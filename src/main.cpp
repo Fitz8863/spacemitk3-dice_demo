@@ -324,7 +324,8 @@ static bool detect_black_divider(const cv::Mat& bgr, DividerLine& divider) {
     cv::Mat gray;
     cv::cvtColor(small, gray, cv::COLOR_BGR2GRAY);
     cv::Mat dark;
-    cv::inRange(gray, cv::Scalar(0), cv::Scalar(75), dark);
+    constexpr int kDividerGrayThreshold = 45;
+    cv::inRange(gray, cv::Scalar(0), cv::Scalar(kDividerGrayThreshold), dark);
     const cv::Mat kernel = cv::getStructuringElement(
         cv::MORPH_ELLIPSE, cv::Size(5, 5));
     cv::morphologyEx(dark, dark, cv::MORPH_CLOSE, kernel);
