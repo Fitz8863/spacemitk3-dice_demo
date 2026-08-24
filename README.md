@@ -24,10 +24,10 @@ USB 摄像头 V4L2 MJPEG 1280x720@25
 
 ## 编译
 
-请在 K3 板端 `/home/spacemit/projects/yolov8` 执行：
+请在 K3 板端 `~/projects/dice-demo` 执行：
 
 ```bash
-cd /home/spacemit/projects/yolov8
+cd ~/projects/dice-demo
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
@@ -41,7 +41,7 @@ cmake --build build -j4
 ### 模型和 OpenCL/SpaceMIT EP 自测（不访问摄像头）
 
 ```bash
-cd /home/spacemit/projects/yolov8
+cd ~/projects/dice-demo
 ./build/yolov8_camera \
   --model models/best.q.onnx \
   --self-test --no-display
@@ -50,7 +50,7 @@ cd /home/spacemit/projects/yolov8
 ### 摄像头显示
 
 ```bash
-cd /home/spacemit/projects/yolov8
+cd ~/projects/dice-demo
 export DISPLAY=:0
 export XDG_RUNTIME_DIR=/run/user/1000
 
