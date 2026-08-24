@@ -1,7 +1,6 @@
 # SpaceMIT K3 YOLOv8 摄像头推理
 
-这个目录实现了 YOLOv8 在 SpaceMIT K3 板端的实时摄像头推理，摄像头读取、MJPEG 解码、OpenCL GPU 前处理、队列、显示方式与
-`spacemitk3_yolo26_detect` 仓库的 `gstreamer-opencl-k3` 分支保持一致。
+这个目录实现了 YOLOv8 在 SpaceMIT K3 板端的实时摄像头推理，包含摄像头读取、MJPEG 解码、OpenCL GPU 前处理、队列和显示。
 
 ## 数据流
 
@@ -121,43 +120,26 @@ export XDG_RUNTIME_DIR=/run/user/1000
 - YOLOv8 解码当前支持 `[1,C,N]` 和 `[1,N,C]` 两种三维输出布局；对当前模型预期为 `[1,10,8400]`，即 4 个框通道加 6 个类别通道。
 - YOLOv8 输出的框按 `cx,cy,w,h`、类别分数已在导出图中完成 DFL/激活，程序不会再次对类别分数做 sigmoid；随后撤销 letterbox 并做按类别 NMS。
 
-## RVV 分支基线验证（2026-08-20）
+## 当前验证状态
 
-父分支 `gstreamer-opencv_rvv-k3` 的基线数据如下；OpenCL 分支应以实际运行日志中的 `OpenCL GPU: ...`、`GStreamer camera opened` 和 `Done.` 行为准。
+当前工程使用 **OpenCL GPU** 完成 NV12 图像预处理，包括 NV12 转 RGB、resize、letterbox、CHW 排布和归一化；SpaceMIT ONNX Runtime EP 负责模型推理。
 
-- CMake 配置成功，使用 OpenCV `4.10.0`、板端 riscv64 编译器和 SpaceMIT ORT 依赖；
-- C++ 编译链接成功，生成 `build/yolov8_camera`；
-- 模型运行时输入为 `[1,3,640,640]`，输出为 `[1,10,8400]`；
-- `/dev/video1` 成功通过 `spacemitdec code-type=9` 解码 1280x720 MJPEG，摄像头实际协商为 24 FPS；
-- `--no-display --max-frames 30` 端到端成功：`prepared=30`、`infer=29`、`display=27`，平均前处理约 `6.32 ms`，推理约 `29.48 ms`，检测到 `325` 个框；
-- 输出日志确认实际使用 `[1,C,N]`、`C=10`、`N=8400` 的 YOLOv8 解码路径。
+已在 SpaceMIT K3 板端验证：
 
-## OpenCL 分支验证（2026-08-20）
+- CMake 编译成功，生成 `build/yolov8_camera`；
+- `--self-test --no-display` 成功执行真实 OpenCL 前处理和模型推理；
+- `/dev/video1` 可通过 `spacemitdec` 硬件解码 MJPEG；没有可用 V4L2 M2M 解码器时自动回退到 `jpegdec` 软件解码；
+- 摄像头请求 25 FPS 时，当前设备可能协商为 24 FPS；
+- 无显示端到端测试可使用 `--no-display --max-frames 30`，退出时允许驱动打印 `V4L2_EVENT_EOS event is not support yet` 提示，只要程序最终输出 `Done.` 即表示正常退出。
 
-已在 K3 板端验证当前 `gstreamer-opencl-k3` 工作树：
+推荐先执行自测，再执行短时摄像头测试：
 
-- OpenCL 设备为 `PowerVR B-Series BXM-4-64`，平台为 `PowerVR`；
-- 全量清理编译成功，生成 `build/yolov8_camera`；
-- `--self-test --no-display` 成功，真实执行 1280x720 NV12 → OpenCL GPU 前处理 → SpaceMIT EP 推理；
-- `--no-display --max-frames 30` 成功：`prepared=30`、`infer=29`、`display=28`，平均前处理约 `8.35 ms`，推理约 `29.62 ms`；
-- OpenCL 资源复用后，前处理相较原始 OpenCL 实现的约 `15.82 ms` 明显下降；具体 FPS 会随摄像头、负载和队列丢帧策略变化。
-
-已知现象：
-
-- 退出摄像头管线时，当前验证未再出现 `queueBuffer ... Invalid argument`；驱动仍可能打印一次 `V4L2_EVENT_EOS event is not support yet`，这是板端 MPP/V4L2 对 EOS 事件的已知提示，不是应用队列未清空，也未导致程序退出失败。
-
-仍需注意：
-
-- 25 FPS caps 首次协商失败后会自动回退到 24 FPS，这是当前摄像头能力表现；
-- 可用 `SPACEMIT_FORCE_SOFTWARE_DECODER=1` 强制验证软件解码；本次软件路径也打印 NV12 零拷贝日志并正常退出：`prepared=10`、`infer=8`、`display=6`；
-- 当前硬件解码日志示例：
-  ```text
-  [Decoder] Using hardware decoder: spacemitdec (V4L2 M2M/MJPEG -> NV12)
-  [Camera] NV12 path: zero-copy GstBuffer -> OpenCV Mat header (owner retained until consumers release the frame)
-  ```
-- 当前软件解码日志示例：
-  ```text
-  [Decoder] Software decoder forced by SPACEMIT_FORCE_SOFTWARE_DECODER
-  [Decoder] Using software decoder: jpegdec
-  ```
-- 本次已验证无显示端到端链路，HighGUI 显示代码保持参考分支方式，但尚未做长时间带显示器测试。
+```bash
+cd ~/projects/dice-demo
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
+cmake --build build -j4
+./build/yolov8_camera --model models/best.q.onnx --self-test --no-display
+./build/yolov8_camera --model models/best.q.onnx --camera 1 \
+  --no-display --max-frames 30
+```
