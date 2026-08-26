@@ -22,3 +22,5 @@ Makefile
 .env
 vision/yolov8_objdetect/config.local.json
 web/uploads/
+web/.dice-arena-web.pid
+web/dice-arena-web.log

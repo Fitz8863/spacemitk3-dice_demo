@@ -1,0 +1,14 @@
+[Unit]
+Description=SpaceMIT K3 Dice Arena web frontend
+After=network.target
+
+[Service]
+Type=simple
+User=spacemit
+WorkingDirectory=/home/spacemit/projects/dice-game/main
+ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory web
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
