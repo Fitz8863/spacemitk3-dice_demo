@@ -273,14 +273,14 @@ def split_text(text: str) -> list[str]:
     return chunks
 
 
-def synthesize(text: str) -> AudioChunk:
+def synthesize(text: str, *, voice: str = "default", speed: float = 1.0) -> AudioChunk:
     body = json.dumps(
         {
             "model": "qwen3-tts",
             "input": text,
-            "voice": "default",
+            "voice": voice,
             "response_format": "wav",
-            "speed": 1.0,
+            "speed": speed,
         },
         ensure_ascii=False,
     ).encode("utf-8")

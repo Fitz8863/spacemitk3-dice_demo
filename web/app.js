@@ -188,55 +188,129 @@
     }
   }
 
-  function splitSpeech(message) {
-    const normalized = String(message).replace(/\s+/g, ' ').trim();
-    if (!normalized) return [];
+  function createTtsFrameQueue() {
+    const items = [];
+    const waiters = [];
+    let finished = false;
+    let failure = null;
 
-    // The K3 endpoint returns one complete WAV per request. Split long
-    // announcements at natural punctuation so the first sentence can start
-    // playing while later sentences are still being synthesized.
-    const sentences = normalized.match(/[^。！？!?]+[。！？!?]?/g) || [normalized];
-    const segments = [];
-    for (const sentence of sentences) {
-      let remaining = sentence.trim();
-      while (remaining.length > 32) {
-        const punctuation = ['，', '、', ',', '；', ';'];
-        let cut = -1;
-        for (const mark of punctuation) {
-          const candidate = remaining.lastIndexOf(mark, 31);
-          if (candidate > cut) cut = candidate;
+    return {
+      push(item) {
+        if (finished) return;
+        const waiter = waiters.shift();
+        if (waiter) waiter.resolve(item);
+        else items.push(item);
+      },
+      finish(error = null) {
+        if (finished) return;
+        finished = true;
+        failure = error;
+        while (waiters.length) {
+          const waiter = waiters.shift();
+          if (failure) waiter.reject(failure);
+          else waiter.resolve(null);
         }
-        // Avoid producing a fragment that is too short just because a comma
-        // appears near the beginning of a sentence.
-        if (cut < 12) cut = 31;
-        segments.push(remaining.slice(0, cut + 1).trim());
-        remaining = remaining.slice(cut + 1).trim();
-      }
-      if (remaining) segments.push(remaining);
-    }
-    return segments;
+      },
+      next() {
+        if (items.length) return Promise.resolve(items.shift());
+        if (finished) return failure ? Promise.reject(failure) : Promise.resolve(null);
+        return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
+      },
+    };
   }
 
-  async function requestSpeechSegment(text, requestId, options) {
+  async function* readTtsFrames(reader) {
+    // /api/tts/stream uses a small length-prefixed protocol so a WAV can be
+    // played as soon as it is complete, without waiting for the whole response.
+    let buffer = new Uint8Array(0);
+    let streamDone = false;
+
+    const append = (chunk) => {
+      const merged = new Uint8Array(buffer.byteLength + chunk.byteLength);
+      merged.set(buffer);
+      merged.set(chunk, buffer.byteLength);
+      buffer = merged;
+    };
+    const readMore = async () => {
+      if (streamDone) return false;
+      const { value, done } = await reader.read();
+      if (done) {
+        streamDone = true;
+        return false;
+      }
+      if (value?.byteLength) append(value);
+      return true;
+    };
+    const ensure = async (size) => {
+      while (buffer.byteLength < size && await readMore()) {}
+      return buffer.byteLength >= size;
+    };
+    const take = (size) => {
+      const value = buffer.slice(0, size);
+      buffer = buffer.slice(size);
+      return value;
+    };
+    const uint32 = (bytes) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, false);
+
+    while (await ensure(4)) {
+      const length = uint32(buffer.slice(0, 4));
+      if (length === 0) {
+        return;
+      }
+      if (length === 0xffffffff) {
+        if (!await ensure(8)) throw new Error('TTS 流在错误帧中提前结束');
+        take(4);
+        const messageLength = uint32(buffer.slice(0, 4));
+        if (messageLength > 64 * 1024 || !await ensure(4 + messageLength)) {
+          throw new Error('TTS 错误帧无效');
+        }
+        take(4);
+        const message = new TextDecoder().decode(take(messageLength));
+        throw new Error(message || 'TTS 流生成失败');
+      }
+      if (length < 44 || length > 32 * 1024 * 1024) {
+        throw new Error('TTS 音频帧长度无效');
+      }
+      if (!await ensure(4 + length)) throw new Error('TTS 音频流提前结束');
+      take(4);
+      yield new Blob([take(length)], { type: 'audio/wav' });
+    }
+    throw new Error('TTS 流没有结束帧');
+  }
+
+  async function requestSpeechStream(message, requestId, options, queue) {
     const controller = new AbortController();
     state.ttsAbortController = controller;
+    let reader = null;
     try {
-      const response = await fetch('/api/tts/synthesize', {
+      const response = await fetch('/api/tts/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: options.voice, speed: options.speed }),
+        body: JSON.stringify({ text: message, voice: options.voice, speed: options.speed }),
         signal: controller.signal,
       });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || `HTTP ${response.status}`);
       }
-      const blob = await response.blob();
-      if (!state.sound || requestId !== state.ttsRequestId) {
-        throw new DOMException('Speech request was cancelled', 'AbortError');
+      if (!response.body) throw new Error('浏览器不支持 TTS 流式响应');
+      reader = response.body.getReader();
+      for await (const blob of readTtsFrames(reader)) {
+        if (!state.sound || requestId !== state.ttsRequestId) {
+          throw new DOMException('Speech request was cancelled', 'AbortError');
+        }
+        queue.push(blob);
       }
-      return blob;
+      queue.finish();
+    } catch (error) {
+      if (error.name === 'AbortError' || controller.signal.aborted || requestId !== state.ttsRequestId) {
+        queue.finish(new DOMException('Speech request was cancelled', 'AbortError'));
+      } else {
+        queue.finish(error);
+      }
     } finally {
+      try { await reader?.cancel(); } catch (_) { /* response already ended */ }
+      reader?.releaseLock();
       if (state.ttsAbortController === controller) state.ttsAbortController = null;
     }
   }
@@ -291,31 +365,28 @@
     if (!state.sound || !message) return;
     stopSpeech();
     const requestId = state.ttsRequestId;
-    const segments = splitSpeech(message);
-    if (!segments.length) return;
-    let playedSegments = 0;
+    const queue = createTtsFrameQueue();
+    const producer = requestSpeechStream(message, requestId, options, queue);
+    let playedFrames = 0;
     try {
-      // Start the next request as soon as the current WAV has arrived. Its
-      // synthesis overlaps playback of the current segment, while the
-      // backend lock still protects the single K3 TTS model from concurrency.
-      let nextBlob = requestSpeechSegment(segments[0], requestId, options);
-      for (let index = 0; index < segments.length; index += 1) {
-        const blob = await nextBlob;
-        if (index + 1 < segments.length) {
-          nextBlob = requestSpeechSegment(segments[index + 1], requestId, options);
-        }
+      // One HTTP request is made for the complete announcement. The producer
+      // keeps reading later WAV frames while the consumer plays the first one.
+      while (true) {
+        const blob = await queue.next();
+        if (blob === null) break;
         await playSpeechBlob(blob, requestId);
-        playedSegments = index + 1;
+        playedFrames += 1;
       }
+      await producer;
     } catch (error) {
+      await producer.catch(() => {});
       if (error.name === 'AbortError' || requestId !== state.ttsRequestId || !state.sound) return;
-      console.warn('K3 Qwen3-TTS failed; using browser speech fallback:', error);
+      console.warn(`K3 Qwen3-TTS stream failed after ${playedFrames} frame(s); using browser speech fallback:`, error);
       if (!state.ttsFallbackNotified) {
         state.ttsFallbackNotified = true;
         toast('K3 TTS 暂不可用，已临时使用浏览器语音');
       }
-      const remaining = segments.slice(playedSegments).join('');
-      browserSpeechFallback(remaining || message);
+      browserSpeechFallback(message);
     }
   }
 

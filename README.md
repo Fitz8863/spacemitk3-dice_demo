@@ -102,7 +102,8 @@ chmod 600 .dice-arena.env
 ```text
 GET  /api/health                    查看 bridge、YOLOv8、LLM 和 TTS 状态
 GET  /api/tts/health                检查板端 Qwen3-TTS llama-server
-POST /api/tts/synthesize            文本转 WAV；JSON: text/voice/speed
+POST /api/tts/stream                 单次提交整段文本，按 WAV 帧持续返回
+POST /api/tts/synthesize              手工调试：单段文本转一个 WAV
 POST /api/analyze                   启动一轮真实板端识别，返回 job_id
 GET  /api/analyze/<job_id>          轮询 YOLOv8 + LLM 任务状态和最终 JSON
 POST /api/analyze/<job_id>/cancel   取消当前识别任务
@@ -149,9 +150,9 @@ TTS 在 K3 上作为独立的 `llama-server` 进程运行：
 
 ```text
 浏览器 Audio
-  <- WAV /api/tts/synthesize
-  <- backend/server.py
-  <- POST http://127.0.0.1:18080/v1/audio/speech
+  <- 单次 POST /api/tts/stream；连续接收长度前缀 WAV 帧
+  <- backend/server.py（按自然标点复用 qwen3_tts_interactive.py）
+  <- 多次 POST http://127.0.0.1:18080/v1/audio/speech（同一个后端请求内部）
   <- tts/qwen3-tts/runtime/bin/llama-server
 ```
 
@@ -166,7 +167,7 @@ curl -fsS http://127.0.0.1:18080/health
 
 模型约 2 GB，因此 `*.onnx`、`*.gguf`、speaker `*.bin`、参考音频、生成 WAV、日志和 PID 均不提交 GitHub。迁移脚本默认只复制当前 `config.json` 指定的 speaker 文件，不复制 `voice_presets/source_audio` 或其他未配置的音色。浏览器优先播放 K3 返回的 WAV；TTS 不可用时才使用浏览器 `speechSynthesis` 兜底。
 
-当前 `/v1/audio/speech` 和 `/api/tts/synthesize` 都是**整段 WAV 响应**，不是逐 PCM 帧的真正流式接口。为降低规则播报的首播等待，前端会按自然标点把长文本切成短段：第一段完整 WAV 生成后立即播放，并在播放时请求下一段。因此当前属于“分段级低延迟播放”，首段仍需等待一次 TTS 推理完成。若要实现真正的音频帧流式播放，需要同时改造 `llama-server` 输出接口、Python 转发链路和浏览器端 Web Audio/MediaSource 播放链路。
+当前 `/v1/audio/speech` 仍然是“一次请求返回一个完整 WAV”，不是逐 PCM 帧接口。网页现在不会切段后发起多个请求：针对一整段规则只发起一次 `/api/tts/stream`，后端内部复用 `qwen3_tts_interactive.py` 的自然标点切分和逐段生成，将每个已经完成的 WAV 以长度前缀帧立即写入同一个 HTTP 响应；浏览器收到第一帧后马上播放，同时继续读取后续帧。因此这是“单 HTTP 请求内的完整 WAV 分段流”，不是逐 PCM 帧流。
 
 手工测试后端代理：
 

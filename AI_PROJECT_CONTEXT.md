@@ -187,6 +187,7 @@ select
 ```text
 GET  /api/health
 GET  /api/tts/health
+POST /api/tts/stream
 POST /api/tts/synthesize
 POST /api/analyze
 GET  /api/analyze/<job_id>
@@ -197,7 +198,8 @@ POST /api/analyze/<job_id>/cancel
 
 - `GET /api/health`：检查后端、YOLOv8、LLM 和 Qwen3-TTS 状态；
 - `GET /api/tts/health`：检查板端 `llama-server` 是否可用；
-- `POST /api/tts/synthesize`：把文本代理给 Qwen3-TTS 并返回 WAV；
+- `POST /api/tts/stream`：整段文本只发起一次请求；后端按自然标点生成多个完整 WAV 帧，并在每帧完成后立即写入响应；
+- `POST /api/tts/synthesize`：兼容手工测试，把单段文本代理给 Qwen3-TTS 并返回一个 WAV；
 - `POST /api/analyze`：创建一次板端视觉分析任务；
 - `GET /api/analyze/<job_id>`：查询任务状态、阶段、日志和最终结果；
 - `POST /api/analyze/<job_id>/cancel`：停止指定分析任务。
@@ -224,9 +226,11 @@ TTS 已迁移到当前项目的 `tts/qwen3-tts/`，但它仍作为独立的板�
 
 ```text
 Web app.js
-  -> POST /api/tts/synthesize
+  -> 一次 POST /api/tts/stream（完整播报文本）
   -> backend/server.py
-  -> http://127.0.0.1:18080/v1/audio/speech
+  -> qwen3_tts_interactive.py.split_text() + synthesize()
+  -> 同一个 HTTP 响应内连续返回长度前缀的完整 WAV 帧
+  -> 每个内部片段 POST http://127.0.0.1:18080/v1/audio/speech
   -> tts/qwen3-tts/runtime/bin/llama-server
   -> SpaceMIT media backend + ONNX Runtime EP + Qwen3-TTS models
   -> 24 kHz mono WAV
@@ -234,12 +238,13 @@ Web app.js
 
 因此当前前后端是“代码职责分离、同一个 HTTP 服务部署”，而 TTS 是第三个板端进程。网页优先播放 K3 TTS 返回的 WAV；只有服务不可用时才使用浏览器 `speechSynthesis` 兜底。后端对 TTS 请求加了串行锁，避免多个语音生成同时争抢模型和算力资源。
 
-`/v1/audio/speech` 与 `/api/tts/synthesize` 当前都要等一个请求对应的完整 WAV 生成完毕后才返回，并非逐 PCM 帧流式。网页为长播报实现了分段级低延迟策略：按自然标点拆分文本，第一段 WAV 返回后立即播放，同时请求下一段，并保持顺序播放。后端的 `TTS_REQUEST_LOCK` 仍会串行化模型推理，避免单个 K3 TTS 服务被并发请求争抢。因此首段仍存在一次完整短句推理延迟；真正的 PCM 流式需要后续同时改造 `llama-server`、HTTP/WebSocket 转发和浏览器 Web Audio/MediaSource 消费链路。
+`/v1/audio/speech` 仍需等待单个内部片段的完整 WAV 生成，但网页针对一整段播报只发起一次 `/api/tts/stream`。后端加载迁移后的 `qwen3_tts_interactive.py`，复用 `split_text()` 按自然标点切分，并在每个 `synthesize()` 完成后立即发送一个长度前缀 WAV 帧；浏览器的读取生产者和播放消费者并行工作，第一帧到达即播放，后续帧按顺序播放。当前是“单请求 + 完整 WAV 分段帧”，不是逐 PCM 帧流。`TTS_REQUEST_LOCK` 仍串行保护单个 K3 TTS 服务。
 
 当前接口：
 
 ```text
 GET  /api/tts/health
+POST /api/tts/stream       {"text":"...", "voice":"default", "speed":1.0}
 POST /api/tts/synthesize    {"text":"...", "voice":"default", "speed":1.0}
 ```
 

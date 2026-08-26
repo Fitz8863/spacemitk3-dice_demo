@@ -10,10 +10,12 @@ winner itself.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import mimetypes
 import os
 import selectors
+import sys
 import signal
 import subprocess
 import threading
@@ -33,6 +35,9 @@ TTS_ROOT = ROOT / "tts" / "qwen3-tts"
 DEFAULT_BINARY = VISION_ROOT / "build" / "yolov8_camera"
 ENV_FILE = ROOT / ".dice-arena.env"
 TTS_REQUEST_LOCK = threading.Lock()
+TTS_STREAM_END = 0
+TTS_STREAM_ERROR = 0xFFFFFFFF
+_tts_interactive_module = None
 
 
 def load_env_file(path: Path) -> None:
@@ -87,8 +92,7 @@ def tts_health() -> bool:
         return False
 
 
-def synthesize_tts(payload: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
-    """Proxy a text-to-WAV request to the board-local Qwen3-TTS service."""
+def validate_tts_payload(payload: dict[str, Any]) -> tuple[str, str, float]:
     text = str(payload.get("text", "")).strip()
     if not text:
         raise ValueError("text is required")
@@ -101,11 +105,57 @@ def synthesize_tts(payload: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
     except (TypeError, ValueError) as exc:
         raise ValueError("speed must be a number") from exc
     speed = max(0.25, min(4.0, speed))
+    voice = str(payload.get("voice", "default"))
+    return text, voice, speed
+
+
+def get_tts_interactive_module():
+    """Load the migrated interactive client so HTTP uses the same splitter."""
+    global _tts_interactive_module
+    if _tts_interactive_module is None:
+        path = TTS_ROOT / "qwen3_tts_interactive.py"
+        spec = importlib.util.spec_from_file_location("dice_arena_qwen3_tts_interactive", path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"unable to load interactive TTS client: {path}")
+        module = importlib.util.module_from_spec(spec)
+        # dataclasses and other decorators may resolve the module through
+        # sys.modules while the file is being executed.
+        sys.modules[spec.name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(spec.name, None)
+            raise
+        _tts_interactive_module = module
+    return _tts_interactive_module
+
+
+def stream_tts(payload: dict[str, Any], write_frame) -> None:
+    """Generate one browser request with ordered WAV frames like run_interactive.sh."""
+    text, voice, speed = validate_tts_payload(payload)
+    client = get_tts_interactive_module()
+    chunks = client.split_text(text)
+    if not chunks:
+        raise ValueError("text is empty after normalization")
+
+    # The browser sends one request for the complete announcement. Internally
+    # we reuse the board interactive client's punctuation-aware generation and
+    # emit each completed WAV frame immediately, so playback can begin after
+    # the first frame without exposing segment requests to the UI.
+    with TTS_REQUEST_LOCK:
+        for chunk_text in chunks:
+            audio = client.synthesize(chunk_text, voice=voice, speed=speed).wav
+            write_frame(audio)
+
+
+def synthesize_tts(payload: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
+    """Proxy a text-to-WAV request to the board-local Qwen3-TTS service."""
+    text, voice, speed = validate_tts_payload(payload)
 
     body = json.dumps({
         "model": "qwen3-tts",
         "input": text,
-        "voice": str(payload.get("voice", "default")),
+        "voice": voice,
         "response_format": "wav",
         "speed": speed,
     }, ensure_ascii=False).encode("utf-8")
@@ -364,6 +414,45 @@ class Handler(BaseHTTPRequestHandler):
         self.serve_static()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/api/tts/stream":
+            try:
+                payload = self.read_json()
+                validate_tts_payload(payload)
+            except (ValueError, UnicodeDecodeError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/x-dice-arena-wav-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+            def write_frame(audio: bytes) -> None:
+                self.wfile.write(len(audio).to_bytes(4, "big"))
+                self.wfile.write(audio)
+                self.wfile.flush()
+
+            try:
+                stream_tts(payload, write_frame)
+                self.wfile.write(TTS_STREAM_END.to_bytes(4, "big"))
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                # The browser can cancel the one streaming request when a new
+                # announcement supersedes it.
+                pass
+            except Exception as exc:
+                print(f"[tts] stream failed: {exc}", flush=True)
+                try:
+                    message = str(exc).encode("utf-8")[:2000]
+                    self.wfile.write(TTS_STREAM_ERROR.to_bytes(4, "big"))
+                    self.wfile.write(len(message).to_bytes(4, "big"))
+                    self.wfile.write(message)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            return
         if self.path == "/api/tts/synthesize":
             try:
                 audio, headers = synthesize_tts(self.read_json())
