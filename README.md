@@ -64,6 +64,29 @@ cd ~/projects/dice-demo
 }
 ```
 
+### `config.json` 参数说明
+
+| 参数 | 作用 |
+| --- | --- |
+| `model` | YOLOv8 ONNX 模型路径；相对路径以程序启动目录为基准。 |
+| `camera` | 摄像头编号 `N`，对应 `/dev/videoN`；命令行 `--device` 的优先级更高。 |
+| `width` / `height` | 摄像头请求的图像宽度和高度，单位为像素。 |
+| `fps` | 摄像头请求帧率；设备不支持时程序可能回退到可用帧率。 |
+| `intra_threads` | SpaceMIT ONNX Runtime EP 推理线程数，必须大于等于 1。 |
+| `ep_affinity` | EP 线程绑定的 CPU 核，使用分号分隔，例如 `14;15`；数量必须与 `intra_threads` 一致。 |
+| `queue_depth` | 前处理和推理队列深度，程序限制为 1–8；数值越大，缓存、延迟和内存占用越高。 |
+| `conf` | YOLO 检测置信度阈值，范围为 0.0–1.0。 |
+| `focus` | 摄像头手动对焦值；`-1` 表示不修改当前设置。 |
+| `zoom` | 摄像头绝对变焦值；`-1` 表示不修改当前设置。 |
+| `llm.url` | OpenAI 兼容 API 基础地址，程序请求其 `/chat/completions` 接口。 |
+| `llm.model` | 用于复核骰子点数和的模型名称。 |
+| `llm.system_prompt` | 约束大模型只根据程序提供的整数点数和进行判断。 |
+| `llm.user_prompt_template` | 请求模板，必须保留 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}`。 |
+| `stable_frames` | 左右严格各有 5 个骰子且点数组成连续一致达到此帧数后，才调用一次大模型。 |
+| `rejudge_on_change` | `false` 表示每次进程只复核一次；`true` 表示点数组成变化后重新稳定计数并再次复核。 |
+
+API Key 不属于 JSON 配置项，只从环境变量 `DICE_LLM_API_KEY` 读取。
+
 命令行参数仍然保留，并在 JSON 加载后覆盖同名配置。例如：
 
 ```bash

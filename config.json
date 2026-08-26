@@ -1,20 +1,4 @@
 {
-  "_comments": {
-    "model": "YOLOv8 ONNX 模型路径；相对路径以程序启动时的当前目录为基准。",
-    "camera": "摄像头编号 N，对应 /dev/videoN；如果命令行指定 --device，则 --device 优先。",
-    "width": "摄像头请求的图像宽度，单位为像素。",
-    "height": "摄像头请求的图像高度，单位为像素。",
-    "fps": "摄像头请求帧率；设备不支持时程序可能回退到可用帧率。",
-    "intra_threads": "SpaceMIT ONNX Runtime EP 的推理线程数，必须大于等于 1。",
-    "ep_affinity": "EP 线程绑定的 CPU 核编号，使用分号分隔；编号数量必须等于 intra_threads。",
-    "queue_depth": "前处理和推理队列深度，程序会限制在 1 到 8；越大缓存越多，但延迟和内存占用也会增加。",
-    "conf": "YOLO 检测置信度阈值，范围为 0.0 到 1.0。",
-    "focus": "摄像头手动对焦值；设置为 -1 表示不修改摄像头当前对焦。",
-    "zoom": "摄像头绝对变焦值；设置为 -1 表示不修改摄像头当前变焦。",
-    "llm": "大模型复核配置；API Key 不写入此文件，只从环境变量 DICE_LLM_API_KEY 读取。",
-    "stable_frames": "左右严格各检测到 5 个骰子，并且两侧点数组成连续保持一致达到此帧数后，才调用一次大模型。",
-    "rejudge_on_change": "false 表示每次程序运行只复核一次；true 表示已判定后检测到任意一侧点数组成变化时，重新稳定计数并再次复核。"
-  },
   "model": "models/best.q.onnx",
   "camera": 1,
   "width": 1280,
@@ -27,12 +11,6 @@
   "focus": 0,
   "zoom": 150,
   "llm": {
-    "_comments": {
-      "url": "OpenAI 兼容 API 的基础地址；程序会请求该地址下的 /chat/completions。",
-      "model": "用于复核左右骰子点数和的模型名称。",
-      "system_prompt": "约束大模型只根据程序提供的整数点数和判断，不自行修改视觉结果。",
-      "user_prompt_template": "请求模板；必须保留 {left_name}、{right_name}、{left_sum}、{right_sum} 四个占位符。"
-    },
     "url": "https://api.rvcompute.com:60000/v1",
     "model": "gpt-5.4-mini",
     "system_prompt": "You are a strict dice-sum judge. Use only the supplied integer sums. Do not infer or correct any vision result. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
