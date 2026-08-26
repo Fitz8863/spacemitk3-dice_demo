@@ -16,5 +16,6 @@
     "system_prompt": "You are a strict dice-sum judge. Use only the supplied integer sums. Do not infer or correct any vision result. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
     "user_prompt_template": "Exactly five dice are present on each side. {left_name} sum={left_sum}, {right_name} sum={right_sum}. Compare the two sums and return {\"winner\":\"LEFT|RIGHT|TIE\"}."
   },
-  "stable_frames": 20
+  "stable_frames": 20,
+  "rejudge_on_change": false
 }

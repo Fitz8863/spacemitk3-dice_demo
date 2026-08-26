@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cctype>
 #include <cstdlib>
 #include <cstdint>
 #include <csignal>
@@ -173,6 +174,7 @@ struct Args {
     float conf = 0.50f;
     size_t queue_depth = 2;
     int stable_frames = 20;
+    bool rejudge_on_change = false;
     bool no_display = false;
     int max_frames = 0;
     bool self_test = false;
@@ -235,6 +237,35 @@ static void read_config_value(const cv::FileNode& root, const char* key, T& valu
     if (!node.empty()) node >> value;
 }
 
+static bool read_config_bool(const cv::FileNode& root, const char* key, bool& value) {
+    const cv::FileNode node = root[key];
+    if (node.empty()) return true;
+
+    if (node.isInt() || node.isReal()) {
+        double numeric = 0.0;
+        node >> numeric;
+        value = numeric != 0.0;
+        return true;
+    }
+    if (node.isString()) {
+        std::string text;
+        node >> text;
+        std::transform(text.begin(), text.end(), text.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (text == "true" || text == "1") {
+            value = true;
+            return true;
+        }
+        if (text == "false" || text == "0") {
+            value = false;
+            return true;
+        }
+    }
+
+    std::cerr << "config " << key << " must be true or false\n";
+    return false;
+}
+
 static bool load_config(const std::string& path, Args& a) {
     try {
         cv::FileStorage file(path, cv::FileStorage::READ | cv::FileStorage::FORMAT_JSON);
@@ -253,6 +284,7 @@ static bool load_config(const std::string& path, Args& a) {
         read_config_value(root, "ep_affinity", a.ep_affinity);
         read_config_value(root, "conf", a.conf);
         read_config_value(root, "stable_frames", a.stable_frames);
+        if (!read_config_bool(root, "rejudge_on_change", a.rejudge_on_change)) return false;
         read_config_value(root, "focus", a.focus);
         read_config_value(root, "zoom", a.zoom);
 
@@ -293,6 +325,8 @@ static void usage(const char* exe) {
               << "  --conf FLOAT       confidence threshold\n"
               << "  --queue-depth N    keep up to N frames per pipeline queue\n"
               << "  --stable-frames N  valid YOLO frames required before LLM\n"
+              << "  --rejudge-on-change restart stable check and LLM after dice change\n"
+              << "  --no-rejudge-on-change keep one-shot-per-process behavior\n"
               << "  --focus N          fixed manual focus (-1 unchanged)\n"
               << "  --zoom N           zoom absolute value (-1 unchanged)\n"
               << "  --intra-threads N  SpaceMIT EP threads\n"
@@ -386,7 +420,9 @@ static bool parse(int argc, char** argv, Args& a) {
                 a.queue_depth = static_cast<std::size_t>(std::stoul(v));
             } else if (k == "--stable-frames" && (v = need(i))) {
                 a.stable_frames = std::stoi(v);
-            } else if (k == "--focus" && (v = need(i))) a.focus = std::stoi(v);
+            } else if (k == "--rejudge-on-change") a.rejudge_on_change = true;
+            else if (k == "--no-rejudge-on-change") a.rejudge_on_change = false;
+            else if (k == "--focus" && (v = need(i))) a.focus = std::stoi(v);
             else if (k == "--zoom" && (v = need(i))) a.zoom = std::stoi(v);
             else if (k == "--intra-threads" && (v = need(i))) a.intra_threads = std::stoi(v);
             else if (k == "--ep-affinity" && (v = need(i))) a.ep_affinity = v;
@@ -652,6 +688,48 @@ static LlmWinner yolo_winner(const DiceJudgment& judgment) {
     return LlmWinner::Tie;
 }
 
+struct DiceResultSnapshot {
+    int first_count = 0;
+    int second_count = 0;
+    int first_sum = 0;
+    int second_sum = 0;
+    std::vector<int> first_values;
+    std::vector<int> second_values;
+    std::string first_name;
+    std::string second_name;
+    bool horizontal_divider = false;
+    LlmWinner winner = LlmWinner::Unknown;
+};
+
+static DiceResultSnapshot make_dice_snapshot(const DiceJudgment& judgment) {
+    DiceResultSnapshot snapshot;
+    snapshot.first_count = judgment.first_count;
+    snapshot.second_count = judgment.second_count;
+    snapshot.first_sum = judgment.first_sum;
+    snapshot.second_sum = judgment.second_sum;
+    snapshot.first_values = judgment.first_values;
+    snapshot.second_values = judgment.second_values;
+    snapshot.first_name = judgment.first_name;
+    snapshot.second_name = judgment.second_name;
+    snapshot.horizontal_divider = judgment.horizontal_divider;
+    snapshot.winner = yolo_winner(judgment);
+    return snapshot;
+}
+
+static bool same_dice_snapshot(const DiceResultSnapshot& lhs,
+                               const DiceResultSnapshot& rhs) {
+    return lhs.first_count == rhs.first_count &&
+           lhs.second_count == rhs.second_count &&
+           lhs.first_sum == rhs.first_sum &&
+           lhs.second_sum == rhs.second_sum &&
+           lhs.first_values == rhs.first_values &&
+           lhs.second_values == rhs.second_values &&
+           lhs.first_name == rhs.first_name &&
+           lhs.second_name == rhs.second_name &&
+           lhs.horizontal_divider == rhs.horizontal_divider &&
+           lhs.winner == rhs.winner;
+}
+
 static const char* winner_label(LlmWinner winner) {
     switch (winner) {
     case LlmWinner::Left: return "LEFT";
@@ -851,26 +929,18 @@ int main(int argc, char** argv) {
     // Thread 3 is the display stage logically; it runs on the main/UI thread
     // because OpenCV HighGUI on this board must own the X11 event loop here.
     struct LlmVerificationState {
-        // The LLM is called only after the same valid 5+5 YOLO result has
-        // been observed for the configured number of consecutive frames.
+        // Each initial or changed result must remain identical for the
+        // configured number of consecutive valid 5+5 frames.
         int stable_count = 0;
         bool have_stable_candidate = false;
-        int stable_left_sum = 0;
-        int stable_right_sum = 0;
-        std::vector<int> stable_first_values;
-        std::vector<int> stable_second_values;
-        std::string stable_first_name;
-        std::string stable_second_name;
-        bool stable_horizontal_divider = false;
+        DiceResultSnapshot stable_candidate;
         std::string last_stability_message;
 
         bool attempted = false;
         bool succeeded = false;
         bool agreement = false;
         bool printed = false;
-        int left_sum = 0;
-        int right_sum = 0;
-        LlmWinner yolo_winner = LlmWinner::Unknown;
+        DiceResultSnapshot attempted_snapshot;
         LlmWinner llm_winner = LlmWinner::Unknown;
     } llm_state;
 
@@ -908,90 +978,112 @@ int main(int argc, char** argv) {
                 display_judgment.valid = false;
                 display_judgment.overlay = "LLM verification disabled; winner suppressed";
             } else {
-                const bool same_candidate =
-                    llm_state.have_stable_candidate &&
-                    judgment.first_count == 5 && judgment.second_count == 5 &&
-                    judgment.first_sum == llm_state.stable_left_sum &&
-                    judgment.second_sum == llm_state.stable_right_sum &&
-                    judgment.first_values == llm_state.stable_first_values &&
-                    judgment.second_values == llm_state.stable_second_values &&
-                    judgment.first_name == llm_state.stable_first_name &&
-                    judgment.second_name == llm_state.stable_second_name &&
-                    judgment.horizontal_divider == llm_state.stable_horizontal_divider;
-                if (same_candidate) {
-                    ++llm_state.stable_count;
-                } else {
-                    llm_state.have_stable_candidate = true;
-                    llm_state.stable_count = 1;
-                    llm_state.stable_left_sum = judgment.first_sum;
-                    llm_state.stable_right_sum = judgment.second_sum;
-                    llm_state.stable_first_values = judgment.first_values;
-                    llm_state.stable_second_values = judgment.second_values;
-                    llm_state.stable_first_name = judgment.first_name;
-                    llm_state.stable_second_name = judgment.second_name;
-                    llm_state.stable_horizontal_divider = judgment.horizontal_divider;
+                const DiceResultSnapshot current_snapshot = make_dice_snapshot(judgment);
+                const bool matches_attempted =
+                    llm_state.attempted &&
+                    same_dice_snapshot(current_snapshot, llm_state.attempted_snapshot);
+                const bool needs_stability =
+                    !llm_state.attempted ||
+                    (a.rejudge_on_change && !matches_attempted);
+                bool waiting_for_stability = false;
+
+                if (llm_state.attempted && a.rejudge_on_change && matches_attempted) {
+                    // A transient changed frame must not trigger another LLM
+                    // call if the scene returns to the already judged result.
+                    llm_state.stable_count = 0;
+                    llm_state.have_stable_candidate = false;
+                    llm_state.last_stability_message.clear();
+                } else if (needs_stability) {
+                    const bool same_candidate =
+                        llm_state.have_stable_candidate &&
+                        same_dice_snapshot(current_snapshot, llm_state.stable_candidate);
+                    if (same_candidate) {
+                        ++llm_state.stable_count;
+                    } else {
+                        llm_state.have_stable_candidate = true;
+                        llm_state.stable_count = 1;
+                        llm_state.stable_candidate = current_snapshot;
+                        llm_state.last_stability_message.clear();
+                        if (llm_state.attempted && a.rejudge_on_change) {
+                            std::cout << "[YOLO] dice result changed; restarting stable check\n";
+                        }
+                    }
+
+                    if (llm_state.stable_count < a.stable_frames) {
+                        waiting_for_stability = true;
+                        display_judgment.valid = false;
+                        display_judgment.overlay =
+                            std::string(llm_state.attempted ? "Changed result stable check "
+                                                            : "YOLO stable check ") +
+                            std::to_string(llm_state.stable_count) + "/" +
+                            std::to_string(a.stable_frames);
+                        const std::string stability_message =
+                            std::string(llm_state.attempted ? "[YOLO] changed 5+5 result "
+                                                            : "[YOLO] stable 5+5 result ") +
+                            std::to_string(llm_state.stable_count) + "/" +
+                            std::to_string(a.stable_frames) + ": " + judgment.message;
+                        if (stability_message != llm_state.last_stability_message) {
+                            std::cout << stability_message << "\n";
+                            llm_state.last_stability_message = stability_message;
+                        }
+                    } else {
+                        // A stable changed snapshot starts a new one-shot LLM
+                        // cycle. The previous response is never reused.
+                        const bool is_rejudgment = llm_state.attempted;
+                        llm_state.attempted = true;
+                        llm_state.succeeded = false;
+                        llm_state.agreement = false;
+                        llm_state.printed = false;
+                        llm_state.attempted_snapshot = current_snapshot;
+                        llm_state.llm_winner = LlmWinner::Unknown;
+
+                        std::cout << "[YOLO] "
+                                  << (is_rejudgment ? "changed result" : "stable result")
+                                  << " reached " << a.stable_frames
+                                  << " consecutive frames; calling LLM once\n";
+                        std::string llm_error;
+                        llm_state.succeeded = llm_verifier.verify_once(
+                            judgment.first_name, judgment.second_name,
+                            judgment.first_sum, judgment.second_sum,
+                            llm_state.llm_winner, llm_error);
+                        if (llm_state.succeeded) {
+                            llm_state.agreement =
+                                llm_state.llm_winner == llm_state.attempted_snapshot.winner;
+                            std::cout << "[LLM] one-shot result="
+                                      << winner_label(llm_state.llm_winner) << "\n";
+                        } else {
+                            std::cerr << "[LLM] one-shot verification failed: "
+                                      << llm_error << "\n";
+                        }
+
+                        llm_state.stable_count = 0;
+                        llm_state.have_stable_candidate = false;
+                        llm_state.last_stability_message.clear();
+                    }
                 }
 
-                if (llm_state.stable_count < a.stable_frames) {
-                    display_judgment.valid = false;
-                    display_judgment.overlay =
-                        "YOLO stable check " + std::to_string(llm_state.stable_count) + "/" +
-                        std::to_string(a.stable_frames);
-                    const std::string stability_message =
-                        "[YOLO] stable 5+5 result " +
-                        std::to_string(llm_state.stable_count) + "/" +
-                        std::to_string(a.stable_frames) + ": " + judgment.message;
-                    if (stability_message != llm_state.last_stability_message) {
-                        std::cout << stability_message << "\n";
-                        llm_state.last_stability_message = stability_message;
-                    }
-                } else if (!llm_state.attempted) {
-                    // Freeze the exact stable 5+5 snapshot. The single LLM
-                    // answer must never be reused to approve a later, different frame.
-                    llm_state.attempted = true;
-                    llm_state.left_sum = judgment.first_sum;
-                    llm_state.right_sum = judgment.second_sum;
-                    llm_state.yolo_winner = yolo_winner(judgment);
-
-                    std::cout << "[YOLO] stable result reached " << a.stable_frames
-                              << " consecutive frames; calling LLM once\n";
-                    std::string llm_error;
-                    llm_state.succeeded = llm_verifier.verify_once(
-                        judgment.first_name, judgment.second_name,
-                        judgment.first_sum, judgment.second_sum,
-                        llm_state.llm_winner, llm_error);
-                    if (llm_state.succeeded) {
-                        llm_state.agreement =
-                            llm_state.llm_winner == llm_state.yolo_winner;
-                        std::cout << "[LLM] one-shot result="
-                                  << winner_label(llm_state.llm_winner) << "\n";
+                if (!waiting_for_stability) {
+                    const bool same_snapshot =
+                        llm_state.attempted &&
+                        same_dice_snapshot(current_snapshot, llm_state.attempted_snapshot);
+                    if (llm_state.succeeded && llm_state.agreement && same_snapshot) {
+                        if (!llm_state.printed) {
+                            std::cout << "Dice judgment verified by YOLO + LLM: "
+                                      << judgment.message << "\n";
+                            llm_state.printed = true;
+                        }
                     } else {
-                        std::cerr << "[LLM] one-shot verification failed: "
-                                  << llm_error << "\n";
-                    }
-                }
-
-                const bool same_snapshot =
-                    judgment.first_sum == llm_state.left_sum &&
-                    judgment.second_sum == llm_state.right_sum &&
-                    yolo_winner(judgment) == llm_state.yolo_winner;
-                if (llm_state.succeeded && llm_state.agreement && same_snapshot) {
-                    if (!llm_state.printed) {
-                        std::cout << "Dice judgment verified by YOLO + LLM: "
-                                  << judgment.message << "\n";
-                        llm_state.printed = true;
-                    }
-                } else {
-                    display_judgment.valid = false;
-                    if (!llm_state.succeeded) {
-                        display_judgment.overlay =
-                            "LLM verification unavailable; winner suppressed";
-                    } else if (!llm_state.agreement) {
-                        display_judgment.overlay =
-                            "LLM/YOLO mismatch; winner suppressed";
-                    } else {
-                        display_judgment.overlay =
-                            "Frame differs from verified snapshot; winner suppressed";
+                        display_judgment.valid = false;
+                        if (!llm_state.attempted || !llm_state.succeeded) {
+                            display_judgment.overlay =
+                                "LLM verification unavailable; winner suppressed";
+                        } else if (!llm_state.agreement) {
+                            display_judgment.overlay =
+                                "LLM/YOLO mismatch; winner suppressed";
+                        } else {
+                            display_judgment.overlay =
+                                "Frame differs from verified snapshot; winner suppressed";
+                        }
                     }
                 }
             }

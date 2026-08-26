@@ -57,6 +57,7 @@ cd ~/projects/dice-demo
   "ep_affinity": "14;15",
   "queue_depth": 2,
   "stable_frames": 20,
+  "rejudge_on_change": false,
   "conf": 0.50,
   "focus": 0,
   "zoom": 150
@@ -88,11 +89,16 @@ cd ~/projects/dice-demo
 ./build/yolov8_camera --device /dev/video1 --no-llm
 ```
 
-### YOLO + 大模型一次性复核
+### YOLO + 大模型稳定复核
 
-当 YOLO 连续稳定确认左右两侧各有 5 个骰子后，程序会把两侧点数和发送到 OpenAI 兼容的 `/chat/completions` 接口。大模型在本次进程中只调用一次，并冻结稳定阶段最后一帧的左右点数和；只有大模型返回的 `LEFT`、`RIGHT` 或 `TIE` 与这个 YOLO 快照一致，程序才打印一次最终胜负。
+当 YOLO 连续稳定确认左右两侧各有 5 个骰子后，程序会把两侧点数和发送到 OpenAI 兼容的 `/chat/completions` 接口。每个稳定判定周期只调用一次大模型，并冻结该周期的左右骰子点数组成和点数和；只有大模型返回的 `LEFT`、`RIGHT` 或 `TIE` 与这个 YOLO 快照一致，程序才打印一次最终胜负。
 
-只有 YOLO 连续得到相同的有效 5+5 结果达到 `stable_frames` 次后，程序才调用一次大模型。任何一帧未检测到分界线、左右数量不是 5 个，或左右骰子点数组成发生变化，连续计数都会清零并重新开始；因此未稳定前不会求胜负，也不会请求大模型。
+只有 YOLO 连续得到相同的有效 5+5 结果达到 `stable_frames` 次后，程序才调用大模型。任何一帧未检测到分界线、左右数量不是 5 个，或左右骰子点数组成发生变化，连续计数都会清零并重新开始；因此未稳定前不会求胜负，也不会请求大模型。
+
+`rejudge_on_change` 控制完成一次判定后的行为：
+
+- `false`（默认）：保持一次性模式，本进程不再调用大模型；后续画面与已复核快照不同时只隐藏胜负。
+- `true`：如果任意一侧的排序后骰子点数组成发生变化，立即把该变化帧作为新一轮稳定计数的第 1 帧。新结果必须再次连续稳定 `stable_frames` 帧且仍满足严格 5+5，才会再次调用一次大模型并输出新结果。短暂误检后恢复到上一次已复核快照时会取消本轮计数，不会重复请求相同结果。
 
 LLM 地址、模型名、system prompt 和 user prompt 模板都在 `config.json` 的 `llm` 对象中配置。模板支持 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}` 四个占位符；程序发送请求前会替换为当前快照值。API Key 不写入代码、配置文件、README 或 Git，只从环境变量读取：
 
@@ -100,7 +106,7 @@ LLM 地址、模型名、system prompt 和 user prompt 模板都在 `config.json
 export DICE_LLM_API_KEY='替换为你的 API Key'
 ```
 
-如需临时覆盖 JSON 中的地址、模型或稳定帧数，可使用 `--llm-url URL`、`--llm-model NAME`、`--stable-frames N`；`--no-llm` 关闭复核。未设置 API Key、请求失败或大模型与 YOLO 结果不一致时，程序不会打印胜负结论。
+如需临时覆盖 JSON 中的地址、模型或稳定帧数，可使用 `--llm-url URL`、`--llm-model NAME`、`--stable-frames N`。`--rejudge-on-change` 临时开启变化后重新判定，`--no-rejudge-on-change` 临时关闭；`--no-llm` 关闭复核。未设置 API Key、请求失败或大模型与 YOLO 结果不一致时，程序不会打印胜负结论。
 
 ### 单核运行与 TCM 资源冲突
 
@@ -153,6 +159,8 @@ spacemit-tcm-smi -c   # 清理残留 TCM 状态
 --conf FLOAT       置信度阈值
 --queue-depth N    每级队列深度
 --stable-frames N  相同有效 5+5 YOLO 结果达到 N 帧后才调用 LLM，默认 20
+--rejudge-on-change 检测结果变化后重新稳定计数并再次复核
+--no-rejudge-on-change 保持一次性复核，覆盖 JSON 中的 true
 --focus N          手动对焦；-1 表示不改动
 --zoom N           绝对变焦；-1 表示不改动
 --intra-threads N  SpaceMIT EP 线程数
