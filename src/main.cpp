@@ -315,35 +315,67 @@ static void draw_detections(cv::Mat& bgr, const std::vector<Detection>& ds) {
 static bool detect_black_divider(const cv::Mat& bgr, DividerLine& divider) {
     if (bgr.empty()) return false;
 
-    // Divider detection does not need full camera resolution. Working at 1/4
-    // scale keeps this CPU-side stage inexpensive on K3 while preserving the
-    // long, high-contrast black separator.
+    // The divider is a known piece of scene geometry: it is a long, nearly
+    // vertical line close to the horizontal center of the camera view. Work
+    // on a reduced image and search only the central corridor so unrelated
+    // dark objects at the bottom/edges cannot win by having a large area.
     constexpr double kDividerScale = 0.25;
     cv::Mat small;
     cv::resize(bgr, small, cv::Size(), kDividerScale, kDividerScale, cv::INTER_AREA);
     cv::Mat gray;
     cv::cvtColor(small, gray, cv::COLOR_BGR2GRAY);
-    cv::Mat dark;
+
     constexpr int kDividerGrayThreshold = 45;
+    cv::Mat dark;
     cv::inRange(gray, cv::Scalar(0), cv::Scalar(kDividerGrayThreshold), dark);
+
+    const int roi_x = static_cast<int>(0.30 * small.cols);
+    const int roi_width = static_cast<int>(0.40 * small.cols);
+    const int roi_y = static_cast<int>(0.05 * small.rows);
+    const int roi_height = static_cast<int>(0.90 * small.rows);
+    const cv::Rect roi(roi_x, roi_y, roi_width, roi_height);
+    cv::Mat central = cv::Mat::zeros(dark.size(), dark.type());
+    dark(roi).copyTo(central(roi));
+
+    // A vertical kernel repairs small breaks along the expected line without
+    // joining a long horizontal mark below the dice area.
     const cv::Mat kernel = cv::getStructuringElement(
-        cv::MORPH_ELLIPSE, cv::Size(5, 5));
-    cv::morphologyEx(dark, dark, cv::MORPH_CLOSE, kernel);
+        cv::MORPH_RECT, cv::Size(3, 9));
+    cv::morphologyEx(central, central, cv::MORPH_CLOSE, kernel);
 
     std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(dark, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-    const int min_span = static_cast<int>(0.45 * std::max(small.cols, small.rows));
+    cv::findContours(central, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    const int min_height = std::max(20, static_cast<int>(0.55 * roi.height));
+    const float center_x = 0.5f * static_cast<float>(small.cols);
     const std::vector<cv::Point>* best = nullptr;
     double best_score = 0.0;
     for (const auto& contour : contours) {
         if (contour.size() < 5) continue;
         const cv::Rect bounds = cv::boundingRect(contour);
-        const int span = std::max(bounds.width, bounds.height);
         const double area = cv::contourArea(contour);
-        if (span < min_span || area < 300.0) continue;
-        const double elongation = static_cast<double>(span) /
-                                  std::max(1, std::min(bounds.width, bounds.height));
-        const double score = area * std::max(1.0, elongation);
+        if (bounds.height < min_height || area < 80.0) continue;
+
+        // Reject horizontal marks and diagonals. The fitted direction is more
+        // stable than comparing bounding-box width/height for broken lines.
+        cv::Vec4f fitted;
+        cv::fitLine(contour, fitted, cv::DIST_L2, 0.0, 0.01, 0.01);
+        const float direction_norm = std::sqrt(fitted[0] * fitted[0] +
+                                                fitted[1] * fitted[1]);
+        if (direction_norm < 1e-4f) continue;
+        const float verticality = std::abs(fitted[1]) / direction_norm;
+        if (verticality < 0.90f) continue;
+
+        const float contour_center_x = bounds.x + 0.5f * bounds.width;
+        const float center_error = std::abs(contour_center_x - center_x) /
+                                   std::max(1.0f, 0.5f * small.cols);
+        // Keep the line near the middle even inside the central corridor.
+        if (center_error > 0.20f) continue;
+
+        const double narrowness = static_cast<double>(bounds.height) /
+                                  std::max(1, bounds.width);
+        const double center_score = 1.0 - center_error;
+        const double score = area * std::min(narrowness, 20.0) * center_score;
         if (score > best_score) {
             best_score = score;
             best = &contour;
@@ -357,14 +389,13 @@ static bool detect_black_divider(const cv::Mat& bgr, DividerLine& divider) {
     const float norm = std::sqrt(direction.dot(direction));
     if (norm < 1e-4f) return false;
     direction *= (1.0f / norm);
+    if (direction.y < 0.0f) direction *= -1.0f;
 
     cv::Point2f normal(-direction.y, direction.x);
-    const bool horizontal = std::abs(direction.x) >= std::abs(direction.y);
-    if (horizontal && normal.y < 0.0f) normal *= -1.0f;
-    if (!horizontal && normal.x < 0.0f) normal *= -1.0f;
+    if (normal.x < 0.0f) normal *= -1.0f;
 
     divider.valid = true;
-    divider.horizontal = horizontal;
+    divider.horizontal = false;
     divider.point = cv::Point2f(
         fitted[2] / static_cast<float>(kDividerScale),
         fitted[3] / static_cast<float>(kDividerScale));
