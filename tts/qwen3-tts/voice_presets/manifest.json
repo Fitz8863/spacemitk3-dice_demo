@@ -1,0 +1,43 @@
+{
+  "format": "qwen3-tts-k3-speaker-embeddings",
+  "runtime_format": "raw little-endian float32[1024]",
+  "source_audio": [
+    {
+      "name": "qwen_clone",
+      "url": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone.wav",
+      "local_file": "source_audio/clone.wav",
+      "embedding": "embeddings/qwen_clone.spk.bin",
+      "source_sha256": "480f55f41c71c3d79c2a9acc48f0bfb3c5a46222e6e9ebf3e2888e93501a6b5c",
+      "embedding_sha256": "21892c10413d2afb2ec322f80073477775b3cfe0a91de21c495ee43cd9ed28e6",
+      "source_bytes": 775738,
+      "embedding_bytes": 4096
+    },
+    {
+      "name": "qwen_clone_1",
+      "url": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone_1.wav",
+      "local_file": "source_audio/clone_1.wav",
+      "embedding": "embeddings/qwen_clone_1.spk.bin",
+      "source_sha256": "46dbc998c9d1d48111267c40741dd3200f2e5bcf4075f8c4c97f4451160dce50",
+      "embedding_sha256": "2de5668d0b8a14e638e296ff863c6dbdafa7d96ea39b54081bb29dd3317a3bf2",
+      "source_bytes": 134570,
+      "embedding_bytes": 4096
+    },
+    {
+      "name": "qwen_clone_2",
+      "url": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone_2.wav",
+      "local_file": "source_audio/clone_2.wav",
+      "embedding": "embeddings/qwen_clone_2.spk.bin",
+      "source_sha256": "480f55f41c71c3d79c2a9acc48f0bfb3c5a46222e6e9ebf3e2888e93501a6b5c",
+      "embedding_sha256": "21892c10413d2afb2ec322f80073477775b3cfe0a91de21c495ee43cd9ed28e6",
+      "source_bytes": 775738,
+      "embedding_bytes": 4096
+    }
+  ],
+  "user_voice": {
+    "name": "anke",
+    "source_audio_not_committed": true,
+    "embedding": "embeddings/anke.spk.bin",
+    "embedding_sha256": "e616aa66bb42d6787ceb293f759498e1a704a80fb3e3a1fe128005e635a56905",
+    "embedding_bytes": 4096
+  }
+}

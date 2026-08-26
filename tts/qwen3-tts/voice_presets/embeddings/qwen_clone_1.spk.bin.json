@@ -1,0 +1,17 @@
+{
+  "format": "qwen3-tts-k3-speaker-embedding",
+  "dtype": "float32",
+  "endianness": "little",
+  "dimensions": 1024,
+  "bytes": 4096,
+  "input": "voice_presets/source_audio/clone_1.wav",
+  "input_sha256": "46dbc998c9d1d48111267c40741dd3200f2e5bcf4075f8c4c97f4451160dce50",
+  "input_sample_rate": 16000,
+  "input_channels": 1,
+  "model": "/tmp/qwen3-base-model",
+  "mode": "x_vector_only",
+  "reference_text": null,
+  "python": "3.12.3",
+  "torch": "2.13.0+cpu",
+  "output_sha256": "2de5668d0b8a14e638e296ff863c6dbdafa7d96ea39b54081bb29dd3317a3bf2"
+}

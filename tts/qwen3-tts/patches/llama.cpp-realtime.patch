@@ -1,0 +1,233 @@
+diff --git a/tools/smt-mtmd/media-worker.cpp b/tools/smt-mtmd/media-worker.cpp
+index 4b6e01d..690af71 100644
+--- a/tools/smt-mtmd/media-worker.cpp
++++ b/tools/smt-mtmd/media-worker.cpp
+@@ -1,5 +1,81 @@
+ #include "media-worker.h"
+
++#if defined(__linux__)
++#    include <cerrno>
++#    include <cstdlib>
++#    include <cstring>
++#    include <pthread.h>
++#    include <sched.h>
++#endif
++
++namespace {
++
++#if defined(__linux__)
++struct cpu_mask {
++    cpu_set_t set{};
++    bool      valid = false;
++};
++
++cpu_mask parse_cpu_mask(const char * name) {
++    cpu_mask result;
++    const char * value = std::getenv(name);
++    if (value == nullptr || *value == '\0') {
++        return result;
++    }
++    CPU_ZERO(&result.set);
++    char * end = nullptr;
++    const char * cursor = value;
++    while (*cursor != '\0') {
++        errno = 0;
++        long first = std::strtol(cursor, &end, 10);
++        if (errno != 0 || end == cursor || first < 0 || first >= CPU_SETSIZE) {
++            std::cerr << "[media-worker] invalid " << name << "='" << value << "'\n";
++            return cpu_mask{};
++        }
++        long last = first;
++        if (*end == '-') {
++            cursor = end + 1;
++            errno = 0;
++            last = std::strtol(cursor, &end, 10);
++            if (errno != 0 || end == cursor || last < first || last >= CPU_SETSIZE) {
++                std::cerr << "[media-worker] invalid " << name << "='" << value << "'\n";
++                return cpu_mask{};
++            }
++        }
++        for (long cpu = first; cpu <= last; ++cpu) {
++            CPU_SET(static_cast<int>(cpu), &result.set);
++        }
++        result.valid = true;
++        if (*end == ',') {
++            cursor = end + 1;
++        } else if (*end == '\0') {
++            break;
++        } else {
++            std::cerr << "[media-worker] invalid " << name << "='" << value << "'\n";
++            return cpu_mask{};
++        }
++    }
++    return result;
++}
++
++void apply_media_worker_affinity() {
++    const cpu_mask mask = parse_cpu_mask("QWEN3_TTS_MEDIA_CPU_MASK");
++    if (!mask.valid) {
++        return;
++    }
++    const int rc = pthread_setaffinity_np(pthread_self(), sizeof(mask.set), &mask.set);
++    if (rc != 0) {
++        std::cerr << "[media-worker] failed to bind worker to QWEN3_TTS_MEDIA_CPU_MASK: "
++                  << std::strerror(rc) << "\n";
++    } else {
++        std::cerr << "[media-worker] worker affinity configured by QWEN3_TTS_MEDIA_CPU_MASK='"
++                  << std::getenv("QWEN3_TTS_MEDIA_CPU_MASK") << "'\n";
++    }
++}
++#endif
++
++}  // namespace
++
+ media_worker::media_worker(std::string name) : name_(std::move(name)) {
+     thread_ = std::thread(&media_worker::loop, this);
+     std::cerr << "[media-worker] backend '" << name_ << "' worker thread started: " << thread_.get_id() << "\n";
+@@ -26,6 +102,9 @@ std::thread::id media_worker::thread_id() const {
+ }
+
+ void media_worker::loop() {
++#if defined(__linux__)
++    apply_media_worker_affinity();
++#endif
+     while (true) {
+         std::function<void()> task;
+         {
+diff --git a/tools/smt-mtmd/smt/qwen3-tts/qwen3_tts_talker.cpp b/tools/smt-mtmd/smt/qwen3-tts/qwen3_tts_talker.cpp
+index cd4b6d9..d82c231 100644
+--- a/tools/smt-mtmd/smt/qwen3-tts/qwen3_tts_talker.cpp
++++ b/tools/smt-mtmd/smt/qwen3-tts/qwen3_tts_talker.cpp
+@@ -23,6 +23,14 @@
+ #include <thread>
+ #include <vector>
+
++#if defined(__linux__)
++#    include <cerrno>
++#    include <pthread.h>
++#    include <sched.h>
++#    include <cstdlib>
++#    include <iostream>
++#endif
++
+ namespace qwen3_tts {
+ namespace {
+
+@@ -54,10 +62,14 @@ float dot_f16(const ggml_fp16_t * weight, const ggml_fp16_t * input) {
+ class f16_gemv {
+   public:
+     f16_gemv() {
++        const cpu_mask mask = parse_cpu_mask("QWEN3_TTS_GEMV_CPU_MASK");
+         int started = 0;
+         try {
+             for (; started < worker_count; ++started) {
+-                workers_[started] = std::thread([this, started] { worker_loop(started); });
++                workers_[started] = std::thread([this, started, mask] {
++                    apply_cpu_mask(mask, started, "gemv");
++                    worker_loop(started);
++                });
+             }
+         } catch (...) {
+             stopping_.store(true, std::memory_order_release);
+@@ -100,6 +112,80 @@ class f16_gemv {
+   private:
+     static constexpr int worker_count = 4;
+
++    struct cpu_mask {
++        cpu_set_t      set{};
++        std::vector<int> ids;
++        bool            valid = false;
++    };
++
++    static cpu_mask parse_cpu_mask(const char * name) {
++        cpu_mask result;
++#if defined(__linux__)
++        const char * value = std::getenv(name);
++        if (value == nullptr || *value == '\0') {
++            return result;
++        }
++        CPU_ZERO(&result.set);
++        char * end = nullptr;
++        const char * cursor = value;
++        while (*cursor != '\0') {
++            errno = 0;
++            long first = std::strtol(cursor, &end, 10);
++            if (errno != 0 || end == cursor || first < 0 || first >= CPU_SETSIZE) {
++                std::cerr << "[qwen3-tts] invalid " << name << "='" << value << "'\n";
++                return cpu_mask{};
++            }
++            long last = first;
++            if (*end == '-') {
++                cursor = end + 1;
++                errno = 0;
++                last = std::strtol(cursor, &end, 10);
++                if (errno != 0 || end == cursor || last < first || last >= CPU_SETSIZE) {
++                    std::cerr << "[qwen3-tts] invalid " << name << "='" << value << "'\n";
++                    return cpu_mask{};
++                }
++            }
++            for (long cpu = first; cpu <= last; ++cpu) {
++                CPU_SET(static_cast<int>(cpu), &result.set);
++                result.ids.push_back(static_cast<int>(cpu));
++            }
++            result.valid = true;
++            if (*end == ',') {
++                cursor = end + 1;
++            } else if (*end == '\0') {
++                break;
++            } else {
++                std::cerr << "[qwen3-tts] invalid " << name << "='" << value << "'\n";
++                return cpu_mask{};
++            }
++        }
++#endif
++        return result;
++    }
++
++    static void apply_cpu_mask(const cpu_mask & mask, int id, const char * label) {
++#if defined(__linux__)
++        if (!mask.valid) {
++            return;
++        }
++        cpu_set_t worker_set;
++        CPU_ZERO(&worker_set);
++        const int cpu = mask.ids[static_cast<size_t>(id) % mask.ids.size()];
++        CPU_SET(cpu, &worker_set);
++        const int rc = pthread_setaffinity_np(pthread_self(), sizeof(worker_set), &worker_set);
++        if (rc != 0) {
++            std::cerr << "[qwen3-tts] failed to bind " << label << " worker " << id
++                      << " to CPU " << cpu << ": " << std::strerror(rc) << "\n";
++        } else {
++            std::cerr << "[qwen3-tts] " << label << " worker " << id << " bound to CPU " << cpu << "\n";
++        }
++#else
++        (void) mask;
++        (void) id;
++        (void) label;
++#endif
++    }
++
+     struct job {
+         const ggml_fp16_t * weight        = nullptr;
+         float *             output        = nullptr;
+@@ -302,6 +388,20 @@ struct talker_engine::impl {
+         }
+
+         ggml_threadpool_params threadpool_params = ggml_threadpool_params_default(threads);
++#if defined(__linux__)
++        if (const char * value = std::getenv("QWEN3_TTS_THREADPOOL_POLL"); value != nullptr && *value != '\0') {
++            char * end = nullptr;
++            errno     = 0;
++            const long poll = std::strtol(value, &end, 10);
++            if (errno == 0 && end != value && *end == '\0' && poll >= 0 && poll <= 100) {
++                threadpool_params.poll = static_cast<uint32_t>(poll);
++                std::cerr << "[qwen3-tts] ggml threadpool poll=" << poll << "\n";
++            } else {
++                std::cerr << "[qwen3-tts] invalid QWEN3_TTS_THREADPOOL_POLL='" << value
++                          << "', using default " << threadpool_params.poll << "\n";
++            }
++        }
++#endif
+         threadpool_.reset(ggml_threadpool_new(&threadpool_params));
+         if (!threadpool_) {
+             throw std::runtime_error("failed to create Qwen3-TTS threadpool");

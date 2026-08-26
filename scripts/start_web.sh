@@ -12,6 +12,13 @@ mkdir -p "$(dirname "$PID_FILE")"
 if [[ -f "$PID_FILE" ]]; then
     old_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
     if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
+        if [[ "${TTS_AUTOSTART:-1}" != "0" ]] && ! "$ROOT_DIR/scripts/start_tts.sh"; then
+            if [[ "${TTS_REQUIRED:-0}" == "1" ]]; then
+                echo "Qwen3-TTS is required but could not be started" >&2
+                exit 1
+            fi
+            echo "Warning: Qwen3-TTS is unavailable; web will use its browser speech fallback" >&2
+        fi
         echo "Dice Arena web is already running: pid=$old_pid port=$PORT"
         exit 0
     fi
@@ -19,6 +26,15 @@ if [[ -f "$PID_FILE" ]]; then
 fi
 
 cd "$ROOT_DIR"
+if [[ "${TTS_AUTOSTART:-1}" != "0" ]]; then
+    if ! "$ROOT_DIR/scripts/start_tts.sh"; then
+        if [[ "${TTS_REQUIRED:-0}" == "1" ]]; then
+            echo "Qwen3-TTS is required but could not be started" >&2
+            exit 1
+        fi
+        echo "Warning: Qwen3-TTS is unavailable; web will use its browser speech fallback" >&2
+    fi
+fi
 nohup /usr/bin/python3 backend/server.py --host "$HOST" --port "$PORT" \
     >>"$LOG_FILE" 2>&1 &
 pid=$!

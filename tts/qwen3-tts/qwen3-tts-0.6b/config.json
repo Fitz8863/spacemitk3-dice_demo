@@ -1,0 +1,25 @@
+{
+  "architectures": [
+    "Qwen3TTSForConditionalGeneration"
+  ],
+  "tts_model": {
+    "tokenizer_model_path": "tokenizer.gguf",
+    "text_embedding_model_path": "text-embed-proj.onnx",
+    "codec_decoder_model_path": "codec-decoder-t50-q.onnx",
+    "talker_model_path": "talker-q8_0.gguf",
+    "code_predictor_model_path": "code-predictor-q4_0.gguf",
+    "aux_model_path": "qwen3-tts-aux.gguf",
+    "speaker_file": "anke.spk.bin",
+    "sample_rate": 24000,
+    "max_frames": 160,
+    "max_prefill": 128,
+    "segment_pause_ms": 200,
+    "frontend_threads": 2,
+    "codec_threads": 4,
+    "talker_threads": 4,
+    "ep_config": {
+      "SPACEMIT_EP_INTRA_THREAD_NUM": "4",
+      "SPACEMIT_EP_INTER_THREAD_NUM": "1"
+    }
+  }
+}

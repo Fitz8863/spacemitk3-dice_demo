@@ -10,6 +10,11 @@
     shakeTimer: null,
     countdownTimer: null,
     analysisJobId: null,
+    ttsAudio: null,
+    ttsObjectUrl: null,
+    ttsAbortController: null,
+    ttsRequestId: 0,
+    ttsFallbackNotified: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -104,13 +109,72 @@
     setTimeout(() => node.classList.remove('show'), 2800);
   }
 
-  function speak(message) {
+  function stopSpeech() {
+    state.ttsRequestId += 1;
+    state.ttsAbortController?.abort();
+    state.ttsAbortController = null;
+    if (state.ttsAudio) {
+      state.ttsAudio.pause();
+      state.ttsAudio.src = '';
+      state.ttsAudio = null;
+    }
+    if (state.ttsObjectUrl) {
+      URL.revokeObjectURL(state.ttsObjectUrl);
+      state.ttsObjectUrl = null;
+    }
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  }
+
+  function browserSpeechFallback(message) {
     if (!state.sound || !('speechSynthesis' in window)) return;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(message);
     utterance.lang = 'zh-CN';
     utterance.rate = 0.96;
     window.speechSynthesis.speak(utterance);
+  }
+
+  async function speak(message) {
+    if (!state.sound || !message) return;
+    stopSpeech();
+    const requestId = state.ttsRequestId;
+    const controller = new AbortController();
+    state.ttsAbortController = controller;
+    try {
+      const response = await fetch('/api/tts/synthesize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: message, voice: 'default', speed: 1.0 }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      if (!state.sound || requestId !== state.ttsRequestId) return;
+      state.ttsAbortController = null;
+      const objectUrl = URL.createObjectURL(blob);
+      state.ttsObjectUrl = objectUrl;
+      const audio = new Audio(objectUrl);
+      state.ttsAudio = audio;
+      const release = () => {
+        if (state.ttsAudio === audio) state.ttsAudio = null;
+        URL.revokeObjectURL(objectUrl);
+        if (state.ttsObjectUrl === objectUrl) state.ttsObjectUrl = null;
+      };
+      audio.addEventListener('ended', release, { once: true });
+      audio.addEventListener('error', release, { once: true });
+      await audio.play();
+    } catch (error) {
+      if (error.name === 'AbortError' || requestId !== state.ttsRequestId || !state.sound) return;
+      console.warn('K3 Qwen3-TTS failed; using browser speech fallback:', error);
+      if (!state.ttsFallbackNotified) {
+        state.ttsFallbackNotified = true;
+        toast('K3 TTS 暂不可用，已临时使用浏览器语音');
+      }
+      browserSpeechFallback(message);
+    }
   }
 
   function countdown(next, label, hint) {
@@ -285,8 +349,9 @@
   });
   $('soundToggle').addEventListener('click', () => {
     state.sound = !state.sound;
+    if (!state.sound) stopSpeech();
     $('soundToggle').textContent = state.sound ? '🔊' : '🔇';
-    toast(state.sound ? '语音播报已开启' : '语音播报已关闭');
+    toast(state.sound ? 'K3 Qwen3-TTS 播报已开启' : '语音播报已关闭');
   });
   $('cameraButton').addEventListener('click', async () => {
     if (state.stream) {

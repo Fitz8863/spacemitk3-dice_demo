@@ -1,6 +1,7 @@
 [Unit]
 Description=SpaceMIT K3 Dice Arena web frontend
-After=network.target
+Wants=dice-arena-tts.service
+After=network.target dice-arena-tts.service
 
 [Service]
 Type=simple

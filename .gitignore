@@ -26,3 +26,15 @@ web/.dice-arena-web.pid
 web/dice-arena-web.log
 .dice-arena.env
 backend/__pycache__/
+
+# Migrated Qwen3-TTS runtime state and board-local model payloads
+tts/qwen3-tts/llama-server.log
+tts/qwen3-tts/llama-server.pid
+tts/qwen3-tts/__pycache__/
+tts/qwen3-tts/voice_embeddings/__pycache__/
+tts/qwen3-tts/wav-output/*
+!tts/qwen3-tts/wav-output/.gitkeep
+tts/qwen3-tts/qwen3-tts-0.6b/*.onnx
+tts/qwen3-tts/qwen3-tts-0.6b/*.gguf
+tts/qwen3-tts/qwen3-tts-0.6b/*.bin
+tts/qwen3-tts/voice_presets/source_audio/

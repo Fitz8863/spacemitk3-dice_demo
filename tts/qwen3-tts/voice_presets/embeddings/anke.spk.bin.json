@@ -1,0 +1,18 @@
+{
+  "format": "qwen3-tts-k3-speaker-embedding",
+  "dtype": "float32",
+  "endianness": "little",
+  "dimensions": 1024,
+  "bytes": 4096,
+  "input": "user-provided/1安可.wav",
+  "input_sha256": "6752bbcfe59bf7804ec4e673e2d1065b642550a1d80ab78fd8e3b670a2c31ec9",
+  "input_sample_rate": 44100,
+  "input_channels": 1,
+  "model": "/tmp/qwen3-base-model",
+  "mode": "x_vector_only",
+  "reference_text": "妈妈说过，只要相信，故事就会给人力量。所以每次想到这些故事的时候，安卡都觉得心里暖融融的。",
+  "python": "3.12.3",
+  "torch": "2.13.0+cpu",
+  "output_sha256": "e616aa66bb42d6787ceb293f759498e1a704a80fb3e3a1fe128005e635a56905",
+  "input_path_redacted": true
+}

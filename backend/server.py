@@ -19,6 +19,8 @@ import subprocess
 import threading
 import time
 import uuid
+import urllib.error
+import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,9 +29,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = ROOT / "web"
 VISION_ROOT = ROOT / "vision" / "yolov8_objdetect"
+TTS_ROOT = ROOT / "tts" / "qwen3-tts"
 DEFAULT_BINARY = VISION_ROOT / "build" / "yolov8_camera"
 ENV_FILE = ROOT / ".dice-arena.env"
-JOB_TIMEOUT_SECONDS = int(os.environ.get("DICE_JOB_TIMEOUT_SECONDS", "120"))
+TTS_REQUEST_LOCK = threading.Lock()
 
 
 def load_env_file(path: Path) -> None:
@@ -51,6 +54,11 @@ def load_env_file(path: Path) -> None:
 
 load_env_file(ENV_FILE)
 
+# Resolve runtime settings only after loading the board-local env file.
+JOB_TIMEOUT_SECONDS = int(os.environ.get("DICE_JOB_TIMEOUT_SECONDS", "120"))
+TTS_URL = os.environ.get("DICE_TTS_URL", "http://127.0.0.1:18080").rstrip("/")
+TTS_TIMEOUT_SECONDS = float(os.environ.get("DICE_TTS_TIMEOUT_SECONDS", "120"))
+
 
 def configured_llm() -> bool:
     if os.environ.get("DICE_LLM_API_KEY", "").strip():
@@ -68,6 +76,68 @@ def yolo_binary() -> Path:
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def tts_health() -> bool:
+    """Return whether the board-local Qwen3-TTS llama-server is reachable."""
+    try:
+        with urllib.request.urlopen(f"{TTS_URL}/health", timeout=1.5) as response:
+            return 200 <= response.status < 300
+    except (OSError, urllib.error.URLError):
+        return False
+
+
+def synthesize_tts(payload: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
+    """Proxy a text-to-WAV request to the board-local Qwen3-TTS service."""
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        raise ValueError("text is required")
+    if len(text) > 4000:
+        raise ValueError("text is too long; limit is 4000 characters")
+
+    speed = payload.get("speed", 1.0)
+    try:
+        speed = float(speed)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("speed must be a number") from exc
+    speed = max(0.25, min(4.0, speed))
+
+    body = json.dumps({
+        "model": "qwen3-tts",
+        "input": text,
+        "voice": str(payload.get("voice", "default")),
+        "response_format": "wav",
+        "speed": speed,
+    }, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        f"{TTS_URL}/v1/audio/speech",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    # The K3 TTS runtime is a single expensive local llama-server. Serialize
+    # synthesis requests so rapid UI events cannot make several generations
+    # compete for the same model/AI cores.
+    try:
+        with TTS_REQUEST_LOCK:
+            with urllib.request.urlopen(request, timeout=TTS_TIMEOUT_SECONDS) as response:
+                audio = response.read()
+                headers = {
+                    name: value
+                    for name, value in response.headers.items()
+                    if name.lower().startswith("x-tts-")
+                }
+                content_type = response.headers.get("Content-Type", "audio/wav")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"TTS HTTP {exc.code}: {detail}") from exc
+    except (OSError, urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(f"TTS service unavailable at {TTS_URL}: {exc}") from exc
+
+    if len(audio) < 44 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        raise RuntimeError("TTS service did not return a valid WAV")
+    headers["Content-Type"] = content_type
+    return audio, headers
 
 
 class AnalysisJob:
@@ -269,12 +339,18 @@ class Handler(BaseHTTPRequestHandler):
             binary = yolo_binary()
             self.send_json({
                 "ok": True,
-                "backend": "k3-local-yolov8-llm-bridge",
+                "backend": "k3-local-yolov8-llm-tts-bridge",
                 "yolo_binary": str(binary),
                 "yolo_ready": binary.is_file() and os.access(binary, os.X_OK),
                 "llm_configured": configured_llm(),
+                "tts_url": TTS_URL,
+                "tts_ready": tts_health(),
+                "tts_root": str(TTS_ROOT),
                 "camera": os.environ.get("DICE_CAMERA", "config.json"),
             })
+            return
+        if self.path == "/api/tts/health":
+            self.send_json({"ok": tts_health(), "url": TTS_URL, "root": str(TTS_ROOT)})
             return
         if self.path.startswith("/api/analyze/"):
             job_id = self.path[len("/api/analyze/"):].split("/", 1)[0]
@@ -288,6 +364,30 @@ class Handler(BaseHTTPRequestHandler):
         self.serve_static()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/api/tts/synthesize":
+            try:
+                audio, headers = synthesize_tts(self.read_json())
+            except (ValueError, UnicodeDecodeError) as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except RuntimeError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            else:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", headers.pop("Content-Type", "audio/wav"))
+                self.send_header("Content-Length", str(len(audio)))
+                self.send_header("Cache-Control", "no-store")
+                for name, value in headers.items():
+                    self.send_header(name, value)
+                self.end_headers()
+                try:
+                    self.wfile.write(audio)
+                except (BrokenPipeError, ConnectionResetError):
+                    # A browser may cancel an in-flight speech request when a
+                    # newer announcement supersedes it. The synthesis itself
+                    # has completed; do not turn the expected disconnect into
+                    # a noisy server traceback.
+                    pass
+            return
         if self.path == "/api/analyze":
             try:
                 self.read_json()

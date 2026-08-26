@@ -1,0 +1,14 @@
+{
+  "bundle_format": 1,
+  "name": "qwen3-tts-0.6b",
+  "architecture": "Qwen3TTSForConditionalGeneration",
+  "source_revision": "58a4795010ba25b34966a56d07499d496ff9cd6f",
+  "llama_cpp_revision": "6ad6d85f1bc0967ece71506074f1f7e1c372e167",
+  "speaker_provenance": "public-internet generic female voice-clone reference; redistribution approved by project owner",
+  "source_sha256": {
+    "talker": "f83ae20d0cfc8df22012da787dc52aa738d53917b79b1616ba8ffe86103da898",
+    "code_predictor": "dc0889795d5a162263fbc425b81271a73b7d04de9ea990d2ee8df2842dacc24a",
+    "text_embedding": "027a5b956d866088019a0d8af4cd470f722eac2fc24e132506850e08bd2cd55f",
+    "codec_decoder": "e6502ab15a33661d674c12f525eb1ec0877e7c7188102541af907434e6a5ab05"
+  }
+}
