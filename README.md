@@ -80,12 +80,13 @@ cd ~/projects/dice-demo
 | `zoom` | 摄像头绝对变焦值；`-1` 表示不修改当前设置。 |
 | `llm.url` | OpenAI 兼容 API 基础地址，程序请求其 `/chat/completions` 接口。 |
 | `llm.model` | 用于复核骰子点数和的模型名称。 |
+| `llm.api_key` | 大模型网关 API Key；程序默认从此项读取。环境变量 `DICE_LLM_API_KEY` 可临时覆盖。 |
 | `llm.system_prompt` | 约束大模型只根据程序提供的整数点数和进行判断。 |
 | `llm.user_prompt_template` | 请求模板，必须保留 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}`。 |
 | `stable_frames` | 左右严格各有 5 个骰子且点数组成连续一致达到此帧数后，才调用一次大模型。 |
 | `rejudge_on_change` | `false` 表示每次进程只复核一次；`true` 表示点数组成变化后重新稳定计数并再次复核。 |
 
-API Key 不属于 JSON 配置项，只从环境变量 `DICE_LLM_API_KEY` 读取。
+API Key 默认从 `llm.api_key` 读取。如果同时设置环境变量 `DICE_LLM_API_KEY`，环境变量优先，且程序读取后会从子进程环境中移除该变量。
 
 命令行参数仍然保留，并在 JSON 加载后覆盖同名配置。例如：
 
@@ -123,10 +124,10 @@ API Key 不属于 JSON 配置项，只从环境变量 `DICE_LLM_API_KEY` 读取�
 - `false`（默认）：保持一次性模式，本进程不再调用大模型；后续画面与已复核快照不同时只隐藏胜负。
 - `true`：如果任意一侧的排序后骰子点数组成发生变化，立即把该变化帧作为新一轮稳定计数的第 1 帧。新结果必须再次连续稳定 `stable_frames` 帧且仍满足严格 5+5，才会再次调用一次大模型并输出新结果。短暂误检后恢复到上一次已复核快照时会取消本轮计数，不会重复请求相同结果。
 
-LLM 地址、模型名、system prompt 和 user prompt 模板都在 `config.json` 的 `llm` 对象中配置。模板支持 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}` 四个占位符；程序发送请求前会替换为当前快照值。API Key 不写入代码、配置文件、README 或 Git，只从环境变量读取：
+LLM 地址、模型名、API Key、system prompt 和 user prompt 模板都在 `config.json` 的 `llm` 对象中配置。模板支持 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}` 四个占位符；程序发送请求前会替换为当前快照值。程序默认读取 `config.json` 中的 `llm.api_key`，因此可以直接运行。需要临时更换密钥时，可通过环境变量覆盖：
 
 ```bash
-export DICE_LLM_API_KEY='替换为你的 API Key'
+export DICE_LLM_API_KEY='临时 API Key'
 ```
 
 如需临时覆盖 JSON 中的地址、模型或稳定帧数，可使用 `--llm-url URL`、`--llm-model NAME`、`--stable-frames N`。`--rejudge-on-change` 临时开启变化后重新判定，`--no-rejudge-on-change` 临时关闭；`--no-llm` 关闭复核。未设置 API Key、请求失败或大模型与 YOLO 结果不一致时，程序不会打印胜负结论。

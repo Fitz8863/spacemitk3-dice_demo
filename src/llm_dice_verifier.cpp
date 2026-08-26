@@ -103,7 +103,7 @@ bool run_curl(const std::string& url, const std::string& api_key,
               const std::string& request, std::string& response,
               std::string& error) {
     if (api_key.find_first_of("\r\n") != std::string::npos) {
-        error = "DICE_LLM_API_KEY contains an invalid newline";
+        error = "LLM API key contains an invalid newline";
         return false;
     }
 
@@ -278,7 +278,7 @@ bool LlmDiceVerifier::verify_once(const std::string& left_name, const std::strin
                                   std::string& error) const {
     winner = LlmWinner::Unknown;
     if (!configured()) {
-        error = "LLM is not configured; set DICE_LLM_API_KEY";
+        error = "LLM is not configured; set llm.api_key in config.json or DICE_LLM_API_KEY";
         return false;
     }
 

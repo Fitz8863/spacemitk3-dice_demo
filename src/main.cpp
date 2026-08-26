@@ -304,6 +304,7 @@ static bool load_config(const std::string& path, Args& a) {
             }
             read_config_value(llm, "url", a.llm_url);
             read_config_value(llm, "model", a.llm_model);
+            read_config_value(llm, "api_key", a.llm_api_key);
             read_config_value(llm, "system_prompt", a.llm_system_prompt);
             read_config_value(llm, "user_prompt_template", a.llm_user_prompt_template);
         }
@@ -778,7 +779,8 @@ int main(int argc, char** argv) {
     LlmDiceVerifier llm_verifier({a.llm_url, a.llm_api_key, a.llm_model,
                                   a.llm_system_prompt, a.llm_user_prompt_template});
     if (!a.no_llm && !llm_verifier.configured()) {
-        std::cerr << "[LLM] verification disabled: set DICE_LLM_API_KEY (the key is never stored in the repository).\n";
+        std::cerr << "[LLM] verification disabled: set llm.api_key in config.json "
+                     "or DICE_LLM_API_KEY.\n";
     }
     if (a.self_test) {
         try {

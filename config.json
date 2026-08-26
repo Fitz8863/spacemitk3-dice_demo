@@ -7,15 +7,16 @@
   "intra_threads": 2,
   "ep_affinity": "14;15",
   "queue_depth": 2,
-  "conf": 0.50,
+  "conf": 0.5,
   "focus": 0,
   "zoom": 150,
   "llm": {
     "url": "https://api.rvcompute.com:60000/v1",
     "model": "gpt-5.4-mini",
+    "api_key": "sk-BCImhO1tWbgQMxd4cn0ss7ljwh9jRsEV1XJMj1PktcqiuBcE",
     "system_prompt": "You are a strict dice-sum judge. Use only the supplied integer sums. Do not infer or correct any vision result. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
     "user_prompt_template": "Exactly five dice are present on each side. {left_name} sum={left_sum}, {right_name} sum={right_sum}. Compare the two sums and return {\"winner\":\"LEFT|RIGHT|TIE\"}."
   },
   "stable_frames": 20,
-  "rejudge_on_change": false
+  "rejudge_on_change": true
 }
