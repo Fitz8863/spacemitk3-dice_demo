@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#09111c" />
+  <title>Dice Arena · 双方摇骰子</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div>
+          <p class="eyebrow">SPACEMIT K3 · AGENT DEMO</p>
+          <h1>Dice Arena <span>/ 双方摇骰子</span></h1>
+        </div>
+      </div>
+      <div class="topbar-status">
+        <span class="status-dot"></span>
+        <span id="connectionLabel">演示模式 · 人手操作</span>
+        <button class="icon-button" id="soundToggle" type="button" aria-label="切换语音">🔊</button>
+      </div>
+    </header>
+
+    <main class="main-grid">
+      <section class="stage-card" aria-label="游戏主舞台">
+        <div class="stage-head">
+          <div>
+            <p class="section-kicker" id="phaseKicker">GAME SELECT</p>
+            <h2 id="phaseTitle">选择一场游戏</h2>
+            <p class="phase-copy" id="phaseCopy">欢迎来到 Dice Arena，选择游戏后按 OK 开始。</p>
+          </div>
+          <div class="round-badge"><span>ROUND</span><strong id="roundNumber">01</strong></div>
+        </div>
+
+        <div class="stage-content" id="stageContent">
+          <div class="input-hint">点击按钮开始 · 支持键盘 Enter / ↑ ↓</div>
+          <div class="game-select-view" data-view="select">
+            <div class="game-list" id="gameList" role="listbox" aria-label="游戏列表">
+              <button class="game-option selected" data-game="dice" role="option" aria-selected="true" type="button">
+                <span class="game-icon dice-icon" aria-hidden="true">⚄</span>
+                <span class="game-option-copy"><strong>摇骰子</strong><small>双方各 5 颗 · 比较点数总和</small></span>
+                <span class="game-option-arrow">↗</span>
+              </button>
+              <button class="game-option disabled" data-game="rps" role="option" aria-selected="false" type="button" disabled>
+                <span class="game-icon hand-icon" aria-hidden="true">✌</span>
+                <span class="game-option-copy"><strong>猜拳</strong><small>即将开放 · Coming soon</small></span>
+                <span class="game-lock">LOCKED</span>
+              </button>
+            </div>
+            <button class="primary-button select-button" id="startGame" type="button">进入摇骰子 <span>→</span></button>
+            <div class="control-hint"><span class="keycap">↑</span><span class="keycap">↓</span> 选择 <span class="keycap wide">OK</span> 确认</div>
+          </div>
+
+          <div class="rules-view hidden" data-view="rules">
+            <div class="rules-hero">
+              <div class="rules-die large-die" data-face="5"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+              <div>
+                <p class="mini-label">HOW TO PLAY</p>
+                <h3>和 Agent 一起摇骰子</h3>
+                <p>双方各摇 5 颗骰子，停止后同时开盖。视觉模型会识别每颗骰子的点数，点数总和更大的一方获胜。</p>
+              </div>
+            </div>
+            <ol class="rules-list">
+              <li><span>01</span><div><strong>准备</strong><small>把骰盅放在两侧区域，准备好后点击确认。</small></div></li>
+              <li><span>02</span><div><strong>同步摇骰</strong><small>跟随屏幕倒计时，与 Agent 同时开始、同时停止。</small></div></li>
+              <li><span>03</span><div><strong>视觉判定</strong><small>开盖后保持骰子不动，等待识别和结果播报。</small></div></li>
+            </ol>
+            <div class="rules-actions"><button class="secondary-button" id="repeatRules" type="button">↻ 再听一次</button><button class="primary-button" id="confirmRules" type="button">我明白了 <span>→</span></button></div>
+          </div>
+
+          <div class="ready-view hidden" data-view="ready">
+            <div class="ready-orb"><div class="pulse-ring"></div><span>READY</span></div>
+            <p class="mini-label">HUMAN-IN-THE-LOOP</p>
+            <h3>请拿起骰盅，准备摇骰</h3>
+            <p>当前由人手代替机械臂操作。点击开始后，跟随倒计时摇动骰盅。</p>
+            <button class="primary-button hero-button" id="startShake" type="button">开始摇骰 <span>→</span></button>
+          </div>
+
+          <div class="countdown-view hidden" data-view="countdown">
+            <p class="mini-label" id="countdownLabel">GET READY</p>
+            <div class="countdown-number" id="countdownNumber">3</div>
+            <p id="countdownHint">和 Agent 同步</p>
+          </div>
+
+          <div class="shaking-view hidden" data-view="shaking">
+            <div class="shake-copy"><p class="mini-label">SHAKE IT</p><h3>摇起来！</h3><p>屏幕会在结束前提醒你。准备好后可以提前点击停止。</p></div>
+            <div class="shake-visual"><div class="shake-cup">🎲</div><div class="motion-lines"></div></div>
+            <div class="shake-timer"><span>摇骰剩余</span><strong id="shakeSeconds">08</strong><button class="stop-button" id="stopShake" type="button">停止摇骰</button></div>
+          </div>
+
+          <div class="open-view hidden" data-view="open">
+            <div class="open-icon">☼</div>
+            <p class="mini-label">OPEN TOGETHER</p>
+            <h3>请同时开盖</h3>
+            <p>把骰盅放回指定区域，点击下方按钮确认双方已经开盖。</p>
+            <button class="primary-button hero-button" id="revealDice" type="button">双方已开盖 <span>→</span></button>
+          </div>
+
+          <div class="analysis-view hidden" data-view="analysis">
+            <div class="analysis-header"><div><p class="mini-label">VISION ANALYSIS</p><h3 id="analysisTitle">正在识别骰子</h3></div><span class="analysis-spinner"></span></div>
+            <div class="analysis-steps"><div class="analysis-step active" id="stepCapture"><span>✓</span><div><strong>采集画面</strong><small>锁定双方区域</small></div></div><div class="analysis-step" id="stepDetect"><span>2</span><div><strong>YOLOv8 识别</strong><small>逐颗检测点数</small></div></div><div class="analysis-step" id="stepJudge"><span>3</span><div><strong>计算胜负</strong><small>比较两侧总和</small></div></div></div>
+            <div class="scan-line"></div>
+          </div>
+
+          <div class="result-view hidden" data-view="result">
+            <div class="result-banner" id="resultBanner"><span class="result-emoji" id="resultEmoji">🏆</span><div><p class="mini-label">FINAL RESULT</p><h3 id="resultTitle">玩家获胜</h3><p id="resultSubtitle">恭喜你，点数总和更高！</p></div></div>
+            <div class="scoreboard large-scoreboard"><div class="score-side player-side"><span class="score-label">PLAYER</span><div class="score-dice" id="playerDice"></div><strong id="playerScore">24</strong><small>总和</small></div><div class="versus">VS</div><div class="score-side agent-side"><span class="score-label">AGENT</span><div class="score-dice" id="agentDice"></div><strong id="agentScore">18</strong><small>总和</small></div></div>
+            <div class="result-actions"><button class="secondary-button" id="newRound" type="button">再来一局</button><button class="primary-button" id="backToGames" type="button">返回游戏列表 <span>→</span></button></div>
+          </div>
+        </div>
+
+        <div class="stage-footer"><div class="progress-dots" id="progressDots"><span class="active"></span><span></span><span></span><span></span><span></span><span></span></div><span id="stageFooterText">选择游戏开始体验</span></div>
+      </section>
+
+      <aside class="side-column">
+        <section class="camera-card panel-card">
+          <div class="panel-heading"><div><p class="section-kicker">LIVE VIEW</p><h2>现场画面</h2></div><span class="live-tag"><i></i> LIVE</span></div>
+          <div class="camera-frame" id="cameraFrame"><video id="cameraVideo" autoplay playsinline muted></video><div class="camera-placeholder" id="cameraPlaceholder"><div class="camera-grid"></div><span class="camera-icon">⌾</span><strong>等待摄像头画面</strong><small>演示模式可直接体验完整流程</small></div><div class="camera-overlay"><span>PLAYER</span><span>AGENT</span></div><div class="camera-divider"></div></div>
+          <div class="camera-footer"><span id="cameraStatus">未连接摄像头</span><button class="text-button" id="cameraButton" type="button">开启摄像头 ↗</button></div>
+        </section>
+
+        <section class="scoreboard panel-card">
+          <div class="panel-heading"><div><p class="section-kicker">LIVE SCORE</p><h2>实时计分</h2></div><span class="round-mini">R<span id="roundMini">01</span></span></div>
+          <div class="score-row"><div class="player-label"><span class="avatar blue">P</span><div><strong>玩家</strong><small>PLAYER</small></div></div><strong class="live-score" id="livePlayerScore">—</strong></div>
+          <div class="score-row"><div class="player-label"><span class="avatar orange">A</span><div><strong>Agent</strong><small>SPACEMIT</small></div></div><strong class="live-score" id="liveAgentScore">—</strong></div>
+          <div class="score-state" id="scoreState"><span class="state-dot"></span> 等待游戏开始</div>
+        </section>
+
+        <section class="agent-card panel-card">
+          <div class="panel-heading"><div><p class="section-kicker">AGENT ACTIVITY</p><h2>Agent 任务</h2></div><span class="agent-spark">✦</span></div>
+          <div class="agent-task-list"><div class="agent-task done" id="taskWelcome"><span>✓</span><div><strong>欢迎玩家</strong><small>准备就绪</small></div></div><div class="agent-task" id="taskCountdown"><span>2</span><div><strong>同步倒计时</strong><small>等待开始</small></div></div><div class="agent-task" id="taskVision"><span>3</span><div><strong>视觉识别</strong><small>等待开盖</small></div></div><div class="agent-task" id="taskResult"><span>4</span><div><strong>播报结果</strong><small>等待判定</small></div></div></div>
+          <div class="agent-quote" id="agentQuote">“欢迎来到 Dice Arena，准备好和我一起摇骰子了吗？”</div>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="app-footer"><span>◎ SpaceMIT K3 · Dice Challenge Demo</span><span>当前版本 <b>v0.1 prototype</b></span></footer>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="./app.js"></script>
+</body>
+</html>
