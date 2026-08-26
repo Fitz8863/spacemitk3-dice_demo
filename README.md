@@ -65,6 +65,30 @@ export XDG_RUNTIME_DIR=/run/user/1000
 
 参考分支中的摄像头可能只接受 1280x720@24；程序会先尝试请求的 FPS，`--fps 25` 失败时自动回退到 24 FPS。
 
+### YOLO + 大模型一次性复核
+
+当 YOLO 已经确认左右两侧各有 5 个骰子时，程序会把两侧点数和发送到 OpenAI 兼容的 `/chat/completions` 接口。大模型只在本次进程第一次获得有效的 5+5 结果时调用一次，并冻结该帧的左右点数和；只有大模型返回的 `LEFT`、`RIGHT` 或 `TIE` 与这一个 YOLO 快照一致，程序才打印一次最终胜负。后续帧即使仍为 5+5，也不会再次请求接口，更不会复用旧的大模型结果批准不同点数的画面。
+
+API Key 不写入代码、README 或 Git。先在板端设置环境变量：
+
+```bash
+export DICE_LLM_API_KEY='替换为你的 API Key'
+# 可选：覆盖默认地址或模型
+export DICE_LLM_URL='https://api.rvcompute.com:60000/v1'
+export DICE_LLM_MODEL='gpt-5.4-mini'
+```
+
+运行时默认使用上述地址和 `gpt-5.4-mini`：
+
+```bash
+./build/yolov8_camera \
+  --model models/best.q.onnx --camera 1 \
+  --intra-threads 1 --ep-affinity "14" \
+  --queue-depth 2 --conf 0.50
+```
+
+也可以通过 `--llm-url URL`、`--llm-model NAME` 覆盖配置；`--no-llm` 只用于关闭复核调试。未设置 `DICE_LLM_API_KEY`、接口请求失败或大模型与 YOLO 结果不一致时，程序不会打印胜负结论。请求通过板端已有的 `curl` 子进程发送，设置了 5 秒连接超时和 20 秒总超时，API Key 不会出现在 curl 命令行参数中。
+
 ### 无显示端到端测试
 
 ```bash

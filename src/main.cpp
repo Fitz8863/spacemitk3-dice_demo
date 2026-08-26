@@ -1,4 +1,5 @@
 #include "gstreamer_camera.h"
+#include "llm_dice_verifier.h"
 #include "opencl_preprocess.h"
 #include "yolov8_detector.h"
 
@@ -9,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstdint>
 #include <csignal>
 #include <cstring>
@@ -170,6 +172,10 @@ struct Args {
     int max_frames = 0;
     bool self_test = false;
     std::string dump_input;
+    std::string llm_url = "https://api.rvcompute.com:60000/v1";
+    std::string llm_model = "gpt-5.4-mini";
+    std::string llm_api_key;
+    bool no_llm = false;
 };
 
 struct Stats {
@@ -211,7 +217,10 @@ static void usage(const char* exe) {
               << "  --no-display       run pipeline without window\n"
               << "  --max-frames N     stop after N frames enter preprocess (0=unlimited)\n"
               << "  --dump-input PATH  dump first preprocessed tensor as float32\n"
-              << "  --self-test        initialize OpenCL GPU and model, run one inference\n";
+              << "  --self-test        initialize OpenCL GPU and model, run one inference\n"
+              << "  --llm-url URL      OpenAI-compatible v1 base URL\n"
+              << "  --llm-model NAME   model used for one dice-sum verification\n"
+              << "  --no-llm           disable LLM verification\n";
 }
 
 static bool parse(int argc, char** argv, Args& a) {
@@ -236,6 +245,9 @@ static bool parse(int argc, char** argv, Args& a) {
         else if (k == "--no-display") a.no_display = true;
         else if (k == "--dump-input" && (v = need(i))) a.dump_input = v;
         else if (k == "--self-test") a.self_test = true;
+        else if (k == "--llm-url" && (v = need(i))) a.llm_url = v;
+        else if (k == "--llm-model" && (v = need(i))) a.llm_model = v;
+        else if (k == "--no-llm") a.no_llm = true;
         else { std::cerr << "Unknown or incomplete option: " << k << "\n"; usage(argv[0]); return false; }
     }
     a.queue_depth = std::clamp<size_t>(a.queue_depth, 1, 8);
@@ -499,6 +511,21 @@ static void draw_divider_and_judgment(cv::Mat& bgr, const DiceJudgment& judgment
                 .7, color, 2, cv::LINE_AA);
 }
 
+static LlmWinner yolo_winner(const DiceJudgment& judgment) {
+    if (judgment.first_sum > judgment.second_sum) return LlmWinner::Left;
+    if (judgment.second_sum > judgment.first_sum) return LlmWinner::Right;
+    return LlmWinner::Tie;
+}
+
+static const char* winner_label(LlmWinner winner) {
+    switch (winner) {
+    case LlmWinner::Left: return "LEFT";
+    case LlmWinner::Right: return "RIGHT";
+    case LlmWinner::Tie: return "TIE";
+    default: return "UNKNOWN";
+    }
+}
+
 
 } // namespace
 
@@ -508,6 +535,18 @@ int main(int argc, char** argv) {
 
     Args a;
     if (!parse(argc, argv, a)) return argc > 1 ? 2 : 0;
+    if (const char* env_url = std::getenv("DICE_LLM_URL")) {
+        if (a.llm_url == "https://api.rvcompute.com:60000/v1") a.llm_url = env_url;
+    }
+    if (const char* env_model = std::getenv("DICE_LLM_MODEL")) {
+        if (a.llm_model == "gpt-5.4-mini") a.llm_model = env_model;
+    }
+    if (const char* env_key = std::getenv("DICE_LLM_API_KEY")) {
+        a.llm_api_key = env_key;
+        // The verifier passes the secret to curl through a private pipe. Do
+        // not leave it in the environment inherited by later child processes.
+        ::unsetenv("DICE_LLM_API_KEY");
+    }
     if (!std::filesystem::exists(a.model)) {
         std::cerr << "Model not found: " << a.model << "\n";
         return 2;
@@ -517,6 +556,10 @@ int main(int argc, char** argv) {
     if (!pre.init()) return 4;
     Yolov8Detector detector;
     if (!detector.init(a.model, a.intra_threads, a.ep_affinity)) return 5;
+    LlmDiceVerifier llm_verifier({a.llm_url, a.llm_api_key, a.llm_model});
+    if (!a.no_llm && !llm_verifier.configured()) {
+        std::cerr << "[LLM] verification disabled: set DICE_LLM_API_KEY (the key is never stored in the repository).\n";
+    }
     if (a.self_test) {
         try {
             // Exercise the actual OpenCL NV12 -> tensor path as well as the
@@ -665,6 +708,17 @@ int main(int argc, char** argv) {
 
     // Thread 3 is the display stage logically; it runs on the main/UI thread
     // because OpenCV HighGUI on this board must own the X11 event loop here.
+    struct LlmVerificationState {
+        bool attempted = false;
+        bool succeeded = false;
+        bool agreement = false;
+        bool printed = false;
+        int left_sum = 0;
+        int right_sum = 0;
+        LlmWinner yolo_winner = LlmWinner::Unknown;
+        LlmWinner llm_winner = LlmWinner::Unknown;
+    } llm_state;
+
     bool first_display = true;
     uint64_t shown = 0;
     auto last_report = start;
@@ -686,14 +740,68 @@ int main(int argc, char** argv) {
         if (item->nv12 && !item->nv12->empty()) {
             cv::cvtColor(*item->nv12, bgr, cv::COLOR_YUV2BGR_NV12);
             judgment = judge_dice(bgr, item->detections);
+            DiceJudgment display_judgment = judgment;
             static std::string last_judgment;
-            if (judgment.message != last_judgment) {
-                std::cout << "Dice judgment: " << judgment.message << "\n";
-                last_judgment = judgment.message;
+            if (!judgment.valid) {
+                if (judgment.message != last_judgment) {
+                    std::cout << "Dice judgment: " << judgment.message << "\n";
+                    last_judgment = judgment.message;
+                }
+            } else if (a.no_llm) {
+                display_judgment.valid = false;
+                display_judgment.overlay = "LLM verification disabled; winner suppressed";
+            } else {
+                if (!llm_state.attempted) {
+                    // Freeze the exact first valid 5+5 snapshot. The single LLM
+                    // answer must never be reused to approve a later, different frame.
+                    llm_state.attempted = true;
+                    llm_state.left_sum = judgment.first_sum;
+                    llm_state.right_sum = judgment.second_sum;
+                    llm_state.yolo_winner = yolo_winner(judgment);
+
+                    std::string llm_error;
+                    llm_state.succeeded = llm_verifier.verify_once(
+                        judgment.first_name, judgment.second_name,
+                        judgment.first_sum, judgment.second_sum,
+                        llm_state.llm_winner, llm_error);
+                    if (llm_state.succeeded) {
+                        llm_state.agreement =
+                            llm_state.llm_winner == llm_state.yolo_winner;
+                        std::cout << "[LLM] one-shot result="
+                                  << winner_label(llm_state.llm_winner) << "\n";
+                    } else {
+                        std::cerr << "[LLM] one-shot verification failed: "
+                                  << llm_error << "\n";
+                    }
+                }
+
+                const bool same_snapshot =
+                    judgment.first_sum == llm_state.left_sum &&
+                    judgment.second_sum == llm_state.right_sum &&
+                    yolo_winner(judgment) == llm_state.yolo_winner;
+                if (llm_state.succeeded && llm_state.agreement && same_snapshot) {
+                    if (!llm_state.printed) {
+                        std::cout << "Dice judgment verified by YOLO + LLM: "
+                                  << judgment.message << "\n";
+                        llm_state.printed = true;
+                    }
+                } else {
+                    display_judgment.valid = false;
+                    if (!llm_state.succeeded) {
+                        display_judgment.overlay =
+                            "LLM verification unavailable; winner suppressed";
+                    } else if (!llm_state.agreement) {
+                        display_judgment.overlay =
+                            "LLM/YOLO mismatch; winner suppressed";
+                    } else {
+                        display_judgment.overlay =
+                            "Frame differs from verified snapshot; winner suppressed";
+                    }
+                }
             }
             if (!a.no_display) {
                 draw_detections(bgr, item->detections);
-                draw_divider_and_judgment(bgr, judgment);
+                draw_divider_and_judgment(bgr, display_judgment);
                 const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
                 const double fps = elapsed > 0.0 ? shown / elapsed : 0.0;
                 cv::putText(bgr, "DISPLAY " + std::to_string(static_cast<int>(fps)) +

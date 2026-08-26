@@ -51,7 +51,8 @@ add_executable(yolov8_camera
     src/main.cpp
     src/gstreamer_camera.cpp
     src/opencl_preprocess.cpp
-    src/yolov8_detector.cpp)
+    src/yolov8_detector.cpp
+    src/llm_dice_verifier.cpp)
 
 target_include_directories(yolov8_camera PRIVATE
     ${OpenCV_INCLUDE_DIRS}
