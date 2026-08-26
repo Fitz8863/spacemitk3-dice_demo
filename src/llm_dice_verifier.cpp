@@ -99,12 +99,18 @@ std::string read_all(int fd) {
     return result;
 }
 
-bool run_curl(const std::string& url, const std::string& api_key,
-              const std::string& request, std::string& response,
-              std::string& error) {
+enum class CurlRequestResult {
+    Success,
+    Timeout,
+    Failure,
+};
+
+CurlRequestResult run_curl(const std::string& url, const std::string& api_key,
+                           int timeout_seconds, const std::string& request,
+                           std::string& response, std::string& error) {
     if (api_key.find_first_of("\r\n") != std::string::npos) {
         error = "LLM API key contains an invalid newline";
-        return false;
+        return CurlRequestResult::Failure;
     }
 
     std::signal(SIGPIPE, SIG_IGN);
@@ -116,7 +122,7 @@ bool run_curl(const std::string& url, const std::string& api_key,
         close_pipe(input_pipe);
         close_pipe(config_pipe);
         close_pipe(output_pipe);
-        return false;
+        return CurlRequestResult::Failure;
     }
 
     const pid_t pid = ::fork();
@@ -125,7 +131,7 @@ bool run_curl(const std::string& url, const std::string& api_key,
         close_pipe(input_pipe);
         close_pipe(config_pipe);
         close_pipe(output_pipe);
-        return false;
+        return CurlRequestResult::Failure;
     }
     if (pid == 0) {
         constexpr int kCurlConfigFd = 10;
@@ -139,9 +145,12 @@ bool run_curl(const std::string& url, const std::string& api_key,
         close_pipe(config_pipe);
         close_pipe(output_pipe);
 
+        const std::string connect_timeout = std::to_string(std::min(5, timeout_seconds));
+        const std::string request_timeout = std::to_string(timeout_seconds);
         ::execlp("curl", "curl",
                  "--silent", "--show-error", "--fail-with-body",
-                 "--connect-timeout", "5", "--max-time", "20",
+                 "--connect-timeout", connect_timeout.c_str(),
+                 "--max-time", request_timeout.c_str(),
                  "--request", "POST",
                  "--config", "/proc/self/fd/10",
                  "--header", "Content-Type: application/json",
@@ -179,17 +188,22 @@ bool run_curl(const std::string& url, const std::string& api_key,
 
     if (!config_ok || !request_ok) {
         error = "failed to send the LLM request to curl";
-        return false;
+        return CurlRequestResult::Failure;
     }
     if (wait_result < 0) {
         error = std::string("waitpid failed: ") + std::strerror(errno);
-        return false;
+        return CurlRequestResult::Failure;
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 28) {
+        error = "LLM request timed out after " + std::to_string(timeout_seconds) +
+                " seconds";
+        return CurlRequestResult::Timeout;
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         error = response.empty() ? "curl request failed" : response;
-        return false;
+        return CurlRequestResult::Failure;
     }
-    return true;
+    return CurlRequestResult::Success;
 }
 
 std::string append_chat_completions(std::string base_url) {
@@ -269,17 +283,17 @@ LlmDiceVerifier::LlmDiceVerifier(LlmDiceConfig config) : config_(std::move(confi
 
 bool LlmDiceVerifier::configured() const {
     return !config_.base_url.empty() && !config_.api_key.empty() &&
-           !config_.model.empty() && !config_.system_prompt.empty() &&
-           !config_.user_prompt_template.empty();
+           !config_.model.empty() && config_.timeout_seconds >= 1 &&
+           !config_.system_prompt.empty() && !config_.user_prompt_template.empty();
 }
 
-bool LlmDiceVerifier::verify_once(const std::string& left_name, const std::string& right_name,
-                                  int left_sum, int right_sum, LlmWinner& winner,
-                                  std::string& error) const {
+LlmVerificationResult LlmDiceVerifier::verify_once(
+    const std::string& left_name, const std::string& right_name,
+    int left_sum, int right_sum, LlmWinner& winner, std::string& error) const {
     winner = LlmWinner::Unknown;
     if (!configured()) {
         error = "LLM is not configured; set llm.api_key in config.json or DICE_LLM_API_KEY";
-        return false;
+        return LlmVerificationResult::Failure;
     }
 
     std::string user_prompt = config_.user_prompt_template;
@@ -297,14 +311,16 @@ bool LlmDiceVerifier::verify_once(const std::string& left_name, const std::strin
         json_escape(user_prompt) + "\"}]}";
 
     std::string response;
-    if (!run_curl(append_chat_completions(config_.base_url), config_.api_key,
-                  request, response, error)) {
-        return false;
-    }
+    const CurlRequestResult curl_result =
+        run_curl(append_chat_completions(config_.base_url), config_.api_key,
+                 config_.timeout_seconds, request, response, error);
+    if (curl_result == CurlRequestResult::Timeout) return LlmVerificationResult::Timeout;
+    if (curl_result != CurlRequestResult::Success) return LlmVerificationResult::Failure;
+
     winner = parse_winner(response);
     if (winner == LlmWinner::Unknown) {
         error = "LLM response did not contain winner=LEFT, RIGHT, or TIE";
-        return false;
+        return LlmVerificationResult::Failure;
     }
-    return true;
+    return LlmVerificationResult::Success;
 }

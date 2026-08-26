@@ -80,6 +80,7 @@ cd ~/projects/dice-demo
 | `zoom` | 摄像头绝对变焦值；`-1` 表示不修改当前设置。 |
 | `llm.url` | OpenAI 兼容 API 基础地址，程序请求其 `/chat/completions` 接口。 |
 | `llm.model` | 用于复核骰子点数和的模型名称。 |
+| `llm.timeout_seconds` | 云端大模型请求总超时秒数，必须大于等于 1，默认 `20`。仅超时会回退使用稳定 YOLO 结果。 |
 | `llm.api_key` | 大模型网关 API Key；程序默认从此项读取。环境变量 `DICE_LLM_API_KEY` 可临时覆盖。 |
 | `llm.system_prompt` | 约束大模型只根据程序提供的整数点数和进行判断。 |
 | `llm.user_prompt_template` | 请求模板，必须保留 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}`。 |
@@ -124,13 +125,13 @@ API Key 默认从 `llm.api_key` 读取。如果同时设置环境变量 `DICE_LL
 - `false`（默认）：保持一次性模式，本进程不再调用大模型；后续画面与已复核快照不同时只隐藏胜负。
 - `true`：如果任意一侧的排序后骰子点数组成发生变化，立即把该变化帧作为新一轮稳定计数的第 1 帧。新结果必须再次连续稳定 `stable_frames` 帧且仍满足严格 5+5，才会再次调用一次大模型并输出新结果。短暂误检后恢复到上一次已复核快照时会取消本轮计数，不会重复请求相同结果。
 
-LLM 地址、模型名、API Key、system prompt 和 user prompt 模板都在 `config.json` 的 `llm` 对象中配置。模板支持 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}` 四个占位符；程序发送请求前会替换为当前快照值。程序默认读取 `config.json` 中的 `llm.api_key`，因此可以直接运行。需要临时更换密钥时，可通过环境变量覆盖：
+LLM 地址、模型名、API Key、请求超时、system prompt 和 user prompt 模板都在 `config.json` 的 `llm` 对象中配置。`llm.timeout_seconds` 限制一次完整云端请求（连接和响应）；超过该时间没有得到响应时，程序会使用对应稳定 5+5 YOLO 快照的结果直接输出胜负。模板支持 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}` 四个占位符；程序发送请求前会替换为当前快照值。程序默认读取 `config.json` 中的 `llm.api_key`，因此可以直接运行。需要临时更换密钥时，可通过环境变量覆盖：
 
 ```bash
 export DICE_LLM_API_KEY='临时 API Key'
 ```
 
-如需临时覆盖 JSON 中的地址、模型或稳定帧数，可使用 `--llm-url URL`、`--llm-model NAME`、`--stable-frames N`。`--rejudge-on-change` 临时开启变化后重新判定，`--no-rejudge-on-change` 临时关闭；`--no-llm` 关闭复核。未设置 API Key、请求失败或大模型与 YOLO 结果不一致时，程序不会打印胜负结论。
+如需临时覆盖 JSON 中的地址、模型、请求超时或稳定帧数，可使用 `--llm-url URL`、`--llm-model NAME`、`--llm-timeout N`、`--stable-frames N`。`--rejudge-on-change` 临时开启变化后重新判定，`--no-rejudge-on-change` 临时关闭；`--no-llm` 关闭复核。只有请求超时才会回退输出稳定 YOLO 的胜负结论；未设置 API Key、HTTP/API 错误、响应格式错误或大模型与 YOLO 结果不一致时，程序仍不会打印胜负结论。
 
 ### 单核运行与 TCM 资源冲突
 
@@ -191,6 +192,7 @@ spacemit-tcm-smi -c   # 清理残留 TCM 状态
 --ep-affinity LIST EP 线程绑核，数量必须匹配线程数
 --llm-url URL      覆盖 config.json 中的 LLM 地址
 --llm-model NAME   覆盖 config.json 中的 LLM 模型
+--llm-timeout N    覆盖 llm.timeout_seconds，单位秒，必须 >= 1
 --no-llm           关闭 LLM 复核
 --no-display       不创建 HighGUI 窗口
 --max-frames N     处理 N 帧后退出

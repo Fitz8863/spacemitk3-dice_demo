@@ -181,6 +181,7 @@ struct Args {
     std::string dump_input;
     std::string llm_url = "https://api.rvcompute.com:60000/v1";
     std::string llm_model = "gpt-5.4-mini";
+    int llm_timeout_seconds = 20;
     std::string llm_system_prompt;
     std::string llm_user_prompt_template;
     std::string llm_api_key;
@@ -304,6 +305,7 @@ static bool load_config(const std::string& path, Args& a) {
             }
             read_config_value(llm, "url", a.llm_url);
             read_config_value(llm, "model", a.llm_model);
+            read_config_value(llm, "timeout_seconds", a.llm_timeout_seconds);
             read_config_value(llm, "api_key", a.llm_api_key);
             read_config_value(llm, "system_prompt", a.llm_system_prompt);
             read_config_value(llm, "user_prompt_template", a.llm_user_prompt_template);
@@ -338,6 +340,7 @@ static void usage(const char* exe) {
               << "  --self-test        initialize OpenCL GPU and model, run one inference\n"
               << "  --llm-url URL      override the config LLM base URL\n"
               << "  --llm-model NAME   override the config LLM model\n"
+              << "  --llm-timeout N    LLM request timeout in seconds\n"
               << "  --no-llm           disable LLM verification\n";
 }
 
@@ -357,6 +360,10 @@ static bool validate_args(Args& a) {
     }
     if (a.stable_frames < 1) {
         std::cerr << "--stable-frames must be >= 1\n";
+        return false;
+    }
+    if (a.llm_timeout_seconds < 1) {
+        std::cerr << "--llm-timeout must be >= 1\n";
         return false;
     }
     if (a.intra_threads < 1) {
@@ -433,7 +440,9 @@ static bool parse(int argc, char** argv, Args& a) {
             else if (k == "--self-test") a.self_test = true;
             else if (k == "--llm-url" && (v = need(i))) a.llm_url = v;
             else if (k == "--llm-model" && (v = need(i))) a.llm_model = v;
-            else if (k == "--no-llm") a.no_llm = true;
+            else if (k == "--llm-timeout" && (v = need(i))) {
+                a.llm_timeout_seconds = std::stoi(v);
+            } else if (k == "--no-llm") a.no_llm = true;
             else {
                 std::cerr << "Unknown or incomplete option: " << k << "\n";
                 usage(argv[0]);
@@ -777,6 +786,7 @@ int main(int argc, char** argv) {
     Yolov8Detector detector;
     if (!detector.init(a.model, a.intra_threads, a.ep_affinity)) return 5;
     LlmDiceVerifier llm_verifier({a.llm_url, a.llm_api_key, a.llm_model,
+                                  a.llm_timeout_seconds,
                                   a.llm_system_prompt, a.llm_user_prompt_template});
     if (!a.no_llm && !llm_verifier.configured()) {
         std::cerr << "[LLM] verification disabled: set llm.api_key in config.json "
@@ -941,6 +951,7 @@ int main(int argc, char** argv) {
         bool attempted = false;
         bool succeeded = false;
         bool agreement = false;
+        bool timeout_fallback = false;
         bool printed = false;
         DiceResultSnapshot attempted_snapshot;
         LlmWinner llm_winner = LlmWinner::Unknown;
@@ -1035,6 +1046,7 @@ int main(int argc, char** argv) {
                         llm_state.attempted = true;
                         llm_state.succeeded = false;
                         llm_state.agreement = false;
+                        llm_state.timeout_fallback = false;
                         llm_state.printed = false;
                         llm_state.attempted_snapshot = current_snapshot;
                         llm_state.llm_winner = LlmWinner::Unknown;
@@ -1044,15 +1056,20 @@ int main(int argc, char** argv) {
                                   << " reached " << a.stable_frames
                                   << " consecutive frames; calling LLM once\n";
                         std::string llm_error;
-                        llm_state.succeeded = llm_verifier.verify_once(
+                        const LlmVerificationResult llm_result = llm_verifier.verify_once(
                             judgment.first_name, judgment.second_name,
                             judgment.first_sum, judgment.second_sum,
                             llm_state.llm_winner, llm_error);
-                        if (llm_state.succeeded) {
+                        if (llm_result == LlmVerificationResult::Success) {
+                            llm_state.succeeded = true;
                             llm_state.agreement =
                                 llm_state.llm_winner == llm_state.attempted_snapshot.winner;
                             std::cout << "[LLM] one-shot result="
                                       << winner_label(llm_state.llm_winner) << "\n";
+                        } else if (llm_result == LlmVerificationResult::Timeout) {
+                            llm_state.timeout_fallback = true;
+                            std::cerr << "[LLM] one-shot verification timed out: "
+                                      << llm_error << "; using the stable YOLO result\n";
                         } else {
                             std::cerr << "[LLM] one-shot verification failed: "
                                       << llm_error << "\n";
@@ -1068,7 +1085,15 @@ int main(int argc, char** argv) {
                     const bool same_snapshot =
                         llm_state.attempted &&
                         same_dice_snapshot(current_snapshot, llm_state.attempted_snapshot);
-                    if (llm_state.succeeded && llm_state.agreement && same_snapshot) {
+                    if (llm_state.timeout_fallback && same_snapshot) {
+                        display_judgment.overlay =
+                            "YOLO fallback (LLM timeout): " + judgment.message;
+                        if (!llm_state.printed) {
+                            std::cout << "Dice judgment by YOLO fallback (LLM timeout): "
+                                      << judgment.message << "\n";
+                            llm_state.printed = true;
+                        }
+                    } else if (llm_state.succeeded && llm_state.agreement && same_snapshot) {
                         if (!llm_state.printed) {
                             std::cout << "Dice judgment verified by YOLO + LLM: "
                                       << judgment.message << "\n";
@@ -1076,10 +1101,11 @@ int main(int argc, char** argv) {
                         }
                     } else {
                         display_judgment.valid = false;
-                        if (!llm_state.attempted || !llm_state.succeeded) {
+                        if (!llm_state.attempted ||
+                            (!llm_state.succeeded && !llm_state.timeout_fallback)) {
                             display_judgment.overlay =
                                 "LLM verification unavailable; winner suppressed";
-                        } else if (!llm_state.agreement) {
+                        } else if (llm_state.succeeded && !llm_state.agreement) {
                             display_judgment.overlay =
                                 "LLM/YOLO mismatch; winner suppressed";
                         } else {
