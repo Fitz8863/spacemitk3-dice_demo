@@ -1086,8 +1086,11 @@ int main(int argc, char** argv) {
                         llm_state.attempted &&
                         same_dice_snapshot(current_snapshot, llm_state.attempted_snapshot);
                     if (llm_state.timeout_fallback && same_snapshot) {
+                        // OpenCV Hershey fonts cannot render UTF-8 Chinese text.
+                        // Keep the image overlay ASCII-only; the terminal log below
+                        // retains the Chinese judgment.message for operators.
                         display_judgment.overlay =
-                            "YOLO fallback (LLM timeout): " + judgment.message;
+                            "YOLO fallback (LLM timeout): " + judgment.overlay;
                         if (!llm_state.printed) {
                             std::cout << "Dice judgment by YOLO fallback (LLM timeout): "
                                       << judgment.message << "\n";
