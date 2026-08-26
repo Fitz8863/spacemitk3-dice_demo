@@ -3,6 +3,7 @@
 #include "opencl_preprocess.h"
 #include "yolov8_detector.h"
 
+#include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
@@ -159,21 +160,24 @@ struct DiceJudgment {
 };
 
 struct Args {
+    std::string config_path = "config.json";
     std::string model = "models/best.q.onnx";
     int camera = 1;
     std::string device;
     int width = 1280, height = 720, fps = 25;
-    int intra_threads = 1;
-    std::string ep_affinity;
-    int focus = 0, zoom = 181;
-    float conf = 0.25f;
-    size_t queue_depth = 3;
+    int intra_threads = 2;
+    std::string ep_affinity = "14;15";
+    int focus = 0, zoom = 150;
+    float conf = 0.50f;
+    size_t queue_depth = 2;
     bool no_display = false;
     int max_frames = 0;
     bool self_test = false;
     std::string dump_input;
     std::string llm_url = "https://api.rvcompute.com:60000/v1";
     std::string llm_model = "gpt-5.4-mini";
+    std::string llm_system_prompt;
+    std::string llm_user_prompt_template;
     std::string llm_api_key;
     bool no_llm = false;
 };
@@ -202,66 +206,126 @@ struct Stats {
     }
 };
 
+static bool has_help_option(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string option = argv[i];
+        if (option == "--help" || option == "-h") return true;
+    }
+    return false;
+}
+
+static bool find_config_path(int argc, char** argv, std::string& config_path) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) != "--config") continue;
+        if (i + 1 >= argc) {
+            std::cerr << "--config requires a JSON file path\n";
+            return false;
+        }
+        config_path = argv[++i];
+    }
+    return true;
+}
+
+template <typename T>
+static void read_config_value(const cv::FileNode& root, const char* key, T& value) {
+    const cv::FileNode node = root[key];
+    if (!node.empty()) node >> value;
+}
+
+static bool load_config(const std::string& path, Args& a) {
+    try {
+        cv::FileStorage file(path, cv::FileStorage::READ | cv::FileStorage::FORMAT_JSON);
+        if (!file.isOpened()) {
+            std::cerr << "Cannot open JSON config: " << path << "\n";
+            return false;
+        }
+
+        const cv::FileNode root = file.root();
+        read_config_value(root, "model", a.model);
+        read_config_value(root, "camera", a.camera);
+        read_config_value(root, "width", a.width);
+        read_config_value(root, "height", a.height);
+        read_config_value(root, "fps", a.fps);
+        read_config_value(root, "intra_threads", a.intra_threads);
+        read_config_value(root, "ep_affinity", a.ep_affinity);
+        read_config_value(root, "conf", a.conf);
+        read_config_value(root, "focus", a.focus);
+        read_config_value(root, "zoom", a.zoom);
+
+        int queue_depth = static_cast<int>(a.queue_depth);
+        read_config_value(root, "queue_depth", queue_depth);
+        if (queue_depth < 0) {
+            std::cerr << "config queue_depth must be >= 0\n";
+            return false;
+        }
+        a.queue_depth = static_cast<std::size_t>(queue_depth);
+
+        const cv::FileNode llm = root["llm"];
+        if (!llm.empty()) {
+            if (!llm.isMap()) {
+                std::cerr << "config llm must be a JSON object\n";
+                return false;
+            }
+            read_config_value(llm, "url", a.llm_url);
+            read_config_value(llm, "model", a.llm_model);
+            read_config_value(llm, "system_prompt", a.llm_system_prompt);
+            read_config_value(llm, "user_prompt_template", a.llm_user_prompt_template);
+        }
+        a.config_path = path;
+        return true;
+    } catch (const cv::Exception& e) {
+        std::cerr << "Failed to parse JSON config " << path << ": " << e.what() << "\n";
+        return false;
+    }
+}
+
 static void usage(const char* exe) {
     std::cout << "Usage: " << exe << " [options]\n"
-              << "  --model PATH       ONNX model\n"
-              << "  --camera N         V4L2 camera index (default 1)\n"
+              << "  --config PATH      JSON config file (default config.json)\n"
+              << "  --model PATH       ONNX model; overrides config.json\n"
+              << "  --camera N         V4L2 camera index\n"
               << "  --device PATH      explicit V4L2 node, overrides --camera\n"
               << "  --width N --height N --fps N\n"
-              << "  --conf FLOAT       confidence threshold (default 0.25)\n"
-              << "  --queue-depth N    keep up to N frames per pipeline queue (default 3)\n"
-              << "  --focus N          fixed manual focus (default 0; -1 unchanged)\n"
-              << "  --zoom N           zoom absolute value (default 181; -1 unchanged)\n"
-              << "  --intra-threads N  SpaceMIT EP threads (default 1)\n"
-              << "  --ep-affinity LIST bind EP threads to cores, e.g. 8;9;10;11\n"
+              << "  --conf FLOAT       confidence threshold\n"
+              << "  --queue-depth N    keep up to N frames per pipeline queue\n"
+              << "  --focus N          fixed manual focus (-1 unchanged)\n"
+              << "  --zoom N           zoom absolute value (-1 unchanged)\n"
+              << "  --intra-threads N  SpaceMIT EP threads\n"
+              << "  --ep-affinity LIST bind EP threads to cores, e.g. 14;15\n"
               << "  --no-display       run pipeline without window\n"
               << "  --max-frames N     stop after N frames enter preprocess (0=unlimited)\n"
               << "  --dump-input PATH  dump first preprocessed tensor as float32\n"
               << "  --self-test        initialize OpenCL GPU and model, run one inference\n"
-              << "  --llm-url URL      OpenAI-compatible v1 base URL\n"
-              << "  --llm-model NAME   model used for one dice-sum verification\n"
+              << "  --llm-url URL      override the config LLM base URL\n"
+              << "  --llm-model NAME   override the config LLM model\n"
               << "  --no-llm           disable LLM verification\n";
 }
 
-static bool parse(int argc, char** argv, Args& a) {
-    auto need = [&](int& i) -> const char* { return i + 1 < argc ? argv[++i] : nullptr; };
-    for (int i = 1; i < argc; ++i) {
-        const std::string k = argv[i];
-        if (k == "--help" || k == "-h") { usage(argv[0]); return false; }
-        const char* v = nullptr;
-        if (k == "--model" && (v = need(i))) a.model = v;
-        else if (k == "--camera" && (v = need(i))) a.camera = std::stoi(v);
-        else if (k == "--device" && (v = need(i))) a.device = v;
-        else if (k == "--width" && (v = need(i))) a.width = std::stoi(v);
-        else if (k == "--height" && (v = need(i))) a.height = std::stoi(v);
-        else if (k == "--fps" && (v = need(i))) a.fps = std::stoi(v);
-        else if (k == "--conf" && (v = need(i))) a.conf = std::stof(v);
-        else if (k == "--queue-depth" && (v = need(i))) a.queue_depth = static_cast<size_t>(std::stoul(v));
-        else if (k == "--focus" && (v = need(i))) a.focus = std::stoi(v);
-        else if (k == "--zoom" && (v = need(i))) a.zoom = std::stoi(v);
-        else if (k == "--intra-threads" && (v = need(i))) a.intra_threads = std::stoi(v);
-        else if (k == "--ep-affinity" && (v = need(i))) a.ep_affinity = v;
-        else if (k == "--max-frames" && (v = need(i))) a.max_frames = std::stoi(v);
-        else if (k == "--no-display") a.no_display = true;
-        else if (k == "--dump-input" && (v = need(i))) a.dump_input = v;
-        else if (k == "--self-test") a.self_test = true;
-        else if (k == "--llm-url" && (v = need(i))) a.llm_url = v;
-        else if (k == "--llm-model" && (v = need(i))) a.llm_model = v;
-        else if (k == "--no-llm") a.no_llm = true;
-        else { std::cerr << "Unknown or incomplete option: " << k << "\n"; usage(argv[0]); return false; }
+static bool validate_args(Args& a) {
+    a.queue_depth = std::clamp<std::size_t>(a.queue_depth, 1, 8);
+    if (a.model.empty()) {
+        std::cerr << "model path must not be empty\n";
+        return false;
     }
-    a.queue_depth = std::clamp<size_t>(a.queue_depth, 1, 8);
+    if (a.width <= 0 || a.height <= 0 || a.fps <= 0) {
+        std::cerr << "width, height, and fps must all be > 0\n";
+        return false;
+    }
+    if (a.conf < 0.0f || a.conf > 1.0f) {
+        std::cerr << "confidence threshold must be between 0 and 1\n";
+        return false;
+    }
     if (a.intra_threads < 1) {
         std::cerr << "--intra-threads must be >= 1\n";
         return false;
     }
     if (!a.ep_affinity.empty()) {
         std::size_t count = 1;
-        for (char c : a.ep_affinity) {
+        for (const char c : a.ep_affinity) {
             if (c == ';') ++count;
             else if (c < '0' || c > '9') {
                 std::cerr << "--ep-affinity must be a semicolon-separated list of core IDs, "
-                             "for example 8;9;10;11\n";
+                             "for example 14;15\n";
                 return false;
             }
         }
@@ -277,7 +341,62 @@ static bool parse(int argc, char** argv, Args& a) {
             return false;
         }
     }
+    if (!a.no_llm) {
+        if (a.llm_system_prompt.empty() || a.llm_user_prompt_template.empty()) {
+            std::cerr << "config llm.system_prompt and llm.user_prompt_template "
+                         "must not be empty\n";
+            return false;
+        }
+        for (const char* token : {"{left_name}", "{right_name}",
+                                  "{left_sum}", "{right_sum}"}) {
+            if (a.llm_user_prompt_template.find(token) == std::string::npos) {
+                std::cerr << "config llm.user_prompt_template is missing placeholder "
+                          << token << "\n";
+                return false;
+            }
+        }
+    }
     return true;
+}
+
+static bool parse(int argc, char** argv, Args& a) {
+    auto need = [&](int& i) -> const char* { return i + 1 < argc ? argv[++i] : nullptr; };
+    try {
+        for (int i = 1; i < argc; ++i) {
+            const std::string k = argv[i];
+            const char* v = nullptr;
+            if (k == "--config" && (v = need(i))) a.config_path = v;
+            else if (k == "--model" && (v = need(i))) a.model = v;
+            else if (k == "--camera" && (v = need(i))) a.camera = std::stoi(v);
+            else if (k == "--device" && (v = need(i))) a.device = v;
+            else if (k == "--width" && (v = need(i))) a.width = std::stoi(v);
+            else if (k == "--height" && (v = need(i))) a.height = std::stoi(v);
+            else if (k == "--fps" && (v = need(i))) a.fps = std::stoi(v);
+            else if (k == "--conf" && (v = need(i))) a.conf = std::stof(v);
+            else if (k == "--queue-depth" && (v = need(i))) {
+                a.queue_depth = static_cast<std::size_t>(std::stoul(v));
+            } else if (k == "--focus" && (v = need(i))) a.focus = std::stoi(v);
+            else if (k == "--zoom" && (v = need(i))) a.zoom = std::stoi(v);
+            else if (k == "--intra-threads" && (v = need(i))) a.intra_threads = std::stoi(v);
+            else if (k == "--ep-affinity" && (v = need(i))) a.ep_affinity = v;
+            else if (k == "--max-frames" && (v = need(i))) a.max_frames = std::stoi(v);
+            else if (k == "--no-display") a.no_display = true;
+            else if (k == "--dump-input" && (v = need(i))) a.dump_input = v;
+            else if (k == "--self-test") a.self_test = true;
+            else if (k == "--llm-url" && (v = need(i))) a.llm_url = v;
+            else if (k == "--llm-model" && (v = need(i))) a.llm_model = v;
+            else if (k == "--no-llm") a.no_llm = true;
+            else {
+                std::cerr << "Unknown or incomplete option: " << k << "\n";
+                usage(argv[0]);
+                return false;
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Invalid command-line value: " << e.what() << "\n";
+        return false;
+    }
+    return validate_args(a);
 }
 
 // Ultralytics-style vivid palette. OpenCV colors are BGR.
@@ -534,6 +653,12 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, on_signal);
 
     Args a;
+    if (has_help_option(argc, argv)) {
+        usage(argv[0]);
+        return 0;
+    }
+    if (!find_config_path(argc, argv, a.config_path)) return 2;
+    if (!load_config(a.config_path, a)) return 2;
     if (!parse(argc, argv, a)) return argc > 1 ? 2 : 0;
     if (const char* env_url = std::getenv("DICE_LLM_URL")) {
         if (a.llm_url == "https://api.rvcompute.com:60000/v1") a.llm_url = env_url;
@@ -556,7 +681,8 @@ int main(int argc, char** argv) {
     if (!pre.init()) return 4;
     Yolov8Detector detector;
     if (!detector.init(a.model, a.intra_threads, a.ep_affinity)) return 5;
-    LlmDiceVerifier llm_verifier({a.llm_url, a.llm_api_key, a.llm_model});
+    LlmDiceVerifier llm_verifier({a.llm_url, a.llm_api_key, a.llm_model,
+                                  a.llm_system_prompt, a.llm_user_prompt_template});
     if (!a.no_llm && !llm_verifier.configured()) {
         std::cerr << "[LLM] verification disabled: set DICE_LLM_API_KEY (the key is never stored in the repository).\n";
     }

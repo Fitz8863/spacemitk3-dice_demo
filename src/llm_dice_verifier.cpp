@@ -38,6 +38,16 @@ std::string json_escape(const std::string& value) {
     return result;
 }
 
+
+void replace_all(std::string& text, const std::string& token,
+                 const std::string& value) {
+    std::size_t position = 0;
+    while ((position = text.find(token, position)) != std::string::npos) {
+        text.replace(position, token.size(), value);
+        position += value.size();
+    }
+}
+
 std::string curl_config_escape(const std::string& value) {
     std::string result;
     result.reserve(value.size() + 8);
@@ -258,7 +268,9 @@ LlmWinner parse_winner(const std::string& response) {
 LlmDiceVerifier::LlmDiceVerifier(LlmDiceConfig config) : config_(std::move(config)) {}
 
 bool LlmDiceVerifier::configured() const {
-    return !config_.base_url.empty() && !config_.api_key.empty() && !config_.model.empty();
+    return !config_.base_url.empty() && !config_.api_key.empty() &&
+           !config_.model.empty() && !config_.system_prompt.empty() &&
+           !config_.user_prompt_template.empty();
 }
 
 bool LlmDiceVerifier::verify_once(const std::string& left_name, const std::string& right_name,
@@ -270,18 +282,19 @@ bool LlmDiceVerifier::verify_once(const std::string& left_name, const std::strin
         return false;
     }
 
+    std::string user_prompt = config_.user_prompt_template;
+    replace_all(user_prompt, "{left_name}", left_name);
+    replace_all(user_prompt, "{right_name}", right_name);
+    replace_all(user_prompt, "{left_sum}", std::to_string(left_sum));
+    replace_all(user_prompt, "{right_sum}", std::to_string(right_sum));
+
     const std::string request =
         "{\"model\":\"" + json_escape(config_.model) + "\","
         "\"messages\":["
-        "{\"role\":\"system\",\"content\":\"You are a strict dice-sum judge. "
-        "Use only the supplied integer sums. Do not infer or correct any vision result. "
-        "Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.\"},"
+        "{\"role\":\"system\",\"content\":\"" +
+        json_escape(config_.system_prompt) + "\"},"
         "{\"role\":\"user\",\"content\":\"" +
-        json_escape("Exactly five dice are present on each side. " + left_name + " sum=" +
-                    std::to_string(left_sum) + ", " + right_name + " sum=" +
-                    std::to_string(right_sum) + ". Compare the two sums and return "
-                    "{\\\"winner\\\":\\\"LEFT|RIGHT|TIE\\\"}.") +
-        "\"}]}";
+        json_escape(user_prompt) + "\"}]}";
 
     std::string response;
     if (!run_curl(append_chat_completions(config_.base_url), config_.api_key,

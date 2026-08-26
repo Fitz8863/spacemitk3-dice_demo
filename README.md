@@ -37,89 +37,74 @@ cmake --build build -j4
 
 ## 运行
 
-### 模型和 OpenCL/SpaceMIT EP 自测（不访问摄像头）
+程序默认从当前工作目录的 `config.json` 读取初始化参数，因此在 `~/projects/dice-demo` 中编译后可以直接运行：
 
 ```bash
 cd ~/projects/dice-demo
-./build/yolov8_camera \
-  --model models/best.q.onnx \
-  --self-test --no-display
+./build/yolov8_camera
 ```
 
-### 摄像头显示
+配置文件包含模型、摄像头、分辨率、帧率、SpaceMIT EP 线程/绑核、队列、置信度、对焦/变焦以及 LLM 请求参数。默认示例值为：
+
+```json
+{
+  "model": "models/best.q.onnx",
+  "camera": 1,
+  "width": 1280,
+  "height": 720,
+  "fps": 25,
+  "intra_threads": 2,
+  "ep_affinity": "14;15",
+  "queue_depth": 2,
+  "conf": 0.50,
+  "focus": 0,
+  "zoom": 150
+}
+```
+
+命令行参数仍然保留，并在 JSON 加载后覆盖同名配置。例如：
 
 ```bash
-cd ~/projects/dice-demo
-export DISPLAY=:0
-export XDG_RUNTIME_DIR=/run/user/1000
-
-./build/yolov8_camera \
-  --model models/best.q.onnx \
-  --camera 1 \
-  --width 1280 --height 720 --fps 25 \
-  --intra-threads 4 \
-  --ep-affinity "8;9;10;11" \
-  --queue-depth 3 \
-  --conf 0.25
+./build/yolov8_camera --model models/other.onnx --conf 0.60
+./build/yolov8_camera --config config.test.json
 ```
 
-参考分支中的摄像头可能只接受 1280x720@24；程序会先尝试请求的 FPS，`--fps 25` 失败时自动回退到 24 FPS。
+`--self-test --no-display` 不访问摄像头，只验证真实 OpenCL 前处理和 SpaceMIT EP 推理：
+
+```bash
+./build/yolov8_camera --self-test --no-display --no-llm
+```
+
+摄像头请求 25 FPS 失败时，程序会自动回退到设备可协商的 24 FPS。无显示端到端测试：
+
+```bash
+./build/yolov8_camera --no-display --max-frames 30 --no-llm
+```
+
+也可以显式指定设备，`--device` 优先于 `--camera`：
+
+```bash
+./build/yolov8_camera --device /dev/video1 --no-llm
+```
 
 ### YOLO + 大模型一次性复核
 
-当 YOLO 已经确认左右两侧各有 5 个骰子时，程序会把两侧点数和发送到 OpenAI 兼容的 `/chat/completions` 接口。大模型只在本次进程第一次获得有效的 5+5 结果时调用一次，并冻结该帧的左右点数和；只有大模型返回的 `LEFT`、`RIGHT` 或 `TIE` 与这一个 YOLO 快照一致，程序才打印一次最终胜负。后续帧即使仍为 5+5，也不会再次请求接口，更不会复用旧的大模型结果批准不同点数的画面。
+当 YOLO 已经确认左右两侧各有 5 个骰子时，程序会把两侧点数和发送到 OpenAI 兼容的 `/chat/completions` 接口。大模型只在本次进程第一次获得有效的 5+5 结果时调用一次，并冻结该帧的左右点数和；只有大模型返回的 `LEFT`、`RIGHT` 或 `TIE` 与这一个 YOLO 快照一致，程序才打印一次最终胜负。
 
-API Key 不写入代码、README 或 Git。先在板端设置环境变量：
+LLM 地址、模型名、system prompt 和 user prompt 模板都在 `config.json` 的 `llm` 对象中配置。模板支持 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}` 四个占位符；程序发送请求前会替换为当前快照值。API Key 不写入代码、配置文件、README 或 Git，只从环境变量读取：
 
 ```bash
 export DICE_LLM_API_KEY='替换为你的 API Key'
-# 可选：覆盖默认地址或模型
-export DICE_LLM_URL='https://api.rvcompute.com:60000/v1'
-export DICE_LLM_MODEL='gpt-5.4-mini'
 ```
 
-运行时默认使用上述地址和 `gpt-5.4-mini`：
-
-```bash
-./build/yolov8_camera \
-  --model models/best.q.onnx --camera 1 \
-  --intra-threads 1 --ep-affinity "14" \
-  --queue-depth 2 --conf 0.50
-```
-
-也可以通过 `--llm-url URL`、`--llm-model NAME` 覆盖配置；`--no-llm` 只用于关闭复核调试。未设置 `DICE_LLM_API_KEY`、接口请求失败或大模型与 YOLO 结果不一致时，程序不会打印胜负结论。请求通过板端已有的 `curl` 子进程发送，设置了 5 秒连接超时和 20 秒总超时，API Key 不会出现在 curl 命令行参数中。
-
-### 无显示端到端测试
-
-```bash
-./build/yolov8_camera \
-  --model models/best.q.onnx \
-  --camera 1 \
-  --width 1280 --height 720 --fps 25 \
-  --intra-threads 4 \
-  --queue-depth 3 \
-  --conf 0.25 \
-  --no-display --max-frames 30
-```
-
-也可以显式指定设备：
-
-```bash
-./build/yolov8_camera --model models/best.q.onnx --device /dev/video1
-```
+如需临时覆盖 JSON 中的地址或模型，可使用 `--llm-url URL`、`--llm-model NAME`；`--no-llm` 关闭复核。未设置 API Key、请求失败或大模型与 YOLO 结果不一致时，程序不会打印胜负结论。
 
 ### 单核运行与 TCM 资源冲突
 
-单核运行示例：
+单核运行时用命令行覆盖 JSON 中的线程参数：
 
 ```bash
-./build/yolov8_camera \
-  --model models/best.q.onnx \
-  --camera 1 \
-  --intra-threads 1 \
-  --ep-affinity "14" \
-  --queue-depth 2 \
-  --conf 0.50
+./build/yolov8_camera --intra-threads 1 --ep-affinity "14"
 ```
 
 `--ep-affinity` 只设置 EP 工作线程的 CPU 亲和性，不能直接指定内部 TCM/A100 block。若其他 EP 进程仍占用 TCM，或上一次异常退出留下残留状态，推理可能报告 `tcm buffer acquire/release failed`。程序不会在同一个 ORT Session 上重试这类错误，因为 EP 内部锁/TCM 状态已经异常时继续复用 Session 不安全；最终失败会以非零状态退出，并提示排查命令。最终失败时请在板端执行：
@@ -154,21 +139,27 @@ spacemit-tcm-smi -c   # 清理残留 TCM 状态
 
 ## 重要参数
 
+持久化运行参数优先写入 `config.json`；命令行同名选项覆盖 JSON。
+
 ```text
+--config PATH      JSON 配置文件，默认当前目录 config.json
 --model PATH       ONNX 模型
---camera N         使用 /dev/videoN，默认 1
+--camera N         使用 /dev/videoN
 --device PATH      显式指定 V4L2 节点，覆盖 --camera
 --width N --height N --fps N
---conf FLOAT       置信度阈值，默认 0.25
---queue-depth N    每级队列深度，默认 3；满时丢旧帧降低延迟
---focus N          手动对焦，默认 0；-1 表示不改动
---zoom N           绝对变焦，默认 181；-1 表示不改动
---intra-threads N  SpaceMIT EP 线程数，默认 1
---ep-affinity LIST  EP 线程绑定的 AI 核，数量必须等于 --intra-threads
+--conf FLOAT       置信度阈值
+--queue-depth N    每级队列深度
+--focus N          手动对焦；-1 表示不改动
+--zoom N           绝对变焦；-1 表示不改动
+--intra-threads N  SpaceMIT EP 线程数
+--ep-affinity LIST EP 线程绑核，数量必须匹配线程数
+--llm-url URL      覆盖 config.json 中的 LLM 地址
+--llm-model NAME   覆盖 config.json 中的 LLM 模型
+--no-llm           关闭 LLM 复核
 --no-display       不创建 HighGUI 窗口
 --max-frames N     处理 N 帧后退出
 --dump-input PATH  保存首帧 640x640 FP32 CHW 输入
---self-test        初始化 OpenCL GPU 和模型，并执行一次真实 NV12 OpenCL 前处理和推理
+--self-test        执行一次真实 OpenCL 前处理和推理
 ```
 
 ## 实现边界

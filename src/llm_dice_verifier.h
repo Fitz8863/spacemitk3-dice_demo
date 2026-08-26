@@ -13,6 +13,8 @@ struct LlmDiceConfig {
     std::string base_url;
     std::string api_key;
     std::string model;
+    std::string system_prompt;
+    std::string user_prompt_template;
 };
 
 class LlmDiceVerifier {
