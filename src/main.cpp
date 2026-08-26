@@ -153,6 +153,8 @@ struct DiceJudgment {
     int second_sum = 0;
     std::string first_name = "LEFT";
     std::string second_name = "RIGHT";
+    std::vector<int> first_values;
+    std::vector<int> second_values;
     std::string message;
     std::string overlay;
     DividerLine divider;
@@ -170,6 +172,7 @@ struct Args {
     int focus = 0, zoom = 150;
     float conf = 0.50f;
     size_t queue_depth = 2;
+    int stable_frames = 20;
     bool no_display = false;
     int max_frames = 0;
     bool self_test = false;
@@ -249,6 +252,7 @@ static bool load_config(const std::string& path, Args& a) {
         read_config_value(root, "intra_threads", a.intra_threads);
         read_config_value(root, "ep_affinity", a.ep_affinity);
         read_config_value(root, "conf", a.conf);
+        read_config_value(root, "stable_frames", a.stable_frames);
         read_config_value(root, "focus", a.focus);
         read_config_value(root, "zoom", a.zoom);
 
@@ -288,6 +292,7 @@ static void usage(const char* exe) {
               << "  --width N --height N --fps N\n"
               << "  --conf FLOAT       confidence threshold\n"
               << "  --queue-depth N    keep up to N frames per pipeline queue\n"
+              << "  --stable-frames N  valid YOLO frames required before LLM\n"
               << "  --focus N          fixed manual focus (-1 unchanged)\n"
               << "  --zoom N           zoom absolute value (-1 unchanged)\n"
               << "  --intra-threads N  SpaceMIT EP threads\n"
@@ -313,6 +318,10 @@ static bool validate_args(Args& a) {
     }
     if (a.conf < 0.0f || a.conf > 1.0f) {
         std::cerr << "confidence threshold must be between 0 and 1\n";
+        return false;
+    }
+    if (a.stable_frames < 1) {
+        std::cerr << "--stable-frames must be >= 1\n";
         return false;
     }
     if (a.intra_threads < 1) {
@@ -375,6 +384,8 @@ static bool parse(int argc, char** argv, Args& a) {
             else if (k == "--conf" && (v = need(i))) a.conf = std::stof(v);
             else if (k == "--queue-depth" && (v = need(i))) {
                 a.queue_depth = static_cast<std::size_t>(std::stoul(v));
+            } else if (k == "--stable-frames" && (v = need(i))) {
+                a.stable_frames = std::stoi(v);
             } else if (k == "--focus" && (v = need(i))) a.focus = std::stoi(v);
             else if (k == "--zoom" && (v = need(i))) a.zoom = std::stoi(v);
             else if (k == "--intra-threads" && (v = need(i))) a.intra_threads = std::stoi(v);
@@ -577,14 +588,19 @@ static DiceJudgment judge_dice(const cv::Mat& bgr, const std::vector<Detection>&
         if (std::abs(signed_distance) <= tolerance) continue;
         const int side = signed_distance < 0.0f ? 0 : 1;
         result.sides[i] = side;
+        const int value = d.class_id + 1;
         if (side == 0) {
             ++result.first_count;
-            result.first_sum += d.class_id + 1;
+            result.first_sum += value;
+            result.first_values.push_back(value);
         } else {
             ++result.second_count;
-            result.second_sum += d.class_id + 1;
+            result.second_sum += value;
+            result.second_values.push_back(value);
         }
     }
+    std::sort(result.first_values.begin(), result.first_values.end());
+    std::sort(result.second_values.begin(), result.second_values.end());
 
     if (result.first_count != 5 || result.second_count != 5) {
         std::ostringstream message;
@@ -835,6 +851,19 @@ int main(int argc, char** argv) {
     // Thread 3 is the display stage logically; it runs on the main/UI thread
     // because OpenCV HighGUI on this board must own the X11 event loop here.
     struct LlmVerificationState {
+        // The LLM is called only after the same valid 5+5 YOLO result has
+        // been observed for the configured number of consecutive frames.
+        int stable_count = 0;
+        bool have_stable_candidate = false;
+        int stable_left_sum = 0;
+        int stable_right_sum = 0;
+        std::vector<int> stable_first_values;
+        std::vector<int> stable_second_values;
+        std::string stable_first_name;
+        std::string stable_second_name;
+        bool stable_horizontal_divider = false;
+        std::string last_stability_message;
+
         bool attempted = false;
         bool succeeded = false;
         bool agreement = false;
@@ -869,6 +898,8 @@ int main(int argc, char** argv) {
             DiceJudgment display_judgment = judgment;
             static std::string last_judgment;
             if (!judgment.valid) {
+                llm_state.stable_count = 0;
+                llm_state.have_stable_candidate = false;
                 if (judgment.message != last_judgment) {
                     std::cout << "Dice judgment: " << judgment.message << "\n";
                     last_judgment = judgment.message;
@@ -877,14 +908,53 @@ int main(int argc, char** argv) {
                 display_judgment.valid = false;
                 display_judgment.overlay = "LLM verification disabled; winner suppressed";
             } else {
-                if (!llm_state.attempted) {
-                    // Freeze the exact first valid 5+5 snapshot. The single LLM
+                const bool same_candidate =
+                    llm_state.have_stable_candidate &&
+                    judgment.first_count == 5 && judgment.second_count == 5 &&
+                    judgment.first_sum == llm_state.stable_left_sum &&
+                    judgment.second_sum == llm_state.stable_right_sum &&
+                    judgment.first_values == llm_state.stable_first_values &&
+                    judgment.second_values == llm_state.stable_second_values &&
+                    judgment.first_name == llm_state.stable_first_name &&
+                    judgment.second_name == llm_state.stable_second_name &&
+                    judgment.horizontal_divider == llm_state.stable_horizontal_divider;
+                if (same_candidate) {
+                    ++llm_state.stable_count;
+                } else {
+                    llm_state.have_stable_candidate = true;
+                    llm_state.stable_count = 1;
+                    llm_state.stable_left_sum = judgment.first_sum;
+                    llm_state.stable_right_sum = judgment.second_sum;
+                    llm_state.stable_first_values = judgment.first_values;
+                    llm_state.stable_second_values = judgment.second_values;
+                    llm_state.stable_first_name = judgment.first_name;
+                    llm_state.stable_second_name = judgment.second_name;
+                    llm_state.stable_horizontal_divider = judgment.horizontal_divider;
+                }
+
+                if (llm_state.stable_count < a.stable_frames) {
+                    display_judgment.valid = false;
+                    display_judgment.overlay =
+                        "YOLO stable check " + std::to_string(llm_state.stable_count) + "/" +
+                        std::to_string(a.stable_frames);
+                    const std::string stability_message =
+                        "[YOLO] stable 5+5 result " +
+                        std::to_string(llm_state.stable_count) + "/" +
+                        std::to_string(a.stable_frames) + ": " + judgment.message;
+                    if (stability_message != llm_state.last_stability_message) {
+                        std::cout << stability_message << "\n";
+                        llm_state.last_stability_message = stability_message;
+                    }
+                } else if (!llm_state.attempted) {
+                    // Freeze the exact stable 5+5 snapshot. The single LLM
                     // answer must never be reused to approve a later, different frame.
                     llm_state.attempted = true;
                     llm_state.left_sum = judgment.first_sum;
                     llm_state.right_sum = judgment.second_sum;
                     llm_state.yolo_winner = yolo_winner(judgment);
 
+                    std::cout << "[YOLO] stable result reached " << a.stable_frames
+                              << " consecutive frames; calling LLM once\n";
                     std::string llm_error;
                     llm_state.succeeded = llm_verifier.verify_once(
                         judgment.first_name, judgment.second_name,

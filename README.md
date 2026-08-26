@@ -56,6 +56,7 @@ cd ~/projects/dice-demo
   "intra_threads": 2,
   "ep_affinity": "14;15",
   "queue_depth": 2,
+  "stable_frames": 20,
   "conf": 0.50,
   "focus": 0,
   "zoom": 150
@@ -89,7 +90,9 @@ cd ~/projects/dice-demo
 
 ### YOLO + 大模型一次性复核
 
-当 YOLO 已经确认左右两侧各有 5 个骰子时，程序会把两侧点数和发送到 OpenAI 兼容的 `/chat/completions` 接口。大模型只在本次进程第一次获得有效的 5+5 结果时调用一次，并冻结该帧的左右点数和；只有大模型返回的 `LEFT`、`RIGHT` 或 `TIE` 与这一个 YOLO 快照一致，程序才打印一次最终胜负。
+当 YOLO 连续稳定确认左右两侧各有 5 个骰子后，程序会把两侧点数和发送到 OpenAI 兼容的 `/chat/completions` 接口。大模型在本次进程中只调用一次，并冻结稳定阶段最后一帧的左右点数和；只有大模型返回的 `LEFT`、`RIGHT` 或 `TIE` 与这个 YOLO 快照一致，程序才打印一次最终胜负。
+
+只有 YOLO 连续得到相同的有效 5+5 结果达到 `stable_frames` 次后，程序才调用一次大模型。任何一帧未检测到分界线、左右数量不是 5 个，或左右骰子点数组成发生变化，连续计数都会清零并重新开始；因此未稳定前不会求胜负，也不会请求大模型。
 
 LLM 地址、模型名、system prompt 和 user prompt 模板都在 `config.json` 的 `llm` 对象中配置。模板支持 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}` 四个占位符；程序发送请求前会替换为当前快照值。API Key 不写入代码、配置文件、README 或 Git，只从环境变量读取：
 
@@ -97,7 +100,7 @@ LLM 地址、模型名、system prompt 和 user prompt 模板都在 `config.json
 export DICE_LLM_API_KEY='替换为你的 API Key'
 ```
 
-如需临时覆盖 JSON 中的地址或模型，可使用 `--llm-url URL`、`--llm-model NAME`；`--no-llm` 关闭复核。未设置 API Key、请求失败或大模型与 YOLO 结果不一致时，程序不会打印胜负结论。
+如需临时覆盖 JSON 中的地址、模型或稳定帧数，可使用 `--llm-url URL`、`--llm-model NAME`、`--stable-frames N`；`--no-llm` 关闭复核。未设置 API Key、请求失败或大模型与 YOLO 结果不一致时，程序不会打印胜负结论。
 
 ### 单核运行与 TCM 资源冲突
 
@@ -149,6 +152,7 @@ spacemit-tcm-smi -c   # 清理残留 TCM 状态
 --width N --height N --fps N
 --conf FLOAT       置信度阈值
 --queue-depth N    每级队列深度
+--stable-frames N  相同有效 5+5 YOLO 结果达到 N 帧后才调用 LLM，默认 20
 --focus N          手动对焦；-1 表示不改动
 --zoom N           绝对变焦；-1 表示不改动
 --intra-threads N  SpaceMIT EP 线程数
