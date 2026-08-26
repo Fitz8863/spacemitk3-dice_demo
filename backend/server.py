@@ -91,6 +91,7 @@ class AnalysisJob:
         line = line.rstrip()
         if not line:
             return
+        print(f"[vision:{self.id[:8]}] {line}", flush=True)
         with self.lock:
             self.logs.append(line[-500:])
             self.logs = self.logs[-40:]
