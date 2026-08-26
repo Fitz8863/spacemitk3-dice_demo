@@ -37,6 +37,8 @@ ENV_FILE = ROOT / ".dice-arena.env"
 TTS_REQUEST_LOCK = threading.Lock()
 TTS_STREAM_END = 0
 TTS_STREAM_ERROR = 0xFFFFFFFF
+TTS_ENGINE = "qwen3-tts-k3-llama-server"
+TTS_SPEAKER_FILE = "anke.spk.bin"
 _tts_interactive_module = None
 
 
@@ -142,10 +144,13 @@ def stream_tts(payload: dict[str, Any], write_frame) -> None:
     # we reuse the board interactive client's punctuation-aware generation and
     # emit each completed WAV frame immediately, so playback can begin after
     # the first frame without exposing segment requests to the UI.
+    print(f"[tts] stream start engine={TTS_ENGINE} speaker={TTS_SPEAKER_FILE} chunks={len(chunks)} text={text[:120]!r}", flush=True)
     with TTS_REQUEST_LOCK:
-        for chunk_text in chunks:
+        for index, chunk_text in enumerate(chunks, start=1):
             audio = client.synthesize(chunk_text, voice=voice, speed=speed).wav
+            print(f"[tts] generated frame={index}/{len(chunks)} bytes={len(audio)} speaker={TTS_SPEAKER_FILE}", flush=True)
             write_frame(audio)
+    print(f"[tts] stream complete engine={TTS_ENGINE} speaker={TTS_SPEAKER_FILE}", flush=True)
 
 
 def synthesize_tts(payload: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
@@ -395,6 +400,8 @@ class Handler(BaseHTTPRequestHandler):
                 "llm_configured": configured_llm(),
                 "tts_url": TTS_URL,
                 "tts_ready": tts_health(),
+                "tts_engine": TTS_ENGINE,
+                "tts_speaker": TTS_SPEAKER_FILE,
                 "tts_root": str(TTS_ROOT),
                 "camera": os.environ.get("DICE_CAMERA", "config.json"),
             })
@@ -424,6 +431,9 @@ class Handler(BaseHTTPRequestHandler):
 
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/x-dice-arena-wav-stream")
+            self.send_header("X-Dice-TTS-Engine", TTS_ENGINE)
+            self.send_header("X-Dice-TTS-Speaker", TTS_SPEAKER_FILE)
+            self.send_header("X-Dice-TTS-Source", "board-local-llama-server")
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("Connection", "close")

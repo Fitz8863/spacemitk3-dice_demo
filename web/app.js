@@ -132,14 +132,10 @@
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   }
 
-  function browserSpeechFallback(message) {
-    if (!state.sound || !('speechSynthesis' in window)) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(message);
-    utterance.lang = 'zh-CN';
-    utterance.rate = 0.96;
-    window.speechSynthesis.speak(utterance);
-  }
+  // Deliberately do not call browser speech synthesis.  Dice Arena must use
+  // the Qwen3-TTS model running on the K3 board; browser speech would hide a
+  // broken backend and make the voice sound unrelated to the configured
+  // speaker embedding.
 
   async function loadTtsConfig() {
     if (!state.ttsConfigPromise) {
@@ -324,6 +320,7 @@
     const audio = new Audio(objectUrl);
     let released = false;
     let cancelled = false;
+    let playbackError = null;
     let finishPlayback;
     const playbackDone = new Promise((resolve) => { finishPlayback = resolve; });
     const release = () => {
@@ -344,11 +341,15 @@
     };
     state.ttsPlaybackCancel = cancelPlayback;
     audio.addEventListener('ended', release, { once: true });
-    audio.addEventListener('error', release, { once: true });
+    audio.addEventListener('error', () => {
+      playbackError = new Error('浏览器无法播放 K3 Qwen3-TTS 返回的 WAV');
+      release();
+    }, { once: true });
 
     try {
       await audio.play();
       await playbackDone;
+      if (playbackError) throw playbackError;
     } catch (error) {
       release();
       throw error;
@@ -381,12 +382,8 @@
     } catch (error) {
       await producer.catch(() => {});
       if (error.name === 'AbortError' || requestId !== state.ttsRequestId || !state.sound) return;
-      console.warn(`K3 Qwen3-TTS stream failed after ${playedFrames} frame(s); using browser speech fallback:`, error);
-      if (!state.ttsFallbackNotified) {
-        state.ttsFallbackNotified = true;
-        toast('K3 TTS 暂不可用，已临时使用浏览器语音');
-      }
-      browserSpeechFallback(message);
+      console.error(`K3 Qwen3-TTS stream failed after ${playedFrames} frame(s):`, error);
+      toast('K3 Qwen3-TTS 播放失败，未使用浏览器替代语音');
     }
   }
 
