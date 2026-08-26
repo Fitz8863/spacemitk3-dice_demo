@@ -2,7 +2,7 @@
 
 这是 RV 峰会 / 开发者大会「机械臂骰子挑战」的第一版整体效果原型：
 
-- `web/`：大屏 Web 前端，完成游戏列表、规则确认、同步倒计时、双方摇骰、同时开盖、视觉分析动画、胜负播报和再来一局。
+- `web/`：大屏 Web 前端，完成游戏列表、规则确认、同步倒计时、双方摇骰、同时开盖、视觉分析动画、胜负播报和再来一局；`tts-texts.json` 集中维护各状态的语音文案。
 - `backend/server.py`：K3 板端轻量 HTTP bridge；开盖后启动 YOLOv8 C++ 进程，等待 5+5 稳定识别，再由大模型复核并把 JSON 结果返回网页。
 - `vision/yolov8_objdetect/`：迁移的 YOLOv8 K3 摄像头推理工程，保留 OpenCL 前处理、SpaceMIT ONNX Runtime EP、GStreamer 摄像头、骰子分区求和和 LLM 复核逻辑。
 - `tts/qwen3-tts/`：从板端 `/home/spacemit/projects/qwen3-tts` 迁移的 Qwen3-TTS 0.6B + SpaceMIT `llama-server` 服务；网页通过后端代理获取 24 kHz 单声道 WAV。
@@ -78,6 +78,24 @@ chmod 600 .dice-arena.env
 7. 点击「再来一局」回到准备状态。
 
 键盘操作：`↑/↓` 选择游戏，`Enter` 确认，摇骰阶段按 `Q` 停止。
+
+## 修改 TTS 播报文案
+
+所有页面状态语音集中在 `web/tts-texts.json`，网页启动后通过 HTTP 加载该文件，不需要修改 `web/app.js`。例如：
+
+```json
+{
+  "version": 1,
+  "voice": "default",
+  "speed": 1.0,
+  "texts": {
+    "rules_intro": "双方各摇五颗骰子，停止后同时开盖。",
+    "result_player_win": "恭喜你，玩家获胜。玩家点数 {player_score}，Agent 点数 {agent_score}。"
+  }
+}
+```
+
+当前已接入的状态键包括：`rules_intro`、`rules_confirmed`、`shake_started`、`shake_stopped`、`analysis_started`、`result_tie`、`result_player_win` 和 `result_agent_win`。胜负文案支持 `{player_score}`、`{agent_score}` 占位符。`voice` 和 `speed` 会作为每次 TTS 请求的默认参数发送到 K3 后端，`speed` 范围为 `0.25` 到 `4.0`。修改板端挂载目录下的 JSON 后，刷新页面即可生效。
 
 ## K3 后端接口
 

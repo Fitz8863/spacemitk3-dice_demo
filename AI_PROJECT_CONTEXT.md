@@ -78,6 +78,7 @@ main/
 ├── web/
 │   ├── index.html                   # Web 页面结构
 │   ├── app.js                       # 游戏交互、状态切换、后端调用
+│   ├── tts-texts.json               # 所有状态的 TTS 文案、音色和语速
 │   └── styles.css                   # 页面样式
 ├── vision/
 │   └── yolov8_objdetect/
@@ -241,6 +242,24 @@ Web app.js
 GET  /api/tts/health
 POST /api/tts/synthesize    {"text":"...", "voice":"default", "speed":1.0}
 ```
+
+### 4.6 TTS 文案配置
+
+网页从 `web/tts-texts.json` 加载所有需要播报的文本，代码只引用状态键，不把业务文案散落在 `app.js`：
+
+```json
+{
+  "version": 1,
+  "voice": "default",
+  "speed": 1.0,
+  "texts": {
+    "rules_intro": "...",
+    "result_player_win": "...{player_score}...{agent_score}..."
+  }
+}
+```
+
+当前状态键：`rules_intro`、`rules_confirmed`、`shake_started`、`shake_stopped`、`analysis_started`、`result_tie`、`result_player_win`、`result_agent_win`。胜负结果使用 `{player_score}` 和 `{agent_score}` 动态替换。修改 JSON 后刷新板端浏览器即可生效；JSON 加载失败时会提示并跳过该次 K3 TTS 请求。
 
 TTS 上游必须使用：
 

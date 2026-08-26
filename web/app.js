@@ -16,9 +16,11 @@
     ttsPlaybackCancel: null,
     ttsRequestId: 0,
     ttsFallbackNotified: false,
+    ttsConfigPromise: null,
+    ttsConfigErrorNotified: false,
   };
 
-  const RULES_TEXT = '双方各摇五颗骰子，停止后同时开盖。K3 上的视觉模型会识别每颗骰子的点数，再由大模型确认胜负。';
+  const TTS_TEXTS_URL = './tts-texts.json';
 
   const $ = (id) => document.getElementById(id);
   const views = [...document.querySelectorAll('[data-view]')];
@@ -139,6 +141,53 @@
     window.speechSynthesis.speak(utterance);
   }
 
+  async function loadTtsConfig() {
+    if (!state.ttsConfigPromise) {
+      state.ttsConfigPromise = fetch(TTS_TEXTS_URL, { cache: 'no-store' })
+        .then(async (response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const config = await response.json();
+          if (!config || typeof config !== 'object' || !config.texts || typeof config.texts !== 'object') {
+            throw new Error('配置中缺少 texts 对象');
+          }
+          const speed = Number(config.speed ?? 1.0);
+          if (!Number.isFinite(speed) || speed < 0.25 || speed > 4.0) {
+            throw new Error('speed 必须在 0.25 到 4.0 之间');
+          }
+          return {
+            voice: typeof config.voice === 'string' && config.voice.trim() ? config.voice.trim() : 'default',
+            speed,
+            texts: config.texts,
+          };
+        });
+    }
+    return state.ttsConfigPromise;
+  }
+
+  function renderTtsText(template, values = {}) {
+    return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name) => (
+      Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match
+    ));
+  }
+
+  async function speakState(key, values = {}) {
+    if (!state.sound) return;
+    try {
+      const config = await loadTtsConfig();
+      const template = config.texts[key];
+      if (typeof template !== 'string' || !template.trim()) {
+        throw new Error(`未配置 TTS 状态文案：${key}`);
+      }
+      await speak(renderTtsText(template, values), config);
+    } catch (error) {
+      console.error(`Failed to load TTS state ${key}:`, error);
+      if (!state.ttsConfigErrorNotified) {
+        state.ttsConfigErrorNotified = true;
+        toast('TTS 文案配置加载失败，请检查 web/tts-texts.json');
+      }
+    }
+  }
+
   function splitSpeech(message) {
     const normalized = String(message).replace(/\s+/g, ' ').trim();
     if (!normalized) return [];
@@ -168,14 +217,14 @@
     return segments;
   }
 
-  async function requestSpeechSegment(text, requestId) {
+  async function requestSpeechSegment(text, requestId, options) {
     const controller = new AbortController();
     state.ttsAbortController = controller;
     try {
       const response = await fetch('/api/tts/synthesize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voice: 'default', speed: 1.0 }),
+        body: JSON.stringify({ text, voice: options.voice, speed: options.speed }),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -238,7 +287,7 @@
     }
   }
 
-  async function speak(message) {
+  async function speak(message, options = { voice: 'default', speed: 1.0 }) {
     if (!state.sound || !message) return;
     stopSpeech();
     const requestId = state.ttsRequestId;
@@ -249,11 +298,11 @@
       // Start the next request as soon as the current WAV has arrived. Its
       // synthesis overlaps playback of the current segment, while the
       // backend lock still protects the single K3 TTS model from concurrency.
-      let nextBlob = requestSpeechSegment(segments[0], requestId);
+      let nextBlob = requestSpeechSegment(segments[0], requestId, options);
       for (let index = 0; index < segments.length; index += 1) {
         const blob = await nextBlob;
         if (index + 1 < segments.length) {
-          nextBlob = requestSpeechSegment(segments[index + 1], requestId);
+          nextBlob = requestSpeechSegment(segments[index + 1], requestId, options);
         }
         await playSpeechBlob(blob, requestId);
         playedSegments = index + 1;
@@ -291,7 +340,7 @@
     setPhase('shaking');
     let seconds = 8;
     $('shakeSeconds').textContent = String(seconds).padStart(2, '0');
-    speak('开始摇骰');
+    speakState('shake_started');
     clearInterval(state.shakeTimer);
     state.shakeTimer = setInterval(() => {
       seconds -= 1;
@@ -303,7 +352,7 @@
   function stopShake() {
     clearInterval(state.shakeTimer);
     countdown(() => setPhase('open'), 'STOP COUNTDOWN', '倒计时结束后，请同时开盖。');
-    speak('停止摇骰');
+    speakState('shake_stopped');
   }
 
   async function requestJson(url, options = {}) {
@@ -366,7 +415,7 @@
   async function reveal() {
     setPhase('analysis');
     resetAnalysisSteps();
-    speak('正在调用 K3 YOLOv8 和大模型复核');
+    speakState('analysis_started');
     try {
       const job = await requestJson('/api/analyze', { method: 'POST', body: '{}' });
       await pollAnalysis(job.job_id);
@@ -393,7 +442,8 @@
     $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : 'Agent 获胜';
     $('resultSubtitle').textContent = `YOLOv8：${player} : ${agent}；大模型复核：${result.llm_winner || winner}`;
     banner.classList.toggle('loss', !playerWins && !tie);
-    speak(tie ? '本局平局，再来一局吧' : playerWins ? '恭喜你，玩家获胜' : '本局 Agent 获胜');
+    const resultTtsKey = tie ? 'result_tie' : playerWins ? 'result_player_win' : 'result_agent_win';
+    speakState(resultTtsKey, { player_score: player, agent_score: agent });
   }
 
   function resetRound() {
@@ -418,7 +468,7 @@
   function enterSelectedGame() {
     if (state.selectedGame === 'dice') {
       setPhase('rules');
-      speak(RULES_TEXT);
+      speakState('rules_intro');
     }
   }
 
@@ -426,9 +476,9 @@
   $('gameList').addEventListener('dblclick', enterSelectedGame);
   $('repeatRules').addEventListener('click', () => {
     toast('正在重复播报游戏规则');
-    speak(RULES_TEXT);
+    speakState('rules_intro');
   });
-  $('confirmRules').addEventListener('click', () => { setPhase('ready'); speak('规则确认完成，请准备'); });
+  $('confirmRules').addEventListener('click', () => { setPhase('ready'); speakState('rules_confirmed'); });
   $('startShake').addEventListener('click', () => countdown(beginShake, 'GET READY', '和 Agent 同步'));
   $('stopShake').addEventListener('click', stopShake);
   $('revealDice').addEventListener('click', reveal);
