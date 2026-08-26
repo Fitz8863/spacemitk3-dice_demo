@@ -13,9 +13,12 @@
     ttsAudio: null,
     ttsObjectUrl: null,
     ttsAbortController: null,
+    ttsPlaybackCancel: null,
     ttsRequestId: 0,
     ttsFallbackNotified: false,
   };
+
+  const RULES_TEXT = '双方各摇五颗骰子，停止后同时开盖。K3 上的视觉模型会识别每颗骰子的点数，再由大模型确认胜负。';
 
   const $ = (id) => document.getElementById(id);
   const views = [...document.querySelectorAll('[data-view]')];
@@ -113,6 +116,8 @@
     state.ttsRequestId += 1;
     state.ttsAbortController?.abort();
     state.ttsAbortController = null;
+    state.ttsPlaybackCancel?.();
+    state.ttsPlaybackCancel = null;
     if (state.ttsAudio) {
       state.ttsAudio.pause();
       state.ttsAudio.src = '';
@@ -134,17 +139,43 @@
     window.speechSynthesis.speak(utterance);
   }
 
-  async function speak(message) {
-    if (!state.sound || !message) return;
-    stopSpeech();
-    const requestId = state.ttsRequestId;
+  function splitSpeech(message) {
+    const normalized = String(message).replace(/\s+/g, ' ').trim();
+    if (!normalized) return [];
+
+    // The K3 endpoint returns one complete WAV per request. Split long
+    // announcements at natural punctuation so the first sentence can start
+    // playing while later sentences are still being synthesized.
+    const sentences = normalized.match(/[^。！？!?]+[。！？!?]?/g) || [normalized];
+    const segments = [];
+    for (const sentence of sentences) {
+      let remaining = sentence.trim();
+      while (remaining.length > 32) {
+        const punctuation = ['，', '、', ',', '；', ';'];
+        let cut = -1;
+        for (const mark of punctuation) {
+          const candidate = remaining.lastIndexOf(mark, 31);
+          if (candidate > cut) cut = candidate;
+        }
+        // Avoid producing a fragment that is too short just because a comma
+        // appears near the beginning of a sentence.
+        if (cut < 12) cut = 31;
+        segments.push(remaining.slice(0, cut + 1).trim());
+        remaining = remaining.slice(cut + 1).trim();
+      }
+      if (remaining) segments.push(remaining);
+    }
+    return segments;
+  }
+
+  async function requestSpeechSegment(text, requestId) {
     const controller = new AbortController();
     state.ttsAbortController = controller;
     try {
       const response = await fetch('/api/tts/synthesize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: message, voice: 'default', speed: 1.0 }),
+        body: JSON.stringify({ text, voice: 'default', speed: 1.0 }),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -152,20 +183,81 @@
         throw new Error(payload.error || `HTTP ${response.status}`);
       }
       const blob = await response.blob();
-      if (!state.sound || requestId !== state.ttsRequestId) return;
-      state.ttsAbortController = null;
-      const objectUrl = URL.createObjectURL(blob);
-      state.ttsObjectUrl = objectUrl;
-      const audio = new Audio(objectUrl);
-      state.ttsAudio = audio;
-      const release = () => {
-        if (state.ttsAudio === audio) state.ttsAudio = null;
-        URL.revokeObjectURL(objectUrl);
-        if (state.ttsObjectUrl === objectUrl) state.ttsObjectUrl = null;
-      };
-      audio.addEventListener('ended', release, { once: true });
-      audio.addEventListener('error', release, { once: true });
+      if (!state.sound || requestId !== state.ttsRequestId) {
+        throw new DOMException('Speech request was cancelled', 'AbortError');
+      }
+      return blob;
+    } finally {
+      if (state.ttsAbortController === controller) state.ttsAbortController = null;
+    }
+  }
+
+  async function playSpeechBlob(blob, requestId) {
+    if (!state.sound || requestId !== state.ttsRequestId) {
+      throw new DOMException('Speech playback was cancelled', 'AbortError');
+    }
+
+    const objectUrl = URL.createObjectURL(blob);
+    const audio = new Audio(objectUrl);
+    let released = false;
+    let cancelled = false;
+    let finishPlayback;
+    const playbackDone = new Promise((resolve) => { finishPlayback = resolve; });
+    const release = () => {
+      if (released) return;
+      released = true;
+      if (state.ttsAudio === audio) state.ttsAudio = null;
+      if (state.ttsObjectUrl === objectUrl) state.ttsObjectUrl = null;
+      URL.revokeObjectURL(objectUrl);
+      finishPlayback();
+    };
+
+    state.ttsAudio = audio;
+    state.ttsObjectUrl = objectUrl;
+    const cancelPlayback = () => {
+      cancelled = true;
+      audio.pause();
+      release();
+    };
+    state.ttsPlaybackCancel = cancelPlayback;
+    audio.addEventListener('ended', release, { once: true });
+    audio.addEventListener('error', release, { once: true });
+
+    try {
       await audio.play();
+      await playbackDone;
+    } catch (error) {
+      release();
+      throw error;
+    } finally {
+      if (state.ttsPlaybackCancel === cancelPlayback) state.ttsPlaybackCancel = null;
+      release();
+    }
+    if (cancelled || !state.sound || requestId !== state.ttsRequestId) {
+      throw new DOMException('Speech playback was cancelled', 'AbortError');
+    }
+  }
+
+  async function speak(message) {
+    if (!state.sound || !message) return;
+    stopSpeech();
+    const requestId = state.ttsRequestId;
+    const segments = splitSpeech(message);
+    if (!segments.length) return;
+    let playedSegments = 0;
+    try {
+      // Start the next request as soon as the current WAV has arrived. Its
+      // synthesis overlaps playback of the current segment, while the
+      // backend lock still protects the single K3 TTS model from concurrency.
+      let nextBlob = requestSpeechSegment(segments[0], requestId);
+      for (let index = 0; index < segments.length; index += 1) {
+        const blob = await nextBlob;
+        if (index + 1 < segments.length) {
+          nextBlob = requestSpeechSegment(segments[index + 1], requestId);
+        }
+        await playSpeechBlob(blob, requestId);
+        playedSegments = index + 1;
+      }
     } catch (error) {
       if (error.name === 'AbortError' || requestId !== state.ttsRequestId || !state.sound) return;
       console.warn('K3 Qwen3-TTS failed; using browser speech fallback:', error);
@@ -173,7 +265,8 @@
         state.ttsFallbackNotified = true;
         toast('K3 TTS 暂不可用，已临时使用浏览器语音');
       }
-      browserSpeechFallback(message);
+      const remaining = segments.slice(playedSegments).join('');
+      browserSpeechFallback(remaining || message);
     }
   }
 
@@ -325,7 +418,7 @@
   function enterSelectedGame() {
     if (state.selectedGame === 'dice') {
       setPhase('rules');
-      speak('摇骰子规则');
+      speak(RULES_TEXT);
     }
   }
 
@@ -333,7 +426,7 @@
   $('gameList').addEventListener('dblclick', enterSelectedGame);
   $('repeatRules').addEventListener('click', () => {
     toast('正在重复播报游戏规则');
-    speak('双方各摇五颗骰子，停止后同时开盖。K3 上的视觉模型会识别每颗骰子的点数，再由大模型确认胜负。');
+    speak(RULES_TEXT);
   });
   $('confirmRules').addEventListener('click', () => { setPhase('ready'); speak('规则确认完成，请准备'); });
   $('startShake').addEventListener('click', () => countdown(beginShake, 'GET READY', '和 Agent 同步'));

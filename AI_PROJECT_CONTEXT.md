@@ -233,6 +233,8 @@ Web app.js
 
 因此当前前后端是“代码职责分离、同一个 HTTP 服务部署”，而 TTS 是第三个板端进程。网页优先播放 K3 TTS 返回的 WAV；只有服务不可用时才使用浏览器 `speechSynthesis` 兜底。后端对 TTS 请求加了串行锁，避免多个语音生成同时争抢模型和算力资源。
 
+`/v1/audio/speech` 与 `/api/tts/synthesize` 当前都要等一个请求对应的完整 WAV 生成完毕后才返回，并非逐 PCM 帧流式。网页为长播报实现了分段级低延迟策略：按自然标点拆分文本，第一段 WAV 返回后立即播放，同时请求下一段，并保持顺序播放。后端的 `TTS_REQUEST_LOCK` 仍会串行化模型推理，避免单个 K3 TTS 服务被并发请求争抢。因此首段仍存在一次完整短句推理延迟；真正的 PCM 流式需要后续同时改造 `llama-server`、HTTP/WebSocket 转发和浏览器 Web Audio/MediaSource 消费链路。
+
 当前接口：
 
 ```text
@@ -439,7 +441,7 @@ chmod 600 .dice-arena.env
 --host 127.0.0.1 --port 18080 --no-ui
 ```
 
-已验证该服务返回 RIFF/WAVE、24 kHz、16-bit、mono 音频。迁移目录已复制同一套 runtime、配置和板端模型资产，但完成切换后才能把“当前 Dice Arena 使用迁移后的 TTS”视为已验证。验证命令：
+已验证迁移后的 Dice Arena TTS 服务返回 RIFF/WAVE、24 kHz、16-bit、mono 音频，且进程实际加载 `/usr/lib/libonnxruntime.so.1.24.2+spacemit.a1` 和 `/usr/lib/libspacemit_ep.so.2.0.6`。以下命令可用于重新验证当前板端状态：
 
 ```bash
 cd /home/spacemit/projects/dice-game/main

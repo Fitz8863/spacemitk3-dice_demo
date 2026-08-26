@@ -148,6 +148,8 @@ curl -fsS http://127.0.0.1:18080/health
 
 模型约 2 GB，因此 `*.onnx`、`*.gguf`、speaker `*.bin`、参考音频、生成 WAV、日志和 PID 均不提交 GitHub。迁移脚本默认只复制当前 `config.json` 指定的 speaker 文件，不复制 `voice_presets/source_audio` 或其他未配置的音色。浏览器优先播放 K3 返回的 WAV；TTS 不可用时才使用浏览器 `speechSynthesis` 兜底。
 
+当前 `/v1/audio/speech` 和 `/api/tts/synthesize` 都是**整段 WAV 响应**，不是逐 PCM 帧的真正流式接口。为降低规则播报的首播等待，前端会按自然标点把长文本切成短段：第一段完整 WAV 生成后立即播放，并在播放时请求下一段。因此当前属于“分段级低延迟播放”，首段仍需等待一次 TTS 推理完成。若要实现真正的音频帧流式播放，需要同时改造 `llama-server` 输出接口、Python 转发链路和浏览器端 Web Audio/MediaSource 播放链路。
+
 手工测试后端代理：
 
 ```bash
