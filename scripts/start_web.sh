@@ -19,7 +19,7 @@ if [[ -f "$PID_FILE" ]]; then
 fi
 
 cd "$ROOT_DIR"
-nohup /usr/bin/python3 -m http.server "$PORT" --bind "$HOST" --directory web \
+nohup /usr/bin/python3 backend/server.py --host "$HOST" --port "$PORT" \
     >>"$LOG_FILE" 2>&1 &
 pid=$!
 printf '%s\n' "$pid" > "$PID_FILE"
@@ -31,8 +31,8 @@ if ! kill -0 "$pid" 2>/dev/null; then
     exit 1
 fi
 
-echo "Dice Arena web started"
-echo "  root: $ROOT_DIR/web"
+echo "Dice Arena K3 backend started"
+echo "  root: $ROOT_DIR"
 echo "  url:  http://127.0.0.1:$PORT"
 echo "  pid:  $pid"
 echo "  log:  $LOG_FILE"

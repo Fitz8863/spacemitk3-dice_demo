@@ -178,6 +178,9 @@ struct Args {
     bool no_display = false;
     int max_frames = 0;
     bool self_test = false;
+    bool require_llm = false;
+    bool exit_on_result = false;
+    std::string result_file;
     std::string dump_input;
     std::string llm_url = "https://api.rvcompute.com:60000/v1";
     std::string llm_model = "gpt-5.4-mini";
@@ -338,6 +341,9 @@ static void usage(const char* exe) {
               << "  --max-frames N     stop after N frames enter preprocess (0=unlimited)\n"
               << "  --dump-input PATH  dump first preprocessed tensor as float32\n"
               << "  --self-test        initialize OpenCL GPU and model, run one inference\n"
+              << "  --result-file PATH write verified YOLO + LLM result as JSON\n"
+              << "  --exit-on-result   stop after writing a verified result\n"
+              << "  --require-llm      fail unless the LLM verifies the YOLO result\n"
               << "  --llm-url URL      override the config LLM base URL\n"
               << "  --llm-model NAME   override the config LLM model\n"
               << "  --llm-timeout N    LLM request timeout in seconds\n"
@@ -438,6 +444,9 @@ static bool parse(int argc, char** argv, Args& a) {
             else if (k == "--no-display") a.no_display = true;
             else if (k == "--dump-input" && (v = need(i))) a.dump_input = v;
             else if (k == "--self-test") a.self_test = true;
+            else if (k == "--result-file" && (v = need(i))) a.result_file = v;
+            else if (k == "--exit-on-result") a.exit_on_result = true;
+            else if (k == "--require-llm") a.require_llm = true;
             else if (k == "--llm-url" && (v = need(i))) a.llm_url = v;
             else if (k == "--llm-model" && (v = need(i))) a.llm_model = v;
             else if (k == "--llm-timeout" && (v = need(i))) {
@@ -749,6 +758,58 @@ static const char* winner_label(LlmWinner winner) {
     }
 }
 
+static std::string json_escape(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size() + 8);
+    for (const char c : value) {
+        switch (c) {
+        case '\\': escaped += "\\\\"; break;
+        case '"': escaped += "\\\""; break;
+        case '\n': escaped += "\\n"; break;
+        case '\r': escaped += "\\r"; break;
+        case '\t': escaped += "\\t"; break;
+        default: escaped += c; break;
+        }
+    }
+    return escaped;
+}
+
+static bool write_verified_result(const std::string& path,
+                                  const DiceResultSnapshot& snapshot,
+                                  LlmWinner llm_winner) {
+    if (path.empty()) return true;
+    std::ofstream output(path, std::ios::trunc);
+    if (!output.is_open()) {
+        std::cerr << "Cannot write result JSON: " << path << "\n";
+        return false;
+    }
+    auto write_values = [&](const std::vector<int>& values) {
+        output << "[";
+        for (size_t i = 0; i < values.size(); ++i) {
+            if (i != 0) output << ",";
+            output << values[i];
+        }
+        output << "]";
+    };
+    output << "{\n"
+           << "  \"verified\":true,\n"
+           << "  \"source\":\"yolov8+llm\",\n"
+           << "  \"first_name\":\"" << json_escape(snapshot.first_name) << "\",\n"
+           << "  \"second_name\":\"" << json_escape(snapshot.second_name) << "\",\n"
+           << "  \"first_dice\":";
+    write_values(snapshot.first_values);
+    output << ",\n  \"second_dice\":";
+    write_values(snapshot.second_values);
+    output << ",\n"
+           << "  \"first_sum\":" << snapshot.first_sum << ",\n"
+           << "  \"second_sum\":" << snapshot.second_sum << ",\n"
+           << "  \"yolo_winner\":\"" << winner_label(snapshot.winner) << "\",\n"
+           << "  \"llm_winner\":\"" << winner_label(llm_winner) << "\",\n"
+           << "  \"winner\":\"" << winner_label(llm_winner) << "\"\n"
+           << "}\n";
+    return output.good();
+}
+
 
 } // namespace
 
@@ -791,6 +852,14 @@ int main(int argc, char** argv) {
     if (!a.no_llm && !llm_verifier.configured()) {
         std::cerr << "[LLM] verification disabled: set llm.api_key in config.json "
                      "or DICE_LLM_API_KEY.\n";
+        if (a.require_llm) {
+            std::cerr << "[LLM] --require-llm requested; refusing to judge without verification.\n";
+            return 7;
+        }
+    }
+    if (a.require_llm && a.no_llm) {
+        std::cerr << "--require-llm cannot be combined with --no-llm\n";
+        return 2;
     }
     if (a.self_test) {
         try {
@@ -1067,9 +1136,11 @@ int main(int argc, char** argv) {
                             std::cout << "[LLM] one-shot result="
                                       << winner_label(llm_state.llm_winner) << "\n";
                         } else if (llm_result == LlmVerificationResult::Timeout) {
-                            llm_state.timeout_fallback = true;
+                            if (!a.require_llm) llm_state.timeout_fallback = true;
                             std::cerr << "[LLM] one-shot verification timed out: "
-                                      << llm_error << "; using the stable YOLO result\n";
+                                      << llm_error
+                                      << (a.require_llm ? "; verified result suppressed\n"
+                                                         : "; using the stable YOLO result\n");
                         } else {
                             std::cerr << "[LLM] one-shot verification failed: "
                                       << llm_error << "\n";
@@ -1085,7 +1156,7 @@ int main(int argc, char** argv) {
                     const bool same_snapshot =
                         llm_state.attempted &&
                         same_dice_snapshot(current_snapshot, llm_state.attempted_snapshot);
-                    if (llm_state.timeout_fallback && same_snapshot) {
+                    if (!a.require_llm && llm_state.timeout_fallback && same_snapshot) {
                         // OpenCV Hershey fonts cannot render UTF-8 Chinese text.
                         // Keep the image overlay ASCII-only; the terminal log below
                         // retains the Chinese judgment.message for operators.
@@ -1100,7 +1171,14 @@ int main(int argc, char** argv) {
                         if (!llm_state.printed) {
                             std::cout << "Dice judgment verified by YOLO + LLM: "
                                       << judgment.message << "\n";
-                            llm_state.printed = true;
+                            if (!write_verified_result(a.result_file, llm_state.attempted_snapshot,
+                                                       llm_state.llm_winner)) {
+                                inference_failed.store(true);
+                                abort.store(true);
+                            } else {
+                                llm_state.printed = true;
+                                if (a.exit_on_result) abort.store(true);
+                            }
                         }
                     } else {
                         display_judgment.valid = false;

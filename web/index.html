@@ -102,7 +102,7 @@
           <div class="analysis-view hidden" data-view="analysis">
             <div class="analysis-header"><div><p class="mini-label">VISION ANALYSIS</p><h3 id="analysisTitle">正在识别骰子</h3></div><span class="analysis-spinner"></span></div>
             <div class="analysis-steps"><div class="analysis-step active" id="stepCapture"><span>✓</span><div><strong>采集画面</strong><small>锁定双方区域</small></div></div><div class="analysis-step" id="stepDetect"><span>2</span><div><strong>YOLOv8 识别</strong><small>逐颗检测点数</small></div></div><div class="analysis-step" id="stepJudge"><span>3</span><div><strong>计算胜负</strong><small>比较两侧总和</small></div></div></div>
-            <div class="scan-line"></div>
+            <p class="analysis-status" id="analysisStatus">正在请求 K3 YOLOv8 推理进程…</p><button class="secondary-button hidden" id="analysisRetry" type="button">重新分析</button><div class="scan-line"></div>
           </div>
 
           <div class="result-view hidden" data-view="result">

@@ -235,3 +235,8 @@ cmake --build build -j4
 ./build/yolov8_camera --model models/best.q.onnx --camera 1 \
   --no-display --max-frames 30
 ```
+
+
+## K3 Web bridge
+
+`backend/server.py` 位于上层项目目录。网页调用 `/api/analyze` 后，bridge 在 K3 板端启动本程序，并使用 `--require-llm --result-file --exit-on-result`：只有 5+5 骰子识别稳定且 LLM 复核与 YOLO 一致，才会写出 `verified:true` JSON。
