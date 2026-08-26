@@ -278,6 +278,23 @@ static const std::array<cv::Scalar, 6> kClassColors = {
     cv::Scalar(10, 249, 72),    // green     #48F90A
 };
 
+static bool is_tcm_resource_error(const std::string& message) {
+    return message.find("tcm buffer acquire failed") != std::string::npos ||
+           message.find("tcm buffer release failed") != std::string::npos ||
+           message.find("wait tcm buffer failed") != std::string::npos;
+}
+
+static void print_tcm_resource_hint(const std::string& message,
+                                    const std::string& ep_affinity) {
+    std::cerr << "SpaceMIT EP TCM resource error: " << message << "\n"
+              << "The requested EP affinity ("
+              << (ep_affinity.empty() ? "runtime default" : ep_affinity)
+              << ") does not directly identify the internal TCM block. "
+              << "Another EP process or stale runtime state may still own the TCM. "
+              << "Check owners with `spacemit-tcm-smi -i`; only when no EP process "
+              << "is running, clear stale blocks with `spacemit-tcm-smi -c`.\n";
+}
+
 static void draw_detections(cv::Mat& bgr, const std::vector<Detection>& ds) {
     for (const auto& d : ds) {
         cv::Rect r(static_cast<int>(d.x1), static_cast<int>(d.y1),
@@ -550,6 +567,7 @@ int main(int argc, char** argv) {
     std::atomic<bool> abort{false};
     std::atomic<bool> preprocess_done{false};
     std::atomic<bool> inference_done{false};
+    std::atomic<bool> inference_failed{false};
     std::atomic<bool> camera_stop{false};
     FrameQueue<PreparedFrame> prepared_queue(a.queue_depth);
     FrameQueue<InferenceResult> result_queue(a.queue_depth);
@@ -617,9 +635,16 @@ int main(int argc, char** argv) {
                 result->height = packet->height;
                 result->nv12 = packet->nv12;
                 result->gst_owner = packet->gst_owner;
-                result->detections = detector.infer(packet->prep.data->data(), packet->prep.data->size(), a.conf,
-                                                     packet->prep.scale, packet->prep.pad_x, packet->prep.pad_y,
-                                                     packet->width, packet->height);
+                try {
+                    result->detections = detector.infer(packet->prep.data->data(), packet->prep.data->size(),
+                                                        a.conf, packet->prep.scale, packet->prep.pad_x,
+                                                        packet->prep.pad_y, packet->width, packet->height);
+                } catch (const std::exception& e) {
+                    if (is_tcm_resource_error(e.what())) {
+                        print_tcm_resource_hint(e.what(), a.ep_affinity);
+                    }
+                    throw;
+                }
                 stats.addInfer(std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
                 stats.inferred.fetch_add(1);
                 if (!result->detections.empty()) stats.detected_frames.fetch_add(1);
@@ -629,6 +654,7 @@ int main(int argc, char** argv) {
                 ++id;
             } catch (const std::exception& e) {
                 std::cerr << "Inference stage failed: " << e.what() << "\n";
+                inference_failed.store(true);
                 abort.store(true);
                 break;
             }
@@ -734,5 +760,9 @@ int main(int argc, char** argv) {
               << " detected_frames=" << stats.detected_frames.load()
               << " detections=" << stats.detections.load()
               << " pre_ms=" << p << " infer_ms=" << i << " display_ms=" << d << "\n";
+    if (inference_failed.load()) {
+        std::cerr << "Pipeline stopped because the inference stage failed; no further frames were processed.\n";
+        return 8;
+    }
     return 0;
 }

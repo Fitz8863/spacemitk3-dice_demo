@@ -84,6 +84,30 @@ export XDG_RUNTIME_DIR=/run/user/1000
 ./build/yolov8_camera --model models/best.q.onnx --device /dev/video1
 ```
 
+### 单核运行与 TCM 资源冲突
+
+单核运行示例：
+
+```bash
+./build/yolov8_camera \
+  --model models/best.q.onnx \
+  --camera 1 \
+  --intra-threads 1 \
+  --ep-affinity "14" \
+  --queue-depth 2 \
+  --conf 0.50
+```
+
+`--ep-affinity` 只设置 EP 工作线程的 CPU 亲和性，不能直接指定内部 TCM/A100 block。若其他 EP 进程仍占用 TCM，或上一次异常退出留下残留状态，推理可能报告 `tcm buffer acquire/release failed`。程序不会在同一个 ORT Session 上重试这类错误，因为 EP 内部锁/TCM 状态已经异常时继续复用 Session 不安全；最终失败会以非零状态退出，并提示排查命令。最终失败时请在板端执行：
+
+```bash
+spacemit-tcm-smi -i   # 查看 TCM/运行实例占用
+# 确认没有 EP 进程后再执行：
+spacemit-tcm-smi -c   # 清理残留 TCM 状态
+```
+
+然后确认没有其他 EP 进程占用对应的运行资源，再重新启动本程序。`tcm buffer release failed` 通常不是摄像头、黑线检测或 OpenCL 前处理错误，而是 EP/TCM 资源冲突，需要先处理占用关系。`spacemit-tcm-smi -i` 可查看 block 与 PID；只有确认没有其他推理进程后，才允许使用 `spacemit-tcm-smi -c` 清理残留 block。
+
 ## 双方骰子裁决
 
 程序会在画面水平中心的候选区域内检测近似竖直的黑色分界线，并按检测框中心将骰子分到线的左右两侧。水平黑线不会作为分界线接受。类别 ID `0..5` 分别计为点数 `1..6`。
@@ -131,6 +155,7 @@ export XDG_RUNTIME_DIR=/run/user/1000
 - 队列深度必须保持有限（默认 3），因为零拷贝会短暂持有 VPU/GStreamer buffer；退出时先停止采集线程、等待工作线程退出并清空应用队列，再向 GStreamer pipeline 发送 EOS、等待 decoder drain，最后释放 pipeline，避免 VPU buffer 生命周期问题。
 - 前处理使用 OpenCL GPU kernel 完成 Y/UV 图像采样、NV12 转 RGB、resize、114/128 letterbox、CHW 和 `/255`；主机侧仅负责将 NV12 的 Y/UV 数据上传到 OpenCL。
 - 推理线程只访问一个 ORT session；显示在主线程执行，保持 HighGUI 事件循环安全。
+- 单路推理显式设置 ORT `ORT_SEQUENTIAL`、`InterOpNumThreads=1` 和 SpaceMIT EP `SPACEMIT_EP_INTER_THREAD_NUM=1`，避免单核配置继承多会话/多流设置；TCM acquire/release 错误不在原 Session 上重试，推理线程失败时以非零状态退出并打印 TCM 占用排查命令。
 - YOLOv8 解码当前支持 `[1,C,N]` 和 `[1,N,C]` 两种三维输出布局；对当前模型预期为 `[1,10,8400]`，即 4 个框通道加 6 个类别通道。
 - YOLOv8 输出的框按 `cx,cy,w,h`、类别分数已在导出图中完成 DFL/激活，程序不会再次对类别分数做 sigmoid；随后撤销 letterbox 并做按类别 NMS。
 

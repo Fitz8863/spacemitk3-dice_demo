@@ -74,11 +74,17 @@ bool Yolov8Detector::init(const std::string& model_path, int intra_threads,
     try {
         impl_ = std::make_unique<Impl>();
         Ort::SessionOptions options;
-        options.SetIntraOpNumThreads(std::max(1, intra_threads));
+        const int ep_threads = std::max(1, intra_threads);
+        // This application owns one session and calls Run serially. Make both
+        // ORT and SpaceMIT EP explicitly single-stream so --intra-threads 1
+        // cannot inherit a multi-session/inter-op setting from the runtime.
+        options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+        options.SetIntraOpNumThreads(ep_threads);
+        options.SetInterOpNumThreads(1);
         options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         std::unordered_map<std::string, std::string> ep_options;
-        const int ep_threads = std::max(1, intra_threads);
         ep_options["SPACEMIT_EP_INTRA_THREAD_NUM"] = std::to_string(ep_threads);
+        ep_options["SPACEMIT_EP_INTER_THREAD_NUM"] = "1";
         if (!ep_affinity.empty()) {
             ep_options["SPACEMIT_EP_INTRA_THREAD_AFFINITY"] = ep_affinity;
             std::cout << "SpaceMIT EP affinity: " << ep_affinity << "\n";
