@@ -12,6 +12,8 @@ import time
 import uuid
 from typing import Any, Callable
 
+from core.errors import JobCancelledError, JobTimeoutError
+
 # run_fn receives on_log(line) for streaming logs and is_cancelled() to check
 # for a cancel request, and returns the result on success.
 RunFn = Callable[[Callable[[str], None], Callable[[], bool]], Any]
@@ -90,7 +92,7 @@ class ComponentJob:
 
     def cancel(self) -> None:
         self._cancelled = True
-        self._fail("analysis cancelled")
+        self._fail("Job cancelled by user")
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:

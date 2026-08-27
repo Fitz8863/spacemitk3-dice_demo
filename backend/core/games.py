@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
+from core.errors import GameConfigError, GameDisabledError, GameNotFoundError
+
 ROOT = Path(__file__).resolve().parents[2]  # repo root (main/)
 GAMES_ROOT = ROOT / "backend" / "games"
 
@@ -23,8 +25,12 @@ class GameRegistry:
     def register(self, manifest: dict[str, Any]) -> None:
         self._games[manifest["id"]] = manifest
 
-    def get(self, game_id: str) -> dict[str, Any] | None:
-        return self._games.get(game_id)
+    def get(self, game_id: str) -> dict[str, Any]:
+        """Get a game manifest by ID, raises GameNotFoundError if not found."""
+        manifest = self._games.get(game_id)
+        if manifest is None:
+            raise GameNotFoundError(game_id)
+        return manifest
 
     def all(self) -> list[dict[str, Any]]:
         return list(self._games.values())
@@ -46,6 +52,15 @@ def load_games() -> GameRegistry:
         if not isinstance(game_id, str) or not game_id.isidentifier():
             print(f"[games] skip {manifest_path}: invalid id", flush=True)
             continue
+
+        # Basic validation
+        if "name" not in manifest or not isinstance(manifest["name"], str):
+            print(f"[games] skip {manifest_path}: missing or invalid 'name'", flush=True)
+            continue
+        if "enabled" not in manifest or not isinstance(manifest["enabled"], bool):
+            print(f"[games] skip {manifest_path}: missing or invalid 'enabled'", flush=True)
+            continue
+
         manifest["texts"] = manifest.get("texts", {})
         manifest["components"] = manifest.get("components", [])
         registry.register(manifest)
@@ -53,12 +68,10 @@ def load_games() -> GameRegistry:
 
 
 def require_game(registry: GameRegistry, game_id: str) -> dict[str, Any]:
-    """Return an enabled game's manifest or raise on unknown/disabled."""
-    manifest = registry.get(game_id)
-    if manifest is None:
-        raise KeyError(f"unknown game: {game_id}")
+    """Return an enabled game's manifest or raise GameNotFoundError/GameDisabledError."""
+    manifest = registry.get(game_id)  # raises GameNotFoundError if not found
     if not manifest.get("enabled", False):
-        raise ValueError(f"game disabled: {game_id}")
+        raise GameDisabledError(game_id)
     return manifest
 
 

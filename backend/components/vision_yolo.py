@@ -18,16 +18,13 @@ from typing import Any, Callable
 
 from core.components import Component
 from core.env import load_board_env
+from core.errors import VisionError
 
 load_board_env()
 
 ROOT = Path(__file__).resolve().parents[2]  # repo root (main/)
 VISION_ROOT = ROOT / "vision" / "yolov8_objdetect"
 DEFAULT_BINARY = VISION_ROOT / "build" / "yolov8_camera"
-
-
-class VisionError(Exception):
-    """Raised when a vision analysis cannot produce a verified result."""
 
 
 def yolo_binary() -> Path:

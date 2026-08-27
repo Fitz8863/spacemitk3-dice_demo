@@ -31,6 +31,12 @@ from components.tts_qwen3 import (
 )
 from components.vision_yolo import configured_llm, yolo_binary
 from core.env import load_board_env
+from core.errors import (
+    DiceArenaError,
+    InvalidRequestError,
+    JobAlreadyExistsError,
+    JobNotFoundError,
+)
 from core.games import load_games, require_game, run_game
 from core.jobs import ComponentJob
 
@@ -62,12 +68,12 @@ active_job_id: str | None = None
 
 def create_job(game_id: str) -> ComponentJob:
     global active_job_id
-    require_game(GAMES, game_id)  # raises KeyError / ValueError on unknown/disabled
+    require_game(GAMES, game_id)  # raises GameNotFoundError / GameDisabledError
     with jobs_lock:
         if active_job_id:
             active = jobs.get(active_job_id)
             if active and active.status in {"queued", "running"}:
-                raise RuntimeError("another analysis is already running")
+                raise JobAlreadyExistsError(active_job_id)
 
         def run_fn(on_log, is_cancelled):
             return run_game(GAMES, game_id, on_log, is_cancelled, JOB_TIMEOUT_SECONDS)
@@ -95,13 +101,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_error_json(self, error: DiceArenaError) -> None:
+        """Send a standardized error response from a DiceArenaError."""
+        self.send_json(error.to_dict(), error.status)
+
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
             return {}
-        raw = self.rfile.read(min(length, 65536))
-        value = json.loads(raw.decode("utf-8"))
-        return value if isinstance(value, dict) else {}
+        if length > 65536:
+            raise InvalidRequestError("request body too large (max 64KB)")
+        try:
+            raw = self.rfile.read(length)
+            value = json.loads(raw.decode("utf-8"))
+            if not isinstance(value, dict):
+                raise InvalidRequestError("request body must be a JSON object")
+            return value
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise InvalidRequestError(f"invalid JSON: {exc}") from exc
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/api/health":
@@ -131,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
             with jobs_lock:
                 job = jobs.get(job_id)
             if not job:
-                self.send_json({"error": "job not found"}, HTTPStatus.NOT_FOUND)
+                self.send_error_json(JobNotFoundError(job_id))
             else:
                 self.send_json(job.snapshot())
             return
@@ -142,8 +159,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 payload = self.read_json()
                 validate_tts_payload(payload)
-            except (ValueError, UnicodeDecodeError) as exc:
-                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
                 return
 
             self.send_response(HTTPStatus.OK)
@@ -183,10 +200,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/tts/synthesize":
             try:
                 audio, headers = synthesize_tts(self.read_json())
-            except (ValueError, UnicodeDecodeError) as exc:
-                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-            except RuntimeError as exc:
-                self.send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
             else:
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", headers.pop("Content-Type", "audio/wav"))
@@ -209,19 +224,16 @@ class Handler(BaseHTTPRequestHandler):
                 payload = self.read_json()
                 game_id = str(payload.get("game") or "dice")
                 job = create_job(game_id)
-            except RuntimeError as exc:
-                self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
-            except (KeyError, ValueError, UnicodeDecodeError) as exc:
-                self.send_json({"error": f"invalid request: {exc}"}, HTTPStatus.BAD_REQUEST)
-            else:
                 self.send_json(job.snapshot(), HTTPStatus.ACCEPTED)
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
             return
         if self.path.startswith("/api/analyze/") and self.path.endswith("/cancel"):
             job_id = self.path[len("/api/analyze/"):-len("/cancel")].rstrip("/")
             with jobs_lock:
                 job = jobs.get(job_id)
             if not job:
-                self.send_json({"error": "job not found"}, HTTPStatus.NOT_FOUND)
+                self.send_error_json(JobNotFoundError(job_id))
             else:
                 job.cancel()
                 self.send_json(job.snapshot())

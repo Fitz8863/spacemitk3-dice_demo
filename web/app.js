@@ -329,7 +329,27 @@ async function requestJson(url, options = {}) {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  if (!response.ok) {
+    const errorCode = payload.code || 'UNKNOWN_ERROR';
+    const errorMessage = payload.error || `HTTP ${response.status}`;
+
+    // 针对特定错误码做用户友好提示
+    if (errorCode === 'GAME_DISABLED') {
+      toast('该游戏即将开放，敬请期待');
+    } else if (errorCode === 'JOB_ALREADY_EXISTS') {
+      toast('已有分析任务正在运行，请稍后再试');
+    } else if (errorCode === 'COMPONENT_NOT_READY') {
+      toast('系统组件未就绪，请检查后端服务');
+    } else if (errorCode === 'TTS_SERVICE_ERROR') {
+      toast('TTS 服务异常，语音播报暂时不可用');
+    } else {
+      toast(`错误：${errorMessage}`);
+    }
+
+    const error = new Error(errorMessage);
+    error.code = errorCode;
+    throw error;
+  }
   return payload;
 }
 

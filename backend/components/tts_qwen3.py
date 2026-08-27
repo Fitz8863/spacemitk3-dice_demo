@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from core.components import Component
 from core.env import load_board_env
+from core.errors import TtsServiceError, TtsValidationError
 
 load_board_env()
 
@@ -43,15 +44,15 @@ def tts_health() -> bool:
 def validate_tts_payload(payload: dict[str, Any]) -> tuple[str, str, float]:
     text = str(payload.get("text", "")).strip()
     if not text:
-        raise ValueError("text is required")
+        raise TtsValidationError("text is required")
     if len(text) > 4000:
-        raise ValueError("text is too long; limit is 4000 characters")
+        raise TtsValidationError("text is too long; limit is 4000 characters")
 
     speed = payload.get("speed", 1.0)
     try:
         speed = float(speed)
     except (TypeError, ValueError) as exc:
-        raise ValueError("speed must be a number") from exc
+        raise TtsValidationError("speed must be a number") from exc
     speed = max(0.25, min(4.0, speed))
     voice = str(payload.get("voice", "default"))
     return text, voice, speed
@@ -84,7 +85,7 @@ def stream_tts(payload: dict[str, Any], write_frame: Callable[[bytes], None]) ->
     client = get_tts_interactive_module()
     chunks = client.split_text(text)
     if not chunks:
-        raise ValueError("text is empty after normalization")
+        raise TtsValidationError("text is empty after normalization")
 
     # The browser sends one request for the complete announcement. Internally
     # we reuse the board interactive client's punctuation-aware generation and
@@ -131,12 +132,12 @@ def synthesize_tts(payload: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
                 content_type = response.headers.get("Content-Type", "audio/wav")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"TTS HTTP {exc.code}: {detail}") from exc
+        raise TtsServiceError(f"HTTP {exc.code}: {detail}") from exc
     except (OSError, urllib.error.URLError, TimeoutError) as exc:
-        raise RuntimeError(f"TTS service unavailable at {TTS_URL}: {exc}") from exc
+        raise TtsServiceError(f"service unavailable at {TTS_URL}: {exc}") from exc
 
     if len(audio) < 44 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
-        raise RuntimeError("TTS service did not return a valid WAV")
+        raise TtsServiceError("service did not return a valid WAV")
     headers["Content-Type"] = content_type
     return audio, headers
 

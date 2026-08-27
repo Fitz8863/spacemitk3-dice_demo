@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.errors import ComponentNotFoundError
+
 
 class Component:
     """Base class for a model/runtime component."""
@@ -28,8 +30,12 @@ class ComponentRegistry:
     def register(self, component: Component) -> None:
         self._components[component.id] = component
 
-    def get(self, component_id: str) -> Component | None:
-        return self._components.get(component_id)
+    def get(self, component_id: str) -> Component:
+        """Get a component by ID, raises ComponentNotFoundError if not found."""
+        component = self._components.get(component_id)
+        if component is None:
+            raise ComponentNotFoundError(component_id)
+        return component
 
     def ids(self) -> list[str]:
         return sorted(self._components)
