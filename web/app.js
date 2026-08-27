@@ -6,7 +6,6 @@
     playerDice: [],
     agentDice: [],
     sound: true,
-    stream: null,
     shakeTimer: null,
     countdownTimer: null,
     analysisJobId: null,
@@ -51,43 +50,6 @@
     document.querySelectorAll('#progressDots span').forEach((dot, i) => {
       dot.classList.toggle('active', i <= Math.max(0, Math.min(5, index)));
     });
-    updateAgent(phase);
-    updateScoreState(phase);
-  }
-
-  function updateAgent(phase) {
-    const tasks = {
-      taskWelcome: ['select', 'rules', 'ready'],
-      taskCountdown: ['countdown', 'shaking', 'open'],
-      taskVision: ['analysis'],
-      taskResult: ['result'],
-    };
-    Object.entries(tasks).forEach(([id, phases]) => {
-      const node = $(id);
-      node.classList.toggle('active', phases.includes(phase));
-      if (phase === 'result' && id === 'taskResult') node.classList.add('done');
-      if (phase === 'analysis' && id === 'taskCountdown') node.classList.add('done');
-    });
-    const quotes = {
-      select: '“欢迎来到 Dice Arena，准备好和我一起摇骰子了吗？”',
-      rules: '“双方各 5 颗骰子，点数总和更大的一方获胜。”',
-      ready: '“拿好骰盅，点击开始，我们马上同步摇骰。”',
-      countdown: '“3、2、1，开始！”',
-      shaking: '“摇起来！我会和你保持同步。”',
-      open: '“3、2、1，停。请同时开盖。”',
-      analysis: '“YOLOv8 先看骰子，大模型再确认结果。”',
-      result: '“结果出来了，恭喜获胜者！”',
-    };
-    $('agentQuote').textContent = quotes[phase];
-  }
-
-  function updateScoreState(phase) {
-    const copy = {
-      select: '等待游戏开始', rules: '等待确认规则', ready: '等待玩家开始',
-      countdown: '同步倒计时中', shaking: '双方摇骰中', open: '等待开盖确认',
-      analysis: 'YOLOv8 + 大模型复核中', result: '本局结果已锁定',
-    };
-    $('scoreState').innerHTML = `<span class="state-dot"></span> ${copy[phase]}`;
   }
 
   function sum(dice) { return dice.reduce((a, b) => a + b, 0); }
@@ -99,8 +61,6 @@
   function updateScores() {
     const player = sum(state.playerDice);
     const agent = sum(state.agentDice);
-    $('livePlayerScore').textContent = state.playerDice.length ? player : '—';
-    $('liveAgentScore').textContent = state.agentDice.length ? agent : '—';
     $('playerScore').textContent = state.playerDice.length ? player : '—';
     $('agentScore').textContent = state.agentDice.length ? agent : '—';
     $('playerDice').innerHTML = diceMarkup(state.playerDice);
@@ -517,7 +477,6 @@
   function resetRound() {
     state.round += 1;
     $('roundNumber').textContent = String(state.round).padStart(2, '0');
-    $('roundMini').textContent = String(state.round).padStart(2, '0');
     state.playerDice = [];
     state.agentDice = [];
     $('analysisRetry').classList.add('hidden');
@@ -540,6 +499,11 @@
     }
   }
 
+  function backFromRules() {
+    stopSpeech();
+    setPhase('select');
+  }
+
   $('startGame').addEventListener('click', enterSelectedGame);
   $('gameList').addEventListener('dblclick', enterSelectedGame);
   $('repeatRules').addEventListener('click', () => {
@@ -547,6 +511,7 @@
     speakState('rules_intro');
   });
   $('confirmRules').addEventListener('click', () => { setPhase('ready'); speakState('rules_confirmed'); });
+  $('backFromRules').addEventListener('click', backFromRules);
   $('startShake').addEventListener('click', () => countdown(beginShake, 'GET READY', '和 Agent 同步'));
   $('stopShake').addEventListener('click', stopShake);
   $('revealDice').addEventListener('click', reveal);
@@ -555,7 +520,6 @@
   $('backToGames').addEventListener('click', () => {
     state.round = 1;
     $('roundNumber').textContent = '01';
-    $('roundMini').textContent = '01';
     setPhase('select');
   });
   $('soundToggle').addEventListener('click', () => {
@@ -564,30 +528,6 @@
     $('soundToggle').textContent = state.sound ? '🔊' : '🔇';
     toast(state.sound ? 'K3 Qwen3-TTS 播报已开启' : '语音播报已关闭');
   });
-  $('cameraButton').addEventListener('click', async () => {
-    if (state.stream) {
-      state.stream.getTracks().forEach((track) => track.stop());
-      state.stream = null;
-      $('cameraFrame').classList.remove('camera-active');
-      $('cameraStatus').textContent = '未连接浏览器预览';
-      $('cameraButton').textContent = '开启本地预览 ↗';
-      return;
-    }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      toast('当前浏览器不支持预览；K3 后端仍会直接使用板端摄像头');
-      return;
-    }
-    try {
-      state.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
-      $('cameraVideo').srcObject = state.stream;
-      $('cameraFrame').classList.add('camera-active');
-      $('cameraStatus').textContent = '浏览器预览已连接';
-      $('cameraButton').textContent = '关闭本地预览';
-      toast('预览已连接，实际识别由 K3 板端摄像头完成');
-    } catch {
-      toast('浏览器摄像头权限未开启；K3 后端仍会直接使用板端摄像头');
-    }
-  });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       const options = [...document.querySelectorAll('.game-option:not(.disabled)')];
@@ -595,6 +535,7 @@
       options[(current + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length].click();
     }
     if (event.key === 'Enter' && state.phase === 'select') enterSelectedGame();
+    if (event.key === 'Escape' && state.phase === 'rules') backFromRules();
     if (event.key.toLowerCase() === 'q' && state.phase === 'shaking') stopShake();
   });
 
