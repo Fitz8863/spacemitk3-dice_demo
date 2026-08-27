@@ -8,6 +8,8 @@ cmake_install.cmake
 Makefile
 
 # Runtime-generated caches and diagnostics
+__pycache__/
+*.pyc
 .shaders/
 *.log
 *.bin
