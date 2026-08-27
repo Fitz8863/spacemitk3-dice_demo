@@ -14,7 +14,6 @@ import json
 import mimetypes
 import os
 import threading
-import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,8 +29,9 @@ from components.tts_qwen3 import (
     tts_health,
     validate_tts_payload,
 )
-from components.vision_yolo import configured_llm, run_analysis, yolo_binary
+from components.vision_yolo import configured_llm, yolo_binary
 from core.env import load_board_env
+from core.games import load_games, require_game, run_game
 from core.jobs import ComponentJob
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +43,7 @@ load_board_env()
 
 # Resolve runtime settings only after loading the board-local env file.
 JOB_TIMEOUT_SECONDS = int(os.environ.get("DICE_JOB_TIMEOUT_SECONDS", "120"))
+GAMES = load_games()
 
 
 def _vision_phase_of(line: str) -> str | None:
@@ -54,30 +55,24 @@ def _vision_phase_of(line: str) -> str | None:
     return None
 
 
-def _run_dice_analysis(on_log, is_cancelled):
-    """Run one YOLOv8 + LLM analysis through the vision component."""
-    result_path = Path("/tmp") / f"dice-arena-{uuid.uuid4().hex}.json"
-    return run_analysis(
-        result_path=result_path,
-        on_log=on_log,
-        is_cancelled=is_cancelled,
-        timeout_seconds=JOB_TIMEOUT_SECONDS,
-    )
-
-
 jobs: dict[str, ComponentJob] = {}
 jobs_lock = threading.Lock()
 active_job_id: str | None = None
 
 
-def create_job() -> ComponentJob:
+def create_job(game_id: str) -> ComponentJob:
     global active_job_id
+    require_game(GAMES, game_id)  # raises KeyError / ValueError on unknown/disabled
     with jobs_lock:
         if active_job_id:
             active = jobs.get(active_job_id)
             if active and active.status in {"queued", "running"}:
-                raise RuntimeError("another dice analysis is already running")
-        job = ComponentJob(run_fn=_run_dice_analysis, phase_of=_vision_phase_of, name="dice-vision")
+                raise RuntimeError("another analysis is already running")
+
+        def run_fn(on_log, is_cancelled):
+            return run_game(GAMES, game_id, on_log, is_cancelled, JOB_TIMEOUT_SECONDS)
+
+        job = ComponentJob(run_fn=run_fn, phase_of=_vision_phase_of, name=f"{game_id}-job")
         jobs[job.id] = job
         active_job_id = job.id
         job.start()
@@ -127,6 +122,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/tts/health":
             self.send_json({"ok": tts_health(), "url": TTS_URL, "root": str(TTS_ROOT)})
+            return
+        if self.path == "/api/games":
+            self.send_json({"games": GAMES.all()})
             return
         if self.path.startswith("/api/analyze/"):
             job_id = self.path[len("/api/analyze/"):].split("/", 1)[0]
@@ -208,11 +206,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/analyze":
             try:
-                self.read_json()
-                job = create_job()
+                payload = self.read_json()
+                game_id = str(payload.get("game") or "dice")
+                job = create_job(game_id)
             except RuntimeError as exc:
                 self.send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
-            except (ValueError, UnicodeDecodeError) as exc:
+            except (KeyError, ValueError, UnicodeDecodeError) as exc:
                 self.send_json({"error": f"invalid request: {exc}"}, HTTPStatus.BAD_REQUEST)
             else:
                 self.send_json(job.snapshot(), HTTPStatus.ACCEPTED)

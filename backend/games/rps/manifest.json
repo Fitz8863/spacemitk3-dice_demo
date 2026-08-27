@@ -1,0 +1,20 @@
+{
+  "id": "rps",
+  "name": "猜拳",
+  "icon": "✊",
+  "description": "石头 · 剪刀 · 布（占位，待接识别模型）",
+  "enabled": false,
+  "components": ["tts_qwen3"],
+  "voice": "default",
+  "speed": 1.0,
+  "texts": {
+    "rules_intro": "猜拳游戏尚未接入识别模型，敬请期待。",
+    "rules_confirmed": "准备。",
+    "shake_started": "开始。",
+    "shake_stopped": "停止。",
+    "analysis_started": "正在识别。",
+    "result_tie": "本局平局。",
+    "result_player_win": "恭喜你，玩家获胜。",
+    "result_agent_win": "本局 Agent 获胜。"
+  }
+}

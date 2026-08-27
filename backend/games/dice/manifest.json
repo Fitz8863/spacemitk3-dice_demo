@@ -1,0 +1,20 @@
+{
+  "id": "dice",
+  "name": "摇骰子",
+  "icon": "⚄",
+  "description": "双方各 5 颗 · 比较点数总和",
+  "enabled": true,
+  "components": ["vision_yolo", "tts_qwen3"],
+  "voice": "default",
+  "speed": 1.0,
+  "texts": {
+    "rules_intro": "双方各摇五颗骰子，停止后同时开盖，点数总和更大的一方获胜。下面说说按键操作。选择游戏时，按上下方向键切换，按回车键确认进入。想返回游戏列表，就按 Esc 键。开始摇骰后，按 Q 键可以随时停止。准备好了，就点击我明白了。",
+    "rules_confirmed": "规则确认完成，请准备。",
+    "shake_started": "开始摇骰。",
+    "shake_stopped": "停止摇骰。",
+    "analysis_started": "正在调用 K3 YOLOv8 和大模型复核。",
+    "result_tie": "本局平局。玩家点数 {player_score}，Agent 点数 {agent_score}，再来一局吧。",
+    "result_player_win": "恭喜你，玩家获胜。玩家点数 {player_score}，Agent 点数 {agent_score}。",
+    "result_agent_win": "本局 Agent 获胜。玩家点数 {player_score}，Agent 点数 {agent_score}。"
+  }
+}
