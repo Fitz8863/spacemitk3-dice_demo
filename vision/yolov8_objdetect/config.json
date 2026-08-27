@@ -14,7 +14,7 @@
   "rejudge_on_change": true,
   "llm": {
     "url": "https://api.rvcompute.com:60000/v1",
-    "model": "gpt-5.4-mini",
+    "model": "deepseek-v4-flash-vision-exp",
     "timeout_seconds": 4,
     "api_key": "",
     "system_prompt": "You are a strict dice-sum judge. Use only the supplied integer sums. Do not infer or correct any vision result. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
