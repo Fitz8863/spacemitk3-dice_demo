@@ -8,7 +8,7 @@
   "voice": "default",
   "speed": 1.0,
   "texts": {
-    "rules_intro": "双方各摇五颗骰子，停止后同时开盖，点数总和更大的一方获胜。下面说说按键操作。选择游戏时，按上下方向键切换，按回车键确认进入。想返回游戏列表，就按 Esc 键。开始摇骰后，按 Q 键可以随时停止。准备好了，就点击我明白了。",
+    "rules_intro": "等待",
     "rules_confirmed": "规则确认完成，请准备。",
     "shake_started": "开始摇骰。",
     "shake_stopped": "停止摇骰。",

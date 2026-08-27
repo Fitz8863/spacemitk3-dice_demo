@@ -6,6 +6,9 @@ know which game they serve, so they stay reusable across games.
 """
 from __future__ import annotations
 
+import importlib.util
+import inspect
+from pathlib import Path
 from typing import Any
 
 from core.errors import ComponentNotFoundError
@@ -42,12 +45,56 @@ class ComponentRegistry:
 
 
 def build_registry() -> ComponentRegistry:
-    """Construct the registry with the board-local built-in components."""
-    # Imported lazily to avoid a circular import during package setup.
-    from components.tts_qwen3 import TtsQwen3
-    from components.vision_yolo import VisionYolo
+    """Scan components/ directory and auto-register all Component subclasses.
 
+    Each *.py file in components/ is imported, and any Component subclass found
+    is instantiated and registered. This eliminates the need to manually import
+    and register new components in this function.
+    """
     registry = ComponentRegistry()
-    registry.register(TtsQwen3())
-    registry.register(VisionYolo())
+    components_root = Path(__file__).resolve().parents[1] / "components"
+
+    if not components_root.is_dir():
+        print("[components] components/ directory not found", flush=True)
+        return registry
+
+    for py_file in sorted(components_root.glob("*.py")):
+        # Skip __init__.py and private modules
+        if py_file.stem.startswith("_"):
+            continue
+
+        try:
+            # Dynamically import the module
+            spec = importlib.util.spec_from_file_location(
+                f"components.{py_file.stem}", py_file
+            )
+            if spec is None or spec.loader is None:
+                print(f"[components] skip {py_file.name}: cannot create module spec", flush=True)
+                continue
+
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
+            # Find all Component subclasses and instantiate them
+            for name in dir(module):
+                obj = getattr(module, name)
+                # Check if it's a class, subclass of Component, not Component itself,
+                # and not an abstract base (has non-empty id)
+                if (inspect.isclass(obj) and
+                    issubclass(obj, Component) and
+                    obj is not Component):
+                    try:
+                        instance = obj()
+                        if not instance.id:
+                            # Skip components with empty id (abstract bases)
+                            continue
+                        registry.register(instance)
+                        print(f"[components] registered {instance.id} ({instance.type}) from {py_file.name}", flush=True)
+                    except Exception as exc:
+                        print(f"[components] skip {name} from {py_file.name}: {exc}", flush=True)
+
+        except Exception as exc:
+            print(f"[components] skip {py_file.name}: {exc}", flush=True)
+            continue
+
     return registry
