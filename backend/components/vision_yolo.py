@@ -109,7 +109,7 @@ def run_analysis(
             if time.monotonic() > deadline:
                 _terminate(process)
                 raise VisionError(f"YOLOv8 analysis timed out after {timeout_seconds}s")
-            events = selector.select(timeout=0.5)
+            events = selector.select(timeout=0.05)
             for key, _ in events:
                 line = key.fileobj.readline()
                 if line:
@@ -120,6 +120,10 @@ def run_analysis(
                             result = json.loads(line[9:])
                             if result.get("verified"):
                                 last_result = result
+                                # Got verified result, terminate process immediately
+                                selector.close()
+                                _terminate(process)
+                                return last_result
                         except (ValueError, KeyError):
                             pass
             if process.poll() is not None:
