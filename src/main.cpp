@@ -179,6 +179,7 @@ struct Args {
     int max_frames = 0;
     bool self_test = false;
     std::string dump_input;
+    bool llm_enabled = true;
     std::string llm_url = "https://api.rvcompute.com:60000/v1";
     std::string llm_model = "gpt-5.4-mini";
     int llm_timeout_seconds = 20;
@@ -303,6 +304,7 @@ static bool load_config(const std::string& path, Args& a) {
                 std::cerr << "config llm must be a JSON object\n";
                 return false;
             }
+            if (!read_config_bool(llm, "enabled", a.llm_enabled)) return false;
             read_config_value(llm, "url", a.llm_url);
             read_config_value(llm, "model", a.llm_model);
             read_config_value(llm, "timeout_seconds", a.llm_timeout_seconds);
@@ -341,7 +343,7 @@ static void usage(const char* exe) {
               << "  --llm-url URL      override the config LLM base URL\n"
               << "  --llm-model NAME   override the config LLM model\n"
               << "  --llm-timeout N    LLM request timeout in seconds\n"
-              << "  --no-llm           disable LLM verification\n";
+              << "  --no-llm           disable LLM verification and use stable YOLO result\n";
 }
 
 static bool validate_args(Args& a) {
@@ -392,7 +394,7 @@ static bool validate_args(Args& a) {
             return false;
         }
     }
-    if (!a.no_llm) {
+    if (a.llm_enabled && !a.no_llm) {
         if (a.llm_system_prompt.empty() || a.llm_user_prompt_template.empty()) {
             std::cerr << "config llm.system_prompt and llm.user_prompt_template "
                          "must not be empty\n";
@@ -788,7 +790,10 @@ int main(int argc, char** argv) {
     LlmDiceVerifier llm_verifier({a.llm_url, a.llm_api_key, a.llm_model,
                                   a.llm_timeout_seconds,
                                   a.llm_system_prompt, a.llm_user_prompt_template});
-    if (!a.no_llm && !llm_verifier.configured()) {
+    const bool llm_enabled = a.llm_enabled && !a.no_llm;
+    if (!llm_enabled) {
+        std::cerr << "[LLM] disabled; a stable YOLO result will directly determine the winner.\n";
+    } else if (!llm_verifier.configured()) {
         std::cerr << "[LLM] verification disabled: set llm.api_key in config.json "
                      "or DICE_LLM_API_KEY.\n";
     }
@@ -987,9 +992,6 @@ int main(int argc, char** argv) {
                     std::cout << "Dice judgment: " << judgment.message << "\n";
                     last_judgment = judgment.message;
                 }
-            } else if (a.no_llm) {
-                display_judgment.valid = false;
-                display_judgment.overlay = "LLM verification disabled; winner suppressed";
             } else {
                 const DiceResultSnapshot current_snapshot = make_dice_snapshot(judgment);
                 const bool matches_attempted =
@@ -1051,28 +1053,39 @@ int main(int argc, char** argv) {
                         llm_state.attempted_snapshot = current_snapshot;
                         llm_state.llm_winner = LlmWinner::Unknown;
 
-                        std::cout << "[YOLO] "
-                                  << (is_rejudgment ? "changed result" : "stable result")
-                                  << " reached " << a.stable_frames
-                                  << " consecutive frames; calling LLM once\n";
-                        std::string llm_error;
-                        const LlmVerificationResult llm_result = llm_verifier.verify_once(
-                            judgment.first_name, judgment.second_name,
-                            judgment.first_sum, judgment.second_sum,
-                            llm_state.llm_winner, llm_error);
-                        if (llm_result == LlmVerificationResult::Success) {
+                        if (!llm_enabled) {
                             llm_state.succeeded = true;
-                            llm_state.agreement =
-                                llm_state.llm_winner == llm_state.attempted_snapshot.winner;
-                            std::cout << "[LLM] one-shot result="
+                            llm_state.agreement = true;
+                            llm_state.llm_winner = llm_state.attempted_snapshot.winner;
+                            std::cout << "[YOLO] "
+                                      << (is_rejudgment ? "changed result" : "stable result")
+                                      << " reached " << a.stable_frames
+                                      << " consecutive frames; using YOLO result directly: "
                                       << winner_label(llm_state.llm_winner) << "\n";
-                        } else if (llm_result == LlmVerificationResult::Timeout) {
-                            llm_state.timeout_fallback = true;
-                            std::cerr << "[LLM] one-shot verification timed out: "
-                                      << llm_error << "; using the stable YOLO result\n";
                         } else {
-                            std::cerr << "[LLM] one-shot verification failed: "
-                                      << llm_error << "\n";
+                            std::cout << "[YOLO] "
+                                      << (is_rejudgment ? "changed result" : "stable result")
+                                      << " reached " << a.stable_frames
+                                      << " consecutive frames; calling LLM once\n";
+                            std::string llm_error;
+                            const LlmVerificationResult llm_result = llm_verifier.verify_once(
+                                judgment.first_name, judgment.second_name,
+                                judgment.first_sum, judgment.second_sum,
+                                llm_state.llm_winner, llm_error);
+                            if (llm_result == LlmVerificationResult::Success) {
+                                llm_state.succeeded = true;
+                                llm_state.agreement =
+                                    llm_state.llm_winner == llm_state.attempted_snapshot.winner;
+                                std::cout << "[LLM] one-shot result="
+                                          << winner_label(llm_state.llm_winner) << "\n";
+                            } else if (llm_result == LlmVerificationResult::Timeout) {
+                                llm_state.timeout_fallback = true;
+                                std::cerr << "[LLM] one-shot verification timed out: "
+                                          << llm_error << "; using the stable YOLO result\n";
+                            } else {
+                                std::cerr << "[LLM] one-shot verification failed: "
+                                          << llm_error << "\n";
+                            }
                         }
 
                         llm_state.stable_count = 0;
@@ -1098,8 +1111,13 @@ int main(int argc, char** argv) {
                         }
                     } else if (llm_state.succeeded && llm_state.agreement && same_snapshot) {
                         if (!llm_state.printed) {
-                            std::cout << "Dice judgment verified by YOLO + LLM: "
-                                      << judgment.message << "\n";
+                            if (llm_enabled) {
+                                std::cout << "Dice judgment verified by YOLO + LLM: "
+                                          << judgment.message << "\n";
+                            } else {
+                                std::cout << "Dice judgment by YOLO: "
+                                          << judgment.message << "\n";
+                            }
                             llm_state.printed = true;
                         }
                     } else {
