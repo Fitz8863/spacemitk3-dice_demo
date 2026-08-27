@@ -1,16 +1,16 @@
 # SpaceMIT K3 YOLOv8 摄像头推理
 
-这个目录实现了 YOLOv8 在 SpaceMIT K3 板端的实时摄像头推理，包含摄像头读取、MJPEG 解码、OpenCL GPU 前处理、队列和显示。
+这个目录实现了 YOLOv8 在 SpaceMIT K3 板端的实时摄像头推理，包含摄像头读取、MJPEG 解码、OpenCL GPU 前处理、队列、桌面显示，以及通过 RTSP 发布到 MediaMTX。
 
 ## 数据流
 
-完整模式下，摄像头采集、YOLO 推理、显示和推流是解耦的；推流使用“只保留最新帧”策略，不会因为网络客户端或 RTSP 服务端变慢而暂停摄像头和推理。
+完整模式下，摄像头采集、YOLO 推理、显示和 RTSP 推流是解耦的；RTSP 推流使用“只保留最新帧”策略，不会因为 MediaMTX 或网络变慢而暂停摄像头和推理。
 
 ```text
 摄像头线程 -> 采集队列 -> OpenCL 前处理线程 -> 推理队列 -> YOLO 推理线程
                                                     \-> 主线程显示/绘制
-                                                    \-> MJPEG HTTP 推流线程
                                                     \-> RTSP 最新帧队列 -> GStreamer spacemith264enc(VPU) -> MediaMTX
+                                                                               \-> WebRTC/WHEP
 ```
 
 ```text
@@ -53,7 +53,7 @@ cd ~/projects/dice-game/yolov8_objdetect
 ./build/yolov8_camera
 ```
 
-配置文件包含所有持久化运行参数：模型、摄像头、分辨率、帧率、桌面显示、YOLOv8 流程开关、SpaceMIT EP 线程/绑核、队列、置信度、对焦/变焦、帧数、自测、推流以及 LLM 请求参数。默认示例值为：
+配置文件包含所有持久化运行参数：模型、摄像头、分辨率、帧率、桌面显示、YOLOv8 流程开关、SpaceMIT EP 线程/绑核、队列、置信度、对焦/变焦、帧数、自测、RTSP 推流以及 LLM 请求参数。默认示例值为：
 
 ```json
 {
@@ -77,12 +77,6 @@ cd ~/projects/dice-game/yolov8_objdetect
   "self_test": false,
   "yolov8_enabled": true,
   "no_llm": false,
-  "stream": {
-    "enabled": true,
-    "host": "0.0.0.0",
-    "port": 8080,
-    "jpeg_quality": 80
-  },
   "rtsp": {
     "enabled": true,
     "host": "127.0.0.1",
@@ -114,15 +108,11 @@ cd ~/projects/dice-game/yolov8_objdetect
 | `conf` | YOLO 检测置信度阈值，范围为 0.0–1.0。 |
 | `focus` | 摄像头手动对焦值；`-1` 表示不修改当前设置。 |
 | `zoom` | 摄像头绝对变焦值；`-1` 表示不修改当前设置。 |
-| `display_enabled` | 是否在板端桌面显示 HighGUI 窗口；`false` 等价于命令行 `--no-display`。即使关闭桌面显示，开启 `stream.enabled` 后仍可继续网页推流。 |
+| `display_enabled` | 是否在板端桌面显示 HighGUI 窗口；`false` 等价于命令行 `--no-display`。关闭桌面显示后，仍可通过 RTSP 发布当前结果画面。 |
 | `max_frames` | 最多处理的帧数；`0` 表示持续运行。 |
 | `dump_input` | 将首帧 640x640 FP32 CHW 输入保存到指定路径；空字符串表示不保存。 |
 | `self_test` | 是否启动后执行一次 OpenCL 和 SpaceMIT EP 自测；通常保持 `false`。 |
 | `yolov8_enabled` | 是否启用 YOLOv8 推理流程；`true` 保持摄像头采集、OpenCL 预处理、YOLOv8 推理和后续判定，`false` 只采集并显示摄像头画面，跳过 OpenCL、YOLOv8 和 LLM。 |
-| `stream.enabled` | 是否启用局域网网页推流；启用后程序提供 MJPEG HTTP 服务。 |
-| `stream.host` | HTTP 服务监听地址；`0.0.0.0` 表示监听所有网卡，便于局域网其他设备访问。 |
-| `stream.port` | HTTP 服务端口，范围为 `1..65535`，默认 `8080`。 |
-| `stream.jpeg_quality` | 推流 JPEG 质量，范围为 `1..100`；数值越高画质越好但带宽和 CPU 编码开销越大。 |
 | `rtsp.enabled` | 是否发布 RTSP H.264 流；启用后将当前结果画面送入 GStreamer，并使用 K3 的 `spacemith264enc` VPU 编码器。 |
 | `rtsp.host` | RTSP 服务端地址；本机 MediaMTX 推荐填写 `127.0.0.1`，不要填写 `0.0.0.0`。 |
 | `rtsp.port` | RTSP 服务端口，默认 `8554`；该端口通常由 MediaMTX 监听。 |
@@ -140,7 +130,7 @@ cd ~/projects/dice-game/yolov8_objdetect
 
 API Key 默认从 `llm.api_key` 读取。如果同时设置环境变量 `DICE_LLM_API_KEY`，环境变量优先，且程序读取后会从子进程环境中移除该变量。仓库中的示例配置不保存真实密钥，推荐始终通过环境变量注入：
 
-`Args` 中除 `config_path` 外的持久化运行参数均可直接写入配置文件；其中 `display_enabled` 对应命令行的反向语义 `--no-display`，`stream.enabled` 对应 `--stream/--no-stream`，`yolov8_enabled` 对应 `--no-yolov8`，`no_llm` 对应 `--no-llm`。命令行参数在 JSON 加载后继续覆盖配置。例如 `--no-display` 会覆盖 `display_enabled=true`，`--no-stream` 会覆盖 `stream.enabled=true`。
+`Args` 中除 `config_path` 外的持久化运行参数均可直接写入配置文件；其中 `display_enabled` 对应命令行的反向语义 `--no-display`，`yolov8_enabled` 对应 `--no-yolov8`，`no_llm` 对应 `--no-llm`。命令行参数在 JSON 加载后继续覆盖配置。例如 `--no-display` 会覆盖 `display_enabled=true`。
 
 命令行参数仍然保留，并在 JSON 加载后覆盖同名配置。例如：
 
@@ -185,7 +175,7 @@ API Key 默认从 `llm.api_key` 读取。如果同时设置环境变量 `DICE_LL
 
 ### RTSP 推流（SpaceMIT VPU H.264）
 
-程序可以把当前处理后的 BGR 结果画面通过 GStreamer 发布到 RTSP 服务端。编码链路为：
+程序把当前处理后的 BGR 结果画面通过 GStreamer 发布到 RTSP 服务端。RTSP 是当前唯一的网络视频输出；浏览器播放由 MediaMTX 将 RTSP 转换为 WebRTC/WHEP。编码链路为：
 
 ```text
 当前结果画面 BGR
@@ -249,7 +239,7 @@ paths:
 cd ~/projects/dice-game/yolov8_objdetect
 export GST_PLUGIN_PATH=/home/spacemit/.local/rtsp-root/usr/lib/riscv64-linux-gnu/gstreamer-1.0
 export LD_LIBRARY_PATH=/home/spacemit/.local/rtsp-root/usr/lib/riscv64-linux-gnu:${LD_LIBRARY_PATH:-}
-./build/yolov8_camera --config config.json --no-display --no-llm --no-stream
+./build/yolov8_camera --config config.json --no-display --no-llm
 ```
 
 如果系统 `gst-inspect-1.0 rtspclientsink` 找不到插件，使用上面的 `GST_PLUGIN_PATH` 和 `LD_LIBRARY_PATH`，并检查：
@@ -288,36 +278,7 @@ ffplay -rtsp_transport tcp rtsp://10.0.90.160:8554/dice
 
 如果出现 `404 Not Found`，通常是发布程序已经退出、`rtsp.path` 与 MediaMTX 的 `paths` 不一致，或者 MediaMTX 未启动。若出现 `connection refused`，检查 `8554/TCP` 是否监听；若出现 `rtspclientsink` 找不到元素，检查 GStreamer 插件路径。
 
-RTSP 可继续交给 MediaMTX 转 WebRTC/WHEP：MediaMTX 负责协议分发和必要的封装转换，但不会把 BGR/NV12/MJPEG 原始画面直接变成浏览器可播放的 H.264；本程序中的 `spacemith264enc` 仍负责 VPU H.264 编码。
-
-### 局域网网页推流
-
-程序内置轻量级 MJPEG HTTP 服务，不需要额外安装 nginx、RTSP 或 WebRTC 服务。推流发送的是程序当前显示的 BGR 画面：完整模式下包含 YOLO 检测框、分界线和裁决文字；`yolov8_enabled=false` 时发送摄像头原始画面转换后的 BGR 图像。
-
-在 `config.json` 中开启：
-
-```json
-"stream": {
-  "enabled": true,
-  "host": "0.0.0.0",
-  "port": 8080,
-  "jpeg_quality": 80
-}
-```
-
-启动程序后，其他同一局域网设备使用浏览器打开：
-
-```text
-http://<K3板端IP>:8080/
-```
-
-也可以直接访问实时流：
-
-```text
-http://<K3板端IP>:8080/stream.mjpg
-```
-
-单张截图地址为 `/snapshot.jpg`。如果端口被占用，可以修改 `stream.port`，或临时使用 `--stream --stream-port 8081`；监听所有网卡时请确保板端防火墙允许对应 TCP 端口。推流只保留最新 JPEG 帧，慢客户端会断开或跳过旧帧，不会反向阻塞摄像头和 YOLO 推理。命令行 `--no-stream` 可以临时关闭推流。
+RTSP 由 MediaMTX 继续转换为 WebRTC/WHEP，供局域网网页中的 `<video>` 播放；本程序不再提供独立的 MJPEG HTTP 服务。MediaMTX 负责协议分发和封装转换，但不会把 BGR/NV12/MJPEG 原始画面直接变成浏览器可播放的 H.264；本程序中的 `spacemith264enc` 仍负责 VPU H.264 编码。
 
 只有 YOLO 连续得到相同的有效 5+5 结果达到 `stable_frames` 次后，程序才调用大模型。任何一帧未检测到分界线、左右数量不是 5 个，或左右骰子点数组成发生变化，连续计数都会清零并重新开始；因此未稳定前不会求胜负，也不会请求大模型。
 
@@ -399,11 +360,6 @@ spacemit-tcm-smi -c   # 清理残留 TCM 状态
 --max-frames N     处理 N 帧后退出（配置项 max_frames）
 --dump-input PATH  保存首帧 640x640 FP32 CHW 输入（配置项 dump_input）
 --no-yolov8        跳过预处理和推理，只显示摄像头画面
---stream           开启 MJPEG HTTP 推流
---stream-host HOST  推流 HTTP 监听地址，默认 0.0.0.0
---stream-port N     推流 HTTP 端口，默认 8080
---stream-quality N  推流 JPEG 质量 1-100，默认 80
---no-stream         关闭 MJPEG HTTP 推流
 --rtsp              发布 H.264 到 RTSP 服务（使用 SpaceMIT VPU）
 --rtsp-host HOST    RTSP 服务端地址，默认 127.0.0.1
 --rtsp-port N       RTSP 服务端口，默认 8554
@@ -446,7 +402,7 @@ cd ~/projects/dice-game/yolov8_objdetect
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4
-./build/yolov8_camera --model models/best.q.onnx --self-test --no-display
+./build/yolov8_camera --model models/best.q.onnx --self-test --no-display --no-rtsp
 ./build/yolov8_camera --model models/best.q.onnx --device /dev/video1 \
   --no-display --max-frames 30
 ```
