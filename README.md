@@ -23,10 +23,10 @@ USB 摄像头 V4L2 MJPEG 1280x720@25
 
 ## 编译
 
-请在 K3 板端 `~/projects/dice-demo` 执行：
+请在 K3 板端 `~/projects/dice-game/yolov8_objdetect` 执行：
 
 ```bash
-cd ~/projects/dice-demo
+cd ~/projects/dice-game/yolov8_objdetect
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
@@ -37,14 +37,14 @@ cmake --build build -j4
 
 ## 运行
 
-程序默认从当前工作目录的 `config.json` 读取初始化参数，因此在 `~/projects/dice-demo` 中编译后可以直接运行：
+程序默认从当前工作目录的 `config.json` 读取初始化参数，因此在 `~/projects/dice-game/yolov8_objdetect` 中编译后可以直接运行：
 
 ```bash
-cd ~/projects/dice-demo
+cd ~/projects/dice-game/yolov8_objdetect
 ./build/yolov8_camera
 ```
 
-配置文件包含模型、摄像头、分辨率、帧率、SpaceMIT EP 线程/绑核、队列、置信度、对焦/变焦以及 LLM 请求参数。默认示例值为：
+配置文件包含模型、摄像头、分辨率、帧率、YOLOv8 流程开关、SpaceMIT EP 线程/绑核、队列、置信度、对焦/变焦以及 LLM 请求参数。默认示例值为：
 
 ```json
 {
@@ -60,7 +60,15 @@ cd ~/projects/dice-demo
   "rejudge_on_change": false,
   "conf": 0.50,
   "focus": 0,
-  "zoom": 150
+  "zoom": 160,
+  "yolov8_enabled": true,
+  "llm": {
+    "enabled": true,
+    "url": "https://api.deepseek.com/v1/",
+    "model": "deepseek-v4-flash-vision-exp",
+    "timeout_seconds": 4,
+    "api_key": ""
+  }
 }
 ```
 
@@ -78,16 +86,18 @@ cd ~/projects/dice-demo
 | `conf` | YOLO 检测置信度阈值，范围为 0.0–1.0。 |
 | `focus` | 摄像头手动对焦值；`-1` 表示不修改当前设置。 |
 | `zoom` | 摄像头绝对变焦值；`-1` 表示不修改当前设置。 |
+| `yolov8_enabled` | 是否启用 YOLOv8 推理流程；`true` 保持摄像头采集、OpenCL 预处理、YOLOv8 推理和后续判定，`false` 只采集并显示摄像头画面，跳过 OpenCL、YOLOv8 和 LLM。 |
+| `llm.enabled` | 是否启用大模型复核；`true` 表示稳定 YOLO 结果后调用 LLM，`false` 表示达到 `stable_frames` 后直接使用 YOLO 结果判定胜负。 |
 | `llm.url` | OpenAI 兼容 API 基础地址，程序请求其 `/chat/completions` 接口。 |
 | `llm.model` | 用于复核骰子点数和的模型名称。 |
-| `llm.timeout_seconds` | 云端大模型请求总超时秒数，必须大于等于 1，默认 `20`。仅超时会回退使用稳定 YOLO 结果。 |
+| `llm.timeout_seconds` | 云端大模型请求总超时秒数，必须大于等于 1；代码内置默认值为 `20`，当前示例配置为 `4`。仅超时会回退使用稳定 YOLO 结果。 |
 | `llm.api_key` | 大模型网关 API Key；程序默认从此项读取。环境变量 `DICE_LLM_API_KEY` 可临时覆盖。 |
 | `llm.system_prompt` | 约束大模型只根据程序提供的整数点数和进行判断。 |
 | `llm.user_prompt_template` | 请求模板，必须保留 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}`。 |
 | `stable_frames` | 左右严格各有 5 个骰子且点数组成连续一致达到此帧数后，才调用一次大模型。 |
 | `rejudge_on_change` | `false` 表示每次进程只复核一次；`true` 表示点数组成变化后重新稳定计数并再次复核。 |
 
-API Key 默认从 `llm.api_key` 读取。如果同时设置环境变量 `DICE_LLM_API_KEY`，环境变量优先，且程序读取后会从子进程环境中移除该变量。
+API Key 默认从 `llm.api_key` 读取。如果同时设置环境变量 `DICE_LLM_API_KEY`，环境变量优先，且程序读取后会从子进程环境中移除该变量。仓库中的示例配置不保存真实密钥，推荐始终通过环境变量注入：
 
 命令行参数仍然保留，并在 JSON 加载后覆盖同名配置。例如：
 
@@ -108,6 +118,12 @@ API Key 默认从 `llm.api_key` 读取。如果同时设置环境变量 `DICE_LL
 ./build/yolov8_camera --no-display --max-frames 30 --no-llm
 ```
 
+只显示摄像头画面、跳过 YOLOv8/OpenCL/LLM：
+
+```bash
+./build/yolov8_camera --no-yolov8
+```
+
 也可以显式指定设备，`--device` 优先于 `--camera`：
 
 ```bash
@@ -116,7 +132,13 @@ API Key 默认从 `llm.api_key` 读取。如果同时设置环境变量 `DICE_LL
 
 ### YOLO + 大模型稳定复核
 
-当 YOLO 连续稳定确认左右两侧各有 5 个骰子后，程序会把两侧点数和发送到 OpenAI 兼容的 `/chat/completions` 接口。每个稳定判定周期只调用一次大模型，并冻结该周期的左右骰子点数组成和点数和；只有大模型返回的 `LEFT`、`RIGHT` 或 `TIE` 与这个 YOLO 快照一致，程序才打印一次最终胜负。
+当 `llm.enabled=true` 且 YOLO 连续稳定确认左右两侧各有 5 个骰子后，程序会把两侧点数和发送到 OpenAI 兼容的 `/chat/completions` 接口。每个稳定判定周期只调用一次大模型；网络请求在独立后台线程执行，不会阻塞摄像头、推理或画面刷新。只有大模型返回的 `LEFT`、`RIGHT` 或 `TIE` 与这个 YOLO 快照一致，程序才打印一次最终胜负。
+
+如果请求连接或响应超过 `llm.timeout_seconds`，后台请求会被判定为超时并清理 curl 子进程；主循环不会等待网络请求，收到超时结果后立即使用发起请求时保存的稳定 YOLO 快照宣判，并显示 `YOLO fallback (LLM timeout)`。因此超时不会冻结画面，也不会卡在程序退出阶段。
+
+当 `llm.enabled=false`（或命令行使用 `--no-llm`）时，不会发起网络请求。YOLO 连续稳定达到 `stable_frames` 后，程序直接根据左右两侧点数和宣判胜负，画面不会等待大模型结果。
+
+当 `yolov8_enabled=false` 时，程序只打开摄像头并将 NV12 转换为 BGR 后显示，跳过 OpenCL 预处理、SpaceMIT EP、YOLOv8 解码/NMS、骰子判断和 LLM 请求。设置为 `true` 即恢复完整流程；也可以使用命令行参数 `--no-yolov8` 临时关闭。
 
 只有 YOLO 连续得到相同的有效 5+5 结果达到 `stable_frames` 次后，程序才调用大模型。任何一帧未检测到分界线、左右数量不是 5 个，或左右骰子点数组成发生变化，连续计数都会清零并重新开始；因此未稳定前不会求胜负，也不会请求大模型。
 
@@ -125,7 +147,7 @@ API Key 默认从 `llm.api_key` 读取。如果同时设置环境变量 `DICE_LL
 - `false`（默认）：保持一次性模式，本进程不再调用大模型；后续画面与已复核快照不同时只隐藏胜负。
 - `true`：如果任意一侧的排序后骰子点数组成发生变化，立即把该变化帧作为新一轮稳定计数的第 1 帧。新结果必须再次连续稳定 `stable_frames` 帧且仍满足严格 5+5，才会再次调用一次大模型并输出新结果。短暂误检后恢复到上一次已复核快照时会取消本轮计数，不会重复请求相同结果。
 
-LLM 地址、模型名、API Key、请求超时、system prompt 和 user prompt 模板都在 `config.json` 的 `llm` 对象中配置。`llm.timeout_seconds` 限制一次完整云端请求（连接和响应）；超过该时间没有得到响应时，程序会使用对应稳定 5+5 YOLO 快照的结果直接输出胜负。模板支持 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}` 四个占位符；程序发送请求前会替换为当前快照值。程序默认读取 `config.json` 中的 `llm.api_key`，因此可以直接运行。需要临时更换密钥时，可通过环境变量覆盖：
+LLM 是否启用、地址、模型名、API Key、请求超时、system prompt 和 user prompt 模板都在 `config.json` 的 `llm` 对象中配置。`llm.timeout_seconds` 限制一次完整云端请求（连接和响应）；超过该时间没有得到响应时，程序会使用对应稳定 5+5 YOLO 快照的结果直接输出胜负。模板支持 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}` 四个占位符；程序发送请求前会替换为当前快照值。仓库中的 `llm.api_key` 保持为空；启用 LLM 前请通过环境变量注入密钥：
 
 ```bash
 export DICE_LLM_API_KEY='临时 API Key'
@@ -193,10 +215,11 @@ spacemit-tcm-smi -c   # 清理残留 TCM 状态
 --llm-url URL      覆盖 config.json 中的 LLM 地址
 --llm-model NAME   覆盖 config.json 中的 LLM 模型
 --llm-timeout N    覆盖 llm.timeout_seconds，单位秒，必须 >= 1
---no-llm           关闭 LLM 复核
+--no-llm           关闭 LLM 复核，稳定 YOLO 后直接判定
 --no-display       不创建 HighGUI 窗口
 --max-frames N     处理 N 帧后退出
 --dump-input PATH  保存首帧 640x640 FP32 CHW 输入
+--no-yolov8        跳过预处理和推理，只显示摄像头画面
 --self-test        执行一次真实 OpenCL 前处理和推理
 ```
 
@@ -223,11 +246,12 @@ spacemit-tcm-smi -c   # 清理残留 TCM 状态
 - `/dev/video1` 可通过 `spacemitdec` 硬件解码 MJPEG；没有可用 V4L2 M2M 解码器时自动回退到 `jpegdec` 软件解码；
 - 摄像头请求 25 FPS 时，当前设备可能协商为 24 FPS；
 - 无显示端到端测试可使用 `--no-display --max-frames 30`，退出时允许驱动打印 `V4L2_EVENT_EOS event is not support yet` 提示，只要程序最终输出 `Done.` 即表示正常退出。
+- 使用本地故意延迟响应的 HTTP 服务完成真实 LLM 超时回归测试：`--llm-timeout 2 --stable-frames 1 --max-frames 100 --no-display` 在约 2 秒后打印 `YOLO fallback (LLM timeout)`，继续处理到 100 帧并正常输出 `Done.`，退出后无残留 `yolov8_camera`/`curl` 进程；
 
 推荐先执行自测，再执行短时摄像头测试：
 
 ```bash
-cd ~/projects/dice-demo
+cd ~/projects/dice-game/yolov8_objdetect
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4

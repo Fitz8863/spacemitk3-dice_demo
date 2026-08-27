@@ -22,6 +22,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -179,6 +180,7 @@ struct Args {
     int max_frames = 0;
     bool self_test = false;
     std::string dump_input;
+    bool yolov8_enabled = true;
     bool llm_enabled = true;
     std::string llm_url = "https://api.rvcompute.com:60000/v1";
     std::string llm_model = "gpt-5.4-mini";
@@ -289,6 +291,7 @@ static bool load_config(const std::string& path, Args& a) {
         if (!read_config_bool(root, "rejudge_on_change", a.rejudge_on_change)) return false;
         read_config_value(root, "focus", a.focus);
         read_config_value(root, "zoom", a.zoom);
+        if (!read_config_bool(root, "yolov8_enabled", a.yolov8_enabled)) return false;
 
         int queue_depth = static_cast<int>(a.queue_depth);
         read_config_value(root, "queue_depth", queue_depth);
@@ -339,6 +342,7 @@ static void usage(const char* exe) {
               << "  --no-display       run pipeline without window\n"
               << "  --max-frames N     stop after N frames enter preprocess (0=unlimited)\n"
               << "  --dump-input PATH  dump first preprocessed tensor as float32\n"
+              << "  --no-yolov8        bypass preprocessing/inference and display camera frames only\n"
               << "  --self-test        initialize OpenCL GPU and model, run one inference\n"
               << "  --llm-url URL      override the config LLM base URL\n"
               << "  --llm-model NAME   override the config LLM model\n"
@@ -439,6 +443,7 @@ static bool parse(int argc, char** argv, Args& a) {
             else if (k == "--max-frames" && (v = need(i))) a.max_frames = std::stoi(v);
             else if (k == "--no-display") a.no_display = true;
             else if (k == "--dump-input" && (v = need(i))) a.dump_input = v;
+            else if (k == "--no-yolov8") a.yolov8_enabled = false;
             else if (k == "--self-test") a.self_test = true;
             else if (k == "--llm-url" && (v = need(i))) a.llm_url = v;
             else if (k == "--llm-model" && (v = need(i))) a.llm_model = v;
@@ -688,9 +693,13 @@ static void draw_divider_and_judgment(cv::Mat& bgr, const DiceJudgment& judgment
         cv::line(bgr, p1, p2, cv::Scalar(0, 165, 255), 3, cv::LINE_AA);
     }
     const cv::Scalar color = judgment.valid ? cv::Scalar(0, 220, 0) : cv::Scalar(0, 0, 255);
-    cv::rectangle(bgr, cv::Rect(8, 8, std::min(bgr.cols - 16, 760), 62),
-                  cv::Scalar(0, 0, 0), cv::FILLED);
-    cv::putText(bgr, judgment.overlay, cv::Point(18, 48), cv::FONT_HERSHEY_SIMPLEX,
+    // Keep the judgment text directly on the image instead of drawing a solid
+    // black panel in the top-left corner. A thin shadow preserves readability
+    // without leaving the unwanted black background/bottom edge.
+    const cv::Point text_origin(18, 48);
+    cv::putText(bgr, judgment.overlay, text_origin, cv::FONT_HERSHEY_SIMPLEX,
+                .7, cv::Scalar(0, 0, 0), 4, cv::LINE_AA);
+    cv::putText(bgr, judgment.overlay, text_origin, cv::FONT_HERSHEY_SIMPLEX,
                 .7, color, 2, cv::LINE_AA);
 }
 
@@ -751,6 +760,97 @@ static const char* winner_label(LlmWinner winner) {
     }
 }
 
+struct LlmRequest {
+    uint64_t generation = 0;
+    DiceResultSnapshot snapshot;
+    std::string first_name;
+    std::string second_name;
+    int first_sum = 0;
+    int second_sum = 0;
+};
+
+struct LlmResponse {
+    uint64_t generation = 0;
+    LlmVerificationResult result = LlmVerificationResult::Failure;
+    LlmWinner winner = LlmWinner::Unknown;
+    std::string error;
+};
+
+// Runs the potentially slow network request away from the HighGUI/display
+// thread. There is one active request and at most one queued request; when a
+// new stable scene is found while a request is running, only the latest scene
+// is retained for the next request.
+class AsyncLlmVerifier {
+public:
+    explicit AsyncLlmVerifier(const LlmDiceVerifier& verifier) : verifier_(verifier) {}
+    ~AsyncLlmVerifier() { stop(); }
+
+    void start() {
+        worker_ = std::thread(&AsyncLlmVerifier::run, this);
+    }
+
+    bool submit(LlmRequest request) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_) return false;
+            queued_request_ = std::move(request);
+        }
+        cv_.notify_one();
+        return true;
+    }
+
+    bool tryPop(LlmResponse& response) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (responses_.empty()) return false;
+        response = std::move(responses_.front());
+        responses_.pop_front();
+        return true;
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+            queued_request_.reset();
+        }
+        cv_.notify_all();
+        if (worker_.joinable()) worker_.join();
+    }
+
+private:
+    void run() {
+        while (true) {
+            LlmRequest request;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [&] { return stopping_ || queued_request_.has_value(); });
+                if (stopping_ && !queued_request_) return;
+                request = std::move(*queued_request_);
+                queued_request_.reset();
+            }
+
+            LlmResponse response;
+            response.generation = request.generation;
+            response.result = verifier_.verify_once(
+                request.first_name, request.second_name,
+                request.first_sum, request.second_sum,
+                response.winner, response.error);
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                responses_.push_back(std::move(response));
+            }
+        }
+    }
+
+    const LlmDiceVerifier& verifier_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::optional<LlmRequest> queued_request_;
+    std::deque<LlmResponse> responses_;
+    std::thread worker_;
+    bool stopping_ = false;
+};
+
 
 } // namespace
 
@@ -778,26 +878,39 @@ int main(int argc, char** argv) {
         // not leave it in the environment inherited by later child processes.
         ::unsetenv("DICE_LLM_API_KEY");
     }
-    if (!std::filesystem::exists(a.model)) {
+    if (a.yolov8_enabled && !std::filesystem::exists(a.model)) {
         std::cerr << "Model not found: " << a.model << "\n";
         return 2;
     }
 
-    OpenClPreprocessor pre;
-    if (!pre.init()) return 4;
-    Yolov8Detector detector;
-    if (!detector.init(a.model, a.intra_threads, a.ep_affinity)) return 5;
+    std::unique_ptr<OpenClPreprocessor> pre;
+    std::unique_ptr<Yolov8Detector> detector;
+    if (a.yolov8_enabled) {
+        pre = std::make_unique<OpenClPreprocessor>();
+        if (!pre->init()) return 4;
+        detector = std::make_unique<Yolov8Detector>();
+        if (!detector->init(a.model, a.intra_threads, a.ep_affinity)) return 5;
+    } else {
+        // Camera-only mode intentionally avoids all YOLOv8/OpenCL/ORT setup.
+        std::cerr << "[YOLOv8] disabled; displaying camera frames without preprocessing or inference.\n";
+    }
     LlmDiceVerifier llm_verifier({a.llm_url, a.llm_api_key, a.llm_model,
                                   a.llm_timeout_seconds,
                                   a.llm_system_prompt, a.llm_user_prompt_template});
-    const bool llm_enabled = a.llm_enabled && !a.no_llm;
-    if (!llm_enabled) {
+    const bool llm_enabled = a.yolov8_enabled && a.llm_enabled && !a.no_llm;
+    if (!a.yolov8_enabled && a.llm_enabled) {
+        std::cerr << "[LLM] disabled because YOLOv8 is disabled.\n";
+    } else if (!llm_enabled) {
         std::cerr << "[LLM] disabled; a stable YOLO result will directly determine the winner.\n";
     } else if (!llm_verifier.configured()) {
         std::cerr << "[LLM] verification disabled: set llm.api_key in config.json "
                      "or DICE_LLM_API_KEY.\n";
     }
     if (a.self_test) {
+        if (!a.yolov8_enabled) {
+            std::cerr << "--self-test requires yolov8_enabled=true\n";
+            return 2;
+        }
         try {
             // Exercise the actual OpenCL NV12 -> tensor path as well as the
             // SpaceMIT EP model path. This catches kernel/image/queue errors
@@ -806,7 +919,7 @@ int main(int argc, char** argv) {
             constexpr int synthetic_height = 720;
             cv::Mat synthetic_nv12(synthetic_height * 3 / 2, synthetic_width,
                                    CV_8UC1, cv::Scalar(128));
-            const auto prep_result = pre.preprocess(synthetic_nv12);
+            const auto prep_result = pre->preprocess(synthetic_nv12);
             if (!prep_result.data || prep_result.data->size() != 3 * 640 * 640) {
                 throw std::runtime_error("OpenCL self-test returned an invalid tensor");
             }
@@ -815,7 +928,7 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("OpenCL self-test returned invalid tensor values");
                 }
             }
-            const auto ds = detector.infer(prep_result.data->data(), prep_result.data->size(),
+            const auto ds = detector->infer(prep_result.data->data(), prep_result.data->size(),
                                            a.conf, prep_result.scale, prep_result.pad_x,
                                            prep_result.pad_y, synthetic_width, synthetic_height);
             std::cout << "Self-test passed: OpenCL preprocess " << prep_result.ms
@@ -842,6 +955,30 @@ int main(int argc, char** argv) {
             camera.close();
             return 7;
         }
+    }
+
+    if (!a.yolov8_enabled) {
+        const auto direct_start = Clock::now();
+        int frame_count = 0;
+        while (!g_signal_stop && (a.max_frames <= 0 || frame_count < a.max_frames)) {
+            GstreamerFrame frame;
+            if (!camera.read(frame, 1000)) continue;
+            ++frame_count;
+            if (a.no_display) continue;
+            cv::Mat bgr;
+            if (frame.nv12.empty()) continue;
+            cv::cvtColor(frame.nv12, bgr, cv::COLOR_YUV2BGR_NV12);
+            cv::imshow("yolov8-k3", bgr);
+            const int key = cv::waitKey(1) & 0xff;
+            if (key == 'q' || key == 27) break;
+        }
+        camera.close();
+        if (!a.no_display) cv::destroyAllWindows();
+        const double elapsed = std::chrono::duration<double>(Clock::now() - direct_start).count();
+        std::cout << "Done. camera-only frames=" << frame_count
+                  << " elapsed_s=" << elapsed
+                  << " fps=" << frame_count / std::max(.001, elapsed) << "\n";
+        return 0;
     }
 
     std::atomic<bool> abort{false};
@@ -880,7 +1017,7 @@ int main(int argc, char** argv) {
             packet->gst_owner = std::move(frame.owner);
             try {
                 const auto t0 = Clock::now();
-                packet->prep = pre.preprocess(*packet->nv12);
+                packet->prep = pre->preprocess(*packet->nv12);
                 if (!a.dump_input.empty() && packet->id == 0) {
                     std::ofstream dump(a.dump_input, std::ios::binary);
                     if (!dump) throw std::runtime_error("cannot open --dump-input path");
@@ -916,7 +1053,7 @@ int main(int argc, char** argv) {
                 result->nv12 = packet->nv12;
                 result->gst_owner = packet->gst_owner;
                 try {
-                    result->detections = detector.infer(packet->prep.data->data(), packet->prep.data->size(),
+                    result->detections = detector->infer(packet->prep.data->data(), packet->prep.data->size(),
                                                         a.conf, packet->prep.scale, packet->prep.pad_x,
                                                         packet->prep.pad_y, packet->width, packet->height);
                 } catch (const std::exception& e) {
@@ -960,21 +1097,77 @@ int main(int argc, char** argv) {
         bool printed = false;
         DiceResultSnapshot attempted_snapshot;
         LlmWinner llm_winner = LlmWinner::Unknown;
+        uint64_t next_generation = 0;
+        uint64_t attempted_generation = 0;
+        uint64_t active_generation = 0;
+        bool request_in_flight = false;
+        bool request_completed = false;
+        bool fallback_verdict_available = false;
+        std::optional<LlmRequest> deferred_request;
     } llm_state;
+
+    std::unique_ptr<AsyncLlmVerifier> async_llm;
+    if (llm_enabled) {
+        async_llm = std::make_unique<AsyncLlmVerifier>(llm_verifier);
+        async_llm->start();
+    }
 
     bool first_display = true;
     uint64_t shown = 0;
     auto last_report = start;
+    auto drain_llm_responses = [&] {
+        if (!async_llm) return;
+        LlmResponse response;
+        while (async_llm->tryPop(response)) {
+            if (response.generation == llm_state.active_generation) {
+                llm_state.request_in_flight = false;
+            }
+            if (response.generation == llm_state.attempted_generation) {
+                llm_state.request_completed = true;
+                if (response.result == LlmVerificationResult::Success) {
+                    llm_state.succeeded = true;
+                    llm_state.agreement =
+                        response.winner == llm_state.attempted_snapshot.winner;
+                    llm_state.llm_winner = response.winner;
+                    std::cout << "[LLM] one-shot result="
+                              << winner_label(response.winner) << "\n";
+                } else if (response.result == LlmVerificationResult::Timeout) {
+                    llm_state.timeout_fallback = true;
+                    llm_state.succeeded = true;
+                    llm_state.agreement = true;
+                    llm_state.llm_winner = llm_state.attempted_snapshot.winner;
+                    llm_state.fallback_verdict_available = true;
+                    std::cerr << "[LLM] one-shot verification timed out: "
+                              << response.error << "; using the stable YOLO result\n";
+                } else {
+                    std::cerr << "[LLM] one-shot verification failed: "
+                              << response.error << "\n";
+                }
+            }
+        }
+        if (!llm_state.request_in_flight && llm_state.deferred_request) {
+            const uint64_t generation = llm_state.deferred_request->generation;
+            if (async_llm->submit(std::move(*llm_state.deferred_request))) {
+                llm_state.deferred_request.reset();
+                llm_state.request_in_flight = true;
+                llm_state.active_generation = generation;
+                std::cout << "[LLM] queued latest stable result for verification\n";
+            }
+        }
+    };
+
     while (true) {
         if (g_signal_stop) abort.store(true);
         std::shared_ptr<InferenceResult> item;
         if (!result_queue.popLatest(item, abort, first_display, a.queue_depth)) {
+            drain_llm_responses();
             if (g_signal_stop) abort.store(true);
             if (inference_done.load()) break;
             if (abort.load()) break;
             continue;
         }
         first_display = false;
+        drain_llm_responses();
         if (!item) continue;
 
         const auto t0 = Clock::now();
@@ -1049,6 +1242,8 @@ int main(int argc, char** argv) {
                         llm_state.succeeded = false;
                         llm_state.agreement = false;
                         llm_state.timeout_fallback = false;
+                        llm_state.request_completed = false;
+                        llm_state.fallback_verdict_available = false;
                         llm_state.printed = false;
                         llm_state.attempted_snapshot = current_snapshot;
                         llm_state.llm_winner = LlmWinner::Unknown;
@@ -1063,28 +1258,25 @@ int main(int argc, char** argv) {
                                       << " consecutive frames; using YOLO result directly: "
                                       << winner_label(llm_state.llm_winner) << "\n";
                         } else {
+                            LlmRequest request;
+                            request.generation = ++llm_state.next_generation;
+                            request.snapshot = current_snapshot;
+                            request.first_name = judgment.first_name;
+                            request.second_name = judgment.second_name;
+                            request.first_sum = judgment.first_sum;
+                            request.second_sum = judgment.second_sum;
+                            llm_state.attempted_generation = request.generation;
                             std::cout << "[YOLO] "
                                       << (is_rejudgment ? "changed result" : "stable result")
                                       << " reached " << a.stable_frames
-                                      << " consecutive frames; calling LLM once\n";
-                            std::string llm_error;
-                            const LlmVerificationResult llm_result = llm_verifier.verify_once(
-                                judgment.first_name, judgment.second_name,
-                                judgment.first_sum, judgment.second_sum,
-                                llm_state.llm_winner, llm_error);
-                            if (llm_result == LlmVerificationResult::Success) {
-                                llm_state.succeeded = true;
-                                llm_state.agreement =
-                                    llm_state.llm_winner == llm_state.attempted_snapshot.winner;
-                                std::cout << "[LLM] one-shot result="
-                                          << winner_label(llm_state.llm_winner) << "\n";
-                            } else if (llm_result == LlmVerificationResult::Timeout) {
-                                llm_state.timeout_fallback = true;
-                                std::cerr << "[LLM] one-shot verification timed out: "
-                                          << llm_error << "; using the stable YOLO result\n";
+                                      << " consecutive frames; scheduling LLM verification\n";
+                            if (!llm_state.request_in_flight &&
+                                async_llm->submit(std::move(request))) {
+                                llm_state.request_in_flight = true;
+                                llm_state.active_generation = llm_state.attempted_generation;
                             } else {
-                                std::cerr << "[LLM] one-shot verification failed: "
-                                          << llm_error << "\n";
+                                llm_state.deferred_request = std::move(request);
+                                std::cout << "[LLM] verification already running; keeping latest result\n";
                             }
                         }
 
@@ -1098,7 +1290,12 @@ int main(int argc, char** argv) {
                     const bool same_snapshot =
                         llm_state.attempted &&
                         same_dice_snapshot(current_snapshot, llm_state.attempted_snapshot);
-                    if (llm_state.timeout_fallback && same_snapshot) {
+                    if (llm_enabled && !llm_state.request_completed &&
+                        llm_state.request_in_flight && same_snapshot) {
+                        display_judgment.valid = false;
+                        display_judgment.overlay = "LLM verification pending";
+                    } else if (llm_enabled && llm_state.fallback_verdict_available &&
+                               llm_state.timeout_fallback && same_snapshot) {
                         // OpenCV Hershey fonts cannot render UTF-8 Chinese text.
                         // Keep the image overlay ASCII-only; the terminal log below
                         // retains the Chinese judgment.message for operators.
@@ -1187,6 +1384,7 @@ int main(int argc, char** argv) {
     if (inference_thread.joinable()) inference_thread.join();
     prepared_queue.clear();
     result_queue.clear();
+    if (async_llm) async_llm->stop();
     camera.close();
     if (!a.no_display) cv::destroyAllWindows();
 
