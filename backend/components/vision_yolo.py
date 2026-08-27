@@ -65,6 +65,11 @@ def run_analysis(
     ``on_log`` receives each stdout line as it arrives (the job layer maps
     lines to phases). ``is_cancelled`` lets the job layer abort the subprocess.
     Raises :class:`VisionError` when no verified result can be produced.
+
+    The new yolov8_camera outputs JSON directly to stdout when both YOLO and LLM
+    reach a verified result (``verified: true``). The subprocess exits after
+    writing the result, so we read stdout until EOF, parse all ``[RESULT]``
+    lines, and return the last verified one.
     """
     binary = yolo_binary()
     if not binary.is_file() or not os.access(binary, os.X_OK):
@@ -77,9 +82,6 @@ def run_analysis(
         "--config", "config.json",
         "--no-display",
         "--rejudge-on-change",
-        "--require-llm",
-        "--result-file", str(result_path),
-        "--exit-on-result",
     ]
     env = os.environ.copy()
     # Keep the secret only in this child process. The browser/API response never
@@ -94,6 +96,7 @@ def run_analysis(
         bufsize=1,
         start_new_session=True,
     )
+    last_result = None
     try:
         deadline = time.monotonic() + timeout_seconds
         assert process.stdout is not None
@@ -111,17 +114,29 @@ def run_analysis(
                 line = key.fileobj.readline()
                 if line:
                     on_log(line)
+                    # Parse [RESULT] JSON lines from stdout
+                    if line.startswith("[RESULT] "):
+                        try:
+                            result = json.loads(line[9:])
+                            if result.get("verified"):
+                                last_result = result
+                        except (ValueError, KeyError):
+                            pass
             if process.poll() is not None:
                 for line in process.stdout:
                     on_log(line)
+                    if line.startswith("[RESULT] "):
+                        try:
+                            result = json.loads(line[9:])
+                            if result.get("verified"):
+                                last_result = result
+                        except (ValueError, KeyError):
+                            pass
                 break
         selector.close()
         return_code = process.wait(timeout=5)
-        if result_path.is_file():
-            try:
-                return json.loads(result_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
-                raise VisionError(f"YOLOv8 wrote an invalid result: {exc}") from exc
+        if last_result:
+            return last_result
         if return_code != 0:
             raise VisionError(f"YOLOv8 process exited with code {return_code}")
         raise VisionError("YOLOv8 stopped before an LLM-verified result was produced")
