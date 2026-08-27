@@ -1,6 +1,6 @@
 {
   "model": "models/best.q.onnx",
-  "camera": 1,
+  "camera": "/dev/video1",
   "width": 1280,
   "height": 720,
   "fps": 25,
@@ -21,5 +21,11 @@
     "user_prompt_template": "Exactly five dice are present on each side. {left_name} sum={left_sum}, {right_name} sum={right_sum}. Compare the two sums and return {\"winner\":\"LEFT|RIGHT|TIE\"}."
   },
   "stable_frames": 30,
-  "rejudge_on_change": true
+  "rejudge_on_change": true,
+  "stream": {
+    "enabled": false,
+    "host": "0.0.0.0",
+    "port": 8080,
+    "jpeg_quality": 80
+  }
 }

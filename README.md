@@ -49,7 +49,7 @@ cd ~/projects/dice-game/yolov8_objdetect
 ```json
 {
   "model": "models/best.q.onnx",
-  "camera": 1,
+  "camera": "/dev/video1",
   "width": 1280,
   "height": 720,
   "fps": 25,
@@ -62,6 +62,12 @@ cd ~/projects/dice-game/yolov8_objdetect
   "focus": 0,
   "zoom": 160,
   "yolov8_enabled": true,
+  "stream": {
+    "enabled": false,
+    "host": "0.0.0.0",
+    "port": 8080,
+    "jpeg_quality": 80
+  },
   "llm": {
     "enabled": true,
     "url": "https://api.deepseek.com/v1/",
@@ -77,7 +83,7 @@ cd ~/projects/dice-game/yolov8_objdetect
 | 参数 | 作用 |
 | --- | --- |
 | `model` | YOLOv8 ONNX 模型路径；相对路径以程序启动目录为基准。 |
-| `camera` | 摄像头编号 `N`，对应 `/dev/videoN`；命令行 `--device` 的优先级更高。 |
+| `camera` | 摄像头设备路径，例如 `/dev/video1`；代码仍兼容旧的数字编号写法。命令行 `--device` 的优先级最高。 |
 | `width` / `height` | 摄像头请求的图像宽度和高度，单位为像素。 |
 | `fps` | 摄像头请求帧率；设备不支持时程序可能回退到可用帧率。 |
 | `intra_threads` | SpaceMIT ONNX Runtime EP 推理线程数，必须大于等于 1。 |
@@ -87,6 +93,10 @@ cd ~/projects/dice-game/yolov8_objdetect
 | `focus` | 摄像头手动对焦值；`-1` 表示不修改当前设置。 |
 | `zoom` | 摄像头绝对变焦值；`-1` 表示不修改当前设置。 |
 | `yolov8_enabled` | 是否启用 YOLOv8 推理流程；`true` 保持摄像头采集、OpenCL 预处理、YOLOv8 推理和后续判定，`false` 只采集并显示摄像头画面，跳过 OpenCL、YOLOv8 和 LLM。 |
+| `stream.enabled` | 是否启用局域网网页推流；启用后程序提供 MJPEG HTTP 服务。 |
+| `stream.host` | HTTP 服务监听地址；`0.0.0.0` 表示监听所有网卡，便于局域网其他设备访问。 |
+| `stream.port` | HTTP 服务端口，范围为 `1..65535`，默认 `8080`。 |
+| `stream.jpeg_quality` | 推流 JPEG 质量，范围为 `1..100`；数值越高画质越好但带宽和 CPU 编码开销越大。 |
 | `llm.enabled` | 是否启用大模型复核；`true` 表示稳定 YOLO 结果后调用 LLM，`false` 表示达到 `stable_frames` 后直接使用 YOLO 结果判定胜负。 |
 | `llm.url` | OpenAI 兼容 API 基础地址，程序请求其 `/chat/completions` 接口。 |
 | `llm.model` | 用于复核骰子点数和的模型名称。 |
@@ -139,6 +149,35 @@ API Key 默认从 `llm.api_key` 读取。如果同时设置环境变量 `DICE_LL
 当 `llm.enabled=false`（或命令行使用 `--no-llm`）时，不会发起网络请求。YOLO 连续稳定达到 `stable_frames` 后，程序直接根据左右两侧点数和宣判胜负，画面不会等待大模型结果。
 
 当 `yolov8_enabled=false` 时，程序只打开摄像头并将 NV12 转换为 BGR 后显示，跳过 OpenCL 预处理、SpaceMIT EP、YOLOv8 解码/NMS、骰子判断和 LLM 请求。设置为 `true` 即恢复完整流程；也可以使用命令行参数 `--no-yolov8` 临时关闭。
+
+### 局域网网页推流
+
+程序内置轻量级 MJPEG HTTP 服务，不需要额外安装 nginx、RTSP 或 WebRTC 服务。推流发送的是程序当前显示的 BGR 画面：完整模式下包含 YOLO 检测框、分界线和裁决文字；`yolov8_enabled=false` 时发送摄像头原始画面转换后的 BGR 图像。
+
+在 `config.json` 中开启：
+
+```json
+"stream": {
+  "enabled": true,
+  "host": "0.0.0.0",
+  "port": 8080,
+  "jpeg_quality": 80
+}
+```
+
+启动程序后，其他同一局域网设备使用浏览器打开：
+
+```text
+http://<K3板端IP>:8080/
+```
+
+也可以直接访问实时流：
+
+```text
+http://<K3板端IP>:8080/stream.mjpg
+```
+
+单张截图地址为 `/snapshot.jpg`。如果端口被占用，可以修改 `stream.port`，或临时使用 `--stream --stream-port 8081`；监听所有网卡时请确保板端防火墙允许对应 TCP 端口。推流只保留最新 JPEG 帧，慢客户端会断开或跳过旧帧，不会反向阻塞摄像头和 YOLO 推理。命令行 `--no-stream` 可以临时关闭推流。
 
 只有 YOLO 连续得到相同的有效 5+5 结果达到 `stable_frames` 次后，程序才调用大模型。任何一帧未检测到分界线、左右数量不是 5 个，或左右骰子点数组成发生变化，连续计数都会清零并重新开始；因此未稳定前不会求胜负，也不会请求大模型。
 
@@ -200,7 +239,7 @@ spacemit-tcm-smi -c   # 清理残留 TCM 状态
 ```text
 --config PATH      JSON 配置文件，默认当前目录 config.json
 --model PATH       ONNX 模型
---camera N         使用 /dev/videoN
+--camera VALUE     使用数字编号或设备路径，例如 /dev/video1
 --device PATH      显式指定 V4L2 节点，覆盖 --camera
 --width N --height N --fps N
 --conf FLOAT       置信度阈值
@@ -220,6 +259,11 @@ spacemit-tcm-smi -c   # 清理残留 TCM 状态
 --max-frames N     处理 N 帧后退出
 --dump-input PATH  保存首帧 640x640 FP32 CHW 输入
 --no-yolov8        跳过预处理和推理，只显示摄像头画面
+--stream           开启 MJPEG HTTP 推流
+--stream-host HOST  推流 HTTP 监听地址，默认 0.0.0.0
+--stream-port N     推流 HTTP 端口，默认 8080
+--stream-quality N  推流 JPEG 质量 1-100，默认 80
+--no-stream         关闭 MJPEG HTTP 推流
 --self-test        执行一次真实 OpenCL 前处理和推理
 ```
 
@@ -256,6 +300,6 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4
 ./build/yolov8_camera --model models/best.q.onnx --self-test --no-display
-./build/yolov8_camera --model models/best.q.onnx --camera 1 \
+./build/yolov8_camera --model models/best.q.onnx --device /dev/video1 \
   --no-display --max-frames 30
 ```

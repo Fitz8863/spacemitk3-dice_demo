@@ -1,5 +1,6 @@
 #include "gstreamer_camera.h"
 #include "llm_dice_verifier.h"
+#include "mjpeg_streamer.h"
 #include "opencl_preprocess.h"
 #include "yolov8_detector.h"
 
@@ -189,6 +190,10 @@ struct Args {
     std::string llm_user_prompt_template;
     std::string llm_api_key;
     bool no_llm = false;
+    bool stream_enabled = false;
+    std::string stream_host = "0.0.0.0";
+    int stream_port = 8080;
+    int stream_jpeg_quality = 80;
 };
 
 struct Stats {
@@ -280,7 +285,19 @@ static bool load_config(const std::string& path, Args& a) {
 
         const cv::FileNode root = file.root();
         read_config_value(root, "model", a.model);
-        read_config_value(root, "camera", a.camera);
+        const cv::FileNode camera = root["camera"];
+        if (!camera.empty()) {
+            if (camera.isString()) {
+                camera >> a.device;
+            } else if (camera.isInt() || camera.isReal()) {
+                camera >> a.camera;
+                a.device.clear();
+            } else {
+                std::cerr << "config camera must be a device path string such as /dev/video1 "
+                             "or a numeric camera index\n";
+                return false;
+            }
+        }
         read_config_value(root, "width", a.width);
         read_config_value(root, "height", a.height);
         read_config_value(root, "fps", a.fps);
@@ -315,6 +332,18 @@ static bool load_config(const std::string& path, Args& a) {
             read_config_value(llm, "system_prompt", a.llm_system_prompt);
             read_config_value(llm, "user_prompt_template", a.llm_user_prompt_template);
         }
+
+        const cv::FileNode stream = root["stream"];
+        if (!stream.empty()) {
+            if (!stream.isMap()) {
+                std::cerr << "config stream must be a JSON object\n";
+                return false;
+            }
+            if (!read_config_bool(stream, "enabled", a.stream_enabled)) return false;
+            read_config_value(stream, "host", a.stream_host);
+            read_config_value(stream, "port", a.stream_port);
+            read_config_value(stream, "jpeg_quality", a.stream_jpeg_quality);
+        }
         a.config_path = path;
         return true;
     } catch (const cv::Exception& e) {
@@ -327,7 +356,7 @@ static void usage(const char* exe) {
     std::cout << "Usage: " << exe << " [options]\n"
               << "  --config PATH      JSON config file (default config.json)\n"
               << "  --model PATH       ONNX model; overrides config.json\n"
-              << "  --camera N         V4L2 camera index\n"
+              << "  --camera VALUE     V4L2 index or device path, e.g. /dev/video1\n"
               << "  --device PATH      explicit V4L2 node, overrides --camera\n"
               << "  --width N --height N --fps N\n"
               << "  --conf FLOAT       confidence threshold\n"
@@ -347,7 +376,12 @@ static void usage(const char* exe) {
               << "  --llm-url URL      override the config LLM base URL\n"
               << "  --llm-model NAME   override the config LLM model\n"
               << "  --llm-timeout N    LLM request timeout in seconds\n"
-              << "  --no-llm           disable LLM verification and use stable YOLO result\n";
+              << "  --no-llm           disable LLM verification and use stable YOLO result\n"
+              << "  --stream           enable MJPEG HTTP streaming\n"
+              << "  --stream-host HOST bind MJPEG server, default 0.0.0.0\n"
+              << "  --stream-port N    MJPEG HTTP port, default 8080\n"
+              << "  --stream-quality N JPEG quality 1-100, default 80\n"
+              << "  --no-stream        disable MJPEG HTTP streaming\n";
 }
 
 static bool validate_args(Args& a) {
@@ -370,6 +404,14 @@ static bool validate_args(Args& a) {
     }
     if (a.llm_timeout_seconds < 1) {
         std::cerr << "--llm-timeout must be >= 1\n";
+        return false;
+    }
+    if (a.stream_port < 1 || a.stream_port > 65535) {
+        std::cerr << "stream port must be between 1 and 65535\n";
+        return false;
+    }
+    if (a.stream_jpeg_quality < 1 || a.stream_jpeg_quality > 100) {
+        std::cerr << "stream JPEG quality must be between 1 and 100\n";
         return false;
     }
     if (a.intra_threads < 1) {
@@ -418,14 +460,29 @@ static bool validate_args(Args& a) {
 
 static bool parse(int argc, char** argv, Args& a) {
     auto need = [&](int& i) -> const char* { return i + 1 < argc ? argv[++i] : nullptr; };
+    bool device_override = false;
     try {
         for (int i = 1; i < argc; ++i) {
             const std::string k = argv[i];
             const char* v = nullptr;
             if (k == "--config" && (v = need(i))) a.config_path = v;
             else if (k == "--model" && (v = need(i))) a.model = v;
-            else if (k == "--camera" && (v = need(i))) a.camera = std::stoi(v);
-            else if (k == "--device" && (v = need(i))) a.device = v;
+            else if (k == "--camera" && (v = need(i))) {
+                const std::string camera_value = v;
+                if (!device_override) {
+                    if (!camera_value.empty() &&
+                        camera_value.find_first_not_of("0123456789") == std::string::npos) {
+                        a.camera = std::stoi(camera_value);
+                        a.device.clear();
+                    } else {
+                        a.device = camera_value;
+                    }
+                }
+            }
+            else if (k == "--device" && (v = need(i))) {
+                a.device = v;
+                device_override = true;
+            }
             else if (k == "--width" && (v = need(i))) a.width = std::stoi(v);
             else if (k == "--height" && (v = need(i))) a.height = std::stoi(v);
             else if (k == "--fps" && (v = need(i))) a.fps = std::stoi(v);
@@ -450,6 +507,11 @@ static bool parse(int argc, char** argv, Args& a) {
             else if (k == "--llm-timeout" && (v = need(i))) {
                 a.llm_timeout_seconds = std::stoi(v);
             } else if (k == "--no-llm") a.no_llm = true;
+            else if (k == "--stream") a.stream_enabled = true;
+            else if (k == "--stream-host" && (v = need(i))) a.stream_host = v;
+            else if (k == "--stream-port" && (v = need(i))) a.stream_port = std::stoi(v);
+            else if (k == "--stream-quality" && (v = need(i))) a.stream_jpeg_quality = std::stoi(v);
+            else if (k == "--no-stream") a.stream_enabled = false;
             else {
                 std::cerr << "Unknown or incomplete option: " << k << "\n";
                 usage(argv[0]);
@@ -946,12 +1008,20 @@ int main(int argc, char** argv) {
         std::cerr << "Camera open failed.\n";
         return 3;
     }
+    MjpegStreamer streamer;
+    if (a.stream_enabled && !streamer.start(a.stream_host, a.stream_port,
+                                             a.stream_jpeg_quality)) {
+        camera.close();
+        return 7;
+    }
+
     if (!a.no_display) {
         try {
             cv::namedWindow("yolov8-k3", cv::WINDOW_NORMAL);
             cv::resizeWindow("yolov8-k3", a.width, a.height);
         } catch (const cv::Exception& e) {
             std::cerr << "Display initialization failed: " << e.what() << "\n";
+            streamer.stop();
             camera.close();
             return 7;
         }
@@ -964,14 +1034,17 @@ int main(int argc, char** argv) {
             GstreamerFrame frame;
             if (!camera.read(frame, 1000)) continue;
             ++frame_count;
-            if (a.no_display) continue;
+            if (a.no_display && !streamer.running()) continue;
             cv::Mat bgr;
             if (frame.nv12.empty()) continue;
             cv::cvtColor(frame.nv12, bgr, cv::COLOR_YUV2BGR_NV12);
+            streamer.publish(bgr);
+            if (a.no_display) continue;
             cv::imshow("yolov8-k3", bgr);
             const int key = cv::waitKey(1) & 0xff;
             if (key == 'q' || key == 27) break;
         }
+        streamer.stop();
         camera.close();
         if (!a.no_display) cv::destroyAllWindows();
         const double elapsed = std::chrono::duration<double>(Clock::now() - direct_start).count();
@@ -1333,7 +1406,7 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            if (!a.no_display) {
+            if (!a.no_display || streamer.running()) {
                 draw_detections(bgr, item->detections);
                 draw_divider_and_judgment(bgr, display_judgment);
                 const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
@@ -1342,9 +1415,12 @@ int main(int argc, char** argv) {
                                       " FPS  DET " + std::to_string(item->detections.size()),
                             {10, 96}, cv::FONT_HERSHEY_SIMPLEX, .75,
                             {0, 255, 255}, 2, cv::LINE_AA);
-                cv::imshow("yolov8-k3", bgr);
-                const int key = cv::waitKey(1) & 0xff;
-                if (key == 'q' || key == 27) abort.store(true);
+                streamer.publish(bgr);
+                if (!a.no_display) {
+                    cv::imshow("yolov8-k3", bgr);
+                    const int key = cv::waitKey(1) & 0xff;
+                    if (key == 'q' || key == 27) abort.store(true);
+                }
             }
         } else {
             std::cerr << "Display frame transfer/YUV conversion failed\n";
@@ -1385,6 +1461,7 @@ int main(int argc, char** argv) {
     prepared_queue.clear();
     result_queue.clear();
     if (async_llm) async_llm->stop();
+    streamer.stop();
     camera.close();
     if (!a.no_display) cv::destroyAllWindows();
 
