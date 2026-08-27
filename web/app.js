@@ -423,8 +423,8 @@ const engine = {
   returnToSelect,
 };
 
-registerDice(engine);
-registerRps(engine);
+registerGame(registerDice(engine));
+registerGame(registerRps(engine));
 
 $('startGame').addEventListener('click', enterSelectedGame);
 $('gameList').addEventListener('dblclick', enterSelectedGame);
