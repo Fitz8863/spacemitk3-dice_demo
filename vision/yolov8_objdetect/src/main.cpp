@@ -1407,6 +1407,24 @@ int main(int argc, char** argv) {
                                 std::cout << "Dice judgment by YOLO: "
                                           << judgment.message << "\n";
                             }
+                            // Output JSON result for Python wrapper to parse
+                            std::cout << "[RESULT] {\"verified\":true"
+                                      << ",\"first_dice\":[";
+                            for (size_t i = 0; i < llm_state.attempted_snapshot.first_values.size(); ++i) {
+                                if (i > 0) std::cout << ",";
+                                std::cout << llm_state.attempted_snapshot.first_values[i];
+                            }
+                            std::cout << "],\"second_dice\":[";
+                            for (size_t i = 0; i < llm_state.attempted_snapshot.second_values.size(); ++i) {
+                                if (i > 0) std::cout << ",";
+                                std::cout << llm_state.attempted_snapshot.second_values[i];
+                            }
+                            std::cout << "],\"first_sum\":" << llm_state.attempted_snapshot.first_sum
+                                      << ",\"second_sum\":" << llm_state.attempted_snapshot.second_sum
+                                      << ",\"winner\":\"" << winner_label(llm_state.attempted_snapshot.winner) << "\""
+                                      << ",\"llm_winner\":\"" << winner_label(llm_state.llm_winner) << "\""
+                                      << "}\n";
+                            std::cout.flush();
                             llm_state.printed = true;
                         }
                     } else {
