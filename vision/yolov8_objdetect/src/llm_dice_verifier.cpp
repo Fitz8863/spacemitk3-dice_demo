@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cerrno>
 #include <cctype>
+#include <chrono>
 #include <csignal>
 #include <cstring>
+#include <poll.h>
 #include <regex>
 #include <sstream>
 #include <sys/types.h>
@@ -83,20 +85,47 @@ bool write_all(int fd, const std::string& data) {
     return true;
 }
 
-std::string read_all(int fd) {
-    std::string result;
+bool read_with_timeout(int fd, int timeout_seconds, std::string& result) {
+    result.clear();
     char buffer[4096];
+    // curl has its own --max-time, but keep an independent parent-side
+    // deadline so a stalled child or inherited pipe can never block the
+    // verifier thread (and therefore shutdown) forever.
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(std::max(1, timeout_seconds)) +
+                          std::chrono::milliseconds(1000);
     for (;;) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining.count() <= 0) return false;
+        struct pollfd descriptor{fd, POLLIN | POLLHUP | POLLERR, 0};
+        const int poll_result = ::poll(&descriptor, 1, static_cast<int>(remaining.count()));
+        if (poll_result < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        if (poll_result == 0) return false;
         const ssize_t n = ::read(fd, buffer, sizeof(buffer));
         if (n > 0) {
             result.append(buffer, static_cast<std::size_t>(n));
         } else if (n == 0) {
-            break;
+            return true;
         } else if (errno != EINTR) {
-            break;
+            return false;
         }
     }
-    return result;
+}
+
+void kill_and_reap(pid_t pid, int& status) {
+    // The curl process normally has no children, but killing its process group
+    // also handles a helper that inherited the output pipe and kept EOF away.
+    if (::kill(-pid, SIGKILL) < 0) {
+        (void)::kill(pid, SIGKILL);
+    }
+    pid_t result;
+    do {
+        result = ::waitpid(pid, &status, 0);
+    } while (result < 0 && errno == EINTR);
 }
 
 enum class CurlRequestResult {
@@ -134,6 +163,7 @@ CurlRequestResult run_curl(const std::string& url, const std::string& api_key,
         return CurlRequestResult::Failure;
     }
     if (pid == 0) {
+        (void)::setpgid(0, 0);
         constexpr int kCurlConfigFd = 10;
         if (::dup2(input_pipe[0], STDIN_FILENO) < 0 ||
             ::dup2(output_pipe[1], STDOUT_FILENO) < 0 ||
@@ -164,6 +194,7 @@ CurlRequestResult run_curl(const std::string& url, const std::string& api_key,
         _exit(127);
     }
 
+    (void)::setpgid(pid, pid);
     close_fd(input_pipe[0]);
     close_fd(config_pipe[0]);
     close_fd(output_pipe[1]);
@@ -177,14 +208,35 @@ CurlRequestResult run_curl(const std::string& url, const std::string& api_key,
     const bool request_ok = write_all(input_pipe[1], request);
     close_fd(input_pipe[1]);
 
-    response = read_all(output_pipe[0]);
+    const bool output_complete = read_with_timeout(output_pipe[0], timeout_seconds, response);
     close_fd(output_pipe[0]);
 
     int status = 0;
-    pid_t wait_result;
-    do {
-        wait_result = ::waitpid(pid, &status, 0);
-    } while (wait_result < 0 && errno == EINTR);
+    pid_t wait_result = -1;
+    if (!output_complete) {
+        // Curl normally enforces --max-time, but do not let a broken/stalled
+        // child or inherited pipe keep the verifier thread blocked forever.
+        kill_and_reap(pid, status);
+        error = "LLM request timed out after " + std::to_string(timeout_seconds) +
+                " seconds";
+        return CurlRequestResult::Timeout;
+    }
+
+    // EOF means curl closed its output descriptors, but allow a short reap
+    // window before treating a pathological child as another timeout.
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        do {
+            wait_result = ::waitpid(pid, &status, WNOHANG);
+        } while (wait_result < 0 && errno == EINTR);
+        if (wait_result != 0) break;
+        ::usleep(10000);
+    }
+    if (wait_result == 0) {
+        kill_and_reap(pid, status);
+        error = "LLM request timed out after " + std::to_string(timeout_seconds) +
+                " seconds";
+        return CurlRequestResult::Timeout;
+    }
 
     if (!config_ok || !request_ok) {
         error = "failed to send the LLM request to curl";

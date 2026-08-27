@@ -7,7 +7,7 @@ set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type")
 
 # OpenCV and GStreamer are discovered through normal system search paths.
 # For a non-standard SDK, pass -DOpenCV_DIR=... and/or -DSPACEMIT_ORT_ROOT=....
-find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui videoio)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui videoio)
 find_package(OpenCL REQUIRED)
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -52,7 +52,8 @@ add_executable(yolov8_camera
     src/gstreamer_camera.cpp
     src/opencl_preprocess.cpp
     src/yolov8_detector.cpp
-    src/llm_dice_verifier.cpp)
+    src/llm_dice_verifier.cpp
+    src/rtsp_streamer.cpp)
 
 target_include_directories(yolov8_camera PRIVATE
     ${OpenCV_INCLUDE_DIRS}
