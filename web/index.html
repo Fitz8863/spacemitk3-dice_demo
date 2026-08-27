@@ -28,19 +28,8 @@
 
         <!-- 选择游戏 -->
         <section class="view" data-view="select">
-          <div class="game-list" id="gameList" role="listbox" aria-label="游戏列表">
-            <button class="game-option selected" data-game="dice" role="option" aria-selected="true" type="button">
-              <span class="game-icon" aria-hidden="true">⚄</span>
-              <span class="game-copy"><strong>摇骰子</strong><small>双方各 5 颗 · 比较点数总和</small></span>
-              <span class="game-arrow" aria-hidden="true">→</span>
-            </button>
-            <button class="game-option disabled" data-game="rps" role="option" aria-selected="false" type="button" disabled>
-              <span class="game-icon" aria-hidden="true">✌</span>
-              <span class="game-copy"><strong>猜拳</strong><small>即将开放</small></span>
-              <span class="game-lock">即将开放</span>
-            </button>
-          </div>
-          <button class="primary-button" id="startGame" type="button">进入摇骰子 <span>→</span></button>
+          <div class="game-list" id="gameList" role="listbox" aria-label="游戏列表"></div>
+          <button class="primary-button" id="startGame" type="button">进入游戏 <span>→</span></button>
           <p class="hint"><span class="keycap">↑</span><span class="keycap">↓</span> 选择 · <span class="keycap">Enter</span> 确认</p>
         </section>
 
@@ -134,7 +123,7 @@
       </div>
 
       <footer class="stage-foot">
-        <div class="progress" id="progressDots"><span class="active"></span><span></span><span></span><span></span><span></span><span></span></div>
+        <div class="progress" id="progressDots"></div>
         <span class="stage-foot-text" id="stageFooterText">选择游戏开始体验</span>
       </footer>
     </main>
@@ -143,6 +132,6 @@
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="./app.js?v=2"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
