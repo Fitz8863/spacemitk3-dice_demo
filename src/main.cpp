@@ -1,6 +1,7 @@
 #include "gstreamer_camera.h"
 #include "llm_dice_verifier.h"
 #include "mjpeg_streamer.h"
+#include "rtsp_streamer.h"
 #include "opencl_preprocess.h"
 #include "yolov8_detector.h"
 
@@ -194,6 +195,10 @@ struct Args {
     std::string stream_host = "0.0.0.0";
     int stream_port = 8080;
     int stream_jpeg_quality = 80;
+    bool rtsp_enabled = false;
+    std::string rtsp_host = "0.0.0.0";
+    int rtsp_port = 8554;
+    std::string rtsp_path = "/dice";
 };
 
 struct Stats {
@@ -298,6 +303,11 @@ static bool load_config(const std::string& path, Args& a) {
                 return false;
             }
         }
+        // An explicitly configured device path overrides camera, while an
+        // empty device keeps the camera path/index selected above.
+        std::string configured_device;
+        read_config_value(root, "device", configured_device);
+        if (!configured_device.empty()) a.device = configured_device;
         read_config_value(root, "width", a.width);
         read_config_value(root, "height", a.height);
         read_config_value(root, "fps", a.fps);
@@ -308,7 +318,20 @@ static bool load_config(const std::string& path, Args& a) {
         if (!read_config_bool(root, "rejudge_on_change", a.rejudge_on_change)) return false;
         read_config_value(root, "focus", a.focus);
         read_config_value(root, "zoom", a.zoom);
+        read_config_value(root, "max_frames", a.max_frames);
+        read_config_value(root, "dump_input", a.dump_input);
+        if (!read_config_bool(root, "self_test", a.self_test)) return false;
+        bool display_enabled = !a.no_display;
+        if (!read_config_bool(root, "display_enabled", display_enabled)) return false;
+        // Accept the old negative spelling too, but prefer display_enabled in
+        // new configurations because it reads naturally in JSON.
+        if (root["display_enabled"].empty()) {
+            if (!read_config_bool(root, "no_display", a.no_display)) return false;
+        } else {
+            a.no_display = !display_enabled;
+        }
         if (!read_config_bool(root, "yolov8_enabled", a.yolov8_enabled)) return false;
+        if (!read_config_bool(root, "no_llm", a.no_llm)) return false;
 
         int queue_depth = static_cast<int>(a.queue_depth);
         read_config_value(root, "queue_depth", queue_depth);
@@ -344,6 +367,17 @@ static bool load_config(const std::string& path, Args& a) {
             read_config_value(stream, "port", a.stream_port);
             read_config_value(stream, "jpeg_quality", a.stream_jpeg_quality);
         }
+        const cv::FileNode rtsp = root["rtsp"];
+        if (!rtsp.empty()) {
+            if (!rtsp.isMap()) {
+                std::cerr << "config rtsp must be a JSON object\n";
+                return false;
+            }
+            if (!read_config_bool(rtsp, "enabled", a.rtsp_enabled)) return false;
+            read_config_value(rtsp, "host", a.rtsp_host);
+            read_config_value(rtsp, "port", a.rtsp_port);
+            read_config_value(rtsp, "path", a.rtsp_path);
+        }
         a.config_path = path;
         return true;
     } catch (const cv::Exception& e) {
@@ -368,7 +402,7 @@ static void usage(const char* exe) {
               << "  --zoom N           zoom absolute value (-1 unchanged)\n"
               << "  --intra-threads N  SpaceMIT EP threads\n"
               << "  --ep-affinity LIST bind EP threads to cores, e.g. 14;15\n"
-              << "  --no-display       run pipeline without window\n"
+              << "  --no-display       run pipeline without window (config: display_enabled=false)\n"
               << "  --max-frames N     stop after N frames enter preprocess (0=unlimited)\n"
               << "  --dump-input PATH  dump first preprocessed tensor as float32\n"
               << "  --no-yolov8        bypass preprocessing/inference and display camera frames only\n"
@@ -381,7 +415,12 @@ static void usage(const char* exe) {
               << "  --stream-host HOST bind MJPEG server, default 0.0.0.0\n"
               << "  --stream-port N    MJPEG HTTP port, default 8080\n"
               << "  --stream-quality N JPEG quality 1-100, default 80\n"
-              << "  --no-stream        disable MJPEG HTTP streaming\n";
+              << "  --no-stream        disable MJPEG HTTP streaming\n"
+              << "  --rtsp             publish H.264 to RTSP server with SpaceMIT VPU\n"
+              << "  --rtsp-host HOST   RTSP server host, default 127.0.0.1\n"
+              << "  --rtsp-port N      RTSP server port, default 8554\n"
+              << "  --rtsp-path PATH   RTSP mount path, default /dice\n"
+              << "  --no-rtsp          disable RTSP publishing\n";
 }
 
 static bool validate_args(Args& a) {
@@ -414,6 +453,15 @@ static bool validate_args(Args& a) {
         std::cerr << "stream JPEG quality must be between 1 and 100\n";
         return false;
     }
+    if (a.rtsp_port < 1 || a.rtsp_port > 65535) {
+        std::cerr << "RTSP port must be between 1 and 65535\n";
+        return false;
+    }
+    if (a.rtsp_path.empty()) {
+        std::cerr << "RTSP path must not be empty\n";
+        return false;
+    }
+    if (a.rtsp_path.front() != '/') a.rtsp_path.insert(a.rtsp_path.begin(), '/');
     if (a.intra_threads < 1) {
         std::cerr << "--intra-threads must be >= 1\n";
         return false;
@@ -512,6 +560,11 @@ static bool parse(int argc, char** argv, Args& a) {
             else if (k == "--stream-port" && (v = need(i))) a.stream_port = std::stoi(v);
             else if (k == "--stream-quality" && (v = need(i))) a.stream_jpeg_quality = std::stoi(v);
             else if (k == "--no-stream") a.stream_enabled = false;
+            else if (k == "--rtsp") a.rtsp_enabled = true;
+            else if (k == "--rtsp-host" && (v = need(i))) a.rtsp_host = v;
+            else if (k == "--rtsp-port" && (v = need(i))) a.rtsp_port = std::stoi(v);
+            else if (k == "--rtsp-path" && (v = need(i))) a.rtsp_path = v;
+            else if (k == "--no-rtsp") a.rtsp_enabled = false;
             else {
                 std::cerr << "Unknown or incomplete option: " << k << "\n";
                 usage(argv[0]);
@@ -1014,6 +1067,14 @@ int main(int argc, char** argv) {
         camera.close();
         return 7;
     }
+    RtspStreamer rtsp_streamer;
+    if (a.rtsp_enabled && !rtsp_streamer.start(a.rtsp_host, a.rtsp_port, a.rtsp_path,
+                                                a.width, a.height, camera.negotiated_fps())) {
+        rtsp_streamer.stop();
+        streamer.stop();
+        camera.close();
+        return 8;
+    }
 
     if (!a.no_display) {
         try {
@@ -1021,6 +1082,7 @@ int main(int argc, char** argv) {
             cv::resizeWindow("yolov8-k3", a.width, a.height);
         } catch (const cv::Exception& e) {
             std::cerr << "Display initialization failed: " << e.what() << "\n";
+            rtsp_streamer.stop();
             streamer.stop();
             camera.close();
             return 7;
@@ -1034,16 +1096,18 @@ int main(int argc, char** argv) {
             GstreamerFrame frame;
             if (!camera.read(frame, 1000)) continue;
             ++frame_count;
-            if (a.no_display && !streamer.running()) continue;
+            if (a.no_display && !streamer.running() && !rtsp_streamer.running()) continue;
             cv::Mat bgr;
             if (frame.nv12.empty()) continue;
             cv::cvtColor(frame.nv12, bgr, cv::COLOR_YUV2BGR_NV12);
             streamer.publish(bgr);
+            rtsp_streamer.publish(bgr);
             if (a.no_display) continue;
             cv::imshow("yolov8-k3", bgr);
             const int key = cv::waitKey(1) & 0xff;
             if (key == 'q' || key == 27) break;
         }
+        rtsp_streamer.stop();
         streamer.stop();
         camera.close();
         if (!a.no_display) cv::destroyAllWindows();
@@ -1406,7 +1470,7 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            if (!a.no_display || streamer.running()) {
+            if (!a.no_display || streamer.running() || rtsp_streamer.running()) {
                 draw_detections(bgr, item->detections);
                 draw_divider_and_judgment(bgr, display_judgment);
                 const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
@@ -1416,6 +1480,7 @@ int main(int argc, char** argv) {
                             {10, 96}, cv::FONT_HERSHEY_SIMPLEX, .75,
                             {0, 255, 255}, 2, cv::LINE_AA);
                 streamer.publish(bgr);
+                rtsp_streamer.publish(bgr);
                 if (!a.no_display) {
                     cv::imshow("yolov8-k3", bgr);
                     const int key = cv::waitKey(1) & 0xff;
@@ -1461,6 +1526,7 @@ int main(int argc, char** argv) {
     prepared_queue.clear();
     result_queue.clear();
     if (async_llm) async_llm->stop();
+    rtsp_streamer.stop();
     streamer.stop();
     camera.close();
     if (!a.no_display) cv::destroyAllWindows();

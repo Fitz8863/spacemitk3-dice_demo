@@ -1,6 +1,7 @@
 {
   "model": "models/best.q.onnx",
   "camera": "/dev/video1",
+  "device": "",
   "width": 1280,
   "height": 720,
   "fps": 25,
@@ -10,7 +11,9 @@
   "conf": 0.5,
   "focus": 0,
   "zoom": 160,
+  "display_enabled": false,
   "yolov8_enabled": true,
+  "no_llm": false,
   "llm": {
     "enabled": true,
     "url": "https://api.deepseek.com/v1/",
@@ -25,7 +28,13 @@
   "stream": {
     "enabled": false,
     "host": "0.0.0.0",
-    "port": 8080,
+    "port": 5000,
     "jpeg_quality": 80
+  },
+  "rtsp": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8554,
+    "path": "/dice"
   }
 }
