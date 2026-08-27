@@ -13,7 +13,6 @@
   "zoom": 160,
   "display_enabled": false,
   "yolov8_enabled": true,
-  "no_llm": false,
   "llm": {
     "enabled": true,
     "url": "https://api.deepseek.com/v1/",

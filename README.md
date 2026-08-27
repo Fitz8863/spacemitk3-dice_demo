@@ -76,7 +76,6 @@ cd ~/projects/dice-game/yolov8_objdetect
   "dump_input": "",
   "self_test": false,
   "yolov8_enabled": true,
-  "no_llm": false,
   "rtsp": {
     "enabled": true,
     "host": "127.0.0.1",
@@ -117,7 +116,6 @@ cd ~/projects/dice-game/yolov8_objdetect
 | `rtsp.host` | RTSP 服务端地址；本机 MediaMTX 推荐填写 `127.0.0.1`，不要填写 `0.0.0.0`。 |
 | `rtsp.port` | RTSP 服务端口，默认 `8554`；该端口通常由 MediaMTX 监听。 |
 | `rtsp.path` | RTSP 发布路径，默认 `/dice`；对应播放地址为 `rtsp://板端IP:8554/dice`。 |
-| `no_llm` | 是否关闭 LLM 复核；`true` 等价于命令行 `--no-llm`，稳定 YOLO 后直接判定。 |
 | `llm.enabled` | 是否启用大模型复核；`true` 表示稳定 YOLO 结果后调用 LLM，`false` 表示达到 `stable_frames` 后直接使用 YOLO 结果判定胜负。 |
 | `llm.url` | OpenAI 兼容 API 基础地址，程序请求其 `/chat/completions` 接口。 |
 | `llm.model` | 用于复核骰子点数和的模型名称。 |
@@ -130,7 +128,7 @@ cd ~/projects/dice-game/yolov8_objdetect
 
 API Key 默认从 `llm.api_key` 读取。如果同时设置环境变量 `DICE_LLM_API_KEY`，环境变量优先，且程序读取后会从子进程环境中移除该变量。仓库中的示例配置不保存真实密钥，推荐始终通过环境变量注入：
 
-`Args` 中除 `config_path` 外的持久化运行参数均可直接写入配置文件；其中 `display_enabled` 对应命令行的反向语义 `--no-display`，`yolov8_enabled` 对应 `--no-yolov8`，`no_llm` 对应 `--no-llm`。命令行参数在 JSON 加载后继续覆盖配置。例如 `--no-display` 会覆盖 `display_enabled=true`。
+`Args` 中除 `config_path` 外的持久化运行参数均可直接写入配置文件；其中 `display_enabled` 对应命令行的反向语义 `--no-display`，`yolov8_enabled` 对应 `--no-yolov8`，`llm.enabled` 控制是否启用大模型复核。命令行参数在 JSON 加载后继续覆盖配置；`--no-llm` 仍作为不修改配置文件的临时关闭开关。例如 `--no-display` 会覆盖 `display_enabled=true`。
 
 命令行参数仍然保留，并在 JSON 加载后覆盖同名配置。例如：
 

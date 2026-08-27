@@ -326,7 +326,6 @@ static bool load_config(const std::string& path, Args& a) {
             a.no_display = !display_enabled;
         }
         if (!read_config_bool(root, "yolov8_enabled", a.yolov8_enabled)) return false;
-        if (!read_config_bool(root, "no_llm", a.no_llm)) return false;
 
         int queue_depth = static_cast<int>(a.queue_depth);
         read_config_value(root, "queue_depth", queue_depth);
