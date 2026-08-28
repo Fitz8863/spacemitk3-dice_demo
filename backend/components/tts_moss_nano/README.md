@@ -34,11 +34,12 @@ SpaceMIT runtime is single-session.
 
 ## Configuration
 
-The defaults are intended for the current K3 board:
+The defaults are derived from the repository root, so the checkout can be moved without changing code:
 
 ```bash
-DICE_MOSS_TTS_ROOT=/home/spacemit/projects/dice-game/main/tts/moss-tts-nano
-DICE_MOSS_TTS_MODEL_DIR=/home/spacemit/projects/dice-game/main/tts/moss-tts-nano/models/MOSS-TTS-Nano-100M-ONNX-xslim-dynq
+# Paths are resolved from the repository root by default.
+DICE_MOSS_TTS_ROOT=tts/moss-tts-nano
+DICE_MOSS_TTS_MODEL_DIR=tts/moss-tts-nano/models/MOSS-TTS-Nano-100M-ONNX-xslim-dynq
 DICE_MOSS_TTS_HOST=127.0.0.1
 DICE_MOSS_TTS_PORT=18082
 DICE_MOSS_TTS_VOICE=Junhao
@@ -60,7 +61,7 @@ voice or enabling voice cloning requires restarting the provider.
 Keep Qwen3 as the default and select MOSS temporarily:
 
 ```bash
-cd /home/spacemit/projects/dice-game/main
+cd <repo-root>
 scripts/stop_web.sh
 DICE_TTS_PROVIDER=tts_moss_nano scripts/start_web.sh
 ```
@@ -71,11 +72,11 @@ backend must be restarted after changing provider selection.
 ## Component checks
 
 ```bash
-/usr/bin/python3 backend/componentctl.py list
-/usr/bin/python3 backend/componentctl.py selected tts --game dice
-/usr/bin/python3 backend/componentctl.py health tts_moss_nano
-/usr/bin/python3 backend/componentctl.py start tts_moss_nano
-/usr/bin/python3 backend/componentctl.py stop tts_moss_nano
+python3 backend/componentctl.py list
+python3 backend/componentctl.py selected tts --game dice
+python3 backend/componentctl.py health tts_moss_nano
+python3 backend/componentctl.py start tts_moss_nano
+python3 backend/componentctl.py stop tts_moss_nano
 ```
 
 The migrated MOSS source can be updated in `tts/moss-tts-nano` without

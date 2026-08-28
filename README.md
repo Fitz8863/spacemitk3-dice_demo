@@ -5,8 +5,8 @@
 - `web/`：大屏 Web 前端，完成游戏列表、规则确认、同步倒计时、双方摇骰、同时开盖、视觉分析动画、胜负播报和再来一局；各游戏的 `manifest.json` 集中维护 TTS 文案与默认音色/语速。
 - `backend/server.py`：K3 板端轻量 HTTP bridge；开盖后按局启动 YOLOv8 C++ 进程，使用独立结构化事件通道和 SSE 将进度/结果推送给网页。
 - `vision/yolov8_objdetect/`：迁移的 YOLOv8 K3 摄像头推理工程，保留 OpenCL 前处理、SpaceMIT ONNX Runtime EP、GStreamer 摄像头、骰子分区求和和 LLM 复核逻辑。
-- `tts/qwen3-tts/`：从板端 `/home/spacemit/projects/qwen3-tts` 迁移的 Qwen3-TTS 0.6B + SpaceMIT `llama-server` 服务；网页通过后端代理获取 24 kHz 单声道 WAV。
-- `tts/moss-tts-nano/`：从板端 `/home/spacemit/projects/moss-tts-nano-spacemit-ep-demo-1.0.7-slim-riscv64` 迁移的 MOSS-TTS-Nano SpaceMIT EP runtime 源码与板端交付目录，布局与 `tts/qwen3-tts/` 一致；模型、riscv64 Python 包和 native 库按该目录 `.gitignore` 保留为板端运行时文件。
+- `tts/qwen3-tts/`：迁移的 Qwen3-TTS 0.6B + SpaceMIT `llama-server` 服务；网页通过后端代理获取 24 kHz 单声道 WAV。
+- `tts/moss-tts-nano/`：迁移的 MOSS-TTS-Nano SpaceMIT EP runtime 源码与板端交付目录，布局与 `tts/qwen3-tts/` 一致；模型、riscv64 Python 包和 native 库按该目录 `.gitignore` 保留为板端运行时文件。
 - `backend/components/tts_moss_nano/`：MOSS-TTS-Nano 组件适配器；调用仓库内 runtime，按文本 chunk 流式返回 WAV。
 
 当前阶段**不接机械臂**，用人手和网页按钮代替机械臂的摇骰、停骰、开盖指令。胜负由 K3 板端摄像头上的 YOLOv8 检测和大模型复核产生，不由网页随机生成。浏览器摄像头只用于页面预览；实际识别直接读取 K3 摄像头设备。
@@ -23,7 +23,7 @@ K3 板端路径：   /home/spacemit/projects/dice-game/main
 因此前端应直接在 K3 板端启动，而不是在开发机启动。登录 K3 后执行：
 
 ```bash
-cd /home/spacemit/projects/dice-game/main
+cd <repo-root>
 scripts/start_web.sh  # 自动启动当前游戏选中的 TTS provider
 ```
 
@@ -42,9 +42,9 @@ http://<K3板端IP>:8080
 停止服务：
 
 ```bash
-cd /home/spacemit/projects/dice-game/main
+cd <repo-root>
 scripts/stop_web.sh
-/usr/bin/python3 backend/componentctl.py stop-selected tts --game dice
+python3 backend/componentctl.py stop-selected tts --game dice
 ```
 
 也可以安装 systemd 服务（可选）：
@@ -59,12 +59,12 @@ systemctl status dice-arena-web.service
 # sudo systemctl enable --now dice-arena-tts.service
 ```
 
-`web/` 前端和 `backend/server.py` 都只使用 K3 系统自带的 `/usr/bin/python3`，不需要 Node.js 或 npm。网页请求 `/api/adjudicate` 后，bridge 会在板端直接启动 `vision/yolov8_objdetect/build/yolov8_camera`，所以裁决阶段应该能看到 YOLOv8 进程、OpenCL GPU、SpaceMIT EP 和 LLM 请求日志。浏览器在板端通过 `127.0.0.1` 访问时，可以正常申请摄像头权限；如果从其他设备通过 HTTP IP 访问，浏览器可能因非安全上下文限制摄像头权限，但实际识别仍使用 K3 板端摄像头。
+`web/` 前端和 `backend/server.py` 都只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。网页请求 `/api/adjudicate` 后，bridge 会在板端直接启动 `vision/yolov8_objdetect/build/yolov8_camera`，所以裁决阶段应该能看到 YOLOv8 进程、OpenCL GPU、SpaceMIT EP 和 LLM 请求日志。浏览器在板端通过 `127.0.0.1` 访问时，可以正常申请摄像头权限；如果从其他设备通过 HTTP IP 访问，浏览器可能因非安全上下文限制摄像头权限，但实际识别仍使用 K3 板端摄像头。
 
 首次接入大模型时，在 K3 项目根目录创建不纳入 Git 的凭据文件（不要把 key 写进网页或提交到仓库）：
 
 ```bash
-cd /home/spacemit/projects/dice-game/main
+cd <repo-root>
 printf 'DICE_LLM_API_KEY=%s\n' '你的大模型API_KEY' > .dice-arena.env
 chmod 600 .dice-arena.env
 ```
@@ -134,7 +134,7 @@ vision/yolov8_objdetect/
 在 SpaceMIT K3 板端编译：
 
 ```bash
-cd /home/spacemit/projects/dice-game/main/vision/yolov8_objdetect
+cd <repo-root>/vision/yolov8_objdetect
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4
@@ -167,8 +167,8 @@ TTS 在 K3 上作为独立的 `llama-server` 进程运行：
 从板端原项目同步资产：
 
 ```bash
-cd /home/spacemit/projects/dice-game/main
-scripts/migrate_qwen3_tts_assets.sh
+cd <repo-root>
+scripts/migrate_qwen3_tts_assets.sh --source <qwen3-tts-source>
 scripts/start_tts.sh
 curl -fsS http://127.0.0.1:18080/health
 ```
@@ -245,10 +245,10 @@ scripts/stop_web.sh
 DICE_TTS_PROVIDER=tts_moss_nano scripts/start_web.sh
 ```
 
-MOSS 组件默认使用：
+MOSS 组件默认使用仓库内路径：
 
 ```text
-/home/spacemit/projects/dice-game/main/tts/moss-tts-nano
+tts/moss-tts-nano
 ```
 
 MOSS 组件直接调用板端 runtime 的 `on_pcm_chunk` 回调：每个文本 chunk 解码完成后立即作为一个 WAV 帧送入

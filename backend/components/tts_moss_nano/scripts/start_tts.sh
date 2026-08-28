@@ -9,9 +9,13 @@ MOSS_ROOT="${DICE_MOSS_TTS_ROOT:-${ROOT_DIR}/tts/moss-tts-nano}"
 MODEL_DIR="${DICE_MOSS_TTS_MODEL_DIR:-}"
 VOICE="${DICE_MOSS_TTS_VOICE:-Junhao}"
 REFERENCE_AUDIO="${DICE_MOSS_TTS_REFERENCE_AUDIO:-}"
-PID_FILE="${DICE_MOSS_TTS_PID_FILE:-/tmp/dice-arena-moss-tts-$(id -u)-${PORT}.pid}"
-LOG_FILE="${DICE_MOSS_TTS_LOG_FILE:-/tmp/dice-arena-moss-tts-$(id -u)-${PORT}.log}"
+RUNTIME_DIR="${DICE_RUNTIME_DIR:-${ROOT_DIR}/.runtime}"
+PID_FILE="${DICE_MOSS_TTS_PID_FILE:-${RUNTIME_DIR}/moss-tts-${PORT}.pid}"
+LOG_FILE="${DICE_MOSS_TTS_LOG_FILE:-${RUNTIME_DIR}/moss-tts-${PORT}.log}"
 START_TIMEOUT="${DICE_MOSS_TTS_START_TIMEOUT_SECONDS:-300}"
+PYTHON_BIN="${DICE_PYTHON:-python3}"
+
+mkdir -p "$(dirname "${PID_FILE}")" "$(dirname "${LOG_FILE}")"
 
 # The MOSS delivery bundles its Python modules and SpaceMIT EP dependencies.
 # Export these before launching Python: the dynamic loader reads the library
@@ -41,7 +45,7 @@ is_expected_bridge() {
     exe="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
     cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
     [[ "${cwd}" == "${ROOT_DIR}" ]] || return 1
-    [[ "${exe}" == /usr/bin/python3* || "${exe}" == */python3* ]] || return 1
+    [[ "$(basename "${exe}")" == python* ]] || return 1
     [[ "${cmdline}" == *"backend/components/tts_moss_nano/daemon.py"* ]] || return 1
     [[ "${cmdline}" == *"--port ${PORT}"* ]] || return 1
 }
@@ -87,7 +91,7 @@ fi
 
 cd "${ROOT_DIR}"
 command=(
-    /usr/bin/python3 "${PLUGIN_DIR}/daemon.py"
+    "$PYTHON_BIN" "${PLUGIN_DIR}/daemon.py"
     --root "${MOSS_ROOT}"
     --host "${HOST}"
     --port "${PORT}"
@@ -110,7 +114,7 @@ for ((elapsed=0; elapsed<START_TIMEOUT; elapsed++)); do
         exit 1
     fi
     health="$(curl -fsS --max-time 2 "http://${HOST}:${PORT}/health" 2>/dev/null || true)"
-    if [[ -n "${health}" ]] && /usr/bin/python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("ready") else 1)' <<<"${health}"; then
+    if [[ -n "${health}" ]] && "$PYTHON_BIN" -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("ready") else 1)' <<<"${health}"; then
         echo "MOSS-TTS bridge started: pid=${pid} http://${HOST}:${PORT}"
         exit 0
     fi

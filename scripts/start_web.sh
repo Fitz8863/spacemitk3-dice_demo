@@ -4,11 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${PORT:-8080}"
 HOST="${HOST:-0.0.0.0}"
-PID_FILE="${PID_FILE:-/tmp/dice-arena-web-$(id -u)-${PORT}.pid}"
-LOG_FILE="${LOG_FILE:-${ROOT_DIR}/web/dice-arena-web.log}"
+RUNTIME_DIR="${DICE_RUNTIME_DIR:-${ROOT_DIR}/.runtime}"
+PID_FILE="${PID_FILE:-${RUNTIME_DIR}/web-${PORT}.pid}"
+PYTHON_BIN="${DICE_PYTHON:-python3}"
+LOG_FILE="${LOG_FILE:-${RUNTIME_DIR}/web-${PORT}.log}"
 SELECTED_TTS_PROVIDER="${DICE_TTS_PROVIDER:-}"
 if [[ -z "$SELECTED_TTS_PROVIDER" ]]; then
-    SELECTED_TTS_PROVIDER="$(/usr/bin/python3 "$ROOT_DIR/backend/componentctl.py" selected tts --game dice)"
+    SELECTED_TTS_PROVIDER="$("$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" selected tts --game dice)"
 fi
 TTS_AUTOSTART_ENABLED="${TTS_AUTOSTART:-1}"
 
@@ -24,7 +26,7 @@ is_expected_web() {
     cwd="$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)"
     exe="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
     [[ "$cwd" == "$ROOT_DIR" ]] || return 1
-    [[ "$(basename "$exe")" == python3* ]] || return 1
+    [[ "$(basename "$exe")" == python* ]] || return 1
     mapfile -d '' -t argv < "/proc/${pid}/cmdline" 2>/dev/null || return 1
     [[ "${#argv[@]}" -ge 2 ]] || return 1
     script="${argv[1]}"
@@ -63,7 +65,7 @@ find_expected_pid() {
 
 start_selected_tts() {
     [[ "$TTS_AUTOSTART_ENABLED" != "0" ]] || return 0
-    if ! /usr/bin/python3 "$ROOT_DIR/backend/componentctl.py" start "$SELECTED_TTS_PROVIDER"; then
+    if ! "$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" start "$SELECTED_TTS_PROVIDER"; then
         if [[ "${TTS_REQUIRED:-0}" == "1" ]]; then
             echo "TTS provider $SELECTED_TTS_PROVIDER is required but could not be started" >&2
             exit 1
@@ -89,7 +91,7 @@ fi
 if [[ -n "$pid" ]]; then
     running_tts_provider="$(
         curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null \
-        | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("tts_provider", ""))' \
+        | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("tts_provider", ""))' \
         2>/dev/null || true
     )"
     running_tts_provider="${running_tts_provider:-unknown}"
@@ -111,7 +113,7 @@ fi
 
 cd "$ROOT_DIR"
 start_selected_tts
-nohup /usr/bin/python3 backend/server.py --host "$HOST" --port "$PORT" \
+nohup "$PYTHON_BIN" backend/server.py --host "$HOST" --port "$PORT" \
     >>"$LOG_FILE" 2>&1 &
 pid=$!
 printf '%s\n' "$pid" > "$PID_FILE"

@@ -3,7 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${PORT:-8080}"
-PID_FILE="${PID_FILE:-/tmp/dice-arena-web-$(id -u)-${PORT}.pid}"
+RUNTIME_DIR="${DICE_RUNTIME_DIR:-${ROOT_DIR}/.runtime}"
+PID_FILE="${PID_FILE:-${RUNTIME_DIR}/web-${PORT}.pid}"
 
 is_expected_web() {
     local pid="$1"
@@ -15,7 +16,7 @@ is_expected_web() {
     cwd="$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)"
     exe="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
     [[ "$cwd" == "$ROOT_DIR" ]] || return 1
-    [[ "$(basename "$exe")" == python3* ]] || return 1
+    [[ "$(basename "$exe")" == python* ]] || return 1
     mapfile -d '' -t argv < "/proc/${pid}/cmdline" 2>/dev/null || return 1
     [[ "${#argv[@]}" -ge 2 ]] || return 1
     script="${argv[1]}"

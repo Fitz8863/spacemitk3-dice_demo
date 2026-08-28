@@ -39,12 +39,12 @@ A provider that owns a local model process may also declare lifecycle commands:
 Commands run from the repository root. Inspect/manage them with:
 
 ```bash
-/usr/bin/python3 backend/componentctl.py list
-/usr/bin/python3 backend/componentctl.py health tts_new
-/usr/bin/python3 backend/componentctl.py start tts_new
-/usr/bin/python3 backend/componentctl.py stop tts_new
-/usr/bin/python3 backend/componentctl.py start-selected tts --game dice
-/usr/bin/python3 backend/componentctl.py selected vision_adjudicator --game dice
+python3 backend/componentctl.py list
+python3 backend/componentctl.py health tts_new
+python3 backend/componentctl.py start tts_new
+python3 backend/componentctl.py stop tts_new
+python3 backend/componentctl.py start-selected tts --game dice
+python3 backend/componentctl.py selected vision_adjudicator --game dice
 ```
 
 ## TTS interface

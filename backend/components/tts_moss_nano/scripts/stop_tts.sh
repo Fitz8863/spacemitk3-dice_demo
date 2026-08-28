@@ -4,7 +4,8 @@ set -euo pipefail
 PLUGIN_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT_DIR="$(cd -- "${PLUGIN_DIR}/../../.." && pwd)"
 PORT="${DICE_MOSS_TTS_PORT:-18082}"
-PID_FILE="${DICE_MOSS_TTS_PID_FILE:-/tmp/dice-arena-moss-tts-$(id -u)-${PORT}.pid}"
+RUNTIME_DIR="${DICE_RUNTIME_DIR:-${ROOT_DIR}/.runtime}"
+PID_FILE="${DICE_MOSS_TTS_PID_FILE:-${RUNTIME_DIR}/moss-tts-${PORT}.pid}"
 
 is_expected_bridge() {
     local pid="$1"
@@ -15,7 +16,7 @@ is_expected_bridge() {
     exe="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
     cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
     [[ "${cwd}" == "${ROOT_DIR}" ]] || return 1
-    [[ "${exe}" == /usr/bin/python3* || "${exe}" == */python3* ]] || return 1
+    [[ "$(basename "${exe}")" == python* ]] || return 1
     [[ "${cmdline}" == *"backend/components/tts_moss_nano/daemon.py"* ]] || return 1
     [[ "${cmdline}" == *"--port ${PORT}"* ]] || return 1
 }

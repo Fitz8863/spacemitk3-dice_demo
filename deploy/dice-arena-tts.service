@@ -1,15 +1,15 @@
 [Unit]
-Description=SpaceMIT K3 Dice Arena optional Qwen3-TTS runtime
+Description=SpaceMIT K3 Dice Arena optional TTS runtime
 After=network.target
 
 [Service]
 Type=oneshot
 User=spacemit
-WorkingDirectory=/home/spacemit/projects/dice-game/main
+WorkingDirectory=%h/projects/dice-game/main
 Environment=QWEN3_TTS_HOST=127.0.0.1
 Environment=QWEN3_TTS_PORT=18080
-ExecStart=/home/spacemit/projects/dice-game/main/scripts/start_tts.sh
-ExecStop=/home/spacemit/projects/dice-game/main/scripts/stop_tts.sh
+ExecStart=%h/projects/dice-game/main/scripts/start_tts.sh
+ExecStop=%h/projects/dice-game/main/scripts/stop_tts.sh
 RemainAfterExit=yes
 
 [Install]
