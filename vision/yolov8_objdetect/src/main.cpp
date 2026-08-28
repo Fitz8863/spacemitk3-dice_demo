@@ -31,13 +31,32 @@
 #include <thread>
 #include <vector>
 #include <deque>
+#include <cerrno>
+#include <unistd.h>
 
 
 
 namespace {
 using Clock = std::chrono::steady_clock;
 volatile sig_atomic_t g_signal_stop = 0;
+int g_event_fd = -1;
 void on_signal(int) { g_signal_stop = 1; }
+
+void emit_event(const std::string& json) {
+    if (g_event_fd < 0) return;
+    const std::string line = json + "\n";
+    std::size_t offset = 0;
+    while (offset < line.size()) {
+        const ssize_t written = ::write(g_event_fd, line.data() + offset, line.size() - offset);
+        if (written > 0) {
+            offset += static_cast<std::size_t>(written);
+        } else if (written < 0 && errno == EINTR) {
+            continue;
+        } else {
+            break;
+        }
+    }
+}
 
 // Bounded queue: it can keep a few frames, but never grows without bound.
 // When full, the oldest frame is discarded so latency cannot accumulate.
@@ -191,6 +210,7 @@ struct Args {
     std::string llm_api_key;
     bool no_llm = false;
     bool rtsp_enabled = false;
+    int event_fd = -1;
     std::string rtsp_host = "0.0.0.0";
     int rtsp_port = 8554;
     std::string rtsp_path = "/dice";
@@ -395,6 +415,7 @@ static void usage(const char* exe) {
               << "  --llm-timeout N    LLM request timeout in seconds\n"
               << "  --no-llm           disable LLM verification and use stable YOLO result\n"
               << "  --rtsp             publish H.264 to RTSP server with SpaceMIT VPU\n"
+              << "  --event-fd FD      write structured JSONL events to an inherited FD\n"
               << "  --rtsp-host HOST   RTSP server host, default 127.0.0.1\n"
               << "  --rtsp-port N      RTSP server port, default 8554\n"
               << "  --rtsp-path PATH   RTSP mount path, default /dice\n"
@@ -429,6 +450,10 @@ static bool validate_args(Args& a) {
     }
     if (a.rtsp_path.empty()) {
         std::cerr << "RTSP path must not be empty\n";
+        return false;
+    }
+    if (a.event_fd != -1 && a.event_fd < 3) {
+        std::cerr << "--event-fd must be -1 or an inherited file descriptor >= 3\n";
         return false;
     }
     if (a.rtsp_path.front() != '/') a.rtsp_path.insert(a.rtsp_path.begin(), '/');
@@ -526,6 +551,7 @@ static bool parse(int argc, char** argv, Args& a) {
                 a.llm_timeout_seconds = std::stoi(v);
             } else if (k == "--no-llm") a.no_llm = true;
             else if (k == "--rtsp") a.rtsp_enabled = true;
+            else if (k == "--event-fd" && (v = need(i))) a.event_fd = std::stoi(v);
             else if (k == "--rtsp-host" && (v = need(i))) a.rtsp_host = v;
             else if (k == "--rtsp-port" && (v = need(i))) a.rtsp_port = std::stoi(v);
             else if (k == "--rtsp-path" && (v = need(i))) a.rtsp_path = v;
@@ -840,6 +866,43 @@ static const char* winner_label(LlmWinner winner) {
     }
 }
 
+static std::string build_verified_result_event(const DiceResultSnapshot& snapshot,
+                                               LlmWinner llm_winner,
+                                               const char* source) {
+    std::ostringstream event;
+    event << "{\"event\":\"result\",\"verified\":true"
+          << ",\"first_dice\":[";
+    for (size_t i = 0; i < snapshot.first_values.size(); ++i) {
+        if (i > 0) event << ",";
+        event << snapshot.first_values[i];
+    }
+    event << "],\"second_dice\":[";
+    for (size_t i = 0; i < snapshot.second_values.size(); ++i) {
+        if (i > 0) event << ",";
+        event << snapshot.second_values[i];
+    }
+    event << "],\"first_sum\":" << snapshot.first_sum
+          << ",\"second_sum\":" << snapshot.second_sum
+          << ",\"winner\":\"" << winner_label(snapshot.winner) << "\""
+          << ",\"llm_winner\":\"" << winner_label(llm_winner) << "\""
+          << ",\"source\":\"" << source << "\"}";
+    return event.str();
+}
+
+static void emit_verified_result(const DiceResultSnapshot& snapshot,
+                                 LlmWinner llm_winner,
+                                 const char* source) {
+    const std::string event = build_verified_result_event(snapshot, llm_winner, source);
+    emit_event(event);
+    // Preserve the standalone CLI result protocol when no event FD was
+    // supplied. The backend prefers the dedicated event channel and never
+    // parses this compatibility line on rebuilt binaries.
+    if (g_event_fd < 0) {
+        std::cout << "[RESULT] " << event << "\n";
+        std::cout.flush();
+    }
+}
+
 struct LlmRequest {
     uint64_t generation = 0;
     DiceResultSnapshot snapshot;
@@ -958,6 +1021,8 @@ int main(int argc, char** argv) {
         // not leave it in the environment inherited by later child processes.
         ::unsetenv("DICE_LLM_API_KEY");
     }
+    g_event_fd = a.event_fd;
+    emit_event("{\"event\":\"started\",\"component\":\"vision_yolo\",\"protocol\":\"jsonl-events-v1\"}");
     if (a.yolov8_enabled && !std::filesystem::exists(a.model)) {
         std::cerr << "Model not found: " << a.model << "\n";
         return 2;
@@ -1026,6 +1091,7 @@ int main(int argc, char** argv) {
         std::cerr << "Camera open failed.\n";
         return 3;
     }
+    emit_event("{\"event\":\"phase\",\"phase\":\"detecting\"}");
     RtspStreamer rtsp_streamer;
     if (a.rtsp_enabled && !rtsp_streamer.start(a.rtsp_host, a.rtsp_port, a.rtsp_path,
                                                 a.width, a.height, camera.negotiated_fps())) {
@@ -1323,6 +1389,9 @@ int main(int argc, char** argv) {
                             std::to_string(llm_state.stable_count) + "/" +
                             std::to_string(a.stable_frames) + ": " + judgment.message;
                         if (stability_message != llm_state.last_stability_message) {
+                            emit_event("{\"event\":\"progress\",\"phase\":\"detecting\",\"stable_count\":" +
+                                       std::to_string(llm_state.stable_count) +
+                                       ",\"stable_frames\":" + std::to_string(a.stable_frames) + "}");
                             std::cout << stability_message << "\n";
                             llm_state.last_stability_message = stability_message;
                         }
@@ -1340,6 +1409,8 @@ int main(int argc, char** argv) {
                         llm_state.attempted_snapshot = current_snapshot;
                         llm_state.llm_winner = LlmWinner::Unknown;
 
+                        emit_event("{\"event\":\"phase\",\"phase\":\"verifying\",\"stable_frames\":" +
+                                   std::to_string(a.stable_frames) + "}");
                         if (!llm_enabled) {
                             llm_state.succeeded = true;
                             llm_state.agreement = true;
@@ -1396,6 +1467,9 @@ int main(int argc, char** argv) {
                         if (!llm_state.printed) {
                             std::cout << "Dice judgment by YOLO fallback (LLM timeout): "
                                       << judgment.message << "\n";
+                            emit_verified_result(llm_state.attempted_snapshot,
+                                                 LlmWinner::Unknown,
+                                                 "yolo_timeout_fallback");
                             llm_state.printed = true;
                         }
                     } else if (llm_state.succeeded && llm_state.agreement && same_snapshot) {
@@ -1407,24 +1481,9 @@ int main(int argc, char** argv) {
                                 std::cout << "Dice judgment by YOLO: "
                                           << judgment.message << "\n";
                             }
-                            // Output JSON result for Python wrapper to parse
-                            std::cout << "[RESULT] {\"verified\":true"
-                                      << ",\"first_dice\":[";
-                            for (size_t i = 0; i < llm_state.attempted_snapshot.first_values.size(); ++i) {
-                                if (i > 0) std::cout << ",";
-                                std::cout << llm_state.attempted_snapshot.first_values[i];
-                            }
-                            std::cout << "],\"second_dice\":[";
-                            for (size_t i = 0; i < llm_state.attempted_snapshot.second_values.size(); ++i) {
-                                if (i > 0) std::cout << ",";
-                                std::cout << llm_state.attempted_snapshot.second_values[i];
-                            }
-                            std::cout << "],\"first_sum\":" << llm_state.attempted_snapshot.first_sum
-                                      << ",\"second_sum\":" << llm_state.attempted_snapshot.second_sum
-                                      << ",\"winner\":\"" << winner_label(llm_state.attempted_snapshot.winner) << "\""
-                                      << ",\"llm_winner\":\"" << winner_label(llm_state.llm_winner) << "\""
-                                      << "}\n";
-                            std::cout.flush();
+                            emit_verified_result(llm_state.attempted_snapshot,
+                                                 llm_state.llm_winner,
+                                                 "llm_verified");
                             llm_state.printed = true;
                         }
                     } else {

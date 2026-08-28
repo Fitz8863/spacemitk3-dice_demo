@@ -1,13 +1,13 @@
 [Unit]
 Description=SpaceMIT K3 Dice Arena web frontend
-Wants=dice-arena-tts.service
-After=network.target dice-arena-tts.service
+After=network.target
 
 [Service]
 Type=simple
 User=spacemit
 WorkingDirectory=/home/spacemit/projects/dice-game/main
 EnvironmentFile=-/home/spacemit/projects/dice-game/main/.dice-arena.env
+ExecStartPre=-/usr/bin/python3 backend/componentctl.py start-selected tts --game dice
 ExecStart=/usr/bin/python3 backend/server.py --host 0.0.0.0 --port 8080
 Restart=on-failure
 RestartSec=2

@@ -1,0 +1,114 @@
+# Provider packages
+
+Each runtime adapter is one directory:
+
+```text
+backend/components/<provider_id>/
+├── manifest.json
+└── provider.py
+```
+
+The backend scans these packages at process startup. Adding or deleting a
+package therefore requires a backend restart, but does not require editing
+`backend/server.py` or a game pipeline.
+
+Minimum TTS manifest:
+
+```json
+{
+  "id": "tts_new",
+  "type": "tts",
+  "name": "New TTS",
+  "version": "1.0",
+  "enabled": true,
+  "entry": "provider.py:TtsNew"
+}
+```
+
+A provider that owns a local model process may also declare lifecycle commands:
+
+```json
+{
+  "lifecycle": {
+    "start": ["scripts/start_new_tts.sh"],
+    "stop": ["scripts/stop_new_tts.sh"]
+  }
+}
+```
+
+Commands run from the repository root. Inspect/manage them with:
+
+```bash
+/usr/bin/python3 backend/componentctl.py list
+/usr/bin/python3 backend/componentctl.py health tts_new
+/usr/bin/python3 backend/componentctl.py start tts_new
+/usr/bin/python3 backend/componentctl.py stop tts_new
+/usr/bin/python3 backend/componentctl.py start-selected tts --game dice
+/usr/bin/python3 backend/componentctl.py selected vision_adjudicator --game dice
+```
+
+## TTS interface
+
+Inherit `core.tts.TtsProvider`. The smallest adapter implements `health()` and
+`synthesize(payload)`. The base class automatically exposes it through the
+browser's framed stream protocol as one WAV frame. Override `stream()` only if
+the model can produce lower-latency ordered segments.
+
+## Visual roles
+
+Visual packages are selected by responsibility, not by whether their
+implementation happens to use YOLO.
+
+### Visual adjudicator
+
+Use `type=vision`, `role=adjudicator`, inherit
+`core.vision.VisionAdjudicatorProvider`, and implement:
+
+```python
+def adjudicate(*, on_log, on_event, is_cancelled, timeout_seconds) -> dict:
+    ...
+```
+
+An adjudicator owns the business decision contract: for the dice game this
+includes pip detection, side scoring, winner calculation, and verification.
+Business progress/results go to `on_event({...})`; `on_log(...)` is diagnostic
+text only. A verified result event uses
+`{"event":"result","verified":true,...}`.
+
+Current manifest:
+
+```json
+{
+  "id": "vision_yolo",
+  "type": "vision",
+  "role": "adjudicator",
+  "entry": "provider.py:DiceYoloAdjudicator",
+  "capabilities": [
+    "dice.pip_detection",
+    "dice.side_scoring",
+    "dice.outcome_adjudication",
+    "dice.llm_verification"
+  ]
+}
+```
+
+### Visual localizer
+
+A future target-coordinate/spatial-perception package must use
+`type=vision`, `role=localizer` and inherit
+`core.vision.VisionLocalizerProvider`. It implements `locate(...)` and returns
+coordinate data; it must not calculate or return a game winner. The object and
+coordinate-frame schema should be finalized with the first actual localizer.
+
+Games select adapters through semantic slots:
+
+```json
+"providers": {
+  "vision_adjudicator": "vision_yolo",
+  "tts": "tts_new"
+}
+```
+
+`DICE_VISION_ADJUDICATOR_PROVIDER=<id>` temporarily overrides the adjudicator.
+The old `providers.vision` key and `DICE_VISION_PROVIDER` variable remain only
+as migration aliases.

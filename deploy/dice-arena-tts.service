@@ -1,5 +1,5 @@
 [Unit]
-Description=SpaceMIT K3 Dice Arena Qwen3-TTS llama.cpp service
+Description=SpaceMIT K3 Dice Arena optional Qwen3-TTS runtime
 After=network.target
 
 [Service]

@@ -88,12 +88,12 @@ bool write_all(int fd, const std::string& data) {
 bool read_with_timeout(int fd, int timeout_seconds, std::string& result) {
     result.clear();
     char buffer[4096];
-    // curl has its own --max-time, but keep an independent parent-side
-    // deadline so a stalled child or inherited pipe can never block the
-    // verifier thread (and therefore shutdown) forever.
+    // curl has its own --max-time. Keep the parent-side deadline at the same
+    // boundary so timeout_seconds is a real request budget, not a budget plus
+    // an undocumented extra second. If the child is still around after this
+    // deadline, run_curl terminates it and returns Timeout to the caller.
     const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::seconds(std::max(1, timeout_seconds)) +
-                          std::chrono::milliseconds(1000);
+                          std::chrono::seconds(std::max(1, timeout_seconds));
     for (;;) {
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
@@ -122,10 +122,19 @@ void kill_and_reap(pid_t pid, int& status) {
     if (::kill(-pid, SIGKILL) < 0) {
         (void)::kill(pid, SIGKILL);
     }
-    pid_t result;
-    do {
-        result = ::waitpid(pid, &status, 0);
-    } while (result < 0 && errno == EINTR);
+
+    // Reap without introducing a second unbounded wait after the request
+    // deadline. SIGKILL normally makes this complete immediately; the short
+    // grace window only covers scheduler latency on a busy board.
+    const auto reap_deadline = std::chrono::steady_clock::now() +
+                               std::chrono::milliseconds(250);
+    for (;;) {
+        const pid_t result = ::waitpid(pid, &status, WNOHANG);
+        if (result == pid || (result < 0 && errno == ECHILD)) return;
+        if (result < 0 && errno != EINTR) return;
+        if (std::chrono::steady_clock::now() >= reap_deadline) return;
+        ::usleep(1000);
+    }
 }
 
 enum class CurlRequestResult {

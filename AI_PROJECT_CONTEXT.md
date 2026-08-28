@@ -1,9 +1,16 @@
 # Dice Arena 项目上下文（供后续 AI / 开发者快速接手）
 
 > **用途**：新对话或新开发者进入项目时，先阅读本文件，再检查代码和板端实际状态。
-> **记录日期**：2026-08-26
+> **记录日期**：2026-08-28
 > **当前阶段**：K3 板端 Web 交互 + YOLOv8 骰子识别 + 大模型复核已接通；机械臂尚未接入，目前由人手完成摇骰、停骰和开盖。
 > **重要原则**：本文将“已实现/已验证”和“未来规划”分开描述。未来规划不能被当成当前已有功能。
+
+## 当前实现覆盖（2026-08-28）
+
+以下内容覆盖本文中关于组件调度的旧描述：后端扫描 `backend/components/*/manifest.json`，按 `entry` 动态加载功能包并通过 `ComponentRegistry` 按 ID 注入游戏流程。视觉 provider 继续使用广义 `type=vision`，但必须再声明职责 `role`：当前骰子 YOLO 包是 `role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于获取目标坐标/空间位置的 YOLO 包必须使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得接入裁决器插槽。骰子游戏通过 `manifest.json.providers.vision_adjudicator` 选择裁决器。TTS 通过 `providers.tts`、`DICE_TTS_PROVIDER` 或请求中的诊断字段选择 provider。新增 TTS 不需要修改 `server.py` 或前端：新增功能包并继承 `TtsProvider`，最小实现 `health()` 与 `synthesize()`；只有需要分段低延迟时才覆盖 `stream()`。
+Provider 可在 manifest 的 `lifecycle.start/stop` 中声明本地模型进程管理命令；`backend/componentctl.py` 和 `scripts/start_web.sh` 会按当前选中的 TTS provider 启动对应 runtime，不再把 Web 启动流程绑定到 Qwen3。新增/删除功能包或修改游戏 provider 后需重启后端以重新扫描。
+
+YOLOv8 新版支持 `--event-fd FD`，通过独立的 JSONL 管道发送结构化 `started`、`phase`、`progress`、`result` 事件；stdout/stderr 仅作为诊断日志。裁决主接口为 `/api/adjudicate...`，`/api/analyze...` 仅保留为迁移别名。任务快照包含 `events`。2026-08-27 已在 K3 重新编译并验证 `jsonl-events-v1`、SSE 完整分析和最终 `verified:true` 结果。2026-08-28 已在 K3 用 `/usr/bin/python3` 通过 14 个后端测试、重启 Web/TTS、确认 `/api/health` 注册 `vision/adjudicator`，并用有界 `/api/adjudicate` 冒烟跑到 `verifying` 后取消，YOLO 子进程随后正常退出。
 
 ---
 
@@ -78,7 +85,6 @@ main/
 ├── web/
 │   ├── index.html                   # Web 页面结构
 │   ├── app.js                       # 游戏交互、状态切换、后端调用
-│   ├── tts-texts.json               # 所有状态的 TTS 文案、音色和语速
 │   └── styles.css                   # 页面样式
 ├── vision/
 │   └── yolov8_objdetect/
@@ -108,7 +114,7 @@ main/
 以下是运行时文件，不应提交：
 
 ```text
-web/.dice-arena-web.pid
+/tmp/dice-arena-web-<uid>-<port>.pid
 web/dice-arena-web.log
 backend/__pycache__/
 .dice-arena.env
@@ -147,7 +153,7 @@ flowchart TD
 - **代码职责上分离**：`web/` 是前端，`backend/server.py` 是后端；
 - **部署上没有完全分离**：同一个 Python HTTP 服务同时提供静态网页和 `/api/*`；
 - **同源访问**：前端不需要单独配置 API 域名和 CORS；
-- **当前没有 WebSocket**：前端通过 HTTP 轮询分析任务，轮询间隔约 700 ms。
+- **当前使用 SSE，不是 WebSocket**：前端优先连接 `/api/adjudicate/<job_id>/stream` 接收结构化进度和结果；SSE 不可用时才回退到 `/api/adjudicate/<job_id>` 的约 700 ms 轮询。
 
 典型访问地址：
 
@@ -189,20 +195,26 @@ GET  /api/health
 GET  /api/tts/health
 POST /api/tts/stream
 POST /api/tts/synthesize
-POST /api/analyze
-GET  /api/analyze/<job_id>
-POST /api/analyze/<job_id>/cancel
+POST /api/adjudicate
+GET  /api/adjudicate/<job_id>
+GET  /api/adjudicate/<job_id>/events
+GET  /api/adjudicate/<job_id>/stream
+POST /api/adjudicate/<job_id>/cancel
 ```
 
 含义：
 
-- `GET /api/health`：检查后端、YOLOv8、LLM 和 Qwen3-TTS 状态；
-- `GET /api/tts/health`：检查板端 `llama-server` 是否可用；
-- `POST /api/tts/stream`：整段文本只发起一次请求；后端按自然标点生成多个完整 WAV 帧，并在每帧完成后立即写入响应；
-- `POST /api/tts/synthesize`：兼容手工测试，把单段文本代理给 Qwen3-TTS 并返回一个 WAV；
-- `POST /api/analyze`：创建一次板端视觉分析任务；
-- `GET /api/analyze/<job_id>`：查询任务状态、阶段、日志和最终结果；
-- `POST /api/analyze/<job_id>/cancel`：停止指定分析任务。
+- `GET /api/health`：检查后端以及当前游戏选中的视觉/TTS provider 状态；
+- `GET /api/tts/health`：检查当前选中的 TTS provider，诊断时可用 `?provider=<id>` 指定；
+- `POST /api/tts/stream`：调用当前 TTS provider；Qwen3 adapter 会按自然标点生成多个完整 WAV 帧，普通 provider 可由基类返回一个 WAV 帧；
+- `POST /api/tts/synthesize`：兼容手工测试，调用当前 TTS provider 返回一个 WAV；
+- `POST /api/adjudicate`：创建一次板端视觉裁决任务；
+- `GET /api/adjudicate/<job_id>`：查询任务状态、阶段、日志、结构化事件和最终结果；兼容旧客户端轮询；
+- `GET /api/adjudicate/<job_id>/events`：只查询结构化裁决事件；
+- `GET /api/adjudicate/<job_id>/stream`：SSE 推送任务快照、结构化事件和最终状态；
+- `POST /api/adjudicate/<job_id>/cancel`：停止指定裁决任务。
+
+`/api/analyze...` 路由仍接受相同请求，仅用于旧客户端迁移。未来的空间定位视觉应使用独立的定位接口，不复用裁决 job。
 
 分析任务状态：
 
@@ -236,7 +248,7 @@ Web app.js
   -> 24 kHz mono WAV
 ```
 
-因此当前前后端是“代码职责分离、同一个 HTTP 服务部署”，而 TTS 是第三个板端进程。网页优先播放 K3 TTS 返回的 WAV；只有服务不可用时才使用浏览器 `speechSynthesis` 兜底。后端对 TTS 请求加了串行锁，避免多个语音生成同时争抢模型和算力资源。
+因此当前前后端是“代码职责分离、同一个 HTTP 服务部署”，而 TTS 是第三个板端进程。网页只播放后端当前 TTS provider 返回的 WAV；provider 不可用时明确报错，不使用浏览器 `speechSynthesis` 掩盖后端故障。后端对 TTS 请求加了串行锁，避免多个语音生成同时争抢模型和算力资源。
 
 `/v1/audio/speech` 仍需等待单个内部片段的完整 WAV 生成，但网页针对一整段播报只发起一次 `/api/tts/stream`。后端加载迁移后的 `qwen3_tts_interactive.py`，复用 `split_text()` 按自然标点切分，并在每个 `synthesize()` 完成后立即发送一个长度前缀 WAV 帧；浏览器的读取生产者和播放消费者并行工作，第一帧到达即播放，后续帧按顺序播放。当前是“单请求 + 完整 WAV 分段帧”，不是逐 PCM 帧流。`TTS_REQUEST_LOCK` 仍串行保护单个 K3 TTS 服务。
 
@@ -250,11 +262,11 @@ POST /api/tts/synthesize    {"text":"...", "voice":"default", "speed":1.0}
 
 ### 4.6 TTS 文案配置
 
-网页从 `web/tts-texts.json` 加载所有需要播报的文本，代码只引用状态键，不把业务文案散落在 `app.js`：
+网页通过 `/api/games` 从 `backend/games/<game_id>/manifest.json` 加载需要播报的文本、默认音色和语速；代码只引用状态键，不把业务文案散落在 `app.js`：
 
 ```json
 {
-  "version": 1,
+  "id": "dice",
   "voice": "default",
   "speed": 1.0,
   "texts": {
@@ -309,19 +321,17 @@ vision/yolov8_objdetect/build/yolov8_camera
 --config config.json
 --no-display
 --rejudge-on-change
---require-llm
---result-file /tmp/dice-arena-<job_id>.json
---exit-on-result
+--event-fd FD
 ```
 
 含义：
 
-- 使用配置文件里的板端摄像头；
+- 使用配置文件里的板端摄像头、稳定帧和 LLM 设置；
 - 不打开本地图形显示窗口；
 - 检测结果变化时重新判断；
-- 必须经过 LLM 复核；
-- 将有效结果写到临时 JSON；
-- 得到有效结果后退出进程。
+- 通过继承的独立文件描述符输出 JSONL 业务事件；
+- stdout/stderr 只保留诊断日志；
+- 后端收到 `verified:true` 的结构化 `result` 事件后终止本轮子进程并返回结果。
 
 **YOLOv8 不是常驻进程。** 空闲时看不到 `yolov8_camera` 是正常的；它只在分析任务期间运行，完成或失败后退出。
 
@@ -376,8 +386,7 @@ vision/yolov8_objdetect/build/yolov8_camera
 ```bash
 ssh spacemit@<K3-IP>
 cd /home/spacemit/projects/dice-game/main
-scripts/start_tts.sh
-scripts/start_web.sh
+scripts/start_web.sh  # 自动启动当前选中的 TTS provider
 ```
 
 默认监听：
@@ -451,7 +460,7 @@ DICE_LLM_API_KEY=<secret>
 chmod 600 .dice-arena.env
 ```
 
-`vision/yolov8_objdetect/config.json` 中的 `llm.api_key` 应保持为空，真实密钥由环境变量提供。
+仓库提交版本的 `vision/yolov8_objdetect/config.json` 必须保持 `llm.api_key` 为空，真实密钥优先由环境变量提供。如果板端工作副本已含本地密钥，不要打印或覆盖；提交配置变更时只提交清空密钥后的版本，完成后恢复用户本地值。
 
 ---
 
@@ -503,7 +512,7 @@ preferred core、CPU affinity 和环境变量只能说明配置意图，不能�
 - 启动、查询、取消 YOLOv8 分析任务；
 - 收集 C++ 进程日志；
 - 返回 YOLOv8 + LLM 复核结果；
-- 代理板端 Qwen3-TTS 并向浏览器返回 WAV。
+- 代理当前选中的 TTS provider 并向浏览器返回 WAV。
 
 当前架构还不具备：
 
@@ -716,7 +725,7 @@ CANCELLED
 
 ## 13. 建议的 Web API / WebSocket 方向
 
-未来可以保留当前 `/api/analyze`，同时逐步增加游戏级接口：
+未来可以保留当前 `/api/adjudicate`，同时逐步增加游戏级接口：
 
 ```text
 POST /api/game/rounds
@@ -799,12 +808,13 @@ K3：Web + Gateway + Orchestrator + YOLOv8
 4. 新建后端权威 `GameOrchestrator`；
 5. 前端改为消费后端游戏状态，不自行推进关键硬件状态。
 
-### 阶段 2：增加实时状态通道
+### 阶段 2：深化实时状态通道
 
-1. 保留 HTTP 命令接口；
-2. 增加 WebSocket 状态和日志推送；
+1. 保留 HTTP 命令接口和现有 SSE 分析事件；
+2. 将后端扩展为完整游戏状态的权威事件源；
 3. 增加 `round_id`、`command_id`、超时和取消；
-4. 增加断线重连后的状态恢复。
+4. 增加断线重连后的状态恢复；
+5. 只有机器人双向事件确有需要时，再引入 WebSocket。
 
 ### 阶段 3：接入机械臂仿真或 Mock
 
@@ -882,4 +892,4 @@ git log -5 --oneline --decorate
 
 ## 18. 一句话交接结论
 
-当前项目是一个运行在 K3 上的同源 Web + 轻量 HTTP bridge，已经通过子进程真正调用板端 YOLOv8、SpaceMIT EP 和 LLM 复核来判断骰子胜负；当前人工动作应先抽象为 `ManualRobotAdapter`，未来保留 Web/HTTP/WebSocket 层，并增加 `GameOrchestrator + Ros2RobotAdapter`，让 ROS2 负责机器人内部协同，而不是推翻现有前后端或让浏览器直接控制机械臂。
+当前项目是一个运行在 K3 上的同源 Web + 轻量 HTTP bridge，已经通过子进程真正调用板端 YOLOv8、SpaceMIT EP 和 LLM 复核来判断骰子胜负；当前人工动作应先抽象为 `ManualRobotAdapter`，未来保留 Web/HTTP/SSE 层，并按需增加 WebSocket，同时增加 `GameOrchestrator + Ros2RobotAdapter`，让 ROS2 负责机器人内部协同，而不是推翻现有前后端或让浏览器直接控制机械臂。

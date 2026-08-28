@@ -94,12 +94,12 @@ function stopSpeech() {
     URL.revokeObjectURL(state.ttsObjectUrl);
     state.ttsObjectUrl = null;
   }
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel(); // clean up any external/browser utterance
 }
 
 // Deliberately do not call browser speech synthesis. Dice Arena must use the
-// Qwen3-TTS model running on the K3 board; browser speech would hide a broken
-// backend and make the voice sound unrelated to the configured speaker.
+// TTS provider selected by the backend; browser speech would hide a broken
+// provider and make the voice unrelated to the configured model/speaker.
 
 function createTtsFrameQueue() {
   const items = [];
@@ -199,7 +199,7 @@ async function requestSpeechStream(message, requestId, options, queue) {
     const response = await fetch('/api/tts/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: message, voice: options.voice, speed: options.speed }),
+      body: JSON.stringify({ text: message, voice: options.voice, speed: options.speed, game: state.selectedGame }),
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -259,7 +259,7 @@ async function playSpeechBlob(blob, requestId) {
   state.ttsPlaybackCancel = cancelPlayback;
   audio.addEventListener('ended', release, { once: true });
   audio.addEventListener('error', () => {
-    playbackError = new Error('浏览器无法播放 K3 Qwen3-TTS 返回的 WAV');
+    playbackError = new Error('浏览器无法播放当前 TTS provider 返回的 WAV');
     release();
   }, { once: true });
 
@@ -299,8 +299,8 @@ async function speak(message, options = { voice: 'default', speed: 1.0 }) {
   } catch (error) {
     await producer.catch(() => {});
     if (error.name === 'AbortError' || requestId !== state.ttsRequestId || !state.sound) return;
-    console.error(`K3 Qwen3-TTS stream failed after ${playedFrames} frame(s):`, error);
-    toast('K3 Qwen3-TTS 播放失败，未使用浏览器替代语音');
+    console.error(`TTS stream failed after ${playedFrames} frame(s):`, error);
+    toast('TTS 播放失败，请检查当前语音组件');
   }
 }
 
@@ -452,7 +452,7 @@ $('soundToggle').addEventListener('click', () => {
   state.sound = !state.sound;
   if (!state.sound) stopSpeech();
   $('soundToggle').textContent = state.sound ? '🔊' : '🔇';
-  toast(state.sound ? 'K3 Qwen3-TTS 播报已开启' : '语音播报已关闭');
+  toast(state.sound ? 'TTS 播报已开启' : '语音播报已关闭');
 });
 
 document.addEventListener('keydown', (event) => {

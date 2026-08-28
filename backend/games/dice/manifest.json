@@ -4,11 +4,14 @@
   "icon": "⚄",
   "description": "双方各 5 颗 · 比较点数总和",
   "enabled": true,
-  "components": ["vision_yolo", "tts_qwen3"],
+  "providers": {
+    "vision_adjudicator": "vision_yolo",
+    "tts": "tts_qwen3"
+  },
   "voice": "default",
   "speed": 1.0,
   "texts": {
-    "rules_intro": "等待",
+    "rules_intro": "欢迎来到摇骰子游戏，下面由我去宣读规则，当前双方各有五颗骰子，听语音提示开始摇骰子，屏幕的倒计时结束后就停止摇骰，然后同时开盖，点数总和更大的一方获胜，如果明白了，请按绿色按钮开始游戏；如果需要再听一次，请按黄色的按钮",
     "rules_confirmed": "规则确认完成，请准备。",
     "shake_started": "开始摇骰。",
     "shake_stopped": "停止摇骰。",

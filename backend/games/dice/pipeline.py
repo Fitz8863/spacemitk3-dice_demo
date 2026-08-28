@@ -1,16 +1,9 @@
-"""Dice-game backend pipeline: one YOLOv8 + LLM verified analysis.
-
-This is the orchestration entrypoint the job layer calls for ``/api/analyze``.
-Today it is a single vision step; future games (or a robot-arm dice game)
-declare richer multi-component sequences here while keeping components generic.
-"""
+"""Dice game orchestration using a visual adjudicator selected by manifest."""
 from __future__ import annotations
 
-import uuid
-from pathlib import Path
 from typing import Any, Callable
 
-from components.vision_yolo import run_analysis
+from core.games import resolve_provider_id
 
 GAME_ID = "dice"
 
@@ -19,12 +12,25 @@ def run(
     on_log: Callable[[str], None],
     is_cancelled: Callable[[], bool],
     timeout_seconds: float,
+    *,
+    components: Any,
+    manifest: dict[str, Any],
+    on_event: Callable[[dict[str, Any]], None],
 ) -> dict[str, Any]:
-    """Run a single verified dice analysis and return its result dict."""
-    result_path = Path("/tmp") / f"dice-arena-{uuid.uuid4().hex}.json"
-    return run_analysis(
-        result_path=result_path,
+    provider_id = resolve_provider_id(manifest, "vision_adjudicator", "vision_yolo")
+    adjudicator = components.require(
+        provider_id,
+        expected_type="vision",
+        expected_role="adjudicator",
+    )
+    adjudicate = getattr(adjudicator, "adjudicate", None)
+    if not callable(adjudicate):
+        raise RuntimeError(
+            f"vision adjudicator {provider_id} does not implement adjudicate()"
+        )
+    return adjudicate(
         on_log=on_log,
+        on_event=on_event,
         is_cancelled=is_cancelled,
         timeout_seconds=timeout_seconds,
     )

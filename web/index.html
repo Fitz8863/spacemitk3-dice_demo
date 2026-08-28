@@ -42,10 +42,10 @@
           </div>
           <div class="view-actions">
             <button class="secondary-button" id="backFromRules" type="button">← 返回</button>
-            <button class="secondary-button" id="repeatRules" type="button">↻ 再听一次</button>
-            <button class="primary-button" id="confirmRules" type="button">我明白了 <span>→</span></button>
+            <button class="secondary-button" id="repeatRules" type="button" aria-keyshortcuts="ArrowDown">↻ 再听一次</button>
+            <button class="primary-button" id="confirmRules" type="button" aria-keyshortcuts="Enter">我明白了 <span>→</span></button>
           </div>
-          <p class="hint">按 <span class="keycap">Esc</span> 返回游戏列表</p>
+          <p class="hint"><span class="keycap">Enter</span> 我明白了 · <span class="keycap">↓</span> 再听一次 · <span class="keycap">Esc</span> 返回</p>
         </section>
 
         <!-- 准备 -->
@@ -82,6 +82,24 @@
         <section class="view hidden" data-view="analysis">
           <div class="analysis-spinner" aria-hidden="true"></div>
           <h2 class="view-title" id="analysisTitle">正在识别骰子</h2>
+          <div class="analysis-stream-panel hidden" id="analysisStreamPanel">
+            <div class="analysis-stream-head">
+              <span class="analysis-stream-label"><span class="live-dot" aria-hidden="true"></span>YOLOv8 实时检测</span>
+              <span class="analysis-stream-state" id="analysisStreamState">正在连接画面…</span>
+            </div>
+            <!-- MediaMTX provides this path's WebRTC player page. Keeping it in
+                 an iframe avoids coupling the game UI to a stream protocol. -->
+            <iframe
+              id="analysisStream"
+              title="YOLOv8 实时骰子检测画面"
+              data-stream-url="http://100.118.229.28:8889/dice/"
+              src="about:blank"
+              allow="autoplay; fullscreen; picture-in-picture"
+              allowfullscreen
+              loading="eager"
+              referrerpolicy="no-referrer"
+            ></iframe>
+          </div>
           <div class="analysis-steps">
             <div class="analysis-step active" id="stepCapture"><span>✓</span><div><strong>采集画面</strong></div></div>
             <div class="analysis-step" id="stepDetect"><span>2</span><div><strong>YOLOv8 识别</strong></div></div>

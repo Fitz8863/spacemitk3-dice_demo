@@ -1,21 +1,24 @@
-"""Game registry: scan ``backend/games/*/manifest.json`` into a lookup.
-
-Each game declares its id, display metadata, TTS texts, and the components it
-orchestrates. The backend exposes the list (``GET /api/games``) and routes
-``/api/analyze`` to a game pipeline. This module stays thin: game logic lives
-in each game's ``pipeline.py``, and components stay game-agnostic.
-"""
+"""Game manifest registry and pipeline dispatch."""
 from __future__ import annotations
 
 import importlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable
 
-from core.errors import GameConfigError, GameDisabledError, GameNotFoundError
+from core.errors import GameDisabledError, GameNotFoundError
 
-ROOT = Path(__file__).resolve().parents[2]  # repo root (main/)
+ROOT = Path(__file__).resolve().parents[2]
 GAMES_ROOT = ROOT / "backend" / "games"
+
+_PROVIDER_SLOT_ALIASES = {
+    # Migration alias for manifests written before visual roles were explicit.
+    "vision_adjudicator": ("vision",),
+}
+_PROVIDER_ENV_ALIASES = {
+    "vision_adjudicator": ("DICE_VISION_PROVIDER",),
+}
 
 
 class GameRegistry:
@@ -26,7 +29,6 @@ class GameRegistry:
         self._games[manifest["id"]] = manifest
 
     def get(self, game_id: str) -> dict[str, Any]:
-        """Get a game manifest by ID, raises GameNotFoundError if not found."""
         manifest = self._games.get(game_id)
         if manifest is None:
             raise GameNotFoundError(game_id)
@@ -37,42 +39,81 @@ class GameRegistry:
 
 
 def load_games() -> GameRegistry:
-    """Scan the games directory for manifests and build the registry."""
     registry = GameRegistry()
     if not GAMES_ROOT.is_dir():
         return registry
     for manifest_path in sorted(GAMES_ROOT.glob("*/manifest.json")):
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
+            game_id = manifest.get("id")
+            if not isinstance(game_id, str) or not game_id.isidentifier():
+                raise ValueError("invalid id")
+            if not isinstance(manifest.get("name"), str):
+                raise ValueError("missing or invalid name")
+            if not isinstance(manifest.get("enabled"), bool):
+                raise ValueError("missing or invalid enabled")
+            texts = manifest.get("texts", {})
+            if not isinstance(texts, dict):
+                raise ValueError("texts must be an object")
+            manifest["texts"] = texts
+
+            if "components" in manifest:
+                legacy_components = manifest["components"]
+                if not isinstance(legacy_components, list) or not all(
+                    isinstance(item, str) and item for item in legacy_components
+                ):
+                    raise ValueError("components must be a list of ids")
+
+            providers = manifest.get("providers", {})
+            if not isinstance(providers, dict) or not all(
+                isinstance(key, str) and isinstance(value, str) and value
+                for key, value in providers.items()
+            ):
+                raise ValueError("providers must map semantic slots to provider ids")
+            # Keep the old flat tts_provider spelling as a migration alias.
+            if "tts" not in providers and isinstance(manifest.get("tts_provider"), str):
+                providers["tts"] = manifest["tts_provider"]
+            manifest["providers"] = providers
+            registry.register(manifest)
+        except (OSError, ValueError, TypeError) as exc:
             print(f"[games] skip {manifest_path}: {exc}", flush=True)
-            continue
-        game_id = manifest.get("id")
-        # ``game_id`` later feeds importlib, so keep it a plain identifier.
-        if not isinstance(game_id, str) or not game_id.isidentifier():
-            print(f"[games] skip {manifest_path}: invalid id", flush=True)
-            continue
-
-        # Basic validation
-        if "name" not in manifest or not isinstance(manifest["name"], str):
-            print(f"[games] skip {manifest_path}: missing or invalid 'name'", flush=True)
-            continue
-        if "enabled" not in manifest or not isinstance(manifest["enabled"], bool):
-            print(f"[games] skip {manifest_path}: missing or invalid 'enabled'", flush=True)
-            continue
-
-        manifest["texts"] = manifest.get("texts", {})
-        manifest["components"] = manifest.get("components", [])
-        registry.register(manifest)
     return registry
 
 
 def require_game(registry: GameRegistry, game_id: str) -> dict[str, Any]:
-    """Return an enabled game's manifest or raise GameNotFoundError/GameDisabledError."""
-    manifest = registry.get(game_id)  # raises GameNotFoundError if not found
+    manifest = registry.get(game_id)
     if not manifest.get("enabled", False):
         raise GameDisabledError(game_id)
     return manifest
+
+
+def resolve_provider_id(
+    manifest: dict[str, Any],
+    provider_slot: str,
+    fallback: str = "",
+) -> str:
+    """Resolve one semantic provider slot from env and game configuration.
+
+    Slots describe responsibility (for example ``vision_adjudicator``), not
+    implementation technology (for example YOLO). Canonical configuration is
+    checked first, followed by narrowly scoped migration aliases.
+    """
+    env_names = (
+        f"DICE_{provider_slot.upper()}_PROVIDER",
+        *_PROVIDER_ENV_ALIASES.get(provider_slot, ()),
+    )
+    for env_name in env_names:
+        override = os.environ.get(env_name, "").strip()
+        if override:
+            return override
+
+    providers = manifest.get("providers", {})
+    if isinstance(providers, dict):
+        for slot in (provider_slot, *_PROVIDER_SLOT_ALIASES.get(provider_slot, ())):
+            configured = providers.get(slot)
+            if isinstance(configured, str) and configured.strip():
+                return configured.strip()
+    return fallback
 
 
 def run_game(
@@ -80,9 +121,18 @@ def run_game(
     game_id: str,
     on_log: Callable[[str], None],
     is_cancelled: Callable[[], bool],
+    on_event: Callable[[dict[str, Any]], None],
     timeout_seconds: float,
+    components: Any,
 ) -> dict[str, Any]:
-    """Run ``games/<id>/pipeline.py:run`` after validating the game is enabled."""
-    require_game(registry, game_id)
+    """Run a game's pipeline with the shared provider registry injected."""
+    manifest = require_game(registry, game_id)
     module = importlib.import_module(f"games.{game_id}.pipeline")
-    return module.run(on_log, is_cancelled, timeout_seconds)
+    return module.run(
+        on_log,
+        is_cancelled,
+        timeout_seconds,
+        components=components,
+        manifest=manifest,
+        on_event=on_event,
+    )

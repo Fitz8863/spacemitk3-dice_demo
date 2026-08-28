@@ -1,0 +1,16 @@
+{
+  "id": "tts_qwen3",
+  "type": "tts",
+  "name": "Qwen3-TTS",
+  "version": "1.0",
+  "enabled": true,
+  "entry": "provider.py:TtsQwen3",
+  "lifecycle": {
+    "start": [
+      "scripts/start_tts.sh"
+    ],
+    "stop": [
+      "scripts/stop_tts.sh"
+    ]
+  }
+}

@@ -27,6 +27,7 @@ web/uploads/
 web/.dice-arena-web.pid
 web/dice-arena-web.log
 .dice-arena.env
+.dice-arena.env.bak
 backend/__pycache__/
 
 # Migrated Qwen3-TTS runtime state and board-local model payloads
