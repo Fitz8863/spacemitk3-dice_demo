@@ -116,7 +116,7 @@ POST /api/adjudicate/<job_id>/cancel     取消
 任务状态 `queued → running → success | error`；阶段 `queued → starting → detecting → verifying → complete | error`。
 
 ### TTS 流协议（`/api/tts/stream`）
-长度前缀帧协议，前端 `web/app.js` 的 `readTtsFrames()` 解析：每帧 = 4 字节大端长度 + WAV 字节；结束帧长度 `0`，错误帧长度 `0xffffffff`（后跟 4 字节消息长度 + 消息）。普通 TTS provider 可由基类返回一个完整 WAV 帧；当前 Qwen3 adapter 复用 `qwen3_tts_interactive.py` 按标点分段并逐帧返回。这是「单请求 + 完整 WAV 帧」，**不是**逐 PCM 帧流。
+长度前缀帧协议，前端 `web/app.js` 的 `readTtsFrames()` 解析：每帧 = 4 字节大端长度 + WAV 字节；结束帧长度 `0`，错误帧长度 `0xffffffff`（后跟 4 字节消息长度 + 消息）。普通 TTS provider 可由基类返回一个完整 WAV 帧；Qwen3 provider 在自己的功能包内按标点分段并逐帧返回。这是「单请求 + 完整 WAV 帧」，**不是**逐 PCM 帧流。
 
 ### Qwen3-TTS 启动与调用链
 
@@ -135,15 +135,16 @@ llama-server --media-backend smt --smt-config-dir qwen3-tts-0.6b \
 web/app.js speakState()
   → POST /api/tts/stream  {text, voice, speed}
   → backend/server.py stream_tts()
-      ├─ importlib 动态加载 qwen3_tts_interactive.py（复用 split_text/synthesize）
+      ├─ TtsDispatcher 选择 manifest 声明的 provider
       ├─ split_text() 按自然标点切段
       └─ 逐段 POST http://127.0.0.1:18080/v1/audio/speech（TTS_REQUEST_LOCK 串行）
   ← 每段 WAV 以长度前缀帧写回，网页 readTtsFrames() 逐段播放
 ```
 
-backend 不自己实现切分，而是 `importlib.util` 动态加载 `tts/qwen3-tts/qwen3_tts_interactive.py` 并复用它的 `split_text()`/`synthesize()`，因此改 interactive 脚本会同步影响 Web 路径。
-
-**命令行调试入口**：`tts/qwen3-tts/run_interactive.sh '文本'`（或省略文本进交互模式）直接驱动 `qwen3_tts_interactive.py`，不经 backend，解码 WAV 后用长生命周期 `aplay` 播 PCM，不落盘 WAV。
+backend 不再动态加载底层 runtime 的交互脚本。Qwen3 的切分和 HTTP 请求位于
+`backend/components/tts_qwen3/client.py`，MOSS 的 chunk 协议位于
+`backend/core/tts_protocol.py`。底层 `tts/*` 目录只保留模型 runtime 和内部启停脚本，
+不提供用户交互式 CLI；调度统一经 `backend/componentctl.py` 和 `TtsDispatcher`。
 
 ## 前端状态机（`web/app.js`）
 
@@ -166,4 +167,5 @@ select → rules → ready → countdown → shaking → open → analysis → r
 ## 子工程规范速查
 
 - **YOLOv8 C++**：C++17，四空格缩进，类 PascalCase、局部/函数 snake_case，RAII 管理 GStreamer/OpenCL/ORT 资源。改动采集或预处理后，必须同时跑 `--self-test --no-display` 和短 `--max-frames` 测试。
-- **Qwen3-TTS**：改动 `qwen3_tts_interactive.py` 后至少验证 `python3 -m py_compile`、`/health` 正常、单段中文直接播放、默认运行不生成 `wav-output/output.wav`、播放结束无残留 `aplay`（详见子工程 `AGENTS.md` 的「修改和验证规则」）。
+- **Qwen3/MOSS TTS**：改动功能包后至少验证 `python3 -m py_compile backend/components/tts_*/*.py`、
+  `python3 -m unittest tests.test_tts_a2 -v` 和已部署板端 `/health`；真实模型合成需在 K3 上执行。

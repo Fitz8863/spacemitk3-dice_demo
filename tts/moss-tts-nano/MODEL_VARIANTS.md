@@ -1,35 +1,9 @@
-# Local decode-cache variants
+# MOSS model variants
 
-This delivery keeps the current dynamic-KV graph on `main` and stores fixed-KV
-alternatives in Git branches. The fixed graphs are derived from the original
-optimized/pruned 320-row graph; only the cache dimension and `fixed_kv_indices`
-initializer differ.
+生产功能包只依赖 `backend/components/tts_moss_nano/config.json` 指定的
+`runtime.model_dir`。如果板端需要切换动态或固定 KV 模型，只需把模型目录切换到
+兼容 MOSS runtime 的交付物并重启 provider；不需要修改 Dice Arena 调度代码。
 
-```bash
-# Keep the dynamic graph (default)
-git switch main
-
-# Fixed optimized graphs for K3 A/B tests
-git switch kv-fixed-512
-git switch kv-fixed-1024
-
-# Restore the original fixed baseline
-git switch kv-fixed-320
-```
-
-Run `git status` before switching. Do not switch with uncommitted changes to the
-tracked model, metadata, README, or checksum files. Each branch keeps the active
-filename `models/MOSS-TTS-Nano-100M-ONNX-xslim-dynq/moss_tts_decode_step.onnx`,
-so the existing launch commands do not change.
-
-The graph builder can reproduce the larger fixed variants from a fixed source:
-
-```bash
-python3 scripts/build_fixed_kv_variants.py \
-  --source /path/to/moss_tts_decode_step.inplace-fixed320.pruned.onnx \
-  --output-dir /tmp/moss-tts-fixed-variants \
-  --capacity 512 --capacity 1024
-```
-
-The host can inspect the graphs, but final SpaceMIT EP/TCM and RTF validation
-must be performed on the K3 board.
+模型目录必须包含 `browser_poc_manifest.json`，并与当前 `OnnxTtsRuntime` API 和
+SpaceMIT EP 版本匹配。切换前请在 K3 上运行组件 health 和一次短文本合成，确认
+采样率、声道数与浏览器播放协议一致。

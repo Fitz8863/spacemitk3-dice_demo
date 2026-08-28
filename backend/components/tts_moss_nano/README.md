@@ -83,3 +83,37 @@ The migrated MOSS source can be updated in `tts/moss-tts-nano` without
 changing Dice Arena core scheduling. If a separate delivery is used, set
 `DICE_MOSS_TTS_ROOT` and optionally `DICE_MOSS_TTS_MODEL_DIR`; the adapter
 contract remains unchanged unless the runtime API changes.
+
+## Component-local configuration
+
+This adapter reads `backend/components/tts_moss_nano/config.json` on startup.
+The file is deliberately kept next to the adapter rather than mixed into the
+runtime delivery. Paths in the checked-in config are relative:
+
+- `runtime.root` is relative to the repository root;
+- `runtime.model_dir` and `voice.reference_audio` are relative to the MOSS
+  runtime root;
+- `voice.name` selects the built-in voice, while `voice.reference_audio`
+  enables voice cloning from a WAV reference.
+
+The precedence is **environment variable > component config > code default**.
+This means existing `DICE_MOSS_TTS_*` deployments continue to work, while
+changing a voice or reference audio normally only requires editing this
+component's config and restarting the TTS provider.
+
+Example voice-clone switch:
+
+```json
+{
+  "voice": {
+    "mode": "clone",
+    "name": "Junhao",
+    "reference_audio": "voice/reference.wav"
+  }
+}
+```
+
+`mode: "builtin"` keeps the built-in voice path and ignores the reference
+file; `mode: "clone"` loads the reference WAV during startup and reuses its
+prompt audio codes for requests. Restart the component after changing this
+section.

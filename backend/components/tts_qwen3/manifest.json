@@ -7,10 +7,11 @@
   "entry": "provider.py:TtsQwen3",
   "lifecycle": {
     "start": [
-      "scripts/start_tts.sh"
+      "backend/components/tts_qwen3/scripts/start_tts.sh"
     ],
     "stop": [
-      "scripts/stop_tts.sh"
+      "backend/components/tts_qwen3/scripts/stop_tts.sh"
     ]
-  }
+  },
+  "config": "config.json"
 }

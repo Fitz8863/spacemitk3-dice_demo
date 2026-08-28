@@ -133,10 +133,13 @@ def main() -> int:
         return 2
     if command is None:
         print(
-            f"Provider {provider.id} has no lifecycle.{args.action} command; manage its runtime externally",
-            file=sys.stderr,
+            f"Provider {provider.id} has no lifecycle.{args.action} command; "
+            "runtime is managed externally",
+            file=sys.stderr if args.action == "start" else sys.stdout,
         )
-        return 2
+        # Cloud and externally managed providers are valid functional packages.
+        # Their health is checked by the provider itself; stop is always a no-op.
+        return 0
 
     completed = subprocess.run(command, cwd=ROOT, check=False)
     if completed.returncode != 0:

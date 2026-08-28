@@ -8,14 +8,14 @@ browser. Providers with lower-latency segmented generation may override
 """
 from __future__ import annotations
 
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import Any, Callable
 
 from core.components import Component
 from core.errors import TtsValidationError
 
 
-class TtsProvider(Component):
+class TtsProvider(Component, ABC):
     """Small stable interface for all speech-synthesis adapters."""
 
     type = "tts"

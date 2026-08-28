@@ -30,12 +30,15 @@ from core.errors import (
 )
 from core.games import load_games, require_game, resolve_provider_id, run_game
 from core.jobs import ComponentJob
+from core.tts_dispatch import TtsDispatcher
+from core.tts_protocol import (
+    encode_audio_frame,
+    encode_end_frame,
+    encode_error_frame,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = ROOT / "web"
-TTS_STREAM_END = 0
-TTS_STREAM_ERROR = 0xFFFFFFFF
-
 load_board_env()
 
 # Resolve runtime settings only after loading the board-local env file.
@@ -100,22 +103,20 @@ def _selected_provider_id(game_id: str, provider_slot: str, fallback: str) -> st
 
 def _selected_tts_id(game_id: str = "dice") -> str:
     try:
-        return _selected_provider_id(game_id, "tts", "tts_qwen3")
+        return TtsDispatcher(COMPONENTS, GAMES).provider_id(game_id)
     except DiceArenaError:
         return "tts_qwen3"
 
 
 def _tts_provider(payload: dict[str, Any], game_id: str | None = None):
-    # Explicit request selection is useful for diagnostics. Normal game calls
-    # send only ``game`` so the backend remains the authority for provider
-    # selection and an operator can switch it with DICE_TTS_PROVIDER.
-    provider_id = payload.get("provider")
-    if not provider_id:
-        provider_id = os.environ.get("DICE_TTS_PROVIDER")
-    if not provider_id and game_id:
-        provider_id = _game_provider_id(game_id, "tts", "tts_qwen3")
-    provider_id = str(provider_id or _selected_tts_id())
-    return COMPONENTS.require(provider_id, expected_type="tts")
+    """Compatibility wrapper for callers that still import this helper."""
+    return TtsDispatcher(COMPONENTS, GAMES).provider(payload, game_id)
+
+
+def _tts_dispatcher() -> TtsDispatcher:
+    # Resolve on demand so tests and board operators can replace the registry
+    # or environment without restarting this module object.
+    return TtsDispatcher(COMPONENTS, GAMES)
 
 
 jobs: dict[str, ComponentJob] = {}
@@ -325,9 +326,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/tts/stream":
             try:
                 payload = self.read_json()
-                provider = _tts_provider(payload, payload.get("game"))
+                dispatcher = _tts_dispatcher()
+                provider = dispatcher.provider(payload)
                 if not callable(getattr(provider, "stream", None)):
-                    raise InvalidRequestError(f"TTS provider {provider.id} does not implement stream()")
+                    raise InvalidRequestError(
+                        f"TTS provider {provider.id} does not implement stream()"
+                    )
             except DiceArenaError as exc:
                 self.send_error_json(exc)
                 return
@@ -346,23 +350,19 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
             def write_frame(audio: bytes) -> None:
-                self.wfile.write(len(audio).to_bytes(4, "big"))
-                self.wfile.write(audio)
+                self.wfile.write(encode_audio_frame(audio))
                 self.wfile.flush()
 
             try:
-                provider.stream(payload, write_frame)
-                self.wfile.write(TTS_STREAM_END.to_bytes(4, "big"))
+                dispatcher.stream(payload, write_frame)
+                self.wfile.write(encode_end_frame())
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 pass
             except Exception as exc:
                 print(f"[tts] stream provider={provider.id} failed: {exc}", flush=True)
                 try:
-                    message = str(exc).encode("utf-8")[:2000]
-                    self.wfile.write(TTS_STREAM_ERROR.to_bytes(4, "big"))
-                    self.wfile.write(len(message).to_bytes(4, "big"))
-                    self.wfile.write(message)
+                    self.wfile.write(encode_error_frame(str(exc)))
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     pass
@@ -370,11 +370,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/tts/synthesize":
             try:
                 payload = self.read_json()
-                provider = _tts_provider(payload, payload.get("game"))
-                synthesize = getattr(provider, "synthesize", None)
-                if not callable(synthesize):
-                    raise InvalidRequestError(f"TTS provider {provider.id} does not implement synthesize()")
-                audio, headers = synthesize(payload)
+                dispatcher = _tts_dispatcher()
+                provider = dispatcher.provider(payload)
+                audio, headers = dispatcher.synthesize(payload)
             except DiceArenaError as exc:
                 self.send_error_json(exc)
             except Exception as exc:

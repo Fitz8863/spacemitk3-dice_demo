@@ -7,7 +7,7 @@
 
 ## 当前实现覆盖（2026-08-28）
 
-以下内容覆盖本文中关于组件调度的旧描述：后端扫描 `backend/components/*/manifest.json`，按 `entry` 动态加载功能包并通过 `ComponentRegistry` 按 ID 注入游戏流程。视觉 provider 继续使用广义 `type=vision`，但必须再声明职责 `role`：当前骰子 YOLO 包是 `role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于获取目标坐标/空间位置的 YOLO 包必须使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得接入裁决器插槽。骰子游戏通过 `manifest.json.providers.vision_adjudicator` 选择裁决器。TTS 通过 `providers.tts`、`DICE_TTS_PROVIDER` 或请求中的诊断字段选择 provider。新增 TTS 不需要修改 `server.py` 或前端：新增功能包并继承 `TtsProvider`，最小实现 `health()` 与 `synthesize()`；只有需要分段低延迟时才覆盖 `stream()`。
+以下内容覆盖本文中关于组件调度的旧描述：后端扫描 `backend/components/*/manifest.json`，按 `entry` 动态加载功能包并通过 `ComponentRegistry` 按 ID 注入游戏流程。视觉 provider 继续使用广义 `type=vision`，但必须再声明职责 `role`：当前骰子 YOLO 包是 `role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于获取目标坐标/空间位置的 YOLO 包必须使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得接入裁决器插槽。骰子游戏通过 `manifest.json.providers.vision_adjudicator` 选择裁决器。TTS 通过 `providers.tts` 或 `DICE_TTS_PROVIDER` 选择 provider；请求体中的 `provider` 不会覆盖后端选择。新增 TTS 不需要修改 `server.py` 或前端：新增功能包并继承 `TtsProvider`，最小实现 `health()` 与 `synthesize()`；只有需要分段低延迟时才覆盖 `stream()`。
 Provider 可在 manifest 的 `lifecycle.start/stop` 中声明本地模型进程管理命令；`backend/componentctl.py` 和 `scripts/start_web.sh` 会按当前选中的 TTS provider 启动对应 runtime，不再把 Web 启动流程绑定到 Qwen3。新增/删除功能包或修改游戏 provider 后需重启后端以重新扫描。
 当前已加入 `tts_moss_nano` 组件：它只负责 Dice Arena 的 `TtsProvider` 适配和本地 HTTP bridge，完整 MOSS-TTS-Nano runtime 源码已迁移到仓库 `tts/moss-tts-nano`，模型/依赖按该目录 `.gitignore` 保留为板端运行时文件；通过 `DICE_MOSS_TTS_ROOT`/`DICE_MOSS_TTS_MODEL_DIR` 可替换路径。bridge 直接复用板端 `OnnxTtsRuntime` 的 `on_pcm_chunk` 回调，按文本 chunk 生成并即时发送 WAV 帧，前端可在首个 chunk 完成后立即播放；当前是 chunk 级流式，不是逐 codec 帧真流式。默认 voice 为 `Junhao`，不支持通用 `speed` 调节，因此适配器只接受 `speed=1.0`。更新 MOSS 独立项目时无需修改 Dice Arena 核心调度；只有外部 runtime Python 接口改变时才需要更新该组件适配器。
 
@@ -97,11 +97,12 @@ main/
 ├── scripts/
 │   ├── start_web.sh                 # 启动板端 Web/API 服务，并默认检查 TTS
 │   ├── stop_web.sh                  # 停止 Web/API 服务
-│   ├── start_tts.sh                 # 检查/启动迁移后的 Qwen3-TTS
-│   ├── stop_tts.sh                  # 停止迁移后的 Qwen3-TTS
+│   ├── start_tts.sh                 # 启动当前游戏选中的 TTS provider
+│   ├── stop_tts.sh                  # 停止当前游戏选中的 TTS provider
 │   └── migrate_qwen3_tts_assets.sh  # 从板端原项目安全同步模型资产
 ├── tts/
-│   └── qwen3-tts/                   # Qwen3-TTS + SpaceMIT llama-server
+│   ├── qwen3-tts/                   # Qwen3-TTS + SpaceMIT llama-server
+│   └── moss-tts-nano/               # MOSS-TTS-Nano + SpaceMIT EP runtime
 │       ├── runtime/bin/              # riscv64 runtime；可提交的小型二进制
 │       ├── qwen3-tts-0.6b/           # 配置、模型权重和 speaker 文件
 │       ├── docs/                     # realtime runtime 构建记录
@@ -241,7 +242,7 @@ TTS 已迁移到当前项目的 `tts/qwen3-tts/`，但它仍作为独立的板�
 Web app.js
   -> 一次 POST /api/tts/stream（完整播报文本）
   -> backend/server.py
-  -> qwen3_tts_interactive.py.split_text() + synthesize()
+  -> backend/components/tts_qwen3/client.py.split_text() + synthesize()
   -> 同一个 HTTP 响应内连续返回长度前缀的完整 WAV 帧
   -> 每个内部片段 POST http://127.0.0.1:18080/v1/audio/speech
   -> tts/qwen3-tts/runtime/bin/llama-server
@@ -251,7 +252,7 @@ Web app.js
 
 因此当前前后端是“代码职责分离、同一个 HTTP 服务部署”，而 TTS 是第三个板端进程。网页只播放后端当前 TTS provider 返回的 WAV；provider 不可用时明确报错，不使用浏览器 `speechSynthesis` 掩盖后端故障。后端对 TTS 请求加了串行锁，避免多个语音生成同时争抢模型和算力资源。
 
-`/v1/audio/speech` 仍需等待单个内部片段的完整 WAV 生成，但网页针对一整段播报只发起一次 `/api/tts/stream`。后端加载迁移后的 `qwen3_tts_interactive.py`，复用 `split_text()` 按自然标点切分，并在每个 `synthesize()` 完成后立即发送一个长度前缀 WAV 帧；浏览器的读取生产者和播放消费者并行工作，第一帧到达即播放，后续帧按顺序播放。当前是“单请求 + 完整 WAV 分段帧”，不是逐 PCM 帧流。`TTS_REQUEST_LOCK` 仍串行保护单个 K3 TTS 服务。
+`/v1/audio/speech` 仍需等待单个内部片段的完整 WAV 生成，但网页针对一整段播报只发起一次 `/api/tts/stream`。后端通过 `TtsDispatcher` 选择游戏 manifest 声明的 provider；Qwen3 在 `backend/components/tts_qwen3/client.py` 按自然标点切分，MOSS 直接转发 chunk 级 WAV 帧。每个完成的 WAV 以长度前缀帧立即写回，浏览器第一帧到达即播放，后续帧按顺序播放。当前是“单请求 + 完整 WAV 分段帧”，不是逐 PCM 帧流。provider 内部锁串行保护单个 K3 TTS 服务。
 
 当前接口：
 
@@ -260,6 +261,11 @@ GET  /api/tts/health
 POST /api/tts/stream       {"text":"...", "voice":"default", "speed":1.0}
 POST /api/tts/synthesize    {"text":"...", "voice":"default", "speed":1.0}
 ```
+
+每个 TTS 功能包都必须包含自己的 `manifest.json`、`config.json`、`provider.py` 和
+`settings.py`。`backend/core/tts_dispatch.py` 只负责按游戏 manifest/环境选择 provider，
+`backend/core/tts_protocol.py` 只负责 WAV 帧协议；本地包可选 `launcher.py` 与 lifecycle
+脚本，云端包不需要进程启停脚本。新增包无需修改 `server.py`、前端或核心调度。
 
 ### 4.6 TTS 文案配置
 

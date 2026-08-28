@@ -14,7 +14,6 @@ artifacts in that directory, matching the existing ``tts/qwen3-tts`` layout;
 """
 from __future__ import annotations
 
-import argparse
 import gc
 import io
 import json
@@ -22,7 +21,6 @@ import os
 import signal
 import sys
 import threading
-import time
 import wave
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,14 +31,19 @@ from urllib.parse import urlsplit
 import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_ROOT = str(PROJECT_ROOT / "tts" / "moss-tts-nano")
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 18082
-DEFAULT_VOICE = "Junhao"
-DEFAULT_MAX_NEW_FRAMES = 120
-DEFAULT_VOICE_CLONE_MAX_TEXT_TOKENS = 24
-DEFAULT_FIRST_CHUNK_TEXT_TOKENS = 16
-DEFAULT_WARMUP_TEXT = "你好，这是 MOSS TTS Nano 在 K3 上的演示。"
+COMPONENT_DIR = Path(__file__).resolve().parent
+BACKEND_ROOT = PROJECT_ROOT / "backend"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+from core.env import load_board_env
+from core.tts_config import load_component_config
+from core.tts_protocol import encode_audio_frame, encode_end_frame, encode_error_frame
+from components.tts_moss_nano.settings import load_settings
+
+load_board_env()
+# Compatibility export for diagnostics; runtime settings are read through the
+# package's single settings loader in ``main``.
+TTS_CONFIG = load_component_config(COMPONENT_DIR)
 
 
 class MossRuntimeError(RuntimeError):
@@ -60,22 +63,6 @@ def _prepend_library_path(path: Path) -> None:
     if value not in entries:
         entries.insert(0, value)
     os.environ["LD_LIBRARY_PATH"] = ":".join(entries)
-
-
-def _resolve_model_dir(root: Path, configured: str | None) -> Path:
-    if configured:
-        model_dir = Path(configured).expanduser()
-        if not model_dir.is_absolute():
-            model_dir = root / model_dir
-        return model_dir.resolve()
-    candidates = (
-        root / "models" / "MOSS-TTS-Nano-100M-ONNX-xslim-dynq",
-        root / "models" / "MOSS-TTS-Nano-100M-ONNX",
-    )
-    for candidate in candidates:
-        if (candidate / "browser_poc_manifest.json").is_file():
-            return candidate.resolve()
-    return candidates[0].resolve()
 
 
 def _wave_bytes(waveform: np.ndarray, sample_rate: int) -> bytes:
@@ -114,16 +101,24 @@ class MossRuntime:
         first_chunk_text_tokens: int,
         warmup_text: str,
         seed: int,
+        ep_intra_thread_num: int = 4,
+        ep_inter_thread_num: int = 1,
+        ep_intra_thread_affinity: str = "8;9;10;11",
+        ep_disable_op_type_filter: str = "",
     ) -> None:
         self.root = root.resolve()
         self.model_dir = model_dir.resolve()
-        self.voice = voice.strip() or DEFAULT_VOICE
+        self.voice = voice.strip() or "Junhao"
         self.reference_audio = reference_audio.resolve() if reference_audio else None
         self.max_new_frames = int(max_new_frames)
         self.voice_clone_max_text_tokens = int(voice_clone_max_text_tokens)
         self.first_chunk_text_tokens = int(first_chunk_text_tokens)
-        self.warmup_text = str(warmup_text).strip() or DEFAULT_WARMUP_TEXT
+        self.warmup_text = str(warmup_text).strip() or "你好，这是 MOSS TTS Nano 在 K3 上的演示。"
         self.seed = int(seed)
+        self.ep_intra_thread_num = int(ep_intra_thread_num)
+        self.ep_inter_thread_num = int(ep_inter_thread_num)
+        self.ep_intra_thread_affinity = str(ep_intra_thread_affinity)
+        self.ep_disable_op_type_filter = str(ep_disable_op_type_filter)
 
         self._runtime: Any | None = None
         self._prompt_audio_codes: list[list[int]] | None = None
@@ -166,10 +161,10 @@ class MossRuntime:
         _prepend_library_path(library_dir)
         os.environ.setdefault("PYTHONUNBUFFERED", "1")
         os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-        os.environ.setdefault("SPACEMIT_EP_INTRA_THREAD_NUM", "4")
-        os.environ.setdefault("SPACEMIT_EP_INTER_THREAD_NUM", "1")
-        os.environ.setdefault("SPACEMIT_EP_INTRA_THREAD_AFFINITY", "8;9;10;11")
-        os.environ.setdefault("SPACEMIT_EP_DISABLE_OP_TYPE_FILTER", "")
+        os.environ.setdefault("SPACEMIT_EP_INTRA_THREAD_NUM", str(self.ep_intra_thread_num))
+        os.environ.setdefault("SPACEMIT_EP_INTER_THREAD_NUM", str(self.ep_inter_thread_num))
+        os.environ.setdefault("SPACEMIT_EP_INTRA_THREAD_AFFINITY", self.ep_intra_thread_affinity)
+        os.environ.setdefault("SPACEMIT_EP_DISABLE_OP_TYPE_FILTER", self.ep_disable_op_type_filter)
 
     def _initialize(self) -> None:
         try:
@@ -187,7 +182,7 @@ class MossRuntime:
 
             runtime = OnnxTtsRuntime(
                 model_dir=self.model_dir,
-                thread_count=4,
+                thread_count=self.ep_intra_thread_num,
                 max_new_frames=self.max_new_frames,
                 do_sample=True,
                 sample_mode="fixed",
@@ -419,8 +414,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 frame = _wave_bytes(waveform, sample_rate)
                 if not frame:
                     return
-                self.wfile.write(len(frame).to_bytes(4, "big"))
-                self.wfile.write(frame)
+                self.wfile.write(encode_audio_frame(frame))
                 self.wfile.flush()
                 print(
                     f"[tts_moss_nano] stream chunk kind={metadata.get('kind', 'audio')} "
@@ -431,17 +425,14 @@ class MossRequestHandler(BaseHTTPRequestHandler):
             try:
                 result = self.server.runtime.synthesize(text, voice, on_pcm_chunk=write_frame)
                 self.server.runtime._validate_result(result)
-                self.wfile.write((0).to_bytes(4, "big"))
+                self.wfile.write(encode_end_frame())
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 pass
             except Exception as exc:
                 print(f"[tts_moss_nano] streaming synthesis failed: {exc}", flush=True)
                 try:
-                    message = str(exc).encode("utf-8")[:2000]
-                    self.wfile.write((0xFFFFFFFF).to_bytes(4, "big"))
-                    self.wfile.write(len(message).to_bytes(4, "big"))
-                    self.wfile.write(message)
+                    self.wfile.write(encode_error_frame(str(exc)))
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     pass
@@ -478,77 +469,28 @@ class MossRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="MOSS-TTS-Nano Dice Arena bridge")
-    parser.add_argument("--root", default=os.environ.get("DICE_MOSS_TTS_ROOT", DEFAULT_ROOT))
-    parser.add_argument("--model-dir", default=os.environ.get("DICE_MOSS_TTS_MODEL_DIR", ""))
-    parser.add_argument("--host", default=os.environ.get("DICE_MOSS_TTS_HOST", DEFAULT_HOST))
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=int(os.environ.get("DICE_MOSS_TTS_PORT", str(DEFAULT_PORT))),
-    )
-    parser.add_argument("--voice", default=os.environ.get("DICE_MOSS_TTS_VOICE", DEFAULT_VOICE))
-    parser.add_argument("--reference-audio", default=os.environ.get("DICE_MOSS_TTS_REFERENCE_AUDIO", ""))
-    parser.add_argument(
-        "--max-new-frames",
-        type=int,
-        default=int(os.environ.get("DICE_MOSS_TTS_MAX_NEW_FRAMES", str(DEFAULT_MAX_NEW_FRAMES))),
-    )
-    parser.add_argument(
-        "--voice-clone-max-text-tokens",
-        type=int,
-        default=int(
-            os.environ.get(
-                "DICE_MOSS_TTS_VOICE_CLONE_MAX_TEXT_TOKENS",
-                str(DEFAULT_VOICE_CLONE_MAX_TEXT_TOKENS),
-            )
-        ),
-    )
-    parser.add_argument(
-        "--first-chunk-text-tokens",
-        type=int,
-        default=int(
-            os.environ.get(
-                "DICE_MOSS_TTS_FIRST_CHUNK_TEXT_TOKENS",
-                str(DEFAULT_FIRST_CHUNK_TEXT_TOKENS),
-            )
-        ),
-    )
-    parser.add_argument(
-        "--warmup-text",
-        default=os.environ.get("DICE_MOSS_TTS_WARMUP_TEXT", DEFAULT_WARMUP_TEXT),
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=int(os.environ.get("DICE_MOSS_TTS_SEED", "1234")),
-    )
-    return parser.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
-    if args.max_new_frames <= 0 or args.voice_clone_max_text_tokens <= 0:
-        raise SystemExit("MOSS TTS frame/token budgets must be positive")
-    if args.first_chunk_text_tokens < 0:
-        raise SystemExit("MOSS TTS first-chunk-text-tokens must be non-negative")
-    root = Path(args.root).expanduser().resolve()
-    model_dir = _resolve_model_dir(root, args.model_dir or None)
-    reference_audio = Path(args.reference_audio).expanduser().resolve() if args.reference_audio else None
+    # This is an internal HTTP process, not a user-facing CLI.  The package
+    # settings loader is the single source for env/config precedence shared
+    # with the provider and lifecycle scripts.
+    settings = load_settings(TTS_CONFIG)
     runtime = MossRuntime(
-        root=root,
-        model_dir=model_dir,
-        voice=str(args.voice),
-        reference_audio=reference_audio,
-        max_new_frames=args.max_new_frames,
-        voice_clone_max_text_tokens=args.voice_clone_max_text_tokens,
-        first_chunk_text_tokens=args.first_chunk_text_tokens,
-        warmup_text=args.warmup_text,
-        seed=args.seed,
+        root=settings.root,
+        model_dir=settings.model_dir,
+        voice=settings.voice,
+        reference_audio=settings.reference_audio,
+        max_new_frames=settings.max_new_frames,
+        voice_clone_max_text_tokens=settings.voice_clone_max_text_tokens,
+        first_chunk_text_tokens=settings.first_chunk_text_tokens,
+        warmup_text=settings.warmup_text,
+        seed=settings.seed,
+        ep_intra_thread_num=settings.ep_intra_thread_num,
+        ep_inter_thread_num=settings.ep_inter_thread_num,
+        ep_intra_thread_affinity=settings.ep_intra_thread_affinity,
+        ep_disable_op_type_filter=settings.ep_disable_op_type_filter,
     )
     runtime.start()
-    server = MossHttpServer((args.host, args.port), runtime)
+    server = MossHttpServer((settings.host, settings.port), runtime)
     runtime._server = server
 
     def shutdown(_signum: int, _frame: Any) -> None:
@@ -558,8 +500,8 @@ def main() -> None:
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
     print(
-        f"[tts_moss_nano] direct bridge listening on http://{args.host}:{args.port}; "
-        f"root={root}; model_dir={model_dir}; voice={runtime.voice}",
+        f"[tts_moss_nano] direct bridge listening on http://{settings.host}:{settings.port}; "
+        f"root={settings.root}; model_dir={settings.model_dir}; voice={runtime.voice}",
         flush=True,
     )
     try:

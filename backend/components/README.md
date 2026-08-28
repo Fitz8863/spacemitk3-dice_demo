@@ -5,12 +5,16 @@ Each runtime adapter is one directory:
 ```text
 backend/components/<provider_id>/
 ├── manifest.json
-└── provider.py
+├── config.json        # required for TTS; component-local runtime settings
+├── provider.py
+└── scripts/            # optional; local runtime lifecycle only
 ```
 
 The backend scans these packages at process startup. Adding or deleting a
 package therefore requires a backend restart, but does not require editing
-`backend/server.py` or a game pipeline.
+`backend/server.py`, `web/app.js`, or a game pipeline. A local package may
+declare `lifecycle.start/stop`; a cloud or externally managed package omits
+those hooks and is still a valid provider.
 
 Minimum TTS manifest:
 
@@ -21,9 +25,16 @@ Minimum TTS manifest:
   "name": "New TTS",
   "version": "1.0",
   "enabled": true,
-  "entry": "provider.py:TtsNew"
+  "entry": "provider.py:TtsNew",
+  "config": "config.json"
 }
 ```
+
+TTS providers should keep their model-specific settings in a component-local
+`config.json` and parse them through a package-local `settings.py` (voice,
+model/runtime path, endpoint, generation and startup tuning).
+Use repository-relative paths in checked-in defaults; environment variables may
+override them for board-local deployments.
 
 A provider that owns a local model process may also declare lifecycle commands:
 
@@ -45,6 +56,29 @@ python3 backend/componentctl.py start tts_new
 python3 backend/componentctl.py stop tts_new
 python3 backend/componentctl.py start-selected tts --game dice
 python3 backend/componentctl.py selected vision_adjudicator --game dice
+```
+
+### Package templates
+
+Cloud/external TTS (no process lifecycle):
+
+```text
+backend/components/tts_cloud_xxx/
+├── manifest.json
+├── config.json          # runtime.kind=cloud, absolute runtime.base_url
+├── settings.py
+└── provider.py
+```
+
+Local TTS (optional process lifecycle):
+
+```text
+backend/components/tts_local_xxx/
+├── manifest.json
+├── config.json          # runtime.kind=local
+├── settings.py
+├── provider.py
+└── scripts/start_tts.sh # optional lifecycle hook
 ```
 
 ## TTS interface

@@ -159,7 +159,7 @@ TTS 在 K3 上作为独立的 `llama-server` 进程运行：
 ```text
 浏览器 Audio
   <- 单次 POST /api/tts/stream；连续接收长度前缀 WAV 帧
-  <- backend/server.py（按自然标点复用 qwen3_tts_interactive.py）
+  <- backend/server.py（通过 TtsDispatcher 调用当前 provider）
   <- 多次 POST http://127.0.0.1:18080/v1/audio/speech（同一个后端请求内部）
   <- tts/qwen3-tts/runtime/bin/llama-server
 ```
@@ -175,7 +175,7 @@ curl -fsS http://127.0.0.1:18080/health
 
 模型约 2 GB，因此 `*.onnx`、`*.gguf`、speaker `*.bin`、参考音频、生成 WAV、日志和 PID 均不提交 GitHub。迁移脚本默认只复制当前 `config.json` 指定的 speaker 文件，不复制 `voice_presets/source_audio` 或其他未配置的音色。浏览器只播放后端当前 TTS provider 返回的 WAV；provider 不可用时会明确报错，不使用浏览器 `speechSynthesis` 掩盖后端故障。
 
-当前 `/v1/audio/speech` 仍然是“一次请求返回一个完整 WAV”，不是逐 PCM 帧接口。网页现在不会切段后发起多个请求：针对一整段规则只发起一次 `/api/tts/stream`，后端内部复用 `qwen3_tts_interactive.py` 的自然标点切分和逐段生成，将每个已经完成的 WAV 以长度前缀帧立即写入同一个 HTTP 响应；浏览器收到第一帧后马上播放，同时继续读取后续帧。因此这是“单 HTTP 请求内的完整 WAV 分段流”，不是逐 PCM 帧流。
+当前 `/v1/audio/speech` 仍然是“一次请求返回一个完整 WAV”，不是逐 PCM 帧接口。网页针对一整段规则只发起一次 `/api/tts/stream`，后端由 `TtsDispatcher` 选择游戏 manifest 声明的 provider；Qwen3 provider 在内部按自然标点切分并逐段生成，MOSS provider 直接转发 chunk 级 WAV 帧。浏览器收到第一帧后马上播放，同时继续读取后续帧。
 
 手工测试后端代理：
 
@@ -286,7 +286,7 @@ DICE_TTS_PROVIDER=tts_new scripts/start_web.sh
 
 组件包可在 `manifest.json.lifecycle` 声明自己的启动/停止命令；`scripts/start_web.sh` 和 systemd Web 服务会启动当前选中的 TTS provider，而不是硬编码启动 Qwen3。没有本地生命周期、由外部服务管理的 provider 可设置 `TTS_AUTOSTART=0`。新增/删除组件或修改游戏 `providers` 后需要重启后端，使注册表重新扫描。
 
-TTS 请求也支持传递 `provider` 进行调试，但正式游戏请求只传 `game`，由后端根据游戏配置选择 provider。查看组件和运行状态：
+正式 TTS 请求只传 `game`、`text`、`voice` 和 `speed`，由后端根据游戏配置选择 provider；请求体中的 `provider` 不会覆盖后端选择。查看组件和运行状态：
 
 ```bash
 curl http://127.0.0.1:8080/api/components

@@ -108,6 +108,18 @@ def _validate_manifest(manifest_path: Path, manifest: Any) -> dict[str, Any]:
         raise ValueError("entry must name a Python module inside the provider package and a class")
     if manifest_path.parent.name != component_id:
         raise ValueError(f"directory name {manifest_path.parent.name!r} must match id {component_id!r}")
+    config_file = manifest.get("config")
+    if provider_type == "tts" and config_file is None:
+        raise ValueError("TTS provider manifest must declare a component-local config")
+    if config_file is not None:
+        config_path = Path(config_file)
+        if (
+            not isinstance(config_file, str)
+            or config_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in config_path.parts)
+            or not (manifest_path.parent / config_path).is_file()
+        ):
+            raise ValueError("config must name an existing file inside the provider package")
     lifecycle = manifest.get("lifecycle", {})
     if not isinstance(lifecycle, dict):
         raise ValueError("lifecycle must be an object")
@@ -207,6 +219,7 @@ class ComponentRegistry:
                 "version": manifest.get("version") or component.version or "",
                 "enabled": manifest.get("enabled", True),
                 "capabilities": list(manifest.get("capabilities", [])),
+                "config": manifest.get("config"),
             }
             if include_health:
                 try:

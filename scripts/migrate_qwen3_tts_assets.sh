@@ -76,9 +76,9 @@ copy_path() {
 }
 
 for path in \
-    AGENTS.md README.md .gitignore start_server.sh stop_server.sh run_interactive.sh \
-    qwen3_tts_interactive.py runtime docs/build-llama-realtime-k3.md \
-    patches/llama.cpp-realtime.patch voice_embeddings voice_presets/README.md \
+    AGENTS.md README.md .gitignore start_server.sh stop_server.sh runtime \
+    docs/build-llama-realtime-k3.md \
+    patches/llama.cpp-realtime.patch voice_presets/README.md \
     voice_presets/manifest.json; do
     copy_path "$path"
 done

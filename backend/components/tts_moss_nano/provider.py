@@ -2,26 +2,23 @@
 from __future__ import annotations
 
 import json
-import os
-import socket
 import urllib.error
 import urllib.request
-from pathlib import Path
 from typing import Any, Callable
 
-from core.env import load_board_env
 from core.errors import TtsServiceError, TtsValidationError
 from core.tts import TtsProvider
+from core.tts_protocol import TtsProtocolError, iter_audio_frames, validate_wav
+from components.tts_moss_nano.settings import load_settings
 
-load_board_env()
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_ROOT = str(PROJECT_ROOT / "tts" / "moss-tts-nano")
-DEFAULT_URL = "http://127.0.0.1:18082"
-MOSS_ROOT = os.environ.get("DICE_MOSS_TTS_ROOT", DEFAULT_ROOT).rstrip("/")
-MOSS_URL = os.environ.get("DICE_MOSS_TTS_URL", DEFAULT_URL).rstrip("/")
-MOSS_TIMEOUT_SECONDS = float(os.environ.get("DICE_MOSS_TTS_TIMEOUT_SECONDS", "120"))
-MOSS_VOICE = os.environ.get("DICE_MOSS_TTS_VOICE", "Junhao").strip() or "Junhao"
+SETTINGS = load_settings()
+MOSS_ROOT = str(SETTINGS.root).rstrip("/")
+MOSS_URL = SETTINGS.base_url
+MOSS_TIMEOUT_SECONDS = SETTINGS.request_timeout_seconds
+MOSS_VOICE = SETTINGS.voice
+MOSS_VOICE_MODE = SETTINGS.voice_mode
+MOSS_REFERENCE_AUDIO = str(SETTINGS.reference_audio) if SETTINGS.reference_audio else ""
 MOSS_ENGINE = "moss-tts-nano-spacemit-ep"
 
 
@@ -36,23 +33,6 @@ def _json_request(url: str, *, timeout: float) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise TtsServiceError("provider=tts_moss_nano returned a non-object health response")
     return payload
-
-
-def _read_exact(response: Any, size: int) -> bytes:
-    chunks: list[bytes] = []
-    remaining = int(size)
-    while remaining:
-        chunk = response.read(remaining)
-        if not chunk:
-            raise TtsServiceError("provider=tts_moss_nano stream ended before a complete frame")
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
-
-
-def _validate_wav(audio: bytes) -> None:
-    if len(audio) < 44 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
-        raise TtsServiceError("provider=tts_moss_nano did not return a valid WAV")
 
 
 class TtsMossNano(TtsProvider):
@@ -76,6 +56,9 @@ class TtsMossNano(TtsProvider):
                 "root": MOSS_ROOT,
                 "engine": MOSS_ENGINE,
                 "voice": MOSS_VOICE,
+                "voice_mode": MOSS_VOICE_MODE,
+                "reference_audio": MOSS_REFERENCE_AUDIO or None,
+                "supports_voice_clone": True,
                 "supports_speed": False,
                 "supports_stream": True,
                 "error": str(exc),
@@ -89,6 +72,9 @@ class TtsMossNano(TtsProvider):
             "root": MOSS_ROOT,
             "engine": MOSS_ENGINE,
             "voice": MOSS_VOICE,
+            "voice_mode": MOSS_VOICE_MODE,
+            "reference_audio": MOSS_REFERENCE_AUDIO or None,
+            "supports_voice_clone": True,
             "supports_speed": False,
             "supports_stream": True,
         })
@@ -142,7 +128,10 @@ class TtsMossNano(TtsProvider):
         except (OSError, urllib.error.URLError, TimeoutError) as exc:
             raise TtsServiceError(f"provider={self.id} unavailable at {MOSS_URL}: {exc}") from exc
 
-        _validate_wav(audio)
+        try:
+            validate_wav(audio)
+        except TtsProtocolError as exc:
+            raise TtsServiceError(f"provider={self.id} did not return a valid WAV") from exc
         headers["Content-Type"] = content_type
         return audio, headers
 
@@ -156,23 +145,12 @@ class TtsMossNano(TtsProvider):
         )
         try:
             with urllib.request.urlopen(request, timeout=MOSS_TIMEOUT_SECONDS) as response:
-                while True:
-                    length = int.from_bytes(_read_exact(response, 4), "big")
-                    if length == 0:
-                        return
-                    if length == 0xFFFFFFFF:
-                        message_length = int.from_bytes(_read_exact(response, 4), "big")
-                        if message_length > 64 * 1024:
-                            raise TtsServiceError("provider=tts_moss_nano returned an oversized error frame")
-                        message = _read_exact(response, message_length).decode("utf-8", errors="replace")
-                        raise TtsServiceError(message or "MOSS streaming synthesis failed")
-                    if length < 44 or length > 32 * 1024 * 1024:
-                        raise TtsServiceError(f"provider=tts_moss_nano returned invalid frame length: {length}")
-                    audio = _read_exact(response, length)
-                    _validate_wav(audio)
+                for audio in iter_audio_frames(response):
                     write_frame(audio)
+        except TtsProtocolError as exc:
+            raise TtsServiceError(f"provider={self.id} stream protocol error: {exc}") from exc
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:500]
             raise TtsServiceError(f"provider={self.id} HTTP {exc.code}: {detail}") from exc
-        except (OSError, urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        except (OSError, urllib.error.URLError, TimeoutError) as exc:
             raise TtsServiceError(f"provider={self.id} stream unavailable at {MOSS_URL}: {exc}") from exc

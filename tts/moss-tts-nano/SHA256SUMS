@@ -1,4 +1,4 @@
-8b075491b8973e7b32d3b96ae69edc1239bdd3bd0ca151c8a478a4c4378bf15f  ./README.md
+7e6c2c2b083a0581611d8701fd5f84fb1a4a7534382249e646690cff36405b05  ./README.md
 b59901c87e521990f37e6d6d15189a16ade2f0806ed704c309a1b730acddb9b6  ./assets/warm-female-reference.wav
 60a9c715a68222eccd9197fb1bf2fd2291b34b70fad91dda5d9f17e850f502f8  ./include/spacemit_ort_env.h
 65b9a2f4da883af2b60d1b4214ccd040cbf3fc5ca67e38117065c1bdbf0ade9e  ./include/spacemit_ort_env_c_api.h
@@ -857,12 +857,6 @@ e1bdd50ba03a85f27ac5198bd9a4c6a8a429fa81a56c33dbfec84ba25b98a9b9  ./python/sound
 01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b  ./python/soundfile-0.14.0.dist-info/zip-safe
 085feb318464c2a5e82747e0d6da43c214f3a6a4ed3a7a18f2c07fe7b3750df2  ./python/soundfile.py
 dd14276594a198f0d8b3ce1a0320189026bce36ca9aea3f48687631b8a411a14  ./python/spacemit_ort/__init__.py
-ffa10447894b20c73bb7977492a8890c6f6142469a02cf3a7b62f8bb20ba7a2b  ./run_demo.sh
-cf07e2b1f895fe3089c293dea1729e463203b67796fe49c9704ea2863a4bbd09  ./run_interactive.sh
-83c9b8985e03967171a3ae609b94e72a1df71b09d788fad614d4dfbbd1617895  ./run_voice_clone.sh
-510edf2bd132706a5b8316be33fd6720670cbe925eed8ee5dcd5e4e71ec1e47a  ./scripts/run_guarded.sh
-a716fac7d2c6bd4ef28acbd8112acd26fad8db0c157610e32e32dcd4d84ddb32  ./src/moss_spacemit_demo.py
-c5d393d4f7d814b57d4d6ae2837dfdd2d9e88e6b722035d06480af4a5ad554a6  ./src/moss_spacemit_interactive.py
 e2dfdcaf386b2ee9befa8ca8c14331b63053cd4b56a7ba114c5db67b012f246e  ./src/moss_tts_nano/__init__.py
 a559ab8042bf69ba6a05515e7f3f421e288e02d3a12a87222ebde4615c77a2a2  ./src/moss_tts_nano/defaults.py
 6c06381f98d18a13b483a8df15cba43f4865758968c50f5e4ef7ce04dabcc0c5  ./src/onnx_tts_runtime.py

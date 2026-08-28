@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import tempfile
 import sys
 import threading
 import time
@@ -20,10 +22,12 @@ from core.components import Component, ComponentRegistry, _validate_manifest, bu
 from core.games import resolve_provider_id  # noqa: E402
 from core.jobs import ComponentJob  # noqa: E402
 from core.tts import TtsProvider  # noqa: E402
+from core.tts_config import TtsConfigError, load_component_config, resolve_config_path  # noqa: E402
 from core.vision import VisionAdjudicatorProvider, VisionLocalizerProvider  # noqa: E402
 from components.vision_yolo.provider import _consume_legacy_log_line  # noqa: E402
-from components.tts_moss_nano.daemon import _wave_bytes  # noqa: E402
-from components.tts_moss_nano.provider import TtsMossNano  # noqa: E402
+from components.tts_moss_nano.daemon import TTS_CONFIG as MOSS_CONFIG, _wave_bytes  # noqa: E402
+from components.tts_moss_nano.provider import MOSS_ROOT, MOSS_VOICE, TtsMossNano  # noqa: E402
+from components.tts_qwen3.provider import TTS_ROOT as QWEN_ROOT, TTS_SPEAKER_FILE  # noqa: E402
 from games.dice import pipeline as dice_pipeline  # noqa: E402
 
 
@@ -65,6 +69,52 @@ class ComponentTests(unittest.TestCase):
         self.assertEqual(registry.get_manifest("tts_qwen3")["entry"], "provider.py:TtsQwen3")
         self.assertEqual(registry.get_manifest("tts_moss_nano")["entry"], "provider.py:TtsMossNano")
         self.assertEqual(registry.get_manifest("vision_yolo")["role"], "adjudicator")
+
+    def test_tts_components_have_independent_configs(self):
+        moss = load_component_config(ROOT / "backend" / "components" / "tts_moss_nano")
+        qwen = load_component_config(ROOT / "backend" / "components" / "tts_qwen3")
+        self.assertEqual(moss["voice"]["name"], "Junhao")
+        self.assertIn(moss["voice"]["mode"], {"builtin", "clone"})
+        if moss["voice"]["mode"] == "clone":
+            reference_audio = ROOT / "tts" / "moss-tts-nano" / moss["voice"]["reference_audio"]
+            self.assertTrue(reference_audio.is_file(), reference_audio)
+        self.assertEqual(qwen["voice"]["speaker_file"], "anke.spk.bin")
+        self.assertNotEqual(moss, qwen)
+
+    def test_tts_config_paths_are_repository_relative(self):
+        self.assertEqual(MOSS_CONFIG["runtime"]["root"], "tts/moss-tts-nano")
+        self.assertEqual(Path(MOSS_ROOT), (ROOT / "tts" / "moss-tts-nano").resolve())
+        self.assertEqual(QWEN_ROOT, (ROOT / "tts" / "qwen3-tts").resolve())
+        self.assertEqual(MOSS_VOICE, "Junhao")
+        self.assertEqual(TTS_SPEAKER_FILE, "anke.spk.bin")
+
+    def test_relative_reference_audio_resolves_from_runtime_root(self):
+        runtime_root = ROOT / "tts" / "moss-tts-nano"
+        resolved = resolve_config_path("voice/reference.wav", base_dir=runtime_root)
+        self.assertEqual(resolved, (runtime_root / "voice" / "reference.wav").resolve())
+
+    def test_tts_config_loader_rejects_missing_and_invalid_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            component = Path(temp_dir)
+            with self.assertRaises(TtsConfigError):
+                load_component_config(component)
+            (component / "config.json").write_text("[]", encoding="utf-8")
+            with self.assertRaises(TtsConfigError):
+                load_component_config(component)
+
+    def test_moss_health_declares_voice_clone_without_network(self):
+        provider = TtsMossNano()
+        with patch(
+            "components.tts_moss_nano.provider.urllib.request.urlopen",
+            side_effect=OSError("offline"),
+        ):
+            health = provider.health()
+        self.assertTrue(health["supports_voice_clone"])
+        self.assertEqual(health["voice_mode"], MOSS_CONFIG["voice"]["mode"])
+        if health["voice_mode"] == "clone":
+            self.assertTrue(health["reference_audio"])
+        else:
+            self.assertIsNone(health["reference_audio"])
 
     def test_default_tts_stream_wraps_single_wav(self):
         provider = DummyTts()

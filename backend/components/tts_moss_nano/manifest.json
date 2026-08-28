@@ -19,5 +19,6 @@
     "stop": [
       "backend/components/tts_moss_nano/scripts/stop_tts.sh"
     ]
-  }
+  },
+  "config": "config.json"
 }
