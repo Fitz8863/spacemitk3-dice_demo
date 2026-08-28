@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Local HTTP bridge for the board-local MOSS-TTS-Nano runtime.
 
-The bridge imports the external K3 delivery directly instead of launching its
-interactive CLI and scraping diagnostic output.  This is important for two
-reasons: request completion is no longer coupled to log wording, and the
-runtime's PCM callback can be forwarded as soon as each decoded text chunk is
-available.
+The bridge imports the packaged K3 delivery from Dice Arena's
+``tts/moss-tts-nano`` directory instead of launching its interactive CLI and
+scraping diagnostic output.  This is important for two reasons: request
+completion is no longer coupled to log wording, and the runtime's PCM callback
+can be forwarded as soon as each decoded text chunk is available.
 
-The external project remains outside Dice Arena.  Only its configured root is
-needed at runtime; model files and board-specific Python/runtime dependencies
-are never copied into this repository.
+The source delivery is versioned with the game in ``tts/moss-tts-nano``.
+Board-specific model files, Python wheels, and native libraries remain ignored
+artifacts in that directory, matching the existing ``tts/qwen3-tts`` layout;
+``DICE_MOSS_TTS_ROOT`` can still override the path for development.
 """
 from __future__ import annotations
 
@@ -31,7 +32,8 @@ from urllib.parse import urlsplit
 
 import numpy as np
 
-DEFAULT_ROOT = "/home/spacemit/projects/moss-tts-nano-spacemit-ep-demo-1.0.7-slim-riscv64"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_ROOT = str(PROJECT_ROOT / "tts" / "moss-tts-nano")
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 18082
 DEFAULT_VOICE = "Junhao"

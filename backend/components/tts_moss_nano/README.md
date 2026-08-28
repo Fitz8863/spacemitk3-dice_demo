@@ -1,15 +1,17 @@
 # MOSS-TTS-Nano provider
 
-This is a Dice Arena adapter for the board-local project:
+This is a Dice Arena adapter for the migrated MOSS-TTS-Nano delivery in:
 
 ```text
-/home/spacemit/projects/moss-tts-nano-spacemit-ep-demo-1.0.7-slim-riscv64
+tts/moss-tts-nano/
 ```
 
-The adapter deliberately does **not** copy or modify that project. It imports
-its packaged `OnnxTtsRuntime` directly through a small local HTTP bridge, so
-model files, bundled Python packages, and board-specific runtime changes stay
-in the MOSS checkout.
+The complete runtime source is kept alongside `tts/qwen3-tts`. The adapter
+imports the packaged `OnnxTtsRuntime` directly through a small local HTTP
+bridge. Large board artifacts (models, bundled Python packages, native
+libraries, reference audio, and generated output) stay ignored in that
+directory, so a checkout can either provision them there or override the
+location with `DICE_MOSS_TTS_ROOT` during development.
 
 ## Streaming behavior
 
@@ -35,8 +37,8 @@ SpaceMIT runtime is single-session.
 The defaults are intended for the current K3 board:
 
 ```bash
-DICE_MOSS_TTS_ROOT=/home/spacemit/projects/moss-tts-nano-spacemit-ep-demo-1.0.7-slim-riscv64
-DICE_MOSS_TTS_MODEL_DIR=/home/spacemit/projects/moss-tts-nano-spacemit-ep-demo-1.0.7-slim-riscv64/models/MOSS-TTS-Nano-100M-ONNX-xslim-dynq
+DICE_MOSS_TTS_ROOT=/home/spacemit/projects/dice-game/main/tts/moss-tts-nano
+DICE_MOSS_TTS_MODEL_DIR=/home/spacemit/projects/dice-game/main/tts/moss-tts-nano/models/MOSS-TTS-Nano-100M-ONNX-xslim-dynq
 DICE_MOSS_TTS_HOST=127.0.0.1
 DICE_MOSS_TTS_PORT=18082
 DICE_MOSS_TTS_VOICE=Junhao
@@ -76,6 +78,7 @@ backend must be restarted after changing provider selection.
 /usr/bin/python3 backend/componentctl.py stop tts_moss_nano
 ```
 
-Changing the external MOSS project later only requires updating that project,
-`DICE_MOSS_TTS_ROOT`, or `DICE_MOSS_TTS_MODEL_DIR`; the Dice Arena adapter
-contract remains unchanged unless the external runtime API changes.
+The migrated MOSS source can be updated in `tts/moss-tts-nano` without
+changing Dice Arena core scheduling. If a separate delivery is used, set
+`DICE_MOSS_TTS_ROOT` and optionally `DICE_MOSS_TTS_MODEL_DIR`; the adapter
+contract remains unchanged unless the runtime API changes.

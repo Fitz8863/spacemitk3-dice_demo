@@ -6,6 +6,7 @@ import os
 import socket
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any, Callable
 
 from core.env import load_board_env
@@ -14,7 +15,8 @@ from core.tts import TtsProvider
 
 load_board_env()
 
-DEFAULT_ROOT = "/home/spacemit/projects/moss-tts-nano-spacemit-ep-demo-1.0.7-slim-riscv64"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_ROOT = str(PROJECT_ROOT / "tts" / "moss-tts-nano")
 DEFAULT_URL = "http://127.0.0.1:18082"
 MOSS_ROOT = os.environ.get("DICE_MOSS_TTS_ROOT", DEFAULT_ROOT).rstrip("/")
 MOSS_URL = os.environ.get("DICE_MOSS_TTS_URL", DEFAULT_URL).rstrip("/")

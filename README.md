@@ -6,7 +6,8 @@
 - `backend/server.py`：K3 板端轻量 HTTP bridge；开盖后按局启动 YOLOv8 C++ 进程，使用独立结构化事件通道和 SSE 将进度/结果推送给网页。
 - `vision/yolov8_objdetect/`：迁移的 YOLOv8 K3 摄像头推理工程，保留 OpenCL 前处理、SpaceMIT ONNX Runtime EP、GStreamer 摄像头、骰子分区求和和 LLM 复核逻辑。
 - `tts/qwen3-tts/`：从板端 `/home/spacemit/projects/qwen3-tts` 迁移的 Qwen3-TTS 0.6B + SpaceMIT `llama-server` 服务；网页通过后端代理获取 24 kHz 单声道 WAV。
-- `backend/components/tts_moss_nano/`：MOSS-TTS-Nano 组件适配器；直接复用板端 `/home/spacemit/projects/moss-tts-nano-spacemit-ep-demo-1.0.7-slim-riscv64` 的 SpaceMIT EP runtime，按文本 chunk 流式返回 WAV，模型和 riscv64 依赖不会复制到本仓库。
+- `tts/moss-tts-nano/`：从板端 `/home/spacemit/projects/moss-tts-nano-spacemit-ep-demo-1.0.7-slim-riscv64` 迁移的 MOSS-TTS-Nano SpaceMIT EP runtime 源码与板端交付目录，布局与 `tts/qwen3-tts/` 一致；模型、riscv64 Python 包和 native 库按该目录 `.gitignore` 保留为板端运行时文件。
+- `backend/components/tts_moss_nano/`：MOSS-TTS-Nano 组件适配器；调用仓库内 runtime，按文本 chunk 流式返回 WAV。
 
 当前阶段**不接机械臂**，用人手和网页按钮代替机械臂的摇骰、停骰、开盖指令。胜负由 K3 板端摄像头上的 YOLOv8 检测和大模型复核产生，不由网页随机生成。浏览器摄像头只用于页面预览；实际识别直接读取 K3 摄像头设备。
 
@@ -223,7 +224,7 @@ provider.py         # Component 子类，实现统一接口
 ```text
 vision_yolo  -> vision/adjudicator，执行骰子点数、总和、胜负和 LLM 复核
 tts_qwen3     -> tts provider，代理 Qwen3-TTS
-tts_moss_nano -> tts provider，直接代理板端独立的 MOSS-TTS-Nano SpaceMIT EP runtime，支持 chunk 级 WAV 流式
+tts_moss_nano -> tts provider，代理仓库内 `tts/moss-tts-nano` 的 MOSS-TTS-Nano SpaceMIT EP runtime，支持 chunk 级 WAV 流式
 ```
 
 `vision_yolo` 的 ID 表示当前实现，`role=adjudicator` 才表示它在系统里的职责。以后即使新增的空间定位模块也使用 YOLO，也必须注册为 `role=localizer` 并继承 `VisionLocalizerProvider`，不能接入裁决器插槽。
@@ -247,14 +248,14 @@ DICE_TTS_PROVIDER=tts_moss_nano scripts/start_web.sh
 MOSS 组件默认使用：
 
 ```text
-/home/spacemit/projects/moss-tts-nano-spacemit-ep-demo-1.0.7-slim-riscv64
+/home/spacemit/projects/dice-game/main/tts/moss-tts-nano
 ```
 
 MOSS 组件直接调用板端 runtime 的 `on_pcm_chunk` 回调：每个文本 chunk 解码完成后立即作为一个 WAV 帧送入
 `/api/tts/stream`，网页收到首帧就开始播放，后续 chunk 继续生成并播放。当前是 chunk 级流式，不是逐 codec 帧真流式。
-如果 MOSS 工程路径或启动参数发生变化，只需要在 `.dice-arena.env` 中调整
-`DICE_MOSS_TTS_ROOT`、`DICE_MOSS_TTS_MODEL_DIR`、`DICE_MOSS_TTS_VOICE` 等配置，不要把模型、
-依赖包或板端项目源码复制进 Dice Arena。
+如果使用其他 MOSS 交付目录，只需要在 `.dice-arena.env` 中调整
+`DICE_MOSS_TTS_ROOT`、`DICE_MOSS_TTS_MODEL_DIR`、`DICE_MOSS_TTS_VOICE` 等配置；默认路径已经是仓库内的
+`tts/moss-tts-nano`，模型、依赖包和生成音频按该目录 `.gitignore` 管理。
 
 添加新的 TTS 时，继承 `backend/core/tts.py` 的 `TtsProvider`。最小实现只需要提供 `health()` 和 `synthesize()`；基类会把单个完整 WAV 自动包装成一帧 `/api/tts/stream`。如果新模型支持更低延迟的分段生成，再覆盖 `stream()`：
 
