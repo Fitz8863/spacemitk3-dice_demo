@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import io
+import json
 import sys
 import threading
 import time
 import unittest
+import wave
 from unittest.mock import patch
 from pathlib import Path
 
@@ -19,6 +22,8 @@ from core.jobs import ComponentJob  # noqa: E402
 from core.tts import TtsProvider  # noqa: E402
 from core.vision import VisionAdjudicatorProvider, VisionLocalizerProvider  # noqa: E402
 from components.vision_yolo.provider import _consume_legacy_log_line  # noqa: E402
+from components.tts_moss_nano.daemon import _wave_bytes  # noqa: E402
+from components.tts_moss_nano.provider import TtsMossNano  # noqa: E402
 from games.dice import pipeline as dice_pipeline  # noqa: E402
 
 
@@ -56,8 +61,9 @@ class ComponentTests(unittest.TestCase):
         self.assertEqual(registry.provider_ids("vision"), ["vision_yolo"])
         self.assertEqual(registry.provider_ids("vision", "adjudicator"), ["vision_yolo"])
         self.assertEqual(registry.provider_ids("vision", "localizer"), [])
-        self.assertEqual(registry.provider_ids("tts"), ["tts_qwen3"])
+        self.assertEqual(registry.provider_ids("tts"), ["tts_moss_nano", "tts_qwen3"])
         self.assertEqual(registry.get_manifest("tts_qwen3")["entry"], "provider.py:TtsQwen3")
+        self.assertEqual(registry.get_manifest("tts_moss_nano")["entry"], "provider.py:TtsMossNano")
         self.assertEqual(registry.get_manifest("vision_yolo")["role"], "adjudicator")
 
     def test_default_tts_stream_wraps_single_wav(self):
@@ -66,6 +72,21 @@ class ComponentTests(unittest.TestCase):
         provider.stream({"text": "hello"}, frames.append)
         self.assertEqual(len(frames), 1)
         self.assertEqual(frames[0][:4], b"RIFF")
+
+    def test_moss_chunk_encoder_returns_browser_playable_wav(self):
+        import numpy as np
+
+        audio = _wave_bytes(np.zeros((480, 2), dtype=np.float32), 48000)
+        with wave.open(io.BytesIO(audio), "rb") as wav_file:
+            self.assertEqual(wav_file.getframerate(), 48000)
+            self.assertEqual(wav_file.getnchannels(), 2)
+            self.assertEqual(wav_file.getsampwidth(), 2)
+            self.assertEqual(wav_file.getnframes(), 480)
+
+    def test_moss_provider_rejects_unsupported_speed_before_network(self):
+        provider = TtsMossNano()
+        with self.assertRaisesRegex(Exception, "speed=1.0"):
+            provider.stream({"text": "hello", "speed": 1.1}, lambda _frame: None)
 
     def test_registry_rejects_vision_provider_without_vision_interface(self):
         registry = ComponentRegistry()
