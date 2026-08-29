@@ -18,6 +18,13 @@ from components.vision_yolov8_adjudicator.profile import (  # noqa: E402
     load_component_config,
     load_profile,
 )
+from components.vision_yolov8_adjudicator.rules import (  # noqa: E402
+    RuleError,
+    evaluate_rule,
+    finalize_outcome,
+    fuse_yolo_outcomes,
+    project_result,
+)
 from games.dice import pipeline as dice_pipeline  # noqa: E402
 
 
@@ -100,3 +107,81 @@ def test_component_config_requires_valid_schema(tmp_path: Path):
 def test_dice_pipeline_requires_loaded_profile():
     with pytest.raises(ValueError, match="vision profile"):
         dice_pipeline.run(lambda _: None, lambda: False, 1.0, components=object(), manifest={"providers": {}}, on_event=lambda _: None)
+
+
+def test_majority_vote_requires_strict_majority():
+    assert fuse_yolo_outcomes(["LEFT", "LEFT", "RIGHT"]) == "LEFT"
+    assert fuse_yolo_outcomes(["LEFT", "RIGHT"]) is None
+    assert fuse_yolo_outcomes([]) is None
+
+
+def test_numeric_compare_sums_participant_values():
+    rule = {"kind": "numeric_compare", "aggregation": "sum", "higher_wins": True, "tie_value": "TIE"}
+    observations = [{"participants": {"LEFT": [6, 4], "RIGHT": [3, 5]}}]
+    assert evaluate_rule(rule, observations) == "LEFT"
+
+
+def test_numeric_compare_rejects_wrong_detection_count():
+    rule = {
+        "kind": "numeric_compare",
+        "aggregation": "sum",
+        "higher_wins": True,
+        "tie_value": "TIE",
+        "expected_count": 2,
+    }
+    observations = [{"participants": {"LEFT": [6], "RIGHT": [3, 5]}}]
+    with pytest.raises(RuleError, match="expected_count"):
+        evaluate_rule(rule, observations)
+
+
+def test_categorical_relation_compares_two_participants():
+    rule = {
+        "kind": "categorical_relation",
+        "relations": {"rock": "scissors", "scissors": "paper", "paper": "rock"},
+        "tie_value": "TIE",
+    }
+    observations = [{"participants": {"LEFT": "rock", "RIGHT": "scissors"}}]
+    assert evaluate_rule(rule, observations) == "LEFT"
+    assert evaluate_rule(rule, [{"participants": {"LEFT": "rock", "RIGHT": "rock"}}]) == "TIE"
+
+
+def test_categorical_relation_rejects_unknown_category():
+    rule = {"kind": "categorical_relation", "relations": {"rock": "scissors"}}
+    with pytest.raises(RuleError, match="unknown"):
+        evaluate_rule(rule, [{"participants": {"LEFT": "lizard", "RIGHT": "scissors"}}])
+
+
+def test_llm_success_overrides_yolo_mismatch():
+    result = finalize_outcome(yolo_outcome="LEFT", llm_outcome="RIGHT", llm_status="success")
+    assert result["outcome"]["value"] == "RIGHT"
+    assert result["decision_source"] == "llm_override"
+    assert result["adjudicated"] is True
+
+
+def test_llm_timeout_falls_back_to_yolo():
+    result = finalize_outcome(yolo_outcome="LEFT", llm_outcome=None, llm_status="timeout")
+    assert result["outcome"]["value"] == "LEFT"
+    assert result["decision_source"] == "yolo_timeout_fallback"
+
+
+def test_llm_other_failure_is_an_error():
+    with pytest.raises(RuleError, match="LLM"):
+        finalize_outcome(yolo_outcome="LEFT", llm_outcome=None, llm_status="failure")
+
+
+def test_project_result_adds_generic_and_dice_compatibility_fields():
+    profile = {
+        "game_id": "dice",
+        "llm": {"allowed_outcomes": ["LEFT", "RIGHT", "TIE"]},
+    }
+    decision = finalize_outcome(yolo_outcome="LEFT", llm_outcome="LEFT", llm_status="success")
+    result = project_result(
+        profile,
+        decision,
+        {"rule": "numeric_compare", "participants": {"LEFT": [6, 4], "RIGHT": [3, 5]}},
+    )
+    assert result["profile_id"] == "dice"
+    assert result["provider_id"] == "vision_yolov8_adjudicator"
+    assert result["outcome"]["value"] == "LEFT"
+    assert result["left_values"] == [6, 4]
+    assert result["right_sum"] == 8
