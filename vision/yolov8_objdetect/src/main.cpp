@@ -7,6 +7,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -33,6 +34,7 @@
 #include <deque>
 #include <cerrno>
 #include <unistd.h>
+#include <poll.h>
 
 
 
@@ -40,10 +42,12 @@ namespace {
 using Clock = std::chrono::steady_clock;
 volatile sig_atomic_t g_signal_stop = 0;
 int g_event_fd = -1;
+std::mutex g_event_mutex;
 void on_signal(int) { g_signal_stop = 1; }
 
 void emit_event(const std::string& json) {
     if (g_event_fd < 0) return;
+    std::lock_guard<std::mutex> lock(g_event_mutex);
     const std::string line = json + "\n";
     std::size_t offset = 0;
     while (offset < line.size()) {
@@ -211,6 +215,10 @@ struct Args {
     bool no_llm = false;
     bool rtsp_enabled = false;
     int event_fd = -1;
+    int control_fd = -1;
+    std::string snapshot_dir;
+    bool prewarm = false;
+    std::string view_id = "default";
     std::string rtsp_host = "0.0.0.0";
     int rtsp_port = 8554;
     std::string rtsp_path = "/dice";
@@ -416,6 +424,10 @@ static void usage(const char* exe) {
               << "  --no-llm           disable LLM verification and use stable YOLO result\n"
               << "  --rtsp             publish H.264 to RTSP server with SpaceMIT VPU\n"
               << "  --event-fd FD      write structured JSONL events to an inherited FD\n"
+              << "  --control-fd FD    read vision-control-v1 JSONL commands from an inherited FD\n"
+              << "  --snapshot-dir PATH save stable-frame JPEG snapshots under PATH\n"
+              << "  --prewarm          keep camera/RTSP resident and wait for START_ADJUDICATION\n"
+              << "  --view-id ID       identify this camera view in observation events\n"
               << "  --rtsp-host HOST   RTSP server host, default 127.0.0.1\n"
               << "  --rtsp-port N      RTSP server port, default 8554\n"
               << "  --rtsp-path PATH   RTSP mount path, default /dice\n"
@@ -456,6 +468,12 @@ static bool validate_args(Args& a) {
         std::cerr << "--event-fd must be -1 or an inherited file descriptor >= 3\n";
         return false;
     }
+    if (a.control_fd != -1 && a.control_fd < 3) {
+        std::cerr << "--control-fd must be -1 or an inherited file descriptor >= 3\n";
+        return false;
+    }
+    if (a.snapshot_dir.empty()) a.snapshot_dir = "/tmp/vision-snapshots";
+    if (a.view_id.empty()) a.view_id = "default";
     if (a.rtsp_path.front() != '/') a.rtsp_path.insert(a.rtsp_path.begin(), '/');
     if (a.intra_threads < 1) {
         std::cerr << "--intra-threads must be >= 1\n";
@@ -483,7 +501,7 @@ static bool validate_args(Args& a) {
             return false;
         }
     }
-    if (a.llm_enabled && !a.no_llm) {
+    if (a.llm_enabled && !a.no_llm && a.control_fd < 0 && !a.prewarm) {
         if (a.llm_system_prompt.empty() || a.llm_user_prompt_template.empty()) {
             std::cerr << "config llm.system_prompt and llm.user_prompt_template "
                          "must not be empty\n";
@@ -552,6 +570,10 @@ static bool parse(int argc, char** argv, Args& a) {
             } else if (k == "--no-llm") a.no_llm = true;
             else if (k == "--rtsp") a.rtsp_enabled = true;
             else if (k == "--event-fd" && (v = need(i))) a.event_fd = std::stoi(v);
+            else if (k == "--control-fd" && (v = need(i))) a.control_fd = std::stoi(v);
+            else if (k == "--snapshot-dir" && (v = need(i))) a.snapshot_dir = v;
+            else if (k == "--prewarm") a.prewarm = true;
+            else if (k == "--view-id" && (v = need(i))) a.view_id = v;
             else if (k == "--rtsp-host" && (v = need(i))) a.rtsp_host = v;
             else if (k == "--rtsp-port" && (v = need(i))) a.rtsp_port = std::stoi(v);
             else if (k == "--rtsp-path" && (v = need(i))) a.rtsp_path = v;
@@ -567,6 +589,126 @@ static bool parse(int argc, char** argv, Args& a) {
         return false;
     }
     return validate_args(a);
+}
+
+// Read one newline-delimited control command without blocking the video loop.
+// The protocol is intentionally tiny and forwards JSON untouched to higher
+// layers; command matching is limited to the well-known vision-control-v1
+// verbs so malformed input cannot alter runtime options.
+static std::optional<std::string> read_control_command(int fd, std::string& buffer) {
+    if (fd < 0) return std::nullopt;
+    char chunk[1024];
+    const ssize_t n = ::read(fd, chunk, sizeof(chunk));
+    if (n <= 0) return std::nullopt;
+    buffer.append(chunk, static_cast<size_t>(n));
+    const size_t newline = buffer.find('\n');
+    if (newline == std::string::npos) return std::nullopt;
+    std::string line = buffer.substr(0, newline);
+    buffer.erase(0, newline + 1);
+    return line;
+}
+
+static std::string control_command_name(const std::string& json) {
+    for (const char* command : {"START_ADJUDICATION", "STOP_ADJUDICATION",
+                                "FINAL_RESULT", "CANCEL"}) {
+        if (json.find(std::string("\"command\":\"") + command + "\"") != std::string::npos ||
+            json.find(std::string("\"command\": \"") + command + "\"") != std::string::npos) {
+            return command;
+        }
+    }
+    return {};
+}
+
+static std::string json_string_field(const std::string& json, const char* key) {
+    const std::string marker = std::string("\"") + key + "\"";
+    const size_t start = json.find(marker);
+    if (start == std::string::npos) return {};
+    const size_t colon = json.find(':', start + marker.size());
+    if (colon == std::string::npos) return {};
+    const size_t quote = json.find('"', colon + 1);
+    if (quote == std::string::npos) return {};
+    const size_t end = json.find('"', quote + 1);
+    if (end == std::string::npos) return {};
+    return json.substr(quote + 1, end - quote - 1);
+}
+
+static std::string json_escape(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() + 8);
+    for (const char c : text) {
+        if (c == '\\' || c == '"') out.push_back('\\');
+        if (c == '\n') { out += "\\n"; continue; }
+        if (c == '\r') { out += "\\r"; continue; }
+        out.push_back(c);
+    }
+    return out;
+}
+
+static const char* winner_label(LlmWinner winner);
+
+static std::string save_snapshot(const Args& args, const cv::Mat& bgr,
+                                 uint64_t frame_id) {
+    std::error_code error;
+    std::filesystem::create_directories(args.snapshot_dir, error);
+    if (error) return {};
+    const std::filesystem::path path = std::filesystem::path(args.snapshot_dir) /
+        ("stable-" + args.view_id + "-" + std::to_string(frame_id) + ".jpg");
+    try {
+        if (!cv::imwrite(path.string(), bgr, {cv::IMWRITE_JPEG_QUALITY, 90})) return {};
+    } catch (const cv::Exception&) {
+        return {};
+    }
+    return path.string();
+}
+
+static void emit_observation(const Args& args, const InferenceResult& item,
+                             const std::string& snapshot_path,
+                             const std::string& outcome,
+                             const DiceJudgment* judgment = nullptr) {
+    std::ostringstream event;
+    event << "{\"event\":\"observation\",\"view_id\":\""
+          << json_escape(args.view_id) << "\",\"frame_id\":" << item.id
+          << ",\"stable\":true,\"yolo_outcome\":\"" << json_escape(outcome) << "\"";
+    if (!snapshot_path.empty()) {
+        event << ",\"snapshot\":{\"format\":\"image/jpeg\",\"path\":\""
+              << json_escape(snapshot_path) << "\"}";
+    }
+    if (judgment && judgment->valid) {
+        event << ",\"participants\":{\"" << json_escape(judgment->first_name) << "\":[";
+        for (size_t i = 0; i < judgment->first_values.size(); ++i) {
+            if (i) event << ',';
+            event << judgment->first_values[i];
+        }
+        event << "],\"" << json_escape(judgment->second_name) << "\":[";
+        for (size_t i = 0; i < judgment->second_values.size(); ++i) {
+            if (i) event << ',';
+            event << judgment->second_values[i];
+        }
+        event << "]}";
+    }
+    event << ",\"detections\":[";
+    for (size_t i = 0; i < item.detections.size(); ++i) {
+        if (i) event << ',';
+        const auto& d = item.detections[i];
+        event << "{\"class_id\":" << d.class_id
+              << ",\"label\":\"class_" << d.class_id
+              << "\",\"confidence\":" << std::fixed << std::setprecision(4) << d.confidence
+              << ",\"bbox\":[" << d.x1 << ',' << d.y1 << ','
+              << d.x2 << ',' << d.y2 << "]}";
+    }
+    event << "]}";
+    emit_event(event.str());
+}
+
+static std::string detection_signature(const std::vector<Detection>& detections) {
+    std::ostringstream out;
+    out << detections.size();
+    for (const auto& d : detections) {
+        out << '|' << d.class_id << ':' << std::llround(d.x1) << ','
+            << std::llround(d.y1) << ',' << std::llround(d.x2) << ','
+            << std::llround(d.y2) << ':' << std::llround(d.confidence * 100.0f);
+    }
+    return out.str();
 }
 
 // Ultralytics-style vivid palette. OpenCV colors are BGR.
@@ -1022,7 +1164,7 @@ int main(int argc, char** argv) {
         ::unsetenv("DICE_LLM_API_KEY");
     }
     g_event_fd = a.event_fd;
-    emit_event("{\"event\":\"started\",\"component\":\"vision_yolo\",\"protocol\":\"jsonl-events-v1\"}");
+    emit_event("{\"event\":\"started\",\"component\":\"vision_yolov8_adjudicator\",\"protocol\":\"jsonl-events-v1\"}");
     if (a.yolov8_enabled && !std::filesystem::exists(a.model)) {
         std::cerr << "Model not found: " << a.model << "\n";
         return 2;
@@ -1042,7 +1184,11 @@ int main(int argc, char** argv) {
     LlmDiceVerifier llm_verifier({a.llm_url, a.llm_api_key, a.llm_model,
                                   a.llm_timeout_seconds,
                                   a.llm_system_prompt, a.llm_user_prompt_template});
-    const bool llm_enabled = a.yolov8_enabled && a.llm_enabled && !a.no_llm;
+    // Resident/provider mode performs verification in Python. Keep the old
+    // dice verifier available for the legacy one-shot CLI, but never start it
+    // while a control channel is active.
+    const bool llm_enabled = a.yolov8_enabled && a.llm_enabled && !a.no_llm &&
+                             !a.prewarm && a.control_fd < 0;
     if (!a.yolov8_enabled && a.llm_enabled) {
         std::cerr << "[LLM] disabled because YOLOv8 is disabled.\n";
     } else if (!llm_enabled) {
@@ -1091,13 +1237,19 @@ int main(int argc, char** argv) {
         std::cerr << "Camera open failed.\n";
         return 3;
     }
-    emit_event("{\"event\":\"phase\",\"phase\":\"detecting\"}");
+    emit_event(std::string("{\"event\":\"phase\",\"phase\":\"") +
+               (a.prewarm ? "idle" : "detecting") + "\"}");
     RtspStreamer rtsp_streamer;
     if (a.rtsp_enabled && !rtsp_streamer.start(a.rtsp_host, a.rtsp_port, a.rtsp_path,
                                                 a.width, a.height, camera.negotiated_fps())) {
         rtsp_streamer.stop();
         camera.close();
         return 8;
+    }
+    emit_event("{\"event\":\"ready\",\"view_id\":\"" + json_escape(a.view_id) + "\"}");
+    if (rtsp_streamer.running()) {
+        emit_event("{\"event\":\"video\",\"view_id\":\"" + json_escape(a.view_id) +
+                   "\",\"url\":\"" + json_escape(rtsp_streamer.url()) + "\"}");
     }
 
     if (!a.no_display) {
@@ -1140,6 +1292,52 @@ int main(int argc, char** argv) {
     }
 
     std::atomic<bool> abort{false};
+    // Any explicit control channel owns round activation, even if a caller
+    // omitted --prewarm; this keeps command-driven providers deterministic.
+    std::atomic<bool> adjudication_active{!a.prewarm && a.control_fd < 0};
+    std::atomic<bool> generic_observation_sent{false};
+    std::atomic<int> generic_stable_count{0};
+    std::string generic_last_signature;
+    std::mutex generic_mutex;
+    std::thread control_thread;
+    if (a.control_fd >= 0) {
+        control_thread = std::thread([&] {
+            std::string buffer;
+            while (!g_signal_stop && !abort.load()) {
+                struct pollfd pfd{a.control_fd, POLLIN | POLLHUP | POLLERR, 0};
+                const int ready = ::poll(&pfd, 1, 250);
+                if (ready <= 0) continue;
+                if (pfd.revents & (POLLHUP | POLLERR)) break;
+                auto line = read_control_command(a.control_fd, buffer);
+                if (!line) continue;
+                const std::string command = control_command_name(*line);
+                if (command == "START_ADJUDICATION") {
+                    adjudication_active.store(true);
+                    generic_observation_sent.store(false);
+                    generic_stable_count.store(0);
+                    std::lock_guard<std::mutex> lock(generic_mutex);
+                    generic_last_signature.clear();
+                    emit_event("{\"event\":\"phase\",\"phase\":\"detecting\"}");
+                } else if (command == "STOP_ADJUDICATION") {
+                    adjudication_active.store(false);
+                    emit_event("{\"event\":\"phase\",\"phase\":\"idle\"}");
+                } else if (command == "CANCEL") {
+                    adjudication_active.store(false);
+                    emit_event("{\"event\":\"cancelled\"}");
+                } else if (command == "FINAL_RESULT") {
+                    // Provider owns the generic verdict payload. Preserve it
+                    // as an opaque result event and let the job state machine
+                    // interpret its fields.
+                    const std::string outcome = json_string_field(*line, "outcome");
+                    const std::string source = json_string_field(*line, "source");
+                    emit_event("{\"event\":\"result\",\"outcome\":\"" +
+                               json_escape(outcome) + "\",\"source\":\"" +
+                               json_escape(source.empty() ? "provider" : source) + "\"}");
+                    emit_event("{\"event\":\"complete\",\"phase\":\"complete\"}");
+                }
+            }
+        });
+    }
     std::atomic<bool> preprocess_done{false};
     std::atomic<bool> inference_done{false};
     std::atomic<bool> inference_failed{false};
@@ -1174,6 +1372,20 @@ int main(int argc, char** argv) {
             packet->nv12 = std::make_shared<cv::Mat>(std::move(frame.nv12));
             packet->gst_owner = std::move(frame.owner);
             try {
+                if (!adjudication_active.load()) {
+                    // Resident prewarm keeps capture and RTSP alive while
+                    // avoiding OpenCL preprocessing and detector work.
+                    auto idle_result = std::make_shared<InferenceResult>();
+                    idle_result->id = packet->id;
+                    idle_result->width = packet->width;
+                    idle_result->height = packet->height;
+                    idle_result->nv12 = packet->nv12;
+                    idle_result->gst_owner = packet->gst_owner;
+                    if (result_queue.push(std::move(idle_result))) stats.dropped_result.fetch_add(1);
+                    stats.dropped_result.fetch_add(result_queue.takeDroppedPending());
+                    stats.prepared.fetch_add(1);
+                    continue;
+                }
                 const auto t0 = Clock::now();
                 packet->prep = pre->preprocess(*packet->nv12);
                 if (!a.dump_input.empty() && packet->id == 0) {
@@ -1210,15 +1422,17 @@ int main(int argc, char** argv) {
                 result->height = packet->height;
                 result->nv12 = packet->nv12;
                 result->gst_owner = packet->gst_owner;
-                try {
-                    result->detections = detector->infer(packet->prep.data->data(), packet->prep.data->size(),
-                                                        a.conf, packet->prep.scale, packet->prep.pad_x,
-                                                        packet->prep.pad_y, packet->width, packet->height);
-                } catch (const std::exception& e) {
-                    if (is_tcm_resource_error(e.what())) {
-                        print_tcm_resource_hint(e.what(), a.ep_affinity);
+                if (adjudication_active.load()) {
+                    try {
+                        result->detections = detector->infer(packet->prep.data->data(), packet->prep.data->size(),
+                                                            a.conf, packet->prep.scale, packet->prep.pad_x,
+                                                            packet->prep.pad_y, packet->width, packet->height);
+                    } catch (const std::exception& e) {
+                        if (is_tcm_resource_error(e.what())) {
+                            print_tcm_resource_hint(e.what(), a.ep_affinity);
+                        }
+                        throw;
                     }
-                    throw;
                 }
                 stats.addInfer(std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
                 stats.inferred.fetch_add(1);
@@ -1329,14 +1543,45 @@ int main(int argc, char** argv) {
         if (!item) continue;
 
         const auto t0 = Clock::now();
-        cv::Mat bgr;
-        DiceJudgment judgment;
-        if (item->nv12 && !item->nv12->empty()) {
-            cv::cvtColor(*item->nv12, bgr, cv::COLOR_YUV2BGR_NV12);
-            judgment = judge_dice(bgr, item->detections);
-            DiceJudgment display_judgment = judgment;
+            cv::Mat bgr;
+            DiceJudgment judgment;
+            if (item->nv12 && !item->nv12->empty()) {
+                cv::cvtColor(*item->nv12, bgr, cv::COLOR_YUV2BGR_NV12);
+                judgment = judge_dice(bgr, item->detections);
+                if (a.control_fd >= 0 && adjudication_active.load() &&
+                    judgment.valid && !generic_observation_sent.load()) {
+                    const std::string signature = detection_signature(item->detections);
+                    int stable_count = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(generic_mutex);
+                        if (signature == generic_last_signature) stable_count = generic_stable_count.fetch_add(1) + 1;
+                        else { generic_last_signature = signature; generic_stable_count.store(1); stable_count = 1; }
+                    }
+                    if (stable_count >= a.stable_frames && !generic_observation_sent.exchange(true)) {
+                        const std::string snapshot_path = save_snapshot(a, bgr, item->id);
+                        const DiceResultSnapshot snapshot = make_dice_snapshot(judgment);
+                        emit_observation(a, *item, snapshot_path,
+                                         winner_label(snapshot.winner), &judgment);
+                    }
+                }
+                DiceJudgment display_judgment = judgment;
+            // In resident/prewarm mode frames are continuously published, but
+            // no detections/stability accounting occur until START arrives.
+            if (!adjudication_active.load()) {
+                display_judgment.valid = false;
+                display_judgment.overlay = "Ready";
+            }
             static std::string last_judgment;
-            if (!judgment.valid) {
+            if (!adjudication_active.load()) {
+                // Keep the live camera/RTSP path warm without running the
+                // game-specific judge or LLM.
+            } else if (a.control_fd >= 0) {
+                // Generic provider mode deliberately bypasses the legacy
+                // dice-specific stability/LLM state machine. The provider
+                // consumes the observation above and returns FINAL_RESULT.
+                display_judgment.valid = false;
+                display_judgment.overlay = "YOLO observation";
+            } else if (!judgment.valid) {
                 llm_state.stable_count = 0;
                 llm_state.have_stable_candidate = false;
                 if (judgment.message != last_judgment) {
@@ -1408,6 +1653,9 @@ int main(int argc, char** argv) {
                         llm_state.printed = false;
                         llm_state.attempted_snapshot = current_snapshot;
                         llm_state.llm_winner = LlmWinner::Unknown;
+
+                        const std::string snapshot_path = save_snapshot(a, bgr, item->id);
+                        emit_observation(a, *item, snapshot_path, winner_label(current_snapshot.winner));
 
                         emit_event("{\"event\":\"phase\",\"phase\":\"verifying\",\"stable_frames\":" +
                                    std::to_string(a.stable_frames) + "}");
@@ -1554,6 +1802,7 @@ int main(int argc, char** argv) {
     result_queue.close();
     if (preprocess_thread.joinable()) preprocess_thread.join();
     if (inference_thread.joinable()) inference_thread.join();
+    if (control_thread.joinable()) control_thread.join();
     prepared_queue.clear();
     result_queue.clear();
     if (async_llm) async_llm->stop();
