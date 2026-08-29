@@ -178,6 +178,33 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         self._runtime_snapshot_dirs: dict[str, Path] = {}
         self._runtime_signatures: dict[str, str] = {}
 
+    def shutdown(self) -> None:
+        """Stop all resident runtimes owned by this provider instance.
+
+        Resident mode intentionally keeps camera/RTSP workers alive between
+        rounds, but those workers must not outlive the backend process.  The
+        server calls this hook during SIGTERM cleanup so a restart does not
+        leave an orphan holding the camera device.
+        """
+        runtimes = list(self._runtime_cache.items())
+        snapshot_dirs = list(self._runtime_snapshot_dirs.values())
+        self._runtime_cache.clear()
+        self._runtime_snapshot_dirs.clear()
+        self._runtime_signatures.clear()
+        import shutil
+
+        for _view_id, runtime in runtimes:
+            try:
+                stop = getattr(runtime, "stop", None)
+                if callable(stop):
+                    stop()
+            except Exception:
+                # Shutdown is best-effort; continue cleaning other views and
+                # private snapshot roots even if one runtime is already dead.
+                pass
+        for root in snapshot_dirs:
+            shutil.rmtree(root, ignore_errors=True)
+
     @staticmethod
     def _runtime_signature(profile: Mapping[str, Any], view_id: str) -> str:
         """Return the profile-owned runtime inputs that require a restart."""

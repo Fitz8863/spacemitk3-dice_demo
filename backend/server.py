@@ -13,6 +13,7 @@ import argparse
 import json
 import mimetypes
 import os
+import signal
 import threading
 from http import HTTPStatus
 from urllib.parse import parse_qs, urlsplit
@@ -194,6 +195,26 @@ def _tts_dispatcher() -> TtsDispatcher:
 jobs: dict[str, ComponentJob] = {}
 jobs_lock = threading.Lock()
 active_job_id: str | None = None
+
+
+def _shutdown_runtime_components() -> None:
+    """Stop provider-owned resident workers before the backend exits."""
+    with jobs_lock:
+        active = jobs.get(active_job_id) if active_job_id else None
+    if active is not None and active.status in {"queued", "running"}:
+        active.cancel()
+
+    # Providers own their runtime processes and may expose a provider-specific
+    # shutdown hook.  Keep this seam optional so cloud/fixture providers do
+    # not need lifecycle code just to participate in the registry.
+    for component_id in COMPONENTS.ids():
+        try:
+            component = COMPONENTS.get(component_id)
+            shutdown = getattr(component, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+        except Exception as exc:
+            print(f"[components] shutdown failed for {component_id}: {exc}", flush=True)
 
 _ADJUDICATION_JOB_PREFIXES = ("/api/adjudicate/", "/api/analyze/")
 
@@ -604,10 +625,27 @@ def main() -> None:
         flush=True,
     )
     print(f"Components: {', '.join(COMPONENTS.ids()) or 'none'}", flush=True)
+    shutdown_requested = threading.Event()
+
+    def request_shutdown(signum: int, _frame: Any) -> None:
+        if shutdown_requested.is_set():
+            return
+        shutdown_requested.set()
+        print(f"Received signal {signum}; shutting down runtime components", flush=True)
+        _shutdown_runtime_components()
+        # ``serve_forever`` must be stopped from another thread when called
+        # by a signal handler on the serving thread.
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGINT, request_shutdown)
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass
+    finally:
+        _shutdown_runtime_components()
+        server.server_close()
 
 
 if __name__ == "__main__":

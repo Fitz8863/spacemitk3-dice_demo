@@ -28,6 +28,36 @@ from core.vision import VisionAdjudicatorProvider  # noqa: E402
 WAV = b"RIFF" + b"\0" * 4 + b"WAVE" + b"\0" * 40
 
 
+def test_shutdown_runtime_components_calls_provider_shutdown(monkeypatch):
+    class Provider:
+        id = "vision_dummy"
+        type = "vision"
+        role = "adjudicator"
+
+        def __init__(self):
+            self.shutdown_calls = 0
+
+        def shutdown(self):
+            self.shutdown_calls += 1
+
+    provider = Provider()
+
+    class Registry:
+        def ids(self):
+            return [provider.id]
+
+        def get(self, component_id):
+            assert component_id == provider.id
+            return provider
+
+    monkeypatch.setattr(server, "COMPONENTS", Registry())
+    monkeypatch.setattr(server, "active_job_id", None)
+
+    server._shutdown_runtime_components()
+
+    assert provider.shutdown_calls == 1
+
+
 class DummyVisionAdjudicator(VisionAdjudicatorProvider):
     id = "vision_dummy"
     type = "vision"

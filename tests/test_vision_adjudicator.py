@@ -610,7 +610,9 @@ def test_provider_cancel_keeps_resident_runtime_warm():
     ]
 
 
-def test_resident_round_emits_video_before_waiting_for_observation(tmp_path: Path):
+def test_resident_round_emits_video_before_waiting_for_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """Every resident round must publish its profile video URL immediately."""
     import threading
     import time
@@ -635,6 +637,7 @@ def test_resident_round_emits_video_before_waiting_for_observation(tmp_path: Pat
 
     image = tmp_path / "stable.jpg"
     image.write_bytes(b"resident-round")
+    monkeypatch.setenv("DICE_MEDIAMTX_WEBRTC_BASE_URL", "http://100.118.229.28:8889")
     profile = {
         "game_id": "x",
         "vision": {"stable_frames": 1},
@@ -645,11 +648,14 @@ def test_resident_round_emits_video_before_waiting_for_observation(tmp_path: Pat
     }
     events = []
     detecting = threading.Event()
+    video_ready = threading.Event()
 
     def on_event(event):
         events.append(dict(event))
         if event.get("phase") == "detecting":
             detecting.set()
+        if event.get("event") == "video":
+            video_ready.set()
 
     provider = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime())
     worker = threading.Thread(
@@ -662,10 +668,35 @@ def test_resident_round_emits_video_before_waiting_for_observation(tmp_path: Pat
     )
     worker.start()
     assert detecting.wait(1)
-    time.sleep(0.05)
+    assert video_ready.wait(0.5)
     assert [event["event"] for event in events[:2]] == ["phase", "video"]
     worker.join(2)
     assert not worker.is_alive()
+
+
+def test_provider_shutdown_stops_and_cleans_resident_runtimes(tmp_path: Path):
+    class Runtime:
+        def __init__(self):
+            self.stop_calls = 0
+
+        def stop(self):
+            self.stop_calls += 1
+
+    runtime = Runtime()
+    snapshot_dir = tmp_path / "resident"
+    snapshot_dir.mkdir()
+    provider = VisionYolov8Adjudicator(runtime_factory=lambda vid: runtime)
+    provider._runtime_cache["default"] = runtime
+    provider._runtime_snapshot_dirs["default"] = snapshot_dir
+    provider._runtime_signatures["default"] = "signature"
+
+    provider.shutdown()
+
+    assert runtime.stop_calls == 1
+    assert provider._runtime_cache == {}
+    assert provider._runtime_snapshot_dirs == {}
+    assert provider._runtime_signatures == {}
+    assert not snapshot_dir.exists()
 
 
 def test_normalize_generic_detections_maps_profile_classes_to_participants():
