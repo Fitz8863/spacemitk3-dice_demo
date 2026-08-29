@@ -218,6 +218,23 @@ def test_project_result_adds_generic_and_dice_compatibility_fields():
     assert result["right_sum"] == 8
 
 
+def test_project_result_preserves_frontend_result_contract():
+    profile = {"game_id": "dice", "llm": {"allowed_outcomes": ["LEFT", "RIGHT", "TIE"]}}
+    decision = finalize_outcome(yolo_outcome="LEFT", llm_outcome="RIGHT", llm_status="success")
+    result = project_result(
+        profile,
+        decision,
+        {"participants": {"LEFT": [6, 4], "RIGHT": [3, 5]}},
+    )
+    assert result["first_dice"] == [6, 4]
+    assert result["second_dice"] == [3, 5]
+    assert result["first_sum"] == 10
+    assert result["second_sum"] == 8
+    assert result["winner"] == "RIGHT"
+    assert result["source"] == "llm_override"
+    assert result["llm_winner"] == "RIGHT"
+
+
 def test_llm_request_is_single_turn_with_image(tmp_path: Path):
     image = tmp_path / "stable.jpg"
     image.write_bytes(b"jpeg-bytes")
@@ -455,7 +472,8 @@ def test_normalize_generic_detections_maps_profile_classes_to_participants():
             "class_map": {"0": "1", "1": "rock"},
             "participants": ["LEFT", "RIGHT"],
             "participant_assignment": "x_midpoint",
-        }
+        },
+        "rule": {"kind": "categorical_relation"},
     }
     observation = {
         "width": 100,
@@ -466,3 +484,50 @@ def test_normalize_generic_detections_maps_profile_classes_to_participants():
     }
     normalized = normalize_observation(profile, observation)
     assert normalized["participants"] == {"LEFT": ["1"], "RIGHT": ["rock"]}
+
+
+def test_normalize_numeric_classes_produces_numeric_rule_values():
+    profile = {
+        "vision": {"class_map": {"0": "6"}, "participants": ["LEFT", "RIGHT"], "participant_assignment": "x_midpoint"},
+        "rule": {"kind": "numeric_compare"},
+    }
+    observation = {"width": 100, "detections": [{"class_id": 0, "bbox": [10, 0, 30, 20]}]}
+    assert normalize_observation(profile, observation)["participants"] == {"LEFT": [6], "RIGHT": []}
+
+
+def test_normalize_generic_detections_skips_unknown_class_ids():
+    profile = {"vision": {"class_map": {"0": "1"}, "participants": ["LEFT", "RIGHT"], "participant_assignment": "x_midpoint"}}
+    observation = {
+        "width": 100,
+        "detections": [{"class_id": 9, "label": "class_9", "bbox": [10, 0, 30, 20]}],
+    }
+    assert "participants" not in normalize_observation(profile, observation)
+
+
+def test_multiview_missing_yolo_vote_uses_profile_rule_for_all_views(tmp_path: Path):
+    image = tmp_path / "stable.jpg"; image.write_bytes(b"jpeg")
+
+    class Runtime:
+        def __init__(self, view_id): self.view_id = view_id
+        def start(self, *args, **kwargs):
+            participants = {"LEFT": [6, 6], "RIGHT": [1, 1]}
+            self.events_data = iter([{"event": "observation", "stable": True,
+                                      "yolo_outcome": "LEFT" if self.view_id == "front" else None,
+                                      "snapshot": {"path": str(image)}, "participants": participants}])
+        def send(self, command): pass
+        def events(self): return self.events_data
+        def stop(self): pass
+
+    profile = {
+        "game_id": "dice",
+        "vision": {"participants": ["LEFT", "RIGHT"], "stable_frames": 1},
+        "rule": {"kind": "numeric_compare", "aggregation": "sum", "higher_wins": True, "tie_value": "TIE"},
+        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]},
+        "multi_view": {"enabled": True, "min_views": 2, "views": [{"id": "front"}, {"id": "side"}]},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    result = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime(vid)).adjudicate(
+        VisionAdjudicationRequest("dice", profile, "mixed-votes", 2),
+        on_log=lambda _: None, on_event=lambda _: None, is_cancelled=lambda: False,
+    )
+    assert result["outcome"]["value"] == "LEFT"

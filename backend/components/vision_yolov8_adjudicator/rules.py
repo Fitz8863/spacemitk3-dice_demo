@@ -225,4 +225,12 @@ def project_result(
                     result[f"{prefix}_sum"] = sum(values)
         if profile_id == "dice" and isinstance(result.get("outcome"), Mapping):
             result["winner"] = result["outcome"]["value"]
+            result["first_dice"] = list(participants.get("LEFT", [])) if isinstance(participants.get("LEFT"), (list, tuple)) else []
+            result["second_dice"] = list(participants.get("RIGHT", [])) if isinstance(participants.get("RIGHT"), (list, tuple)) else []
+            result["first_sum"] = result.get("left_sum", 0)
+            result["second_sum"] = result.get("right_sum", 0)
+            result["source"] = result.get("decision_source", "provider")
+            verification = result.get("verification")
+            if isinstance(verification, Mapping):
+                result["llm_winner"] = verification.get("llm_outcome")
     return result

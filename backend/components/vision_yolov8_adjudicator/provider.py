@@ -80,11 +80,18 @@ def normalize_observation(
         except (TypeError, ValueError):
             continue
         class_id = detection.get("class_id")
-        mapped = class_map.get(str(class_id), detection.get("label"))
+        # ``class_N`` is a runtime diagnostic label, never a game value.
+        # Unknown class IDs must be ignored until the profile declares them.
+        mapped = class_map.get(str(class_id))
         if mapped is None:
             continue
-        if mapped is None:
-            continue
+        if isinstance(mapped, str) and isinstance(profile.get("rule"), Mapping):
+            if profile["rule"].get("kind") == "numeric_compare":
+                try:
+                    numeric = float(mapped.strip())
+                    mapped = int(numeric) if numeric.is_integer() else numeric
+                except (TypeError, ValueError):
+                    continue
         participant = grouped[str(participant_names[0])] if center_x < float(width) / 2 else grouped[str(participant_names[1])]
         participant.append(mapped)
     if any(grouped.values()):
@@ -356,11 +363,18 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             normalized = []
             for observation in ordered:
                 normalized.append(normalize_observation(profile, observation))
-            if len(vals) > 1:
-                yolo = fuse_yolo_outcomes(vals)
+            # If every view supplies a runtime verdict, fuse those votes.
+            # Otherwise evaluate the declared profile rule for each view so a
+            # missing/legacy yolo_outcome cannot discard a camera's evidence.
+            computed = [
+                str(item.get("yolo_outcome")) if item.get("yolo_outcome") else evaluate_rule(rule, [item])
+                for item in normalized
+            ]
+            if len(computed) > 1:
+                yolo = fuse_yolo_outcomes(computed)
                 if yolo is None: raise RuntimeError("no strict majority across views")
             else:
-                yolo = vals[0] if vals else evaluate_rule(rule, normalized)
+                yolo = computed[0] if computed else evaluate_rule(rule, normalized)
             on_event({"event":"phase", "phase":"verifying"}); cfg = profile.get("llm", {})
             cfg = cfg if isinstance(cfg, Mapping) else {}
             status, out = "timeout", None
