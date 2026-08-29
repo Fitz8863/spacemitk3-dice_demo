@@ -7,9 +7,14 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from core.vision import VisionAdjudicationRequest, VisionAdjudicatorProvider
-from .llm import OpenAICompatibleVisionVerifier
-from .process import YoloRuntimeProcess
-from .rules import evaluate_rule, finalize_outcome, project_result, fuse_yolo_outcomes
+from components.vision_yolov8_adjudicator.llm import OpenAICompatibleVisionVerifier
+from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess
+from components.vision_yolov8_adjudicator.rules import (
+    evaluate_rule,
+    finalize_outcome,
+    project_result,
+    fuse_yolo_outcomes,
+)
 
 
 class VisionYolov8Adjudicator(VisionAdjudicatorProvider):

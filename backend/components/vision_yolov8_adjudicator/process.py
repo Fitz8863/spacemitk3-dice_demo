@@ -11,7 +11,7 @@ import json
 import os
 import subprocess
 
-from .llm import OpenAICompatibleVisionVerifier, VerificationResult
+from components.vision_yolov8_adjudicator.llm import OpenAICompatibleVisionVerifier, VerificationResult
 
 
 class SnapshotError(ValueError):
