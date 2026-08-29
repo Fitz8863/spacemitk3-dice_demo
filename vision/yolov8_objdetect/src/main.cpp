@@ -638,6 +638,30 @@ static std::string json_string_field(const std::string& json, const char* key) {
     return json.substr(quote + 1, end - quote - 1);
 }
 
+// FINAL_RESULT carries the provider's generic outcome envelope as
+// {"outcome":{"kind":"winner","value":"LEFT"}}.  Keep parsing
+// deliberately small and dependency-free here: the runtime only needs the
+// scalar value to annotate its own event, while Python remains the owner of
+// the full result contract.
+static std::string json_outcome_value(const std::string& json) {
+    const std::string marker = "\"outcome\"";
+    const size_t start = json.find(marker);
+    if (start == std::string::npos) return {};
+    const size_t colon = json.find(':', start + marker.size());
+    if (colon == std::string::npos) return {};
+    const size_t first = json.find_first_not_of(" \t\r\n", colon + 1);
+    if (first == std::string::npos) return {};
+    if (json[first] == '"') {
+        const size_t end = json.find('"', first + 1);
+        return end == std::string::npos ? std::string{} :
+               json.substr(first + 1, end - first - 1);
+    }
+    if (json[first] != '{') return {};
+    const size_t object_end = json.find('}', first + 1);
+    if (object_end == std::string::npos) return {};
+    return json_string_field(json.substr(first, object_end - first + 1), "value");
+}
+
 static std::string json_escape(const std::string& text) {
     std::string out;
     out.reserve(text.size() + 8);
@@ -674,7 +698,8 @@ static void emit_observation(const Args& args, const InferenceResult& item,
     std::ostringstream event;
     event << "{\"event\":\"observation\",\"view_id\":\""
           << json_escape(args.view_id) << "\",\"frame_id\":" << item.id
-          << ",\"stable\":true";
+          << ",\"stable\":true,\"width\":" << item.width
+          << ",\"height\":" << item.height;
     if (!outcome.empty()) {
         event << ",\"yolo_outcome\":\"" << json_escape(outcome) << "\"";
     }
@@ -1343,10 +1368,10 @@ int main(int argc, char** argv) {
                     // Provider owns the generic verdict payload. Preserve it
                     // as an opaque result event and let the job state machine
                     // interpret its fields.
-                    const std::string outcome = json_string_field(*line, "outcome");
+                    const std::string outcome = json_outcome_value(*line);
                     const std::string source = json_string_field(*line, "source");
-                    emit_event("{\"event\":\"result\",\"outcome\":\"" +
-                               json_escape(outcome) + "\",\"source\":\"" +
+                    emit_event("{\"event\":\"result\",\"outcome\":{\"kind\":\"winner\",\"value\":\"" +
+                               json_escape(outcome) + "\"},\"source\":\"" +
                                json_escape(source.empty() ? "provider" : source) + "\"}");
                     emit_event("{\"event\":\"complete\",\"phase\":\"complete\"}");
                 }
