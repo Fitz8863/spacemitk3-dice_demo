@@ -27,7 +27,8 @@ def normalize_observation(
     """Project generic detector boxes into the profile's participants.
 
     The C++ runtime deliberately emits only model-neutral detections.  A
-    profile may opt into the simple two-region ``x_midpoint`` assignment; a
+    profile may opt into ``x_midpoint`` or an explicit ``divider_regions``
+    boundary; a
     runtime-provided ``participants`` object remains authoritative when it is
     available (for example, a future detector with its own tracker).
     """
@@ -45,7 +46,8 @@ def normalize_observation(
             if name in existing
         }
         return result
-    if vision.get("participant_assignment", "") != "x_midpoint":
+    grouping = str(vision.get("grouping") or vision.get("participant_assignment") or "x_midpoint")
+    if grouping not in {"x_midpoint", "divider_regions"}:
         return result
     class_map = vision.get("class_map", {})
     if not isinstance(class_map, Mapping):
@@ -69,6 +71,15 @@ def normalize_observation(
         str(participant_names[0]): [],
         str(participant_names[1]): [],
     }
+    divider = vision.get("divider", {})
+    position = 0.5
+    orientation = "vertical"
+    if grouping == "divider_regions" and isinstance(divider, Mapping):
+        try:
+            position = float(divider.get("position", 0.5))
+        except (TypeError, ValueError):
+            position = 0.5
+        orientation = str(divider.get("orientation", "vertical"))
     for detection in detections:
         if not isinstance(detection, Mapping):
             continue
@@ -77,6 +88,7 @@ def normalize_observation(
             continue
         try:
             center_x = (float(bbox[0]) + float(bbox[2])) / 2.0
+            center_y = (float(bbox[1]) + float(bbox[3])) / 2.0
         except (TypeError, ValueError):
             continue
         class_id = detection.get("class_id")
@@ -92,7 +104,23 @@ def normalize_observation(
                     mapped = int(numeric) if numeric.is_integer() else numeric
                 except (TypeError, ValueError):
                     continue
-        participant = grouped[str(participant_names[0])] if center_x < float(width) / 2 else grouped[str(participant_names[1])]
+        if grouping == "divider_regions" and orientation == "horizontal":
+            height = result.get("height")
+            if not isinstance(height, (int, float)) or height <= 0:
+                height = max(
+                    (float(box[3]) for box in detections
+                     if isinstance(box, Mapping)
+                     and isinstance(box.get("bbox"), (list, tuple))
+                     and len(box["bbox"]) >= 4
+                     and isinstance(box["bbox"][3], (int, float))),
+                    default=0.0,
+                )
+            boundary = float(height) * position
+            is_first = center_y < boundary
+        else:
+            boundary = float(width) * (position if grouping == "divider_regions" else 0.5)
+            is_first = center_x < boundary
+        participant = grouped[str(participant_names[0])] if is_first else grouped[str(participant_names[1])]
         participant.append(mapped)
     if any(grouped.values()):
         result["participants"] = grouped
@@ -377,7 +405,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 yolo = computed[0] if computed else evaluate_rule(rule, normalized)
             on_event({"event":"phase", "phase":"verifying"}); cfg = profile.get("llm", {})
             cfg = cfg if isinstance(cfg, Mapping) else {}
-            status, out = "timeout", None
+            status, out = ("timeout", None) if cfg.get("enabled", True) else ("disabled", None)
             if cfg.get("enabled", True):
                 paths = []
                 for observation in ordered:

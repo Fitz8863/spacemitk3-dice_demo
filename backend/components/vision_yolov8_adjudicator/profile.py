@@ -97,8 +97,21 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(vision.get("participants"), list) or not vision["participants"]:
         raise ProfileError("vision.participants must be a non-empty array")
     assignment = vision.get("participant_assignment", "")
-    if assignment not in {"", "x_midpoint"}:
-        raise ProfileError("vision.participant_assignment must be x_midpoint when provided")
+    grouping = vision.get("grouping", "")
+    if assignment not in {"", "x_midpoint", "divider_regions"}:
+        raise ProfileError("vision.participant_assignment must be x_midpoint or divider_regions")
+    if grouping not in {"", "divider_regions", "x_midpoint"}:
+        raise ProfileError("vision.grouping must be divider_regions or x_midpoint")
+    if grouping == "divider_regions":
+        divider = vision.get("divider", {})
+        if not isinstance(divider, dict):
+            raise ProfileError("vision.divider must be an object")
+        orientation = divider.get("orientation", "vertical")
+        if orientation not in {"vertical", "horizontal"}:
+            raise ProfileError("vision.divider.orientation must be vertical or horizontal")
+        position = divider.get("position", 0.5)
+        if not isinstance(position, (int, float)) or isinstance(position, bool) or not math.isfinite(position) or not 0 < position < 1:
+            raise ProfileError("vision.divider.position must be between 0 and 1")
     if not isinstance(vision.get("stable_frames"), int) or vision["stable_frames"] <= 0:
         raise ProfileError("vision.stable_frames must be a positive integer")
 

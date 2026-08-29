@@ -486,6 +486,27 @@ def test_normalize_generic_detections_maps_profile_classes_to_participants():
     assert normalized["participants"] == {"LEFT": ["1"], "RIGHT": ["rock"]}
 
 
+def test_normalize_divider_regions_uses_profile_divider_not_frame_midpoint():
+    profile = {
+        "vision": {
+            "class_map": {"0": "1", "1": "2"},
+            "participants": ["LEFT", "RIGHT"],
+            "grouping": "divider_regions",
+            "divider": {"orientation": "vertical", "position": 0.65},
+        },
+        "rule": {"kind": "numeric_compare"},
+    }
+    observation = {
+        "width": 100,
+        "detections": [
+            {"class_id": 0, "bbox": [55, 0, 60, 20]},
+            {"class_id": 1, "bbox": [70, 0, 80, 20]},
+        ],
+    }
+    normalized = normalize_observation(profile, observation)
+    assert normalized["participants"] == {"LEFT": [1], "RIGHT": [2]}
+
+
 def test_normalize_numeric_classes_produces_numeric_rule_values():
     profile = {
         "vision": {"class_map": {"0": "6"}, "participants": ["LEFT", "RIGHT"], "participant_assignment": "x_midpoint"},
@@ -531,3 +552,39 @@ def test_multiview_missing_yolo_vote_uses_profile_rule_for_all_views(tmp_path: P
         on_log=lambda _: None, on_event=lambda _: None, is_cancelled=lambda: False,
     )
     assert result["outcome"]["value"] == "LEFT"
+
+
+def test_provider_marks_disabled_llm_as_yolo_only_not_timeout(tmp_path: Path):
+    """Disabling verification must not claim a timeout or a call occurred."""
+    class Runtime:
+        def start(self, *args, **kwargs):
+            self.events_data = iter([{
+                "event": "observation",
+                "stable": True,
+                "yolo_outcome": "LEFT",
+            }])
+        def send(self, command):
+            pass
+        def events(self):
+            return self.events_data
+
+    profile = {
+        "game_id": "x",
+        "vision": {"participants": ["LEFT", "RIGHT"], "stable_frames": 1},
+        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    result = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime()).adjudicate(
+        VisionAdjudicationRequest("x", profile, "llm-disabled", 2),
+        on_log=lambda _: None,
+        on_event=lambda _: None,
+        is_cancelled=lambda: False,
+    )
+    assert result["outcome"]["value"] == "LEFT"
+    assert result["decision_source"] == "yolo_only"
+    assert result["verification"] == {
+        "status": "disabled",
+        "yolo_outcome": "LEFT",
+        "llm_outcome": None,
+        "llm_called": False,
+    }
