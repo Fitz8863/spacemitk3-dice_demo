@@ -56,7 +56,8 @@ class OpenAICompatibleVisionVerifier:
     def verify(
         self,
         *,
-        image_path: str | Path,
+        image_path: str | Path | None = None,
+        image_paths: Sequence[str | Path] | None = None,
         system_prompt: str,
         user_prompt: str,
         allowed_outcomes: Sequence[str],
@@ -64,25 +65,24 @@ class OpenAICompatibleVisionVerifier:
         model: str | None = None,
     ) -> VerificationResult:
         try:
-            path = Path(image_path)
-            data = path.read_bytes()
-            mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
-            if mime not in {"image/jpeg", "image/png"}:
-                return VerificationResult("failure", error="unsupported image format")
-            encoded = base64.b64encode(data).decode("ascii")
+            paths = [Path(p) for p in (image_paths or ([image_path] if image_path is not None else []))]
+            if not paths:
+                return VerificationResult("failure", error="image_path is required")
+            image_parts = []
+            for path in paths:
+                data = path.read_bytes()
+                mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+                if mime not in {"image/jpeg", "image/png"}:
+                    return VerificationResult("failure", error="unsupported image format")
+                encoded = base64.b64encode(data).decode("ascii")
+                image_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}})
             payload = {
                 "model": model or self.model or "",
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "text", "text": user_prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{mime};base64,{encoded}"},
-                            },
-                        ],
+                        "content": [{"type": "text", "text": user_prompt}, *image_parts],
                     },
                 ],
             }

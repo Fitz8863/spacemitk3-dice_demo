@@ -1,9 +1,14 @@
-"""YOLOv8 adjudicator package entry point."""
+"""Resident, game-agnostic YOLOv8 adjudication provider."""
 from __future__ import annotations
 
-from typing import Any
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Mapping
 
 from core.vision import VisionAdjudicationRequest, VisionAdjudicatorProvider
+from .llm import OpenAICompatibleVisionVerifier
+from .process import YoloRuntimeProcess
+from .rules import evaluate_rule, finalize_outcome, project_result, fuse_yolo_outcomes
 
 
 class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
@@ -13,13 +18,48 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
     name = "YOLOv8 Vision Adjudicator"
     version = "2.0"
 
-    def adjudicate(
-        self,
-        request: VisionAdjudicationRequest,
-        *,
-        on_log,
-        on_event,
-        is_cancelled,
-        timeout_seconds: float | None = None,
-    ) -> dict[str, Any]:
-        raise NotImplementedError("YOLOv8 runtime adapter is implemented in a later task")
+    def __init__(self, manifest: dict[str, Any] | None = None, *, runtime_factory: Callable[..., Any] | None = None, verifier: Any | None = None) -> None:
+        super().__init__(manifest)
+        self.runtime_factory = runtime_factory or (lambda view_id="default": YoloRuntimeProcess())
+        self.verifier = verifier or OpenAICompatibleVisionVerifier()
+
+    def adjudicate(self, request: VisionAdjudicationRequest, *, on_log: Callable[[str], None], on_event: Callable[[dict[str, Any]], None], is_cancelled: Callable[[], bool], timeout_seconds: float | None = None) -> dict[str, Any]:
+        profile = request.profile; runtimes = []
+        multi = profile.get("multi_view", {}) if isinstance(profile.get("multi_view"), Mapping) else {}
+        views = multi.get("views") if multi.get("enabled") else None
+        if not isinstance(views, list) or not views: views = [{"id": "default"}]
+        try:
+            def start(v):
+                vid = str(v.get("id", "default")); rt = self.runtime_factory(vid); rt.start(profile, vid, prewarm=True); return rt
+            with ThreadPoolExecutor(max_workers=len(views)) as pool: runtimes.extend(pool.map(start, views))
+            for rt in runtimes: rt.send({"command":"START_ADJUDICATION", "request_id":request.request_id, "profile_id":profile.get("game_id")})
+            on_event({"event":"phase", "phase":"detecting"}); observations = {}
+            for rt, view in zip(runtimes, views):
+                vid = str(view.get("id", "default"))
+                for event in rt.events():
+                    if is_cancelled(): raise RuntimeError("cancelled")
+                    if event.get("event") == "video": on_event(dict(event, view_id=vid))
+                    elif event.get("event") == "observation" and event.get("stable"):
+                        observations[vid] = dict(event, view_id=vid); break
+            if not observations: raise RuntimeError("no stable observation")
+            ordered = [observations[k] for k in sorted(observations)]
+            vals = [str(o["yolo_outcome"]) for o in ordered if o.get("yolo_outcome")]
+            yolo = (fuse_yolo_outcomes(vals) if len(vals) > 1 else (vals[0] if vals else None)) or evaluate_rule(profile.get("rule", {}), ordered)
+            on_event({"event":"phase", "phase":"verifying"}); cfg = profile.get("llm", {}); status, out = "timeout", None
+            if cfg.get("enabled", True):
+                paths = [o.get("snapshot", {}).get("path") for o in ordered if isinstance(o.get("snapshot"), Mapping)]
+                vr = self.verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=float(cfg.get("timeout_seconds", timeout_seconds or request.timeout_seconds)))
+                status, out = vr.status, vr.outcome
+            decision = finalize_outcome(yolo_outcome=yolo, llm_outcome=out, llm_status=status)
+            final = project_result(profile, decision, {**ordered[0], "views": ordered})
+            on_event({"event":"result", **final}); hold = float(profile.get("lifecycle", {}).get("post_result_hold_seconds", 0))
+            if hold > 0:
+                on_event({"event":"phase", "phase":"holding", "remaining_ms":int(hold*1000)}); end = time.monotonic() + hold
+                while time.monotonic() < end:
+                    if is_cancelled(): raise RuntimeError("cancelled")
+                    time.sleep(min(0.25, end-time.monotonic()))
+            on_event({"event":"complete", "phase":"complete"}); return final
+        finally:
+            for rt in runtimes:
+                try: rt.stop()
+                except Exception: pass

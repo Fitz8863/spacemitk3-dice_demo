@@ -32,6 +32,7 @@ from components.vision_yolov8_adjudicator.process import (  # noqa: E402
     SnapshotError,
     verify_snapshot,
 )
+from components.vision_yolov8_adjudicator.provider import VisionYolov8Adjudicator  # noqa: E402
 from games.dice import pipeline as dice_pipeline  # noqa: E402
 
 
@@ -237,6 +238,49 @@ def test_llm_timeout_is_distinguished_from_failure(tmp_path: Path):
     )
     assert result.status == "timeout"
     assert result.outcome is None
+
+
+def test_provider_runs_one_round_and_holds_result(tmp_path: Path):
+    image = tmp_path / "stable.jpg"; image.write_bytes(b"jpeg")
+    class Runtime:
+        def __init__(self, view_id="default"):
+            self.commands = []; self.view_id = view_id
+        def start(self, profile, view_id, prewarm=True): self.events_data = iter([
+            {"event":"started","phase":"starting"}, {"event":"ready","phase":"idle"},
+            {"event":"video","url":"http://x/dice/"},
+            {"event":"observation","stable":True,"yolo_outcome":"LEFT","snapshot":{"path":str(image)},"participants":{"LEFT":[6],"RIGHT":[1]}},
+        ])
+        def send(self, command): self.commands.append(command)
+        def events(self): return self.events_data
+        def stop(self): pass
+    runtimes=[]
+    def factory(view_id="default"):
+        r=Runtime(view_id); runtimes.append(r); return r
+    class Verifier:
+        def __init__(self): self.calls=0
+        def verify(self, **kwargs):
+            self.calls += 1; return type("R", (), {"status":"success","outcome":"LEFT","error":None})()
+    profile={"game_id":"dice","vision":{"stable_frames":1},"llm":{"enabled":True,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT","TIE"]},"multi_view":{"enabled":False,"min_views":1},"lifecycle":{"post_result_hold_seconds":0}}
+    events=[]; verifier=Verifier()
+    result=VisionYolov8Adjudicator(runtime_factory=factory, verifier=verifier).adjudicate(VisionAdjudicationRequest("dice",profile,"r1",2),on_log=lambda x:None,on_event=events.append,is_cancelled=lambda:False)
+    assert result["decision_source"] == "consensus"; assert verifier.calls == 1
+    assert any(r.commands and r.commands[0]["command"] == "START_ADJUDICATION" for r in runtimes)
+
+
+def test_provider_multiview_sends_single_llm_request():
+    class Runtime:
+        def __init__(self, view_id): self.view_id=view_id; self.commands=[]
+        def start(self,*a,**k): self.events_data=iter([{"event":"ready","phase":"idle"},{"event":"observation","stable":True,"yolo_outcome":"LEFT","snapshot":{"path":"/tmp/a.jpg"}},{"event":"observation","stable":True,"yolo_outcome":"LEFT","snapshot":{"path":"/tmp/b.jpg"}}])
+        def send(self,c): self.commands.append(c)
+        def events(self): return self.events_data
+        def stop(self): pass
+    class V:
+        def __init__(self): self.calls=0
+        def verify(self, **kw): self.calls+=1; return type("R",(),{"status":"success","outcome":"LEFT","error":None})()
+    profile={"game_id":"x","vision":{"stable_frames":1},"llm":{"enabled":True,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT"]},"multi_view":{"enabled":True,"min_views":2,"views":[{"id":"a"},{"id":"b"}]},"lifecycle":{"post_result_hold_seconds":0}}
+    v=V(); p=VisionYolov8Adjudicator(runtime_factory=lambda vid:Runtime(vid),verifier=v)
+    out=p.adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
+    assert out["outcome"]["value"] == "LEFT" and v.calls == 1
 
 
 @pytest.mark.parametrize("content", ["not-json", '{"winner":"UNKNOWN"}', '{"winner":1}'])
