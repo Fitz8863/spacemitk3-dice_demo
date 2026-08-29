@@ -3,7 +3,7 @@
 这是 RV 峰会 / 开发者大会「机械臂骰子挑战」的第一版整体效果原型：
 
 - `web/`：大屏 Web 前端，完成游戏列表、规则确认、同步倒计时、双方摇骰、同时开盖、视觉分析动画、胜负播报和再来一局；各游戏的 `manifest.json` 集中维护 TTS 文案与默认音色/语速。
-- `backend/server.py`：K3 板端轻量 HTTP bridge；开盖后按局启动 YOLOv8 C++ 进程，使用独立结构化事件通道和 SSE 将进度/结果推送给网页。
+- `backend/server.py`：K3 板端轻量 HTTP bridge；通过视觉裁决功能包调度 YOLOv8 runtime，并使用独立结构化事件通道和 SSE 将进度/结果推送给网页。
 - `vision/yolov8_objdetect/`：迁移的 YOLOv8 K3 摄像头推理工程，保留 OpenCL 前处理、SpaceMIT ONNX Runtime EP、GStreamer 摄像头、骰子分区求和和 LLM 复核逻辑。
 - `tts/qwen3-tts/`：迁移的 Qwen3-TTS 0.6B + SpaceMIT `llama-server` 服务；网页通过后端代理获取 24 kHz 单声道 WAV。
 - `tts/moss-tts-nano/`：迁移的 MOSS-TTS-Nano SpaceMIT EP runtime 源码与板端交付目录，布局与 `tts/qwen3-tts/` 一致；模型、riscv64 Python 包和 native 库按该目录 `.gitignore` 保留为板端运行时文件。
@@ -142,7 +142,10 @@ POST /api/adjudicate/<job_id>/cancel   取消当前裁决任务
 
 旧的 `/api/analyze...` 路由仍作为迁移别名保留。未来用于目标坐标/空间位置的视觉定位器应使用独立接口和路由，不复用裁决接口。
 
-一次裁决只允许一个 YOLOv8 进程运行，避免多个会话同时争用 K3 的 TCM/算力资源。只有 YOLOv8 识别稳定、且大模型复核结果与 YOLOv8 一致时，后端才返回 `verified:true` 的胜负结果；超时、数量不是 5+5、LLM 失败或结果不一致都会返回错误，不会用网页随机数据兜底。
+一次裁决只允许一个 YOLOv8 runtime 运行，避免多个会话同时争用 K3 的 TCM/算力资源。
+runtime 默认常驻预热，空闲时保持摄像头和视频链路但不做推理；点击裁决后才计稳定帧，
+结果按 profile 的规则生成。LLM 与 YOLO 一致时使用共识结果，LLM 成功但不一致时使用
+LLM 覆盖结果，LLM 超时则受控回退到 YOLO；其他失败、数量不符或超时进入错误，不会用网页随机数据兜底。
 
 ## 迁移的 YOLOv8 工程
 
@@ -246,18 +249,18 @@ provider.py         # Component 子类，实现统一接口
 当前组件：
 
 ```text
-vision_yolo  -> vision/adjudicator，执行骰子点数、总和、胜负和 LLM 复核
+vision_yolov8_adjudicator -> vision/adjudicator，按游戏 profile 执行稳定帧、多视角投票、胜负规则和 LLM 复核
 tts_qwen3     -> tts provider，代理 Qwen3-TTS
 tts_moss_nano -> tts provider，代理仓库内 `tts/moss-tts-nano` 的 MOSS-TTS-Nano SpaceMIT EP runtime，支持 chunk 级 WAV 流式
 ```
 
-`vision_yolo` 的 ID 表示当前实现，`role=adjudicator` 才表示它在系统里的职责。以后即使新增的空间定位模块也使用 YOLO，也必须注册为 `role=localizer` 并继承 `VisionLocalizerProvider`，不能接入裁决器插槽。
+`vision_yolov8_adjudicator` 是当前 YOLOv8 实现，`role=adjudicator` 表示它在系统里的职责。旧 ID `vision_yolo` 仅作为一次性 registry 迁移别名，不再作为独立组件注册。以后即使新增的空间定位模块也使用 YOLO，也必须注册为 `role=localizer` 并继承 `VisionLocalizerProvider`，不能接入裁决器插槽。
 
 游戏通过 `manifest.json` 的 `providers` 选择具体实现：
 
 ```json
 "providers": {
-  "vision_adjudicator": "vision_yolo",
+  "vision_adjudicator": "vision_yolov8_adjudicator",
   "tts": "tts_qwen3"
 }
 ```
@@ -296,7 +299,7 @@ class TtsNew(TtsProvider):
 
 ```json
 "providers": {
-  "vision_adjudicator": "vision_yolo",
+  "vision_adjudicator": "vision_yolov8_adjudicator",
   "tts": "tts_new"
 }
 ```

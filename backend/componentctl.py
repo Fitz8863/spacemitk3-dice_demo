@@ -62,7 +62,7 @@ def _health(provider: Any) -> dict[str, Any]:
 
 def _selected_provider_id(provider_slot: str, game_id: str) -> str:
     manifest = require_game(load_games(), game_id)
-    fallbacks = {"tts": "tts_qwen3", "vision_adjudicator": "vision_yolo"}
+    fallbacks = {"tts": "tts_qwen3", "vision_adjudicator": "vision_yolov8_adjudicator"}
     return resolve_provider_id(
         manifest,
         provider_slot,

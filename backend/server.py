@@ -332,7 +332,7 @@ class Handler(BaseHTTPRequestHandler):
             tts_id = _selected_tts_id()
             tts_health = _provider_health(tts_id, "tts")
             adjudicator_id = _selected_provider_id(
-                "dice", "vision_adjudicator", "vision_yolo"
+                "dice", "vision_adjudicator", "vision_yolov8_adjudicator"
             )
             adjudicator_health = _provider_health(
                 adjudicator_id, "vision", "adjudicator"

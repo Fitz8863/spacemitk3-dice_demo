@@ -33,7 +33,10 @@ from components.vision_yolov8_adjudicator.process import (  # noqa: E402
     SnapshotError,
     verify_snapshot,
 )
-from components.vision_yolov8_adjudicator.provider import VisionYolov8Adjudicator  # noqa: E402
+from components.vision_yolov8_adjudicator.provider import (  # noqa: E402
+    VisionYolov8Adjudicator,
+    normalize_observation,
+)
 from games.dice import pipeline as dice_pipeline  # noqa: E402
 
 
@@ -395,7 +398,7 @@ def test_runtime_process_uses_dedicated_control_and_event_fds(tmp_path: Path):
     script.write_text(
         """#!/usr/bin/env python3
 import argparse, json, os, sys
-p=argparse.ArgumentParser(); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--snapshot-dir',default='/tmp'); p.add_argument('--view-id',default='default'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--no-display',action='store_true'); a=p.parse_args()
+p=argparse.ArgumentParser(); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--snapshot-dir',default='/tmp'); p.add_argument('--view-id',default='default'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--no-display',action='store_true'); p.add_argument('--rtsp',action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path'); a=p.parse_args()
 def emit(e): os.write(a.event_fd, (json.dumps(e)+'\\n').encode())
 print('diagnostic line that is not JSON', flush=True)
 emit({'event':'started','phase':'starting'}); emit({'event':'ready','phase':'idle'}); emit({'event':'video','url':'rtsp://private/cam'})
@@ -444,3 +447,22 @@ def test_provider_sends_final_result_and_stops_resident_runtime(tmp_path: Path):
     VisionYolov8Adjudicator(runtime_factory=lambda vid: runtime, verifier=Verifier()).adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
     assert [c["command"] for c in runtime.commands] == ["START_ADJUDICATION", "FINAL_RESULT", "STOP_ADJUDICATION"]
     assert runtime.commands[1]["outcome"] == {"kind":"winner","value":"LEFT"}
+
+
+def test_normalize_generic_detections_maps_profile_classes_to_participants():
+    profile = {
+        "vision": {
+            "class_map": {"0": "1", "1": "rock"},
+            "participants": ["LEFT", "RIGHT"],
+            "participant_assignment": "x_midpoint",
+        }
+    }
+    observation = {
+        "width": 100,
+        "detections": [
+            {"class_id": 0, "label": "class_0", "bbox": [10, 0, 30, 20]},
+            {"class_id": 1, "label": "class_1", "bbox": [70, 0, 90, 20]},
+        ],
+    }
+    normalized = normalize_observation(profile, observation)
+    assert normalized["participants"] == {"LEFT": ["1"], "RIGHT": ["rock"]}

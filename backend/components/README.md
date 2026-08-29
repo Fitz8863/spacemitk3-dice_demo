@@ -109,19 +109,18 @@ Business progress/results go to `on_event({...})`; `on_log(...)` is diagnostic
 text only. A verified result event uses
 `{"event":"result","verified":true,...}`.
 
-Current manifest:
+Current package manifest:
 
 ```json
 {
-  "id": "vision_yolo",
+  "id": "vision_yolov8_adjudicator",
   "type": "vision",
   "role": "adjudicator",
-  "entry": "provider.py:DiceYoloAdjudicator",
+  "entry": "provider.py:VisionYolov8Adjudicator",
   "capabilities": [
-    "dice.pip_detection",
-    "dice.side_scoring",
-    "dice.outcome_adjudication",
-    "dice.llm_verification"
+    "stable_frame_detection",
+    "multiview_majority_vote",
+    "stateless_multimodal_llm"
   ]
 }
 ```
@@ -138,7 +137,7 @@ Games select adapters through semantic slots:
 
 ```json
 "providers": {
-  "vision_adjudicator": "vision_yolo",
+  "vision_adjudicator": "vision_yolov8_adjudicator",
   "tts": "tts_new"
 }
 ```

@@ -5,6 +5,7 @@
     "model": "vision/yolov8_objdetect/models/best.q.onnx",
     "class_map": {"0": "rock", "1": "scissors", "2": "paper"},
     "participants": ["LEFT", "RIGHT"],
+    "participant_assignment": "x_midpoint",
     "stable_frames": 15
   },
   "multi_view": {

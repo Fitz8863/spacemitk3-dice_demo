@@ -69,7 +69,7 @@ flowchart TD
     Registry[ComponentRegistry\n扫描并注册 provider]
     Game[游戏 manifest + pipeline\n选择语义职责]
     Job[ComponentJob\n异步任务/状态/SSE]
-    YOLO[vision_yolo provider]
+    YOLO[vision_yolov8_adjudicator provider]
     Binary[yolov8_camera C++ 进程]
     Camera[K3 摄像头]
     LLM[大模型复核]
@@ -91,7 +91,9 @@ flowchart TD
 ### 3.1 部署关系
 
 - `web/` 和 `backend/server.py` 由同一个 Python HTTP 服务提供，因此前端和 API 是同源访问。
-- YOLOv8 不是常驻在 Python 中的模型对象，而是每一轮裁决时由视觉 provider 启动的 C++ 子进程。
+- `vision_yolov8_adjudicator` 默认持有 resident runtime：摄像头和 MediaMTX 视频链路
+  预热后保持 idle，收到 `START_ADJUDICATION` 才计稳定帧；结果保持时间结束后回到
+  idle，异常或取消才释放 runtime。
 - TTS 是独立的板端运行时：Qwen3 使用 `llama-server`，MOSS 使用仓库内的 Python HTTP bridge。
 - 浏览器摄像头只用于页面预览；实际骰子识别读取 K3 板端摄像头。
 
@@ -124,7 +126,7 @@ main/
 │   │   ├── vision.py            # 视觉 adjudicator/localizer 接口
 │   │   └── errors.py            # 标准化错误类型和错误码
 │   ├── components/
-│   │   ├── vision_yolo/         # YOLOv8 骰子裁决适配器
+│   │   ├── vision_yolov8_adjudicator/ # 通用 YOLOv8 视觉裁决功能包
 │   │   ├── tts_qwen3/           # Qwen3-TTS 适配器
 │   │   └── tts_moss_nano/       # MOSS-TTS-Nano 适配器和 bridge
 │   └── games/dice/
@@ -166,7 +168,7 @@ provider.py         # Component 子类
 ```text
 tts_moss_nano  -> type=tts
 tts_qwen3      -> type=tts
-vision_yolo    -> type=vision, role=adjudicator
+vision_yolov8_adjudicator -> type=vision, role=adjudicator
 ```
 
 `build_registry()` 不在 `server.py` 中硬编码导入具体 provider，而是根据 manifest 动态加载入口类。因此增加或删除一个组件，原则上只需要增加或删除对应组件目录，并重启后端重新扫描。
@@ -267,7 +269,7 @@ Content-Type: application/json
   ↓
 游戏 manifest.providers.vision_adjudicator
   ↓
-默认 vision_yolo
+默认 vision_yolov8_adjudicator
 ```
 
 具体来说，`resolve_provider_id()` 会按以下优先级查找：
@@ -276,7 +278,7 @@ Content-Type: application/json
 2. 兼容旧配置的 `DICE_VISION_PROVIDER`；
 3. manifest 中的 `providers.vision_adjudicator`；
 4. 兼容旧 manifest 的 `providers.vision`；
-5. 流水线传入的默认值 `vision_yolo`。
+5. 流水线传入的默认值 `vision_yolov8_adjudicator`。
 
 然后通过：
 
@@ -369,7 +371,7 @@ POST /api/adjudicate/<job_id>/cancel
 
 ### 9.1 Provider 负责什么
 
-`backend/components/vision_yolo/provider.py` 是 Python 适配器，负责：
+`backend/components/vision_yolov8_adjudicator/provider.py` 是通用 Python 适配器，负责：
 
 - 定位 `vision/yolov8_objdetect/build/yolov8_camera`；
 - 检查可执行文件和 LLM 配置；
@@ -380,6 +382,9 @@ POST /api/adjudicate/<job_id>/cancel
 - 响应取消和超时；
 - 回收进程；
 - 返回最终 `verified` 裁决结果。
+
+旧组件 ID `vision_yolo` 仅由 `ComponentRegistry` 解析为新 ID，并记录一次迁移日志；
+旧目录不再被扫描或注册。游戏配置应使用 `vision_yolov8_adjudicator`。
 
 ### 9.2 当前子进程启动方式
 
@@ -423,10 +428,10 @@ C++ --event-fd JSONL ──────────→ ComponentJob.events ─�
 - 左右两侧都识别到 5 颗骰子；
 - 检测结果满足稳定帧要求；
 - YOLOv8 计算出双方点数和；
-- LLM 复核成功，或代码明确允许的受控超时回退路径；
+- LLM 复核成功，或代码明确允许的受控超时回退路径；成功但不一致时以 LLM 为准；
 - 最终结果包含 `verified: true`。
 
-识别失败、数量不符、超时、LLM 配置缺失或进程异常退出时，任务进入 `error`，网页不会使用随机骰子兜底。
+识别失败、数量不符、超时、LLM 配置缺失或进程异常退出时（LLM 超时回退除外），任务进入 `error`，网页不会使用随机骰子兜底。
 
 ---
 
@@ -615,7 +620,7 @@ sequenceDiagram
     participant S as server.py
     participant G as dice pipeline
     participant J as ComponentJob
-    participant V as vision_yolo
+    participant V as vision_yolov8_adjudicator
     participant Y as yolov8_camera
     participant L as LLM
     participant T as TTS provider
@@ -749,7 +754,7 @@ result      → 后端权威结果 + 前端展示
   → HTTP bridge
   → 游戏 manifest 选择语义 provider
   → ComponentJob 管理一次异步任务
-  → vision_yolo 启动 YOLOv8 C++ + LLM 复核
+  → vision_yolov8_adjudicator 调度 YOLOv8 runtime + LLM 复核
   → 结构化事件/SSE 返回网页
   → TTS provider 负责状态播报
 ```

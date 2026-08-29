@@ -24,7 +24,7 @@ from core.jobs import ComponentJob  # noqa: E402
 from core.tts import TtsProvider  # noqa: E402
 from core.tts_config import TtsConfigError, load_component_config, resolve_config_path  # noqa: E402
 from core.vision import VisionAdjudicatorProvider, VisionLocalizerProvider  # noqa: E402
-from components.vision_yolo.provider import _consume_legacy_log_line  # noqa: E402
+from components.vision_yolov8_adjudicator.provider import _consume_legacy_log_line  # noqa: E402
 from components.tts_moss_nano.daemon import TTS_CONFIG as MOSS_CONFIG, _wave_bytes  # noqa: E402
 from components.tts_moss_nano.provider import MOSS_ROOT, MOSS_VOICE, TtsMossNano  # noqa: E402
 from components.tts_qwen3.provider import TTS_ROOT as QWEN_ROOT, TTS_SPEAKER_FILE  # noqa: E402
@@ -64,16 +64,20 @@ class ComponentTests(unittest.TestCase):
         registry = build_registry()
         self.assertEqual(
             registry.provider_ids("vision"),
-            ["vision_yolo", "vision_yolov8_adjudicator"],
+            ["vision_yolov8_adjudicator"],
         )
         self.assertEqual(
             registry.provider_ids("vision", "adjudicator"),
-            ["vision_yolo", "vision_yolov8_adjudicator"],
+            ["vision_yolov8_adjudicator"],
         )
         self.assertEqual(registry.provider_ids("vision", "localizer"), [])
         self.assertEqual(registry.provider_ids("tts"), ["tts_moss_nano", "tts_qwen3"])
         self.assertEqual(registry.get_manifest("tts_qwen3")["entry"], "provider.py:TtsQwen3")
         self.assertEqual(registry.get_manifest("tts_moss_nano")["entry"], "provider.py:TtsMossNano")
+        self.assertEqual(
+            registry.get("vision_yolo").id,
+            "vision_yolov8_adjudicator",
+        )
         self.assertEqual(registry.get_manifest("vision_yolo")["role"], "adjudicator")
         self.assertEqual(
             registry.get_manifest("vision_yolov8_adjudicator")["entry"],
@@ -167,6 +171,23 @@ class ComponentTests(unittest.TestCase):
                 expected_type="vision",
                 expected_role="adjudicator",
             )
+
+    def test_registry_logs_legacy_alias_once_and_resolves_canonical(self):
+        logs = []
+        registry = ComponentRegistry(migration_logger=logs.append)
+        registry.register(DummyAdjudicator(), {
+            "id": "vision_dummy_adjudicator",
+            "type": "vision",
+            "role": "adjudicator",
+            "entry": "provider.py:DummyAdjudicator",
+        })
+        # Install a test-only alias to exercise the same registry seam without
+        # requiring the production provider to be renamed.
+        from core import components as component_module
+        with patch.dict(component_module.COMPONENT_ID_ALIASES, {"vision_old": "vision_dummy_adjudicator"}):
+            assert registry.get("vision_old").id == "vision_dummy_adjudicator"
+            assert registry.require("vision_old", expected_type="vision").id == "vision_dummy_adjudicator"
+        assert logs == ["[components] migration alias vision_old -> vision_dummy_adjudicator"]
 
     def test_manifest_entry_cannot_escape_provider_package(self):
         manifest_path = ROOT / "backend" / "components" / "vision_bad" / "manifest.json"

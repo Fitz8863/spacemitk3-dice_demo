@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, wait
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -19,6 +19,75 @@ from components.vision_yolov8_adjudicator.rules import (
     fuse_yolo_outcomes,
 )
 from components.vision_yolov8_adjudicator.profile import compose_video_url, load_component_config
+
+
+def normalize_observation(
+    profile: Mapping[str, Any], observation: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Project generic detector boxes into the profile's participants.
+
+    The C++ runtime deliberately emits only model-neutral detections.  A
+    profile may opt into the simple two-region ``x_midpoint`` assignment; a
+    runtime-provided ``participants`` object remains authoritative when it is
+    available (for example, a future detector with its own tracker).
+    """
+    result = dict(observation)
+    vision = profile.get("vision", {})
+    vision = vision if isinstance(vision, Mapping) else {}
+    participant_names = vision.get("participants")
+    if not isinstance(participant_names, list) or len(participant_names) < 2:
+        return result
+    existing = result.get("participants")
+    if isinstance(existing, Mapping):
+        result["participants"] = {
+            str(name): existing[name]
+            for name in participant_names
+            if name in existing
+        }
+        return result
+    if vision.get("participant_assignment", "") != "x_midpoint":
+        return result
+    class_map = vision.get("class_map", {})
+    if not isinstance(class_map, Mapping):
+        return result
+    detections = result.get("detections")
+    if not isinstance(detections, list):
+        return result
+    width = result.get("width")
+    if not isinstance(width, (int, float)) or width <= 0:
+        width = max(
+            (float(box[2]) for box in detections
+             if isinstance(box, Mapping)
+             and isinstance(box.get("bbox"), (list, tuple))
+             and len(box["bbox"]) >= 3
+             and isinstance(box["bbox"][2], (int, float))),
+            default=0.0,
+        )
+    if width <= 0:
+        return result
+    grouped: dict[str, list[Any]] = {
+        str(participant_names[0]): [],
+        str(participant_names[1]): [],
+    }
+    for detection in detections:
+        if not isinstance(detection, Mapping):
+            continue
+        bbox = detection.get("bbox")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+            continue
+        try:
+            center_x = (float(bbox[0]) + float(bbox[2])) / 2.0
+        except (TypeError, ValueError):
+            continue
+        class_id = detection.get("class_id")
+        mapped = class_map.get(str(class_id), detection.get("label"))
+        if mapped is None:
+            continue
+        participant = grouped[str(participant_names[0])] if center_x < float(width) / 2 else grouped[str(participant_names[1])]
+        participant.append(mapped)
+    if any(grouped.values()):
+        result["participants"] = grouped
+    return result
 
 
 def _parse_result_line(line: str) -> dict[str, Any] | None:
@@ -70,6 +139,28 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         # root per view alive for that process lifetime and remove each
         # single-use snapshot after verification.
         self._runtime_snapshot_dirs: dict[str, Path] = {}
+        self._runtime_signatures: dict[str, str] = {}
+
+    @staticmethod
+    def _runtime_signature(profile: Mapping[str, Any], view_id: str) -> str:
+        """Return the profile-owned runtime inputs that require a restart."""
+        vision = profile.get("vision", {})
+        vision = vision if isinstance(vision, Mapping) else {}
+        multi = profile.get("multi_view", {})
+        multi = multi if isinstance(multi, Mapping) else {}
+        view_data: Mapping[str, Any] = {}
+        for candidate in multi.get("views", []):
+            if isinstance(candidate, Mapping) and str(candidate.get("id")) == view_id:
+                view_data = candidate
+                break
+        payload = {
+            "model": vision.get("model"),
+            "stable_frames": vision.get("stable_frames"),
+            "confidence": vision.get("confidence", vision.get("conf")),
+            "camera": view_data.get("camera"),
+            "runtime": profile.get("runtime"),
+        }
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
 
     @staticmethod
     def _video_event(profile: Mapping[str, Any], view_id: str, event: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -91,6 +182,18 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             video = profile.get("video")
             path = video.get("path") if isinstance(video, Mapping) else None
         if not isinstance(path, str) or not path.strip():
+            return None
+        video_enabled = True
+        if isinstance(multi, Mapping) and multi.get("enabled"):
+            for view in multi.get("views", []):
+                if isinstance(view, Mapping) and str(view.get("id")) == view_id:
+                    view_video = view.get("video")
+                    if isinstance(view_video, Mapping):
+                        video_enabled = bool(view_video.get("enabled", True))
+                    break
+        elif isinstance(profile.get("video"), Mapping):
+            video_enabled = bool(profile["video"].get("enabled", True))
+        if not video_enabled:
             return None
         config = load_component_config(Path(__file__).parent)
         # A deployment may override the board's MediaMTX host without
@@ -145,6 +248,18 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         try:
             def start(v):
                 vid = str(v.get("id", "default")); rt = self._runtime_cache.get(vid)
+                signature = self._runtime_signature(profile, vid)
+                if rt is not None and self._runtime_signatures.get(vid) != signature:
+                    try:
+                        rt.stop()
+                    finally:
+                        self._runtime_cache.pop(vid, None)
+                        self._runtime_signatures.pop(vid, None)
+                        old_root = self._runtime_snapshot_dirs.pop(vid, None)
+                        if old_root is not None:
+                            import shutil
+                            shutil.rmtree(old_root, ignore_errors=True)
+                    rt = None
                 if rt is None:
                     rt = self.runtime_factory(vid)
                     snapshot_dir = Path(tempfile.mkdtemp(prefix=f"vision-runtime-{vid}-"))
@@ -157,6 +272,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                         rt.start(profile, vid, prewarm=True)
                     self._runtime_cache[vid] = rt
                     self._runtime_snapshot_dirs[vid] = snapshot_dir
+                    self._runtime_signatures[vid] = signature
                 if isinstance(rt, YoloRuntimeProcess):
                     root = self._runtime_snapshot_dirs.get(vid)
                     if root is not None:
@@ -178,15 +294,38 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                         found = dict(event, view_id=vid); break
                 return vid, found
             deadline = time.monotonic() + float(timeout_seconds or request.timeout_seconds)
-            with ThreadPoolExecutor(max_workers=len(runtimes)) as pool:
-                futures = [pool.submit(collect, rt, view) for rt, view in zip(runtimes, views)]
-                try:
-                    for future in futures:
-                        remaining = max(0.0, deadline - time.monotonic())
-                        vid, found = future.result(timeout=remaining)
-                        if found is not None: observations[vid] = found
-                except FuturesTimeout as exc:
-                    raise TimeoutError("YOLO adjudication timed out") from exc
+            pool = ThreadPoolExecutor(max_workers=len(runtimes))
+            futures = [pool.submit(collect, rt, view) for rt, view in zip(runtimes, views)]
+            pending = set(futures)
+            try:
+                while pending:
+                    if is_cancelled():
+                        raise RuntimeError("cancelled")
+                    remaining = max(0.0, deadline - time.monotonic())
+                    if remaining <= 0:
+                        raise TimeoutError("YOLO adjudication timed out")
+                    done, pending = wait(pending, timeout=min(remaining, 0.1))
+                    for future in done:
+                        vid, found = future.result()
+                        if found is not None:
+                            observations[vid] = found
+            except (TimeoutError, RuntimeError):
+                for view, rt in zip(views, runtimes):
+                    try:
+                        rt.stop()
+                    except Exception:
+                        pass
+                    vid = str(view.get("id", "default"))
+                    if self._runtime_cache.get(vid) is rt:
+                        self._runtime_cache.pop(vid, None)
+                        self._runtime_signatures.pop(vid, None)
+                        root = self._runtime_snapshot_dirs.pop(vid, None)
+                        if root is not None:
+                            import shutil
+                            shutil.rmtree(root, ignore_errors=True)
+                raise
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
             if is_cancelled():
                 raise RuntimeError("cancelled")
             if not observations: raise RuntimeError("no stable observation")
@@ -201,12 +340,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             participants = vision.get("participants")
             normalized = []
             for observation in ordered:
-                if isinstance(participants, list) and isinstance(observation.get("participants"), Mapping):
-                    obs = dict(observation); values = obs["participants"]
-                    obs["participants"] = {name: values[name] for name in participants if name in values}
-                    normalized.append(obs)
-                else:
-                    normalized.append(observation)
+                normalized.append(normalize_observation(profile, observation))
             if len(vals) > 1:
                 yolo = fuse_yolo_outcomes(vals)
                 if yolo is None: raise RuntimeError("no strict majority across views")

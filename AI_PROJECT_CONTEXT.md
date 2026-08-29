@@ -24,7 +24,7 @@ YOLOv8 新版支持 `--event-fd FD`，通过独立的 JSONL 管道发送结构�
 3. 当前阶段由人手替代机械臂完成摇骰、停骰、开盖；
 4. K3 板端启动 YOLOv8，识别左右双方各 5 颗骰子；
 5. YOLOv8 得到稳定结果后调用大模型复核；
-6. 只有 YOLOv8 和大模型结论一致时，网页才展示有效胜负；
+6. 结果按 YOLOv8 与 LLM 优先级策略确定：一致用共识，不一致用 LLM，LLM 超时回退 YOLO；
 7. 后续加入机械臂，自动完成摇骰、停止、开盖、复位等动作。
 
 当前只要求“摇骰子”游戏有效。游戏列表中的其他游戏仍可作为占位，不要误认为已经实现。
@@ -306,7 +306,9 @@ TTS 资产策略：模型文件约 2 GiB，`*.onnx`、`*.gguf`、speaker `.bin` 
 
 ### 4.6 当前 YOLOv8 调用链
 
-后端不是在浏览器里运行 YOLOv8，也不是使用随机数判胜。点击“双方已开盖”后，`backend/server.py` 在 K3 上启动：
+后端不是在浏览器里运行 YOLOv8，也不是使用随机数判胜。后端通过
+`vision_yolov8_adjudicator` 功能包调度板端 runtime；常驻模式下摄像头和视频链路
+提前打开，点击“双方已开盖”后仅发送本局开始控制命令：
 
 ```text
 vision/yolov8_objdetect/build/yolov8_camera
@@ -330,7 +332,10 @@ vision/yolov8_objdetect/build/yolov8_camera
 - stdout/stderr 只保留诊断日志；
 - 后端收到 `verified:true` 的结构化 `result` 事件后终止本轮子进程并返回结果。
 
-**YOLOv8 不是常驻进程。** 空闲时看不到 `yolov8_camera` 是正常的；它只在分析任务期间运行，完成或失败后退出。
+**YOLOv8 默认使用常驻预热模式。** 空闲时 runtime 保持摄像头和视频链路，处于
+`idle`，不计稳定帧也不调用 LLM；开始裁决时通过控制通道进入检测，结果后的
+`post_result_hold_seconds` 期间继续发布视频，随后回到 idle。异常或取消时才释放
+runtime 资源。旧版按局启动的二进制仅作为迁移兼容路径。
 
 当前有效结果要求：
 
@@ -338,8 +343,9 @@ vision/yolov8_objdetect/build/yolov8_camera
 2. 检测达到配置要求的稳定帧数；
 3. YOLOv8 算出双方点数和胜负；
 4. LLM 根据双方整数和复核胜负；
-5. LLM 与 YOLOv8 结论一致；
-6. 最终 JSON 中 `verified` 为 `true`。
+5. LLM 成功且与 YOLOv8 不一致时，以 LLM 结果为最终结果；
+6. LLM 超时则受控回退到 YOLOv8 结果；其他 LLM 失败进入错误；
+7. 最终 JSON 中 `verified` 为 `true`。
 
 结果结构示例：
 
@@ -359,7 +365,7 @@ vision/yolov8_objdetect/build/yolov8_camera
 }
 ```
 
-如果 YOLOv8 超时、数量不为 5+5、LLM 未配置、LLM 调用失败或两者结论不一致，前端应显示错误，不能使用随机骰子兜底。
+如果 YOLOv8 超时、数量不为 5+5、LLM 未配置或 LLM 调用失败（超时回退除外），前端应显示错误，不能使用随机骰子兜底；LLM 与 YOLO 不一致时按约定使用 LLM 结果。
 
 ### 4.7 摄像头边界
 
@@ -548,7 +554,7 @@ flowchart TD
     Game["Game Orchestrator\n权威游戏状态机"]
     Manual["ManualRobotAdapter\n当前人工操作"]
     RosAdapter["Ros2RobotAdapter\n未来机械臂适配"]
-    VisionAdapter["VisionAdapter\n封装 YOLOv8 任务"]
+    VisionAdapter["vision_yolov8_adjudicator\n通用视觉裁决功能包"]
     Vision["YOLOv8 + OpenCL + SpaceMIT EP + LLM"]
     ROS["ROS2 Graph"]
     Driver["机械臂 ROS2 驱动/厂商 SDK 适配"]
@@ -595,7 +601,9 @@ ros2_ws/
     └── dice_safety_monitor/     # 可选安全状态监控节点
 ```
 
-现有 C++ YOLOv8 不需要立即重写为 ROS2 节点。第一阶段继续通过 `VisionAdapter` 启动已验证的 `yolov8_camera`，等接口和部署稳定后，再决定是否封装成 ROS2 node。
+现有 C++ YOLOv8 不需要立即重写为 ROS2 节点。第一阶段继续由
+`vision_yolov8_adjudicator` 通过控制通道调度已验证的 `yolov8_camera`；新游戏只需
+提供自己的 `vision_profile.json`（模型、规则、提示词和 MediaMTX path）。
 
 ---
 
@@ -798,7 +806,7 @@ K3：Web + Gateway + Orchestrator + YOLOv8
 
 ### 阶段 1：保持当前功能可用，先抽象模块
 
-1. 把视觉子进程逻辑移到 `VisionAdapter`；
+1. 将视觉 runtime 通过 `vision_yolov8_adjudicator` 功能包隔离；
 2. 新建 `RobotAdapter`；
 3. 实现 `ManualRobotAdapter`；
 4. 新建后端权威 `GameOrchestrator`；
@@ -832,7 +840,7 @@ K3：Web + Gateway + Orchestrator + YOLOv8
 
 1. 统一摄像头所有权；
 2. 向网页推送板端检测画面；
-3. 评估 YOLOv8 常驻服务或 ROS2 node；
+3. 评估 YOLOv8 常驻服务或 ROS2 node（当前已支持 Python resident/prewarm 调度）；
 4. 保持 SpaceMIT EP、OpenCL 和 LLM 链路的板端验证证据。
 
 ---

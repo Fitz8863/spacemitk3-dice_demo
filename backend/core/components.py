@@ -12,7 +12,7 @@ import inspect
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from core.errors import ComponentNotFoundError, ComponentNotReadyError
 
@@ -35,6 +35,13 @@ class Component:
 
 _SUPPORTED_TYPES = {"vision", "tts", "llm", "command"}
 _VISION_ROLES = {"adjudicator", "localizer"}
+
+# ``vision_yolo`` was the pre-profile provider id.  Keep this one-way alias
+# for manifests and clients during migration; it is never registered as a
+# second component.
+COMPONENT_ID_ALIASES = {
+    "vision_yolo": "vision_yolov8_adjudicator",
+}
 
 
 def _validate_component_contract(component: Component) -> None:
@@ -136,9 +143,21 @@ def _validate_manifest(manifest_path: Path, manifest: Any) -> dict[str, Any]:
 class ComponentRegistry:
     """Resolve providers by stable id and expose their health/metadata."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, migration_logger: Callable[[str], None] | None = None) -> None:
         self._components: dict[str, Component] = {}
         self._manifests: dict[str, dict[str, Any]] = {}
+        self._migration_logger = migration_logger
+        self._migration_logged: set[str] = set()
+
+    def canonical_id(self, component_id: str) -> str:
+        canonical = COMPONENT_ID_ALIASES.get(component_id, component_id)
+        if canonical != component_id and component_id not in self._migration_logged:
+            self._migration_logged.add(component_id)
+            if self._migration_logger is not None:
+                self._migration_logger(
+                    f"[components] migration alias {component_id} -> {canonical}"
+                )
+        return canonical
 
     def register(self, component: Component, manifest: dict[str, Any] | None = None) -> None:
         if not component.id:
@@ -169,6 +188,7 @@ class ComponentRegistry:
             self._manifests[component.id] = dict(manifest)
 
     def get(self, component_id: str) -> Component:
+        component_id = self.canonical_id(component_id)
         component = self._components.get(component_id)
         if component is None:
             raise ComponentNotFoundError(component_id)
@@ -180,6 +200,7 @@ class ComponentRegistry:
         expected_type: str | None = None,
         expected_role: str | None = None,
     ) -> Component:
+        component_id = self.canonical_id(component_id)
         component = self.get(component_id)
         if expected_type and component.type != expected_type:
             raise ComponentNotReadyError(
@@ -197,6 +218,7 @@ class ComponentRegistry:
         return sorted(self._components)
 
     def get_manifest(self, component_id: str) -> dict[str, Any]:
+        component_id = self.canonical_id(component_id)
         self.get(component_id)
         return dict(self._manifests.get(component_id, {}))
 
@@ -266,11 +288,10 @@ def _load_entrypoint(manifest_path: Path, manifest: dict[str, Any]) -> type[Comp
 
 def build_registry(*, log: bool = True) -> ComponentRegistry:
     """Scan ``backend/components/*/manifest.json`` and instantiate providers."""
-    registry = ComponentRegistry()
-
     def report(message: str) -> None:
         if log:
             print(message, flush=True)
+    registry = ComponentRegistry(migration_logger=report)
     components_root = Path(__file__).resolve().parents[1] / "components"
     if not components_root.is_dir():
         report("[components] components/ directory not found")
@@ -283,6 +304,12 @@ def build_registry(*, log: bool = True) -> ComponentRegistry:
                 json.loads(manifest_path.read_text(encoding="utf-8")),
             )
             component_id = manifest["id"]
+            if component_id in COMPONENT_ID_ALIASES:
+                report(
+                    f"[components] skip legacy package {component_id}; "
+                    f"use {COMPONENT_ID_ALIASES[component_id]}"
+                )
+                continue
             if manifest.get("enabled", True) is False:
                 report(f"[components] disabled {component_id}")
                 continue
