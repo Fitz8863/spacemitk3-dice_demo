@@ -52,6 +52,11 @@ class ComponentJob:
         self.condition = threading.Condition(self.lock)
         self._cancelled = False
         self._terminal = False
+        # New providers explicitly announce the end of their lifecycle with
+        # a ``complete`` event/phase.  Keeping this bit separate from
+        # ``phase`` prevents an adjudicated result from being mistaken for a
+        # released/finished job while it is still holding the live video.
+        self._complete_requested = False
         self._run_fn = run_fn
         self._phase_of = phase_of or (lambda line: None)
         self.thread = threading.Thread(target=self._run, name=f"{name}-{self.id[:8]}", daemon=True)
@@ -86,8 +91,11 @@ class ComponentJob:
         phase = event.get("phase")
         if isinstance(phase, str) and phase and not self._terminal:
             self.phase = phase
-        if event.get("event") == "result" and event.get("verified") and not self._terminal:
-            self.phase = "complete"
+        if (
+            event.get("event") == "complete"
+            or event.get("phase") == "complete"
+        ) and not self._terminal:
+            self._complete_requested = True
         self.revision += 1
 
     def add_event(self, event: Event) -> None:
@@ -131,11 +139,22 @@ class ComponentJob:
                     # structured job protocol so clients never need to parse
                     # stdout logs.
                     self._append_event_locked({"event": "result", **result})
-            self.result = result
-            self.status = "success"
-            self.phase = "complete"
-            self.finished_at = now_ms()
-            self._terminal = True
+            adjudicated = bool(isinstance(result, dict) and result.get("adjudicated"))
+            # ``adjudicated`` is a business result, not a lifecycle signal.
+            # A new provider may return it before the holding phase has
+            # elapsed; remain running until it emits ``complete``.  Legacy
+            # verified providers have no holding contract and retain their
+            # historical implicit success behavior.
+            if adjudicated and not self._complete_requested:
+                self.status = "running"
+                self.phase = "holding"
+                self.finished_at = None
+            else:
+                self.result = result
+                self.status = "success"
+                self.phase = "complete"
+                self.finished_at = now_ms()
+                self._terminal = True
             self.revision += 1
             self.condition.notify_all()
 

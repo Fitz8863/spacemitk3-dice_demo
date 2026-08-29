@@ -9,6 +9,7 @@ import time
 import unittest
 from http.client import HTTPConnection
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -137,6 +138,39 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(int.from_bytes(data[:4], "big"), len(WAV))
         self.assertEqual(data[4:-4], WAV)
         self.assertEqual(data[-4:], b"\0\0\0\0")
+
+    def test_health_exposes_vision_profile_video_and_prewarm_metadata(self):
+        original_games = server.GAMES
+        original_components = server.COMPONENTS
+        registry = ComponentRegistry()
+        registry.register(DummyVisionAdjudicator(), {
+            "id": "vision_dummy", "type": "vision", "role": "adjudicator",
+            "name": "Dummy Vision Adjudicator", "version": "1", "enabled": True,
+            "entry": "provider.py:DummyVisionAdjudicator",
+        })
+        server.COMPONENTS = registry
+        games = GameRegistry()
+        games.register({
+            "id": "dice", "name": "Dice", "enabled": True,
+            "providers": {"vision_adjudicator": "vision_dummy"}, "texts": {},
+            "vision_profile": {
+                "game_id": "dice", "video": {"enabled": True, "path": "/dice/"},
+            },
+        })
+        server.GAMES = games
+        try:
+            with patch.object(server, "load_component_config", return_value={
+                "runtime": {"mode": "resident", "prewarm_camera": True},
+                "mediamtx": {"webrtc_base_url": "http://100.118.229.28:8889"},
+            }):
+                status, _, data = self.request("GET", "/api/health")
+        finally:
+            server.GAMES = original_games
+            server.COMPONENTS = original_components
+        payload = json.loads(data)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["adjudicator"]["profile_id"], "dice")
+        self.assertEqual(payload["adjudicator"]["video_path"], "/dice/")
 
     def test_audio_speech_stream_reads_manifest_selected_wav(self):
         import core.games as games_module

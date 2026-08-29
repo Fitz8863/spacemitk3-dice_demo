@@ -44,6 +44,7 @@ from core.tts_protocol import (
     encode_end_frame,
     encode_error_frame,
 )
+from components.vision_yolov8_adjudicator.profile import compose_video_url, load_component_config
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = ROOT / "web"
@@ -114,6 +115,35 @@ def _selected_tts_id(game_id: str = "dice") -> str:
         return TtsDispatcher(COMPONENTS, GAMES).provider_id(game_id)
     except DiceArenaError:
         return "tts_qwen3"
+
+
+def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
+    """Expose safe, deployment-facing vision metadata without prompts/secrets."""
+    try:
+        manifest = require_game(GAMES, game_id)
+        profile = manifest.get("vision_profile")
+        if not isinstance(profile, dict):
+            return {}
+        package_dir = ROOT / "backend" / "components" / provider_id
+        config = load_component_config(package_dir)
+        mediamtx = config.get("mediamtx", {})
+        base_url = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or mediamtx.get("webrtc_base_url", "")
+        video = profile.get("video", {})
+        path = video.get("path") if isinstance(video, dict) else None
+        metadata: dict[str, Any] = {
+            "profile_id": profile.get("game_id"),
+            "video_enabled": bool(video.get("enabled", True)) if isinstance(video, dict) else False,
+            "video_path": path or "",
+            "runtime_mode": config.get("runtime", {}).get("mode", "") if isinstance(config.get("runtime"), dict) else "",
+            "prewarm_camera": bool(config.get("runtime", {}).get("prewarm_camera", False)) if isinstance(config.get("runtime"), dict) else False,
+        }
+        if metadata["video_enabled"] and isinstance(base_url, str) and isinstance(path, str):
+            metadata["video_url"] = compose_video_url(base_url, path)
+        return metadata
+    except Exception:
+        # Provider health already reports component/configuration failures;
+        # metadata is optional and must never mask that primary signal.
+        return {}
 
 
 def _tts_provider(payload: dict[str, Any], game_id: str | None = None):
@@ -273,6 +303,10 @@ class Handler(BaseHTTPRequestHandler):
             adjudicator_health = _provider_health(
                 adjudicator_id, "vision", "adjudicator"
             )
+            adjudicator_health = {
+                **adjudicator_health,
+                **_vision_profile_metadata("dice", adjudicator_id),
+            }
             self.send_json({
                 "ok": True,
                 "backend": "k3-local-component-bridge",

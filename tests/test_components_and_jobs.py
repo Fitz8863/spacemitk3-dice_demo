@@ -233,6 +233,71 @@ class ComponentTests(unittest.TestCase):
 
 
 class JobTests(unittest.TestCase):
+    def test_adjudicated_result_enters_holding_until_explicit_complete(self):
+        release = threading.Event()
+
+        def run(_on_log, _cancelled, on_event):
+            on_event({"event": "result", "adjudicated": True, "winner": "LEFT"})
+            on_event({"event": "phase", "phase": "holding", "remaining_ms": 100})
+            release.wait(timeout=1)
+            on_event({"event": "complete", "phase": "complete"})
+            return {"adjudicated": True, "winner": "LEFT"}
+
+        job = ComponentJob(run)
+        job.start()
+        deadline = time.time() + 1
+        while time.time() < deadline:
+            snapshot = job.snapshot()
+            if snapshot["phase"] == "holding":
+                break
+            time.sleep(0.01)
+        snapshot = job.snapshot()
+        self.assertEqual(snapshot["status"], "running")
+        self.assertEqual(snapshot["phase"], "holding")
+        self.assertIsNone(snapshot["result"])
+        release.set()
+        job.thread.join(timeout=2)
+        snapshot = job.snapshot()
+        self.assertEqual(snapshot["status"], "success")
+        self.assertEqual(snapshot["phase"], "complete")
+
+    def test_adjudicated_return_without_complete_stays_holding(self):
+        def run(_on_log, _cancelled, _on_event):
+            return {"adjudicated": True, "winner": "LEFT"}
+
+        job = ComponentJob(run)
+        job.start()
+        job.thread.join(timeout=1)
+        snapshot = job.snapshot()
+        self.assertEqual(snapshot["status"], "running")
+        self.assertEqual(snapshot["phase"], "holding")
+        self.assertIsNone(snapshot["finished_at"])
+
+    def test_cancel_during_holding_is_terminal_and_cannot_become_success(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def run(_on_log, _cancelled, on_event):
+            on_event({"event": "result", "adjudicated": True, "winner": "LEFT"})
+            on_event({"event": "phase", "phase": "holding", "remaining_ms": 1000})
+            entered.set()
+            release.wait(timeout=1)
+            on_event({"event": "complete", "phase": "complete"})
+            return {"adjudicated": True, "winner": "LEFT"}
+
+        job = ComponentJob(run)
+        job.start()
+        self.assertTrue(entered.wait(timeout=1))
+        self.assertEqual(job.snapshot()["phase"], "holding")
+        job.cancel()
+        release.set()
+        job.thread.join(timeout=2)
+        snapshot = job.snapshot()
+        self.assertEqual(snapshot["status"], "error")
+        self.assertEqual(snapshot["phase"], "error")
+        self.assertTrue(snapshot["cancelled"])
+        self.assertIsNone(snapshot["result"])
+
     def test_verified_legacy_result_is_promoted_to_structured_event(self):
         def run(_log, _cancelled, _event):
             return {"verified": True, "winner": "LEFT"}
