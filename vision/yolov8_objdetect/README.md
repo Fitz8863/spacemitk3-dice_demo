@@ -1,406 +1,152 @@
-# SpaceMIT K3 YOLOv8 摄像头推理
+# YOLOv8 摄像头 Runtime（SpaceMIT K3）
 
-这个目录实现了 YOLOv8 在 SpaceMIT K3 板端的实时摄像头推理，包含摄像头读取、MJPEG 解码、OpenCL GPU 前处理、队列、桌面显示，以及通过 RTSP 发布到 MediaMTX。
+本目录是 `vision_yolov8_adjudicator` 使用的私有硬件 runtime。它只负责摄像头采集、
+OpenCL 预处理、YOLOv8 推理、稳定观测、稳定帧快照和 RTSP 发布，不负责游戏规则、
+胜负语义或云端大模型请求。游戏差异由后端的
+`backend/games/<game_id>/vision_profile.json` 描述，Python provider 负责读取 profile、
+聚合多视角结果、调用无状态多模态 LLM 并生成最终裁决。
 
-## 数据流
-
-完整模式下，摄像头采集、YOLO 推理、显示和 RTSP 推流是解耦的；RTSP 推流使用“只保留最新帧”策略，不会因为 MediaMTX 或网络变慢而暂停摄像头和推理。
-
-```text
-摄像头线程 -> 采集队列 -> OpenCL 前处理线程 -> 推理队列 -> YOLO 推理线程
-                                                    \-> 主线程显示/绘制
-                                                    \-> RTSP 最新帧队列 -> GStreamer spacemith264enc(VPU) -> MediaMTX
-                                                                               \-> WebRTC/WHEP
-```
+## Runtime 数据流
 
 ```text
-USB 摄像头 V4L2 MJPEG 1280x720@25
-  -> GStreamer v4l2src
-  -> 优先 spacemitdec code-type=9（K3 VPU 硬件解码）
-     无可用 V4L2 M2M 解码节点时自动回退 jpegdec + videoconvert
-  -> appsink NV12（只保留最新帧）
-  -> OpenCL GPU：Y/UV 上传 + NV12->RGB + resize + letterbox + CHW + FP32/255
+K3 摄像头
+  -> GStreamer V4L2/MJPEG 解码（优先硬件解码，失败时安全回退）
+  -> NV12 最新帧队列
+  -> OpenCL：NV12 -> RGB、resize、letterbox、CHW、归一化
   -> SpaceMIT ONNX Runtime EP
-  -> YOLOv8 raw output [1, 4+nc, N]
-  -> xywh 解码 + 置信度筛选 + class-aware NMS
-  -> OpenCV HighGUI 显示
+  -> 通用 detection 事件 + stable snapshot
+  -> GStreamer H.264/VPU 编码 -> MediaMTX RTSP 发布 -> WebRTC
 ```
 
-当前模型 `models/best.q.onnx` 的文件元数据表明它是 Ultralytics YOLOv8s-relu、6 类骰子模型，导出参数为 `nms=False`、`imgsz=[640,640]`、`end2end=False`。因此它不是 YOLO26 的 `[1,300,6]` end-to-end 输出，程序会在 CPU 侧执行 YOLOv8 的外部解码和 NMS。
+MediaMTX 由部署管理。浏览器使用后端根据组件基础地址和游戏 profile path 合成的
+WebRTC URL；runtime 自身产生的 RTSP/内部地址不能直接作为浏览器地址。
 
-类别 ID `0..5` 在显示时对应骰子面 `1..6`。
-
-## 编译
-
-请在 K3 板端 `~/projects/dice-game/yolov8_objdetect` 执行：
+## 编译（在 K3 板端）
 
 ```bash
-cd ~/projects/dice-game/yolov8_objdetect
-cmake -S . -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
-cmake --build build -j4
-```
-
-如果板端没有 `/opt/opencv-spacemit/lib/cmake/opencv4`，去掉 `-DOpenCV_DIR=...`，以 CMake 实际打印的 OpenCV include/library 路径为准。参考分支使用的是系统/板端 OpenCV 包；应在 K3 板端编译；本工作区的本机环境不作为 riscv64/SpaceMIT 运行时验证依据。
-
-## 运行
-
-程序默认从当前工作目录的 `config.json` 读取初始化参数，因此在 `~/projects/dice-game/yolov8_objdetect` 中编译后可以直接运行：
-
-```bash
-cd ~/projects/dice-game/yolov8_objdetect
-./build/yolov8_camera
-```
-
-配置文件包含所有持久化运行参数：模型、摄像头、分辨率、帧率、桌面显示、YOLOv8 流程开关、SpaceMIT EP 线程/绑核、队列、置信度、对焦/变焦、帧数、自测、RTSP 推流以及 LLM 请求参数。默认示例值为：
-
-```json
-{
-  "model": "models/best.q.onnx",
-  "camera": "/dev/video1",
-  "device": "",
-  "width": 1280,
-  "height": 720,
-  "fps": 25,
-  "intra_threads": 2,
-  "ep_affinity": "14;15",
-  "queue_depth": 2,
-  "stable_frames": 20,
-  "rejudge_on_change": false,
-  "conf": 0.50,
-  "focus": 0,
-  "zoom": 160,
-  "display_enabled": true,
-  "max_frames": 0,
-  "dump_input": "",
-  "self_test": false,
-  "yolov8_enabled": true,
-  "rtsp": {
-    "enabled": true,
-    "host": "127.0.0.1",
-    "port": 8554,
-    "path": "/dice"
-  },
-  "llm": {
-    "enabled": true,
-    "url": "https://api.deepseek.com/v1/",
-    "model": "deepseek-v4-flash-vision-exp",
-    "timeout_seconds": 4,
-    "api_key": ""
-  }
-}
-```
-
-### `config.json` 参数说明
-
-| 参数 | 作用 |
-| --- | --- |
-| `model` | YOLOv8 ONNX 模型路径；相对路径以程序启动目录为基准。 |
-| `camera` | 摄像头设备路径，例如 `/dev/video1`；代码仍兼容旧的数字编号写法。 |
-| `device` | 可选的显式 V4L2 设备路径；非空时优先于 `camera`，对应命令行 `--device`。 |
-| `width` / `height` | 摄像头请求的图像宽度和高度，单位为像素。 |
-| `fps` | 摄像头请求帧率；设备不支持时程序可能回退到可用帧率。 |
-| `intra_threads` | SpaceMIT ONNX Runtime EP 推理线程数，必须大于等于 1。 |
-| `ep_affinity` | EP 线程绑定的 CPU 核，使用分号分隔，例如 `14;15`；数量必须与 `intra_threads` 一致。 |
-| `queue_depth` | 前处理和推理队列深度，程序限制为 1–8；数值越大，缓存、延迟和内存占用越高。 |
-| `conf` | YOLO 检测置信度阈值，范围为 0.0–1.0。 |
-| `focus` | 摄像头手动对焦值；`-1` 表示不修改当前设置。 |
-| `zoom` | 摄像头绝对变焦值；`-1` 表示不修改当前设置。 |
-| `display_enabled` | 是否在板端桌面显示 HighGUI 窗口；`false` 等价于命令行 `--no-display`。关闭桌面显示后，仍可通过 RTSP 发布当前结果画面。 |
-| `max_frames` | 最多处理的帧数；`0` 表示持续运行。 |
-| `dump_input` | 将首帧 640x640 FP32 CHW 输入保存到指定路径；空字符串表示不保存。 |
-| `self_test` | 是否启动后执行一次 OpenCL 和 SpaceMIT EP 自测；通常保持 `false`。 |
-| `yolov8_enabled` | 是否启用 YOLOv8 推理流程；`true` 保持摄像头采集、OpenCL 预处理、YOLOv8 推理和后续判定，`false` 只采集并显示摄像头画面，跳过 OpenCL、YOLOv8 和 LLM。 |
-| `rtsp.enabled` | 是否发布 RTSP H.264 流；启用后将当前结果画面送入 GStreamer，并使用 K3 的 `spacemith264enc` VPU 编码器。 |
-| `rtsp.host` | RTSP 服务端地址；本机 MediaMTX 推荐填写 `127.0.0.1`，不要填写 `0.0.0.0`。 |
-| `rtsp.port` | RTSP 服务端口，默认 `8554`；该端口通常由 MediaMTX 监听。 |
-| `rtsp.path` | RTSP 发布路径，默认 `/dice`；对应播放地址为 `rtsp://板端IP:8554/dice`。 |
-| `llm.enabled` | 是否启用大模型复核；`true` 表示稳定 YOLO 结果后调用 LLM，`false` 表示达到 `stable_frames` 后直接使用 YOLO 结果判定胜负。 |
-| `llm.url` | OpenAI 兼容 API 基础地址，程序请求其 `/chat/completions` 接口。 |
-| `llm.model` | 用于复核骰子点数和的模型名称。 |
-| `llm.timeout_seconds` | 云端大模型请求总超时秒数，必须大于等于 1；代码内置默认值为 `20`，当前示例配置为 `4`。仅超时会回退使用稳定 YOLO 结果。 |
-| `llm.api_key` | 大模型网关 API Key；程序默认从此项读取。环境变量 `DICE_LLM_API_KEY` 可临时覆盖。 |
-| `llm.system_prompt` | 约束大模型只根据程序提供的整数点数和进行判断。 |
-| `llm.user_prompt_template` | 请求模板，必须保留 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}`。 |
-| `stable_frames` | 左右严格各有 5 个骰子且点数组成连续一致达到此帧数后，才调用一次大模型。 |
-| `rejudge_on_change` | `false` 表示每次进程只复核一次；`true` 表示点数组成变化后重新稳定计数并再次复核。 |
-
-API Key 默认从 `llm.api_key` 读取。如果同时设置环境变量 `DICE_LLM_API_KEY`，环境变量优先，且程序读取后会从子进程环境中移除该变量。仓库中的示例配置不保存真实密钥，推荐始终通过环境变量注入：
-
-`Args` 中除 `config_path` 外的持久化运行参数均可直接写入配置文件；其中 `display_enabled` 对应命令行的反向语义 `--no-display`，`yolov8_enabled` 对应 `--no-yolov8`，`llm.enabled` 控制是否启用大模型复核。命令行参数在 JSON 加载后继续覆盖配置；`--no-llm` 仍作为不修改配置文件的临时关闭开关。例如 `--no-display` 会覆盖 `display_enabled=true`。
-
-命令行参数仍然保留，并在 JSON 加载后覆盖同名配置。例如：
-
-```bash
-./build/yolov8_camera --model models/other.onnx --conf 0.60
-./build/yolov8_camera --config config.test.json
-```
-
-`--self-test --no-display` 不访问摄像头，只验证真实 OpenCL 前处理和 SpaceMIT EP 推理：
-
-```bash
-./build/yolov8_camera --self-test --no-display --no-llm
-```
-
-摄像头请求 25 FPS 失败时，程序会自动回退到设备可协商的 24 FPS。无显示端到端测试：
-
-```bash
-./build/yolov8_camera --no-display --max-frames 30 --no-llm
-```
-
-只显示摄像头画面、跳过 YOLOv8/OpenCL/LLM：
-
-```bash
-./build/yolov8_camera --no-yolov8
-```
-
-也可以显式指定设备，`--device` 优先于 `--camera`：
-
-```bash
-./build/yolov8_camera --device /dev/video1 --no-llm
-```
-
-### YOLO + 大模型稳定复核
-
-当 `llm.enabled=true` 且 YOLO 连续稳定确认左右两侧各有 5 个骰子后，程序会把两侧点数和发送到 OpenAI 兼容的 `/chat/completions` 接口。每个稳定判定周期只调用一次大模型；网络请求在独立后台线程执行，不会阻塞摄像头、推理或画面刷新。只有大模型返回的 `LEFT`、`RIGHT` 或 `TIE` 与这个 YOLO 快照一致，程序才打印一次最终胜负。
-
-如果请求连接或响应超过 `llm.timeout_seconds`，后台请求会被判定为超时并清理 curl 子进程；主循环不会等待网络请求，收到超时结果后立即使用发起请求时保存的稳定 YOLO 快照宣判，并显示 `YOLO fallback (LLM timeout)`。因此超时不会冻结画面，也不会卡在程序退出阶段。
-
-当 `llm.enabled=false`（或命令行使用 `--no-llm`）时，不会发起网络请求。YOLO 连续稳定达到 `stable_frames` 后，程序直接根据左右两侧点数和宣判胜负，画面不会等待大模型结果。
-
-当 `yolov8_enabled=false` 时，程序只打开摄像头并将 NV12 转换为 BGR 后显示，跳过 OpenCL 预处理、SpaceMIT EP、YOLOv8 解码/NMS、骰子判断和 LLM 请求。设置为 `true` 即恢复完整流程；也可以使用命令行参数 `--no-yolov8` 临时关闭。
-
-### RTSP 推流（SpaceMIT VPU H.264）
-
-程序把当前处理后的 BGR 结果画面通过 GStreamer 发布到 RTSP 服务端。RTSP 是当前唯一的网络视频输出；浏览器播放由 MediaMTX 将 RTSP 转换为 WebRTC/WHEP。编码链路为：
-
-```text
-当前结果画面 BGR
-  -> videoconvert / NV12
-  -> spacemith264enc（SpaceMIT VPU 硬件 H.264 编码）
-  -> rtspclientsink
-  -> MediaMTX 或其他 RTSP Server
-```
-
-推荐在板端先启动 MediaMTX，并让它监听 `8554`，然后配置：
-
-```json
-"rtsp": {
-  "enabled": true,
-  "host": "127.0.0.1",
-  "port": 8554,
-  "path": "/dice"
-}
-```
-
-启动后，RTSP 播放地址为：
-
-```text
-rtsp://<K3板端IP>:8554/dice
-```
-
-可以用 `ffplay` 或 `ffprobe` 测试：
-
-```bash
-ffprobe -rtsp_transport tcp rtsp://127.0.0.1:8554/dice
-ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/dice
-```
-
-注意：`rtsp.port` 是**目标 RTSP 服务端端口**，不是程序自己创建的 RTSP Server 监听端口。当前实现使用 GStreamer `rtspclientsink` 主动向 MediaMTX 发布；因此需要板端安装 `rtspclientsink` 插件。`rtsp.host` 使用 `127.0.0.1` 表示 MediaMTX 与骰子程序在同一块板上，使用 `0.0.0.0` 不能作为连接目标。
-
-#### 使用 MediaMTX 接收 RTSP
-
-程序是 RTSP **发布端**，不会自行监听 RTSP 播放端口。推荐使用 MediaMTX 作为接收和分发服务：
-
-```bash
-# 板端示例；路径以实际部署位置为准
-/home/spacemit/projects/mediamtx/bin/mediamtx \
-  /home/spacemit/projects/mediamtx/config/mediamtx.yml
-```
-
-MediaMTX 配置至少需要打开 RTSP，并为发布路径配置 `source: publisher`：
-
-```yaml
-rtsp: true
-rtspTransports: [tcp]
-rtspAddress: :8554
-
-paths:
-  dice:
-    source: publisher
-```
-
-先启动 MediaMTX，再启动本程序。板端启动示例：
-
-```bash
-cd ~/projects/dice-game/yolov8_objdetect
-export GST_PLUGIN_PATH=/home/spacemit/.local/rtsp-root/usr/lib/riscv64-linux-gnu/gstreamer-1.0
-export LD_LIBRARY_PATH=/home/spacemit/.local/rtsp-root/usr/lib/riscv64-linux-gnu:${LD_LIBRARY_PATH:-}
-./build/yolov8_camera --config config.json --no-display --no-llm
-```
-
-如果系统 `gst-inspect-1.0 rtspclientsink` 找不到插件，使用上面的 `GST_PLUGIN_PATH` 和 `LD_LIBRARY_PATH`，并检查：
-
-```bash
-gst-inspect-1.0 rtspclientsink | grep -E 'Name|Filename|Version'
-gst-inspect-1.0 spacemith264enc | grep -E 'Name|Filename|Version'
-```
-
-`spacemith264enc` 的存在和运行日志中的 `al_enc_init:... init finish` 表明 VPU 编码器已初始化；仅看到插件名称并不能证明一次发布已经成功。可以通过 MediaMTX Control API 查看路径是否在线（如果启用了 API）：
-
-```bash
-curl -s http://127.0.0.1:9997/v3/paths/list | python3 -m json.tool
-```
-
-正常发布时，`dice` 路径应显示 `ready: true`，并包含 H.264 视频轨道。
-
-#### RTSP 播放和解码验证
-
-先让发布程序持续运行，再从板端或局域网另一台设备执行：
-
-```bash
-# 只检查 SDP/编码参数
-ffprobe -v error -rtsp_transport tcp \
-  -show_entries stream=codec_name,profile,level,width,height,pix_fmt,avg_frame_rate \
-  -of default=nw=1 rtsp://10.0.90.160:8554/dice
-
-# 实际解码一帧到 JPEG，验证不只是能读到 SDP
-ffmpeg -hide_banner -loglevel error -rtsp_transport tcp \
-  -i rtsp://10.0.90.160:8554/dice -frames:v 1 -y /tmp/dice-rtsp-frame.jpg
-
-# 交互播放
-ffplay -rtsp_transport tcp rtsp://10.0.90.160:8554/dice
-# 或在 VLC 中打开同一个 rtsp:// 地址
-```
-
-如果出现 `404 Not Found`，通常是发布程序已经退出、`rtsp.path` 与 MediaMTX 的 `paths` 不一致，或者 MediaMTX 未启动。若出现 `connection refused`，检查 `8554/TCP` 是否监听；若出现 `rtspclientsink` 找不到元素，检查 GStreamer 插件路径。
-
-RTSP 由 MediaMTX 继续转换为 WebRTC/WHEP，供局域网网页中的 `<video>` 播放；本程序不再提供独立的 MJPEG HTTP 服务。MediaMTX 负责协议分发和封装转换，但不会把 BGR/NV12/MJPEG 原始画面直接变成浏览器可播放的 H.264；本程序中的 `spacemith264enc` 仍负责 VPU H.264 编码。
-
-只有 YOLO 连续得到相同的有效 5+5 结果达到 `stable_frames` 次后，程序才调用大模型。任何一帧未检测到分界线、左右数量不是 5 个，或左右骰子点数组成发生变化，连续计数都会清零并重新开始；因此未稳定前不会求胜负，也不会请求大模型。
-
-`rejudge_on_change` 控制完成一次判定后的行为：
-
-- `false`（默认）：保持一次性模式，本进程不再调用大模型；后续画面与已复核快照不同时只隐藏胜负。
-- `true`：如果任意一侧的排序后骰子点数组成发生变化，立即把该变化帧作为新一轮稳定计数的第 1 帧。新结果必须再次连续稳定 `stable_frames` 帧且仍满足严格 5+5，才会再次调用一次大模型并输出新结果。短暂误检后恢复到上一次已复核快照时会取消本轮计数，不会重复请求相同结果。
-
-LLM 是否启用、地址、模型名、API Key、请求超时、system prompt 和 user prompt 模板都在 `config.json` 的 `llm` 对象中配置。`llm.timeout_seconds` 限制一次完整云端请求（连接和响应）；超过该时间没有得到响应时，程序会使用对应稳定 5+5 YOLO 快照的结果直接输出胜负。模板支持 `{left_name}`、`{right_name}`、`{left_sum}`、`{right_sum}` 四个占位符；程序发送请求前会替换为当前快照值。仓库中的 `llm.api_key` 保持为空；启用 LLM 前请通过环境变量注入密钥：
-
-```bash
-export DICE_LLM_API_KEY='临时 API Key'
-```
-
-如需临时覆盖 JSON 中的地址、模型、请求超时或稳定帧数，可使用 `--llm-url URL`、`--llm-model NAME`、`--llm-timeout N`、`--stable-frames N`。`--rejudge-on-change` 临时开启变化后重新判定，`--no-rejudge-on-change` 临时关闭；`--no-llm` 关闭复核。只有请求超时才会回退输出稳定 YOLO 的胜负结论；未设置 API Key、HTTP/API 错误、响应格式错误或大模型与 YOLO 结果不一致时，程序仍不会打印胜负结论。
-
-### 单核运行与 TCM 资源冲突
-
-单核运行时用命令行覆盖 JSON 中的线程参数：
-
-```bash
-./build/yolov8_camera --intra-threads 1 --ep-affinity "14"
-```
-
-`--ep-affinity` 只设置 EP 工作线程的 CPU 亲和性，不能直接指定内部 TCM/A100 block。若其他 EP 进程仍占用 TCM，或上一次异常退出留下残留状态，推理可能报告 `tcm buffer acquire/release failed`。程序不会在同一个 ORT Session 上重试这类错误，因为 EP 内部锁/TCM 状态已经异常时继续复用 Session 不安全；最终失败会以非零状态退出，并提示排查命令。最终失败时请在板端执行：
-
-```bash
-spacemit-tcm-smi -i   # 查看 TCM/运行实例占用
-# 确认没有 EP 进程后再执行：
-spacemit-tcm-smi -c   # 清理残留 TCM 状态
-```
-
-然后确认没有其他 EP 进程占用对应的运行资源，再重新启动本程序。`tcm buffer release failed` 通常不是摄像头、黑线检测或 OpenCL 前处理错误，而是 EP/TCM 资源冲突，需要先处理占用关系。`spacemit-tcm-smi -i` 可查看 block 与 PID；只有确认没有其他推理进程后，才允许使用 `spacemit-tcm-smi -c` 清理残留 block。
-
-## 双方骰子裁决
-
-程序会在画面水平中心的候选区域内检测近似竖直的黑色分界线，并按检测框中心将骰子分到线的左右两侧。水平黑线不会作为分界线接受。类别 ID `0..5` 分别计为点数 `1..6`。
-
-只有两侧都**恰好检测到 5 个骰子**时才计算点数和并显示胜方或平局；任一侧不是 5 个、检测框中心压在线上，或未找到黑色分界线时，画面会显示红色 `INVALID` 提示，终端会打印当前两侧数量，并且不会执行胜负判断。
-
-## 黑色分界线检测原理与可靠性
-
-当前实现不是通过训练模型识别黑线，而是使用 OpenCV 的固定规则进行检测。为避免画面下方的水平黑线或手部等深色区域被误认为分界线，检测规则严格利用分界线的已知几何位置：
-
-1. 将当前 BGR 画面缩小到 1/4，降低 CPU 开销；
-2. 转为灰度图，把灰度值 `0..45` 的像素判定为黑色；
-3. 只保留画面水平中心约 `30%..70%`、垂直方向约 `5%..95%` 的候选区域；
-4. 使用 `3x9` 竖直闭运算连接小断点，避免把水平线连接成候选轮廓；
-5. 只接受高度至少覆盖候选区域约 `55%`、拟合方向垂直度不低于 `0.90`、且靠近画面水平中心的轮廓；
-6. 用 `cv::fitLine` 拟合竖直分界线，再将骰子中心点投影到直线两侧，分别统计点数总和。距离直线不超过约 `4` 像素的检测框会被暂时忽略，不参与计数。
-
-因此，水平黑线即使很长，也会因不在中心走廊、垂直跨度不足或方向不满足而被拒绝。若摄像头位置改变、分界线不在水平中心或被遮挡超过阈值，需要同步调整这些固定几何约束。该方案比“全画面按面积选最长黑轮廓”更适合当前固定机位，但仍属于启发式检测，不等同于模型识别；现场应通过画面的橙色拟合线检查结果。
-
-
-## 重要参数
-
-持久化运行参数优先写入 `config.json`；命令行同名选项覆盖 JSON。
-
-```text
---config PATH      JSON 配置文件，默认当前目录 config.json
---model PATH       ONNX 模型
---camera VALUE     使用数字编号或设备路径，例如 /dev/video1
---device PATH      显式指定 V4L2 节点，覆盖 --camera
---width N --height N --fps N
---conf FLOAT       置信度阈值
---queue-depth N    每级队列深度
---stable-frames N  相同有效 5+5 YOLO 结果达到 N 帧后才调用 LLM，默认 20
---rejudge-on-change 检测结果变化后重新稳定计数并再次复核
---no-rejudge-on-change 保持一次性复核，覆盖 JSON 中的 true
---focus N          手动对焦；-1 表示不改动
---zoom N           绝对变焦；-1 表示不改动
---intra-threads N  SpaceMIT EP 线程数
---ep-affinity LIST EP 线程绑核，数量必须匹配线程数
---llm-url URL      覆盖 config.json 中的 LLM 地址
---llm-model NAME   覆盖 config.json 中的 LLM 模型
---llm-timeout N    覆盖 llm.timeout_seconds，单位秒，必须 >= 1
---no-llm           关闭 LLM 复核，稳定 YOLO 后直接判定
---no-display       不创建 HighGUI 窗口（配置项 display_enabled=false）
---max-frames N     处理 N 帧后退出（配置项 max_frames）
---dump-input PATH  保存首帧 640x640 FP32 CHW 输入（配置项 dump_input）
---no-yolov8        跳过预处理和推理，只显示摄像头画面
---rtsp              发布 H.264 到 RTSP 服务（使用 SpaceMIT VPU）
---rtsp-host HOST    RTSP 服务端地址，默认 127.0.0.1
---rtsp-port N       RTSP 服务端口，默认 8554
---rtsp-path PATH    RTSP 发布路径，默认 /dice
---no-rtsp           关闭 RTSP 发布
---self-test        执行一次真实 OpenCL 前处理和推理（配置项 self_test=true）
-```
-
-## 实现边界
-
-- 摄像头阶段优先使用 `v4l2src ! image/jpeg ! spacemitdec code-type=9 ! video/x-raw,format=NV12 ! appsink`。如果没有检测到可用的 V4L2 M2M 节点，则跳过可能触发 MPP 段错误的 `spacemitdec`，自动使用 `jpegdec ! videoconvert ! video/x-raw,format=NV12` 软件解码。
-- NV12 默认尽量走浅拷贝：`GstVideoFrame` 映射后，OpenCV `cv::Mat` 只创建 header，不复制像素；`GstreamerFrame::owner` 持有 `GstSample` 和映射状态，并随帧经过 OpenCL 前处理、推理、显示队列，直到最后一个消费者释放后才 unmap/unref。
-- 零拷贝只在两个 plane 能表示为一个兼容的 NV12 视图时启用：Y/UV stride 满足要求，且 UV 紧接在 Y plane 后面；如果 VPU/GStreamer 给出分离 plane 或不兼容 padding，则自动逐行深拷贝，并打印 `safe copy fallback`。旧的 `read(cv::Mat&)` 兼容接口会主动 `clone()`。
-- 队列深度必须保持有限（默认 3），因为零拷贝会短暂持有 VPU/GStreamer buffer；退出时先停止采集线程、等待工作线程退出并清空应用队列，再向 GStreamer pipeline 发送 EOS、等待 decoder drain，最后释放 pipeline，避免 VPU buffer 生命周期问题。
-- 前处理使用 OpenCL GPU kernel 完成 Y/UV 图像采样、NV12 转 RGB、resize、114/128 letterbox、CHW 和 `/255`；主机侧仅负责将 NV12 的 Y/UV 数据上传到 OpenCL。
-- 推理线程只访问一个 ORT session；显示在主线程执行，保持 HighGUI 事件循环安全。
-- 单路推理显式设置 ORT `ORT_SEQUENTIAL`、`InterOpNumThreads=1` 和 SpaceMIT EP `SPACEMIT_EP_INTER_THREAD_NUM=1`，避免单核配置继承多会话/多流设置；TCM acquire/release 错误不在原 Session 上重试，推理线程失败时以非零状态退出并打印 TCM 占用排查命令。
-- YOLOv8 解码当前支持 `[1,C,N]` 和 `[1,N,C]` 两种三维输出布局；对当前模型预期为 `[1,10,8400]`，即 4 个框通道加 6 个类别通道。
-- YOLOv8 输出的框按 `cx,cy,w,h`、类别分数已在导出图中完成 DFL/激活，程序不会再次对类别分数做 sigmoid；随后撤销 letterbox 并做按类别 NMS。
-
-## 当前验证状态
-
-当前工程使用 **OpenCL GPU** 完成 NV12 图像预处理，包括 NV12 转 RGB、resize、letterbox、CHW 排布和归一化；SpaceMIT ONNX Runtime EP 负责模型推理。
-
-已在 SpaceMIT K3 板端验证：
-
-- CMake 编译成功，生成 `build/yolov8_camera`；
-- `--self-test --no-display` 成功执行真实 OpenCL 前处理和模型推理；
-- `/dev/video1` 可通过 `spacemitdec` 硬件解码 MJPEG；没有可用 V4L2 M2M 解码器时自动回退到 `jpegdec` 软件解码；
-- 摄像头请求 25 FPS 时，当前设备可能协商为 24 FPS；
-- 无显示端到端测试可使用 `--no-display --max-frames 30`，退出时允许驱动打印 `V4L2_EVENT_EOS event is not support yet` 提示，只要程序最终输出 `Done.` 即表示正常退出。
-- 使用本地故意延迟响应的 HTTP 服务完成真实 LLM 超时回归测试：`--llm-timeout 2 --stable-frames 1 --max-frames 100 --no-display` 在约 2 秒后打印 `YOLO fallback (LLM timeout)`，继续处理到 100 帧并正常输出 `Done.`，退出后无残留 `yolov8_camera`/`curl` 进程；
-- 使用 MediaMTX `v1.20.1` 接收本程序发布的 `/dice` 路径；运行日志确认 `spacemith264enc` VPU 编码初始化成功，MediaMTX 识别到 H.264、1280x720、Main Profile、Level 3.1，`ffprobe -rtsp_transport tcp` 可以读取 RTSP。
-- RTSP 发布依赖板端用户目录中的 `rtspclientsink` 插件：`/home/spacemit/.local/rtsp-root/usr/lib/riscv64-linux-gnu/gstreamer-1.0/libgstrtspclientsink.so`；若插件未安装或环境变量未设置，程序会在启动阶段报告 RTSP pipeline 创建失败。
-
-推荐先执行自测，再执行短时摄像头测试：
-
-```bash
-cd ~/projects/dice-game/yolov8_objdetect
+cd ~/projects/dice-game/main/vision/yolov8_objdetect
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4
-./build/yolov8_camera --model models/best.q.onnx --self-test --no-display --no-rtsp
-./build/yolov8_camera --model models/best.q.onnx --device /dev/video1 \
-  --no-display --max-frames 30
 ```
+
+如果 OpenCV 安装位置不同，以 CMake 打印的 include/library 路径为准。本机编译不能
+替代 riscv64、OpenCL、SpaceMIT EP 和摄像头验证。
+
+## Provider 调度模式
+
+生产环境由 `vision_yolov8_adjudicator` 启动 resident runtime。摄像头、预处理和视频
+发布链路提前打开，进程在 `idle` 状态等待控制命令；这避免每局重复创建/销毁硬件资源。
+只有收到 `START_ADJUDICATION` 后才开始稳定帧计数并发布 observation，收到最终结果后
+可继续保持画面一段时间，之后回到 `idle`。取消或异常时才释放 runtime。
+
+启动命令由 provider 内部生成，示意如下（路径和参数来自组件配置，不应由网页拼接）：
+
+```text
+build/yolov8_camera --config config.json --no-display --prewarm \
+  --control-fd <inherited-fd> --event-fd <inherited-fd> \
+  --snapshot-dir <private-round-dir> --view-id <view-id>
+```
+
+`config.json` 只保存 runtime 和硬件默认值；模型、参与方、稳定帧阈值、规则、提示词、
+LLM 超时和每个游戏的视频 path 均由组件配置或游戏 profile 管理。
+
+## vision-control-v1 协议
+
+控制通道和事件通道均为独立的 UTF-8 JSONL 文件描述符。stdout/stderr 仅用于诊断，
+不能被当作业务事件解析。
+
+Provider 向 `control-fd` 发送：
+
+```json
+{"command":"START_ADJUDICATION","request_id":"job-abc","profile_id":"game-id"}
+{"command":"FINAL_RESULT","request_id":"job-abc","outcome":{"kind":"winner","value":"LEFT"}}
+{"command":"STOP_ADJUDICATION","request_id":"job-abc"}
+{"command":"CANCEL","request_id":"job-abc"}
+```
+
+Runtime 向 `event-fd` 发送：
+
+```json
+{"event":"started","component":"vision_yolov8_adjudicator","protocol":"jsonl-events-v1"}
+{"event":"phase","phase":"idle"}
+{"event":"ready","view_id":"front"}
+{"event":"video","view_id":"front","url":"rtsp://127.0.0.1:8554/internal"}
+{"event":"phase","phase":"detecting"}
+{"event":"progress","stable_count":3,"stable_frames":5}
+{"event":"observation","stable":true,"detections":[],"snapshot":{"path":"/tmp/private/stable.jpg"}}
+{"event":"phase","phase":"idle"}
+```
+
+`observation` 是通用检测证据，包含 detection 列表和稳定帧图片；runtime 不写入游戏
+winner。多视角由 provider 并行启动多个 runtime，并以 `view_id` 区分。LLM 只由 provider
+调用一次，将全部稳定帧作为无状态单轮多模态请求。最终结果优先级为：YOLO 与 LLM 一致
+使用 `consensus`；LLM 成功但不一致使用 `llm_override`；LLM 超时使用
+`yolo_timeout_fallback`；其他失败返回错误。
+
+## 组件与游戏配置边界
+
+组件级配置：
+
+```text
+backend/components/vision_yolov8_adjudicator/config.json
+  runtime.binary / runtime.working_dir / runtime.mode
+  runtime.prewarm_camera / runtime.request_timeout_seconds
+  mediamtx.webrtc_base_url
+```
+
+游戏级 profile：
+
+```text
+backend/games/<game_id>/vision_profile.json
+  vision.model / class_map / participants / stable_frames
+  rule（numeric_compare 或 categorical_relation）
+  llm.system_prompt / user_prompt_template / allowed_outcomes
+  multi_view.views[].camera / multi_view.views[].video.path
+  video.path / lifecycle.post_result_hold_seconds
+```
+
+新增游戏不需要修改本 runtime：新增模型文件和 profile 即可。profile 中的 path 只能是
+URL 路径（例如 `/dice/`），不能包含主机、查询串或 `..`；MediaMTX 基础地址由部署配置
+提供。API key 通过板端环境变量注入，不写入仓库。
+
+## 诊断模式
+
+命令行仅用于硬件自测和问题定位，不是网页游戏的调用接口。常用操作：
+
+```bash
+./build/yolov8_camera --help
+./build/yolov8_camera --config config.json --self-test --no-display --no-rtsp
+./build/yolov8_camera --config config.json --no-display --max-frames 30
+./build/yolov8_camera --config config.json --no-yolov8 --max-frames 30
+```
+
+`--self-test` 验证真实 OpenCL 前处理和 SpaceMIT EP；`--no-yolov8` 只验证摄像头读取和
+视频链路。生产调用不要使用诊断模式绕过 provider 的 profile、快照目录和控制协议。
+
+## MediaMTX 验证
+
+runtime 是 RTSP 发布端，MediaMTX 是接收和分发端。部署应先启动 MediaMTX，再由 provider
+启动 runtime；各游戏的 RTSP 发布路径由 profile/部署映射决定。板端可检查：
+
+```bash
+gst-inspect-1.0 rtspclientsink
+gst-inspect-1.0 spacemith264enc
+curl -s http://127.0.0.1:9997/v3/paths/list | python3 -m json.tool
+```
+
+网页播放地址使用 `http://<mediamtx-host>:8889/<profile-video-path>/`，不使用 runtime
+事件中的 RTSP 地址。若 MediaMTX 路径不可用，前端应提示视频不可用，但不能改变已经
+完成的结构化裁决结果。
+
+## 资源和生命周期约束
+
+- resident runtime 在空闲时保持摄像头和视频链路，不做稳定帧计数、不调用 LLM。
+- 单个裁决对象的多路视角并行运行；provider 负责超时、取消和结果后的保持时长。
+- 稳定帧快照写入每局私有目录，LLM 消费后立即清理；禁止使用不受控的共享路径。
+- 队列深度保持有限，避免摄像头缓冲反向阻塞推理或占满 K3 内存。
+- 取消、超时和进程异常必须关闭文件描述符、停止 GStreamer pipeline，并释放相机资源。
+- stdout/stderr 日志可以用于诊断，但不能作为 API 业务协议。
+
+硬件验证时应在 K3 上记录 CMake、自测、摄像头协商帧率、OpenCL/EP 初始化和 MediaMTX
+路径在线证据；不要仅凭本机编译或端口可访问就宣称板端推理链路可用。
