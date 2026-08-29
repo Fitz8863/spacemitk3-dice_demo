@@ -350,12 +350,22 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             round_started = True
             on_event({"event":"phase", "phase":"detecting"}); observations = {}
             emitted_video_views: set[str] = set()
+            # A resident runtime's startup event is one-shot and may have
+            # already been consumed by an earlier round.  Publish the
+            # profile-owned WebRTC URL synchronously for every new round so
+            # clients can attach to the live stream while detection runs.
+            for view in views:
+                vid = str(view.get("id", "default"))
+                video_event = self._video_event(profile, vid, {"event": "video"})
+                if video_event is not None:
+                    on_event(video_event)
+                    emitted_video_views.add(vid)
             def collect(rt, view):
                 vid = str(view.get("id", "default")); found = None
                 for event in rt.events():
                     if event.get("event") == "video":
                         video_event = self._video_event(profile, vid, event)
-                        if video_event is not None:
+                        if video_event is not None and vid not in emitted_video_views:
                             on_event(video_event)
                             emitted_video_views.add(vid)
                     elif event.get("event") == "runtime_exit":

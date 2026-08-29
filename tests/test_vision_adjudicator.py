@@ -610,6 +610,64 @@ def test_provider_cancel_keeps_resident_runtime_warm():
     ]
 
 
+def test_resident_round_emits_video_before_waiting_for_observation(tmp_path: Path):
+    """Every resident round must publish its profile video URL immediately."""
+    import threading
+    import time
+
+    class Runtime:
+        def start(self, *args, **kwargs):
+            pass
+
+        def send(self, command):
+            pass
+
+        def events(self):
+            # Simulate a cached runtime whose one-shot startup video event was
+            # already consumed by a previous round.
+            time.sleep(0.25)
+            return iter([{
+                "event": "observation",
+                "stable": True,
+                "yolo_outcome": "LEFT",
+                "snapshot": {"path": str(image)},
+            }])
+
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"resident-round")
+    profile = {
+        "game_id": "x",
+        "vision": {"stable_frames": 1},
+        "video": {"path": "/dice/"},
+        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
+        "lifecycle": {"post_result_hold_seconds": 0},
+        "runtime": {"mode": "resident", "prewarm_camera": True},
+    }
+    events = []
+    detecting = threading.Event()
+
+    def on_event(event):
+        events.append(dict(event))
+        if event.get("phase") == "detecting":
+            detecting.set()
+
+    provider = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime())
+    worker = threading.Thread(
+        target=lambda: provider.adjudicate(
+            VisionAdjudicationRequest("x", profile, "resident-video", 2),
+            on_log=lambda _: None,
+            on_event=on_event,
+            is_cancelled=lambda: False,
+        )
+    )
+    worker.start()
+    assert detecting.wait(1)
+    time.sleep(0.05)
+    assert [event["event"] for event in events[:2]] == ["phase", "video"]
+    worker.join(2)
+    assert not worker.is_alive()
+
+
 def test_normalize_generic_detections_maps_profile_classes_to_participants():
     profile = {
         "vision": {
