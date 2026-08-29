@@ -173,11 +173,14 @@ def adjudicate(
   },
   "events": {
     "protocol": "jsonl-events-v1"
+  },
+  "mediamtx": {
+    "webrtc_base_url": "http://100.118.229.28:8889"
   }
 }
 ```
 
-`mode` 只允许 `per_request` 或 `resident`。模型路径、LLM endpoint、类别映射、游戏规则和视频播放地址不放在这里；视频地址属于具体游戏 profile。
+`mode` 只允许 `per_request` 或 `resident`。模型路径、LLM endpoint、类别映射和游戏规则不放在这里。`mediamtx.webrtc_base_url` 是板端部署级基础地址，只配置协议、主机和端口，不包含游戏 stream path。
 
 ### 6.2 游戏视觉 profile
 
@@ -222,8 +225,7 @@ def adjudicate(
   "video": {
     "enabled": true,
     "protocol": "webrtc",
-    "url": "http://100.118.229.28:8889/dice/",
-    "mediamtx_path": "/dice",
+    "path": "/dice/",
     "autoplay": true,
     "muted": true
   },
@@ -233,9 +235,11 @@ def adjudicate(
 }
 ```
 
-`video.url` 是该游戏在局域网中实际可播放的 MediaMTX WebRTC 地址，必须由游戏维护者填写；不同游戏可以填写不同 URL，例如猜拳可以使用 `/rps/` 路径。`mediamtx_path` 是可选的诊断字段，用于记录该 URL 对应的 MediaMTX stream path，不作为前端拼接 URL 的依据。`autoplay` 和 `muted` 只描述前端播放策略，不改变视觉裁决逻辑。
+`video.path` 是该游戏对应的 MediaMTX stream path；不同游戏使用不同路径，例如骰子使用 `/dice/`，猜拳使用 `/rps/`。`autoplay` 和 `muted` 只描述前端播放策略，不改变视觉裁决逻辑。
 
-MediaMTX 的职责是接收 YOLOv8 runtime 输出的本地 RTSP，再提供 WebRTC 播放端点。视觉 provider 不把 RTSP 地址当作前端地址，也不在每局重复启动 MediaMTX；它只在 profile 校验通过后将受信任的 `video.url` 作为事件发给前端。MediaMTX 必须由板端部署或系统服务预先运行，路径不可用时由前端显示视频不可用，但不能影响已经完成的结构化裁决结果。
+后端使用标准 URL 拼接规则，把组件配置中的 `mediamtx.webrtc_base_url` 和游戏 profile 中的 `video.path` 合成为完整播放地址，例如 `http://100.118.229.28:8889` + `/dice/` 得到 `http://100.118.229.28:8889/dice/`。禁止直接进行字符串相加，必须规范化基础地址末尾和 path 开头的 `/`，并保留 path 的结尾 `/`。
+
+MediaMTX 的职责是接收 YOLOv8 runtime 输出的本地 RTSP，再提供 WebRTC 播放端点。视觉 provider 不把 RTSP 地址当作前端地址，也不在每局重复启动 MediaMTX；它只在 profile 校验通过后把合成的播放 URL 作为事件发给前端。MediaMTX 必须由板端部署或系统服务预先运行，路径不可用时由前端显示视频不可用，但不能影响已经完成的结构化裁决结果。
 
 猜拳 profile 使用同一结构，但 `class_map` 和规则不同，例如：
 
@@ -368,20 +372,27 @@ queued → starting → detecting → verifying → holding → complete
 
 ## 9. 前端实时画面与 MediaMTX
 
-当前前端硬编码 `http://100.118.229.28:8889/dice/`，这会把骰子和固定 IP 写进 UI。新设计将播放地址放到游戏 profile，由后端在受信任配置中解析并通过事件下发：
+当前前端硬编码 `http://100.118.229.28:8889/dice/`，这会把部署地址和骰子路径一起写进 UI。新设计把 MediaMTX 基础地址放在组件 / 部署配置，把游戏 path 放在游戏 profile，再由后端合成完整 URL 并通过事件下发：
 
-1. profile 中声明该游戏的完整 WebRTC 播放地址：
+1. 组件配置声明部署级基础地址：
+
+   ```json
+   "mediamtx": {
+     "webrtc_base_url": "http://100.118.229.28:8889"
+   }
+   ```
+
+2. 游戏 profile 只声明自己的 WebRTC path：
 
    ```json
    "video": {
      "enabled": true,
      "protocol": "webrtc",
-     "url": "http://100.118.229.28:8889/dice/",
-     "mediamtx_path": "/dice"
+     "path": "/dice/"
    }
    ```
 
-2. provider 在进程启动并确认 profile 有效后发送一次 `video` 事件：
+3. provider 在进程启动并确认两层配置有效后发送一次 `video` 事件：
 
    ```json
    {
@@ -393,12 +404,12 @@ queued → starting → detecting → verifying → holding → complete
    }
    ```
 
-3. URL 只来自后端加载并校验的 profile，HTTP 请求体不能提交、替换或拼接视频地址；
-4. 前端收到 `video` 事件后设置当前分析画面的 iframe/video source。`protocol=webrtc` 时按项目约定使用 MediaMTX WebRTC 播放方式；前端不读取 RTSP，也不自行推断 stream path；
-5. 收到 `result` 时只更新结果，不清除视频；
-6. 收到 `complete` 或任务错误时才停止/清除视频；
-7. SSE 重连时根据快照中的最近 `video`、`result` 和 `phase` 恢复画面，不依赖事件恰好只到达一次；
-8. profile 未启用视频时不发送 `video` 事件，前端隐藏视频区域，但裁决流程保持不变。
+4. 基础地址和 path 只来自后端加载并校验的配置，HTTP 请求体不能提交、替换或拼接视频地址；
+5. 前端继续使用现有 `iframe` 加载 MediaMTX 自带的 WebRTC 播放页面，不引入额外 WHEP JavaScript 播放器。收到 `video` 事件后设置 iframe source，并附加现有的 `autoplay=1`、`muted=1`、`controls=0` 和 `playsinline=1`；
+6. 收到 `result` 时只更新结果，不清除视频；
+7. 收到 `complete` 或任务错误时才停止/清除视频；
+8. SSE 重连时根据快照中的最近 `video`、`result` 和 `phase` 恢复画面，不依赖事件恰好只到达一次；
+9. profile 未启用视频时不发送 `video` 事件，前端隐藏视频区域，但裁决流程保持不变。
 
 MediaMTX 的运行链路固定为：
 
@@ -407,10 +418,10 @@ K3 摄像头 → yolov8_camera → RTSP 发布（例如 /dice）
                               ↓
                          MediaMTX
                               ↓
-游戏 profile.video.url → 浏览器 WebRTC 播放
+组件 base URL + 游戏 profile.video.path → 浏览器 iframe 播放
 ```
 
-URL 仅允许 `http` 或 `https`，必须是绝对 URL，禁止 `javascript:`、`data:`、嵌入凭据和控制字符。为避免跨环境修改代码，地址可以直接写入板端对应游戏 profile；如果部署脚本提供了受限的 `DICE_VIDEO_HOST` 覆盖，则只能替换已登记 URL 的 host，不能改变协议、端口、路径或指向任意请求地址。默认实现不做 WebRTC 播放探测，因为 WebRTC 端点不保证支持简单的 HTTP `HEAD`；视频可用性由前端播放器事件反馈，裁决结果不依赖视频播放成功。
+基础地址只允许 `http` 或 `https`，必须是无 path、query、fragment 和凭据的绝对 URL；游戏 path 必须以 `/` 开头，只允许 URL path 字符，禁止 scheme、host、query、fragment、`..` 和控制字符。为避免跨环境修改 profile，部署环境可使用受限的 `DICE_MEDIAMTX_WEBRTC_BASE_URL` 覆盖基础地址，但不能覆盖游戏 path。默认实现不做 WebRTC 播放探测，因为 MediaMTX 播放页面不保证支持简单的 HTTP `HEAD`；视频可用性由 iframe 加载和播放器页面反馈，裁决结果不依赖视频播放成功。
 
 这样 `post_result_hold_seconds` 控制的是「结果展示后继续保持视频的时长」，而不是人为延长检测帧数量或 LLM 调用时间。
 
@@ -469,7 +480,7 @@ Python `rules.py` 根据 profile 的 `participants`、`grouping`、`class_map` �
 ### 12.1 配置和规则单元测试
 
 - 能加载骰子 profile 和组件 config；非法 JSON、缺字段、未知 schema、负数保持时间和未知 mode 均拒绝；
-- 模型路径、working directory 和视频配置不能逃逸项目根目录；
+- 模型路径和 working directory 不能逃逸项目根目录；MediaMTX base URL 和游戏 video path 必须分别通过 URL 与 path 白名单校验；
 - `numeric_compare` 能验证求和、数量和并列结果；`categorical_relation` 能验证石头、剪刀、布关系；
 - allowed outcomes 不包含未知结果时，LLM 候选被拒绝；
 - 请求体中的 `model`、`prompt`、`rule` 和 `post_result_hold_seconds` 被忽略或拒绝，不能覆盖 profile。
@@ -489,7 +500,7 @@ Python `rules.py` 根据 profile 的 `participants`、`grouping`、`class_map` �
 ### 12.3 HTTP、SSE 和前端集成测试
 
 - `POST /api/adjudicate` 只接收 game ID，返回任务快照；
-- 不同游戏使用各自 profile 中的 WebRTC URL，SSE 在 holding 期间推送 result、video、remaining_ms，并在 complete 后才发送 success；
+- 不同游戏使用各自 profile 中的 WebRTC path，后端与统一 base URL 合成地址；SSE 在 holding 期间推送 result、video、remaining_ms，并在 complete 后才发送 success；
 - SSE 断线重连可以从快照恢复 result 和 video；
 - 前端不再引用固定骰子 IP；收到 profile 提供的 video 事件后显示实时画面，收到 complete 后才停止；
 - `/api/health` 报告新组件 ID、role、配置校验状态和事件协议；旧 ID 只显示兼容提示。
@@ -513,7 +524,7 @@ Python `rules.py` 根据 profile 的 `participants`、`grouping`、`class_map` �
 - resident 模式会长期占用摄像头和模型内存，因此默认关闭，只在明确需要连续低延迟场景时启用。
 - `post_result_hold_seconds` 会延长摄像头占用；必须受总超时和最大值限制，避免任务永久占用硬件。
 - 云端 LLM 失败时不能用未复核的 YOLO 结果冒充 `verified=true`；错误必须通过 job 和 SSE 明确呈现。
-- 视频地址属于游戏 profile 的服务端能力，不接受浏览器任意 URL，以免把前端变成跨域或内网探测入口；MediaMTX 不可用时视频失败不能改变已经得到的裁决结果。
+- MediaMTX 基础地址属于组件 / 部署配置，path 属于游戏 profile；两者都不接受浏览器覆盖，以免把前端变成跨域或内网探测入口。MediaMTX 不可用时视频失败不能改变已经得到的裁决结果。
 
 ## 14. 完成定义
 
@@ -522,7 +533,7 @@ Python `rules.py` 根据 profile 的 `participants`、`grouping`、`class_map` �
 1. 新组件 ID、manifest、config 和骰子 profile 已生效，旧 ID 不再被新代码主动引用；
 2. `VisionAdjudicationRequest` 不包含骰子专属字段，provider 核心不包含骰子分支；
 3. 规则、prompt、模型和保持时间均来自经过校验的 profile/config；
-4. 每个游戏的 WebRTC 地址来自自己的 profile；`holding` 期间 result、SSE 和实时视频同时可见，保持结束后才 success；
+4. 每个游戏的 WebRTC path 来自自己的 profile，并与统一 MediaMTX base URL 正确合成；`holding` 期间 result、SSE 和实时视频同时可见，保持结束后才 success；
 5. 按局和常驻模式的取消、超时、重复任务和资源回收测试通过；
 6. C++ runtime 的骰子业务耦合已移出核心裁决路径，新增游戏只需增加 profile 和模型即可接入；
 7. K3 实机完成真实模型、LLM、视频保持和摄像头释放验收。
