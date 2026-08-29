@@ -267,10 +267,11 @@ def test_provider_runs_one_round_and_holds_result(tmp_path: Path):
     assert any(r.commands and r.commands[0]["command"] == "START_ADJUDICATION" for r in runtimes)
 
 
-def test_provider_multiview_sends_single_llm_request():
+def test_provider_multiview_sends_single_llm_request(tmp_path: Path):
+    (tmp_path / "a.jpg").write_bytes(b"a"); (tmp_path / "b.jpg").write_bytes(b"b")
     class Runtime:
         def __init__(self, view_id): self.view_id=view_id; self.commands=[]
-        def start(self,*a,**k): self.events_data=iter([{"event":"ready","phase":"idle"},{"event":"observation","stable":True,"yolo_outcome":"LEFT","snapshot":{"path":"/tmp/a.jpg"}},{"event":"observation","stable":True,"yolo_outcome":"LEFT","snapshot":{"path":"/tmp/b.jpg"}}])
+        def start(self,*a,**k): self.events_data=iter([{"event":"ready","phase":"idle"},{"event":"observation","stable":True,"yolo_outcome":"LEFT","snapshot":{"path":str(tmp_path / "a.jpg")}},{"event":"observation","stable":True,"yolo_outcome":"LEFT","snapshot":{"path":str(tmp_path / "b.jpg")}}])
         def send(self,c): self.commands.append(c)
         def events(self): return self.events_data
         def stop(self): pass
@@ -281,6 +282,35 @@ def test_provider_multiview_sends_single_llm_request():
     v=V(); p=VisionYolov8Adjudicator(runtime_factory=lambda vid:Runtime(vid),verifier=v)
     out=p.adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
     assert out["outcome"]["value"] == "LEFT" and v.calls == 1
+
+
+def test_provider_cleans_runtime_snapshots_after_llm(tmp_path: Path):
+    image = tmp_path / "stable.jpg"; image.write_bytes(b"jpeg")
+    class Runtime:
+        def start(self, *args, **kwargs):
+            self.events_data = iter([{"event":"observation", "stable":True, "yolo_outcome":"LEFT", "snapshot":{"path":str(image)}, "participants":{"LEFT":[1],"RIGHT":[2]}}])
+        def send(self, command): pass
+        def events(self): return self.events_data
+        def stop(self): pass
+    class V:
+        def verify(self, **kwargs):
+            assert image.exists()
+            return type("R", (), {"status":"success", "outcome":"LEFT", "error":None})()
+    profile={"game_id":"x","vision":{"stable_frames":1},"llm":{"enabled":True,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT"]},"lifecycle":{"post_result_hold_seconds":0}}
+    VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime(), verifier=V()).adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
+    assert not image.exists()
+
+
+def test_provider_applies_vision_expected_count_to_rule():
+    class Runtime:
+        def start(self, *args, **kwargs):
+            self.events_data = iter([{"event":"observation", "stable":True, "snapshot":{"path":"/tmp/no.jpg"}, "participants":{"LEFT":[1],"RIGHT":[2,3]}}])
+        def send(self, command): pass
+        def events(self): return self.events_data
+        def stop(self): pass
+    profile={"game_id":"x","vision":{"stable_frames":1,"expected_count":2},"rule":{"kind":"numeric_compare","aggregation":"sum","higher_wins":True,"tie_value":"TIE"},"llm":{"enabled":False,"allowed_outcomes":["LEFT","RIGHT","TIE"]},"lifecycle":{"post_result_hold_seconds":0}}
+    with pytest.raises(RuleError, match="expected_count"):
+        VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime()).adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
 
 
 @pytest.mark.parametrize("content", ["not-json", '{"winner":"UNKNOWN"}', '{"winner":1}'])

@@ -31,14 +31,20 @@ class YoloRuntimeProcess:
         self._process: subprocess.Popen[str] | None = None
 
     def start(self, profile: Mapping[str, Any], view_id: str = "default", prewarm: bool = True) -> None:
+        runtime = profile.get("runtime", {}) if isinstance(profile, Mapping) else {}
+        binary = runtime.get("binary") if isinstance(runtime, Mapping) else None
+        if binary: self.binary = str(binary)
+        workdir = runtime.get("working_dir") if isinstance(runtime, Mapping) else None
+        if workdir: self.working_dir = str(workdir)
         cmd = [self.binary, "--no-display"]
+        if prewarm: cmd.append("--prewarm")
         self._process = subprocess.Popen(cmd, cwd=self.working_dir, stdin=subprocess.PIPE,
                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, bufsize=1)
 
     def send(self, command: Mapping[str, Any]) -> None:
         if not self._process or not self._process.stdin:
-            return
+            raise RuntimeError("YOLO runtime is not running")
         self._process.stdin.write(json.dumps(dict(command)) + "\n")
         self._process.stdin.flush()
 
