@@ -46,9 +46,15 @@ std::mutex g_event_mutex;
 void on_signal(int) { g_signal_stop = 1; }
 
 void emit_event(const std::string& json) {
-    if (g_event_fd < 0) return;
     std::lock_guard<std::mutex> lock(g_event_mutex);
     const std::string line = json + "\n";
+    // When launched by the Python package without an inherited event pipe,
+    // stdout is the event transport.  Keep this fallback JSONL-only so the
+    // resident adapter can consume events directly from Popen.stdout.
+    if (g_event_fd < 0) {
+        std::cout << line << std::flush;
+        return;
+    }
     std::size_t offset = 0;
     while (offset < line.size()) {
         const ssize_t written = ::write(g_event_fd, line.data() + offset, line.size() - offset);
@@ -468,8 +474,8 @@ static bool validate_args(Args& a) {
         std::cerr << "--event-fd must be -1 or an inherited file descriptor >= 3\n";
         return false;
     }
-    if (a.control_fd != -1 && a.control_fd < 3) {
-        std::cerr << "--control-fd must be -1 or an inherited file descriptor >= 3\n";
+    if (a.control_fd < -1) {
+        std::cerr << "--control-fd must be -1 or a valid inherited file descriptor\n";
         return false;
     }
     if (a.snapshot_dir.empty()) a.snapshot_dir = "/tmp/vision-snapshots";
@@ -668,7 +674,10 @@ static void emit_observation(const Args& args, const InferenceResult& item,
     std::ostringstream event;
     event << "{\"event\":\"observation\",\"view_id\":\""
           << json_escape(args.view_id) << "\",\"frame_id\":" << item.id
-          << ",\"stable\":true,\"yolo_outcome\":\"" << json_escape(outcome) << "\"";
+          << ",\"stable\":true";
+    if (!outcome.empty()) {
+        event << ",\"yolo_outcome\":\"" << json_escape(outcome) << "\"";
+    }
     if (!snapshot_path.empty()) {
         event << ",\"snapshot\":{\"format\":\"image/jpeg\",\"path\":\""
               << json_escape(snapshot_path) << "\"}";
@@ -1151,6 +1160,12 @@ int main(int argc, char** argv) {
     if (!find_config_path(argc, argv, a.config_path)) return 2;
     if (!load_config(a.config_path, a)) return 2;
     if (!parse(argc, argv, a)) return argc > 1 ? 2 : 0;
+    // A prewarmed runtime is controlled through the process stdin by
+    // default.  The Python adapter writes vision-control-v1 JSONL commands
+    // to that stream; an explicit descriptor still takes precedence for
+    // supervisors that pass one.  This keeps resident mode usable without
+    // requiring every caller to know Unix fd conventions.
+    if (a.prewarm && a.control_fd < 0) a.control_fd = STDIN_FILENO;
     if (const char* env_url = std::getenv("DICE_LLM_URL")) {
         if (a.llm_url == "https://api.rvcompute.com:60000/v1") a.llm_url = env_url;
     }
@@ -1547,9 +1562,16 @@ int main(int argc, char** argv) {
             DiceJudgment judgment;
             if (item->nv12 && !item->nv12->empty()) {
                 cv::cvtColor(*item->nv12, bgr, cv::COLOR_YUV2BGR_NV12);
-                judgment = judge_dice(bgr, item->detections);
+                // A control-fd run is the game-agnostic provider mode.  Do
+                // not run the legacy divider/five-dice judge on every frame;
+                // it is both wasted work and an accidental coupling that can
+                // reject non-dice profiles.  The Python provider consumes the
+                // generic detections/snapshot and applies the game profile.
+                if (a.control_fd < 0) {
+                    judgment = judge_dice(bgr, item->detections);
+                }
                 if (a.control_fd >= 0 && adjudication_active.load() &&
-                    judgment.valid && !generic_observation_sent.load()) {
+                    !generic_observation_sent.load()) {
                     const std::string signature = detection_signature(item->detections);
                     int stable_count = 0;
                     {
@@ -1557,11 +1579,25 @@ int main(int argc, char** argv) {
                         if (signature == generic_last_signature) stable_count = generic_stable_count.fetch_add(1) + 1;
                         else { generic_last_signature = signature; generic_stable_count.store(1); stable_count = 1; }
                     }
-                    if (stable_count >= a.stable_frames && !generic_observation_sent.exchange(true)) {
+                    // Generic provider mode uses the detector's stable
+                    // observation contract, not the legacy dice divider/
+                    // five-plus-five judge.  An empty detection frame is not
+                    // useful evidence, but every non-empty object layout is a
+                    // valid candidate for a game profile to interpret.
+                    if (!item->detections.empty() &&
+                        stable_count >= a.stable_frames &&
+                        !generic_observation_sent.exchange(true)) {
                         const std::string snapshot_path = save_snapshot(a, bgr, item->id);
-                        const DiceResultSnapshot snapshot = make_dice_snapshot(judgment);
-                        emit_observation(a, *item, snapshot_path,
-                                         winner_label(snapshot.winner), &judgment);
+                        // Keep dice fields only when the legacy judge can
+                        // produce them; generic games consume detections and
+                        // the stable snapshot without any C++ business rule.
+                        if (judgment.valid) {
+                            const DiceResultSnapshot snapshot = make_dice_snapshot(judgment);
+                            emit_observation(a, *item, snapshot_path,
+                                             winner_label(snapshot.winner), &judgment);
+                        } else {
+                            emit_observation(a, *item, snapshot_path, "", nullptr);
+                        }
                     }
                 }
                 DiceJudgment display_judgment = judgment;
