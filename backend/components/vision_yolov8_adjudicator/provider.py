@@ -323,7 +323,13 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     rt = self.runtime_factory(vid)
                     snapshot_dir = Path(tempfile.mkdtemp(prefix=f"vision-runtime-{vid}-"))
                     try:
-                        rt.start(profile, vid, prewarm=True, snapshot_dir=snapshot_dir)
+                        rt.start(
+                            profile,
+                            vid,
+                            prewarm=True,
+                            snapshot_dir=snapshot_dir,
+                            on_log=on_log,
+                        )
                     except TypeError:
                         # Keep injected test/fallback runtimes source-compatible
                         # while the production adapter receives the per-job
@@ -352,6 +358,12 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                         if video_event is not None:
                             on_event(video_event)
                             emitted_video_views.add(vid)
+                    elif event.get("event") == "runtime_exit":
+                        returncode = event.get("returncode")
+                        raise RuntimeError(
+                            f"YOLO runtime exited before stable observation "
+                            f"(returncode={returncode})"
+                        )
                     elif event.get("event") == "observation" and event.get("stable"):
                         found = dict(event, view_id=vid); break
                 return vid, found

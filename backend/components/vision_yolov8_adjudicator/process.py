@@ -37,6 +37,8 @@ class YoloRuntimeProcess:
         self._event_stream: Any | None = None
         self._event_read: int | None = None
         self._stdout_thread: threading.Thread | None = None
+        self._on_log: Any = lambda _line: None
+        self._runtime_exit_emitted = False
 
     def start(
         self,
@@ -45,6 +47,7 @@ class YoloRuntimeProcess:
         prewarm: bool = True,
         *,
         snapshot_dir: str | Path | None = None,
+        on_log: Any | None = None,
     ) -> None:
         """Start one resident runtime and wire its command/event pipes.
 
@@ -54,6 +57,8 @@ class YoloRuntimeProcess:
         runtimes; production provider calls always provide it.
         """
         self.stop()
+        self._on_log = on_log if callable(on_log) else (lambda _line: None)
+        self._runtime_exit_emitted = False
         runtime = profile.get("runtime", {}) if isinstance(profile, Mapping) else {}
         binary = runtime.get("binary") if isinstance(runtime, Mapping) else None
         if binary: self.binary = str(binary)
@@ -186,8 +191,13 @@ class YoloRuntimeProcess:
         if stdout is not None:
             def drain() -> None:
                 try:
-                    for _line in stdout:
-                        pass
+                    for line in stdout:
+                        line = line.rstrip()
+                        if line:
+                            try:
+                                self._on_log(line)
+                            except Exception:
+                                pass
                 except (OSError, ValueError):
                     pass
 
@@ -205,7 +215,8 @@ class YoloRuntimeProcess:
 
     def events(self) -> Iterator[dict[str, Any]]:
         stream = self._event_stream
-        if not self._process or stream is None:
+        process = self._process
+        if not process or stream is None:
             return
         for line in stream:
             try:
@@ -214,6 +225,10 @@ class YoloRuntimeProcess:
                 continue
             if isinstance(event, dict):
                 yield event
+        returncode = process.poll()
+        if returncode is not None and not self._runtime_exit_emitted:
+            self._runtime_exit_emitted = True
+            yield {"event": "runtime_exit", "returncode": returncode}
 
     def stop(self) -> None:
         process = self._process

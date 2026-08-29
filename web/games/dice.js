@@ -147,7 +147,7 @@ export function register(engine) {
   function updateAnalysisProgress(job) {
     if (job.phase === 'detecting') {
       $('stepDetect').classList.add('active');
-      $('stepDetect').querySelector('span').textContent = '✓';
+      $('stepDetect').querySelector('span').textContent = '…';
       const count = Number(job.stable_count || 0);
       const required = Number(job.stable_frames || 0);
       $('analysisStatus').textContent = count > 0 && required > 0

@@ -760,12 +760,27 @@ static void emit_observation(const Args& args, const InferenceResult& item,
 }
 
 static std::string detection_signature(const std::vector<Detection>& detections) {
-    std::ostringstream out;
-    out << detections.size();
+    // Detector confidence and box coordinates naturally move by a few pixels
+    // between adjacent frames.  Stability is about the observed object
+    // layout, not bit-identical floating point output, so quantize geometry
+    // and compare detections independent of the NMS output order.
+    const auto quantize = [](float value) {
+        constexpr float kGridPixels = 8.0f;
+        return std::llround(value / kGridPixels);
+    };
+    std::vector<std::string> tokens;
+    tokens.reserve(detections.size());
     for (const auto& d : detections) {
-        out << '|' << d.class_id << ':' << std::llround(d.x1) << ','
-            << std::llround(d.y1) << ',' << std::llround(d.x2) << ','
-            << std::llround(d.y2) << ':' << std::llround(d.confidence * 100.0f);
+        std::ostringstream token;
+        token << d.class_id << ':' << quantize(d.x1) << ',' << quantize(d.y1)
+              << ',' << quantize(d.x2) << ',' << quantize(d.y2);
+        tokens.push_back(token.str());
+    }
+    std::sort(tokens.begin(), tokens.end());
+    std::ostringstream out;
+    out << tokens.size();
+    for (const auto& token : tokens) {
+        out << '|' << token;
     }
     return out.str();
 }

@@ -450,6 +450,32 @@ while True:
         runtime.stop()
 
 
+def test_runtime_process_forwards_diagnostics_and_reports_exit(tmp_path: Path):
+    """An early camera/model exit must be visible instead of becoming a vague timeout."""
+    script = tmp_path / "exiting_runtime.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import argparse, json, os, sys
+p=argparse.ArgumentParser(); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--view-id',default='default'); p.add_argument('--no-display',action='store_true'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--rtsp',action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path'); a=p.parse_args()
+print('camera open failed: /dev/video1', flush=True)
+os.write(a.event_fd, (json.dumps({'event':'ready','view_id':a.view_id})+'\\n').encode())
+raise SystemExit(7)
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess
+    logs = []
+    runtime = YoloRuntimeProcess(binary=script)
+    runtime.start({}, "front", prewarm=True, on_log=logs.append)
+    try:
+        events = list(runtime.events())
+        assert events[-1] == {"event": "runtime_exit", "returncode": 7}
+        assert any("camera open failed" in line for line in logs)
+    finally:
+        runtime.stop()
+
+
 def test_provider_sends_final_result_and_stops_resident_runtime(tmp_path: Path):
     image = tmp_path / "stable.jpg"; image.write_bytes(b"jpeg")
     class Runtime:
