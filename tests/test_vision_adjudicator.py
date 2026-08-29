@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -279,11 +280,13 @@ def test_provider_runs_one_round_and_holds_result(tmp_path: Path):
         def __init__(self): self.calls=0
         def verify(self, **kwargs):
             self.calls += 1; return type("R", (), {"status":"success","outcome":"LEFT","error":None})()
-    profile={"game_id":"dice","vision":{"stable_frames":1},"llm":{"enabled":True,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT","TIE"]},"multi_view":{"enabled":False,"min_views":1},"lifecycle":{"post_result_hold_seconds":0}}
+    profile={"game_id":"dice","vision":{"stable_frames":1},"llm":{"enabled":True,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT","TIE"]},"video":{"path":"/dice/"},"multi_view":{"enabled":False,"min_views":1},"lifecycle":{"post_result_hold_seconds":0}}
     events=[]; verifier=Verifier()
     result=VisionYolov8Adjudicator(runtime_factory=factory, verifier=verifier).adjudicate(VisionAdjudicationRequest("dice",profile,"r1",2),on_log=lambda x:None,on_event=events.append,is_cancelled=lambda:False)
     assert result["decision_source"] == "consensus"; assert verifier.calls == 1
     assert any(r.commands and r.commands[0]["command"] == "START_ADJUDICATION" for r in runtimes)
+    video_events = [event for event in events if event.get("event") == "video"]
+    assert video_events == [{"event": "video", "url": "http://100.118.229.28:8889/dice/", "view_id": "default"}]
 
 
 def test_provider_multiview_sends_single_llm_request(tmp_path: Path):
@@ -384,3 +387,60 @@ def test_snapshot_rejects_path_outside_task_directory(tmp_path: Path):
             verifier=object(), system_prompt="Judge", user_prompt="JSON",
             allowed_outcomes=["LEFT"], timeout_seconds=1,
         )
+
+
+def test_runtime_process_uses_dedicated_control_and_event_fds(tmp_path: Path):
+    """A noisy runtime must not be able to corrupt structured events."""
+    script = tmp_path / "fake_runtime.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import argparse, json, os, sys
+p=argparse.ArgumentParser(); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--snapshot-dir',default='/tmp'); p.add_argument('--view-id',default='default'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--no-display',action='store_true'); a=p.parse_args()
+def emit(e): os.write(a.event_fd, (json.dumps(e)+'\\n').encode())
+print('diagnostic line that is not JSON', flush=True)
+emit({'event':'started','phase':'starting'}); emit({'event':'ready','phase':'idle'}); emit({'event':'video','url':'rtsp://private/cam'})
+buf=b''
+while True:
+    chunk=os.read(a.control_fd, 4096)
+    if not chunk: break
+    buf += chunk
+    while b'\\n' in buf:
+        line, buf = buf.split(b'\\n',1)
+        cmd=json.loads(line)
+        if cmd.get('command') == 'START_ADJUDICATION':
+            path=os.path.join(a.snapshot_dir, 'stable.jpg'); open(path,'wb').write(b'jpeg')
+            emit({'event':'observation','stable':True,'yolo_outcome':'LEFT','snapshot':{'path':path}})
+        elif cmd.get('command') == 'STOP_ADJUDICATION': emit({'event':'phase','phase':'idle'})
+        elif cmd.get('command') == 'CANCEL': emit({'event':'cancelled'}); raise SystemExit
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess
+    runtime = YoloRuntimeProcess(binary=script)
+    runtime.start({}, "front", prewarm=True, snapshot_dir=tmp_path / "snapshots")
+    try:
+        initial = [next(runtime.events()) for _ in range(3)]
+        assert [item["event"] for item in initial] == ["started", "ready", "video"]
+        runtime.send({"command": "START_ADJUDICATION"})
+        observation = next(item for item in runtime.events() if item.get("event") == "observation")
+        assert Path(observation["snapshot"]["path"]).is_file()
+        assert str(tmp_path / "snapshots") in observation["snapshot"]["path"]
+    finally:
+        runtime.stop()
+
+
+def test_provider_sends_final_result_and_stops_resident_runtime(tmp_path: Path):
+    image = tmp_path / "stable.jpg"; image.write_bytes(b"jpeg")
+    class Runtime:
+        def __init__(self): self.commands=[]
+        def start(self,*a,**k): self.events_data=iter([{"event":"observation","stable":True,"yolo_outcome":"LEFT","snapshot":{"path":str(image)}}])
+        def send(self,c): self.commands.append(c)
+        def events(self): return self.events_data
+    class Verifier:
+        def verify(self, **kwargs): return type("R",(),{"status":"success","outcome":"LEFT","error":None})()
+    runtime = Runtime()
+    profile={"game_id":"x","vision":{"stable_frames":1},"llm":{"enabled":True,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT"]},"lifecycle":{"post_result_hold_seconds":0}}
+    VisionYolov8Adjudicator(runtime_factory=lambda vid: runtime, verifier=Verifier()).adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
+    assert [c["command"] for c in runtime.commands] == ["START_ADJUDICATION", "FINAL_RESULT", "STOP_ADJUDICATION"]
+    assert runtime.commands[1]["outcome"] == {"kind":"winner","value":"LEFT"}

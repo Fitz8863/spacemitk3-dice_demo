@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence, Iterator
 import json
 import os
 import subprocess
+import threading
 
 from components.vision_yolov8_adjudicator.llm import OpenAICompatibleVisionVerifier, VerificationResult
 
@@ -19,39 +20,129 @@ class SnapshotError(ValueError):
 
 
 class YoloRuntimeProcess:
-    """Thin adapter for a resident YOLO process using JSONL stdin/stdout.
+    """Adapter for a resident YOLO process using the vision-control-v1 pipes.
 
-    Tests and deployments can inject a compatible runtime object into the
-    provider; this class intentionally contains no game-specific logic.
+    The camera process deliberately keeps diagnostics on stdout/stderr while
+    structured events and commands use dedicated inherited file descriptors.
+    This prevents a verbose OpenCV/GStreamer log from corrupting the event
+    protocol and, more importantly, lets a prewarmed process accept multiple
+    adjudication rounds without being restarted.
     """
 
     def __init__(self, binary: str | Path | None = None, working_dir: str | Path | None = None) -> None:
         self.binary = str(binary or "yolov8_camera")
         self.working_dir = str(working_dir) if working_dir else None
         self._process: subprocess.Popen[str] | None = None
+        self._control_write: int | None = None
+        self._event_stream: Any | None = None
+        self._event_read: int | None = None
+        self._stdout_thread: threading.Thread | None = None
 
-    def start(self, profile: Mapping[str, Any], view_id: str = "default", prewarm: bool = True) -> None:
+    def start(
+        self,
+        profile: Mapping[str, Any],
+        view_id: str = "default",
+        prewarm: bool = True,
+        *,
+        snapshot_dir: str | Path | None = None,
+    ) -> None:
+        """Start one resident runtime and wire its command/event pipes.
+
+        ``snapshot_dir`` is supplied by the provider per adjudication job so
+        that runtime evidence cannot escape into a shared ``/tmp`` directory.
+        It is optional for backwards compatibility with manually launched
+        runtimes; production provider calls always provide it.
+        """
+        self.stop()
         runtime = profile.get("runtime", {}) if isinstance(profile, Mapping) else {}
         binary = runtime.get("binary") if isinstance(runtime, Mapping) else None
         if binary: self.binary = str(binary)
         workdir = runtime.get("working_dir") if isinstance(runtime, Mapping) else None
         if workdir: self.working_dir = str(workdir)
-        cmd = [self.binary, "--no-display"]
+        # Component deployment defaults live next to this package.  A game
+        # profile may override them for tests or a custom local runtime.
+        if not binary:
+            try:
+                from components.vision_yolov8_adjudicator.profile import load_component_config
+
+                component = load_component_config(Path(__file__).parent)
+                defaults = component.get("runtime", {})
+                if not self.binary or self.binary == "yolov8_camera":
+                    configured = defaults.get("binary") if isinstance(defaults, Mapping) else None
+                    if configured:
+                        root = Path(__file__).resolve().parents[3]
+                        self.binary = str((root / str(configured)).resolve())
+                if not self.working_dir and isinstance(defaults, Mapping) and defaults.get("working_dir"):
+                    root = Path(__file__).resolve().parents[3]
+                    self.working_dir = str((root / str(defaults["working_dir"])).resolve())
+            except Exception:
+                # A fake/injected runtime binary need not have a component
+                # config.  Let subprocess report its normal launch error.
+                pass
+
+        control_read, control_write = os.pipe()
+        event_read, event_write = os.pipe()
+        cmd = [self.binary, "--no-display", "--control-fd", str(control_read),
+               "--event-fd", str(event_write), "--view-id", str(view_id)]
         if prewarm: cmd.append("--prewarm")
-        self._process = subprocess.Popen(cmd, cwd=self.working_dir, stdin=subprocess.PIPE,
-                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                         text=True, bufsize=1)
+        if snapshot_dir is not None:
+            Path(snapshot_dir).mkdir(parents=True, exist_ok=True)
+            cmd.extend(["--snapshot-dir", str(Path(snapshot_dir).resolve())])
+        try:
+            self._process = subprocess.Popen(
+                cmd,
+                cwd=self.working_dir,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                pass_fds=(control_read, event_write),
+            )
+        except Exception:
+            for fd in (control_read, control_write, event_read, event_write):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            raise
+        # Parent only writes commands and reads events.  Child inherited the
+        # opposite ends through pass_fds; close those ends immediately here.
+        os.close(control_read)
+        os.close(event_write)
+        self._control_write = control_write
+        self._event_read = event_read
+        self._event_stream = os.fdopen(event_read, "r", encoding="utf-8", buffering=1)
+        self._event_read = None
+
+        # Drain diagnostics independently so the child cannot block on a
+        # full stdout pipe while the provider is waiting for event-fd data.
+        stdout = self._process.stdout
+        if stdout is not None:
+            def drain() -> None:
+                try:
+                    for _line in stdout:
+                        pass
+                except (OSError, ValueError):
+                    pass
+
+            self._stdout_thread = threading.Thread(target=drain, name="yolo-runtime-log", daemon=True)
+            self._stdout_thread.start()
 
     def send(self, command: Mapping[str, Any]) -> None:
-        if not self._process or not self._process.stdin:
+        if not self._process or self._process.poll() is not None or self._control_write is None:
             raise RuntimeError("YOLO runtime is not running")
-        self._process.stdin.write(json.dumps(dict(command)) + "\n")
-        self._process.stdin.flush()
+        payload = (json.dumps(dict(command), ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+        try:
+            os.write(self._control_write, payload)
+        except OSError as exc:
+            raise RuntimeError("YOLO runtime control channel is closed") from exc
 
     def events(self) -> Iterator[dict[str, Any]]:
-        if not self._process or not self._process.stdout:
-            return iter(())
-        for line in self._process.stdout:
+        stream = self._event_stream
+        if not self._process or stream is None:
+            return
+        for line in stream:
             try:
                 event = json.loads(line)
             except (TypeError, ValueError):
@@ -62,11 +153,25 @@ class YoloRuntimeProcess:
     def stop(self) -> None:
         process = self._process
         self._process = None
+        for stream_name in ("_event_stream",):
+            stream = getattr(self, stream_name)
+            setattr(self, stream_name, None)
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        for fd_name in ("_control_write", "_event_read"):
+            fd = getattr(self, fd_name)
+            setattr(self, fd_name, None)
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
         if process is None:
             return
         try:
-            if process.stdin:
-                process.stdin.close()
             process.terminate()
             process.wait(timeout=2)
         except (OSError, subprocess.TimeoutExpired):
