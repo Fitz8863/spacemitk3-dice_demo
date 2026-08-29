@@ -46,6 +46,24 @@ cd <repo-root>
 scripts/stop_web.sh
 ```
 
+如需在没有网页的情况下单独调试 TTS，可直接运行对应功能包的交互脚本。脚本会
+自动启动并预热 provider；每次输入一行文字并回车后，音频会通过板端播放器播放：
+
+```bash
+# Qwen3-TTS（默认音频播放器自动检测为 aplay）
+backend/components/tts_qwen3/scripts/debug_tts.sh
+
+# MOSS-TTS-Nano
+backend/components/tts_moss_nano/scripts/debug_tts.sh
+
+# 任意已注册 provider（适用于以后新增的本地或云端 TTS）
+python3 backend/tts_debug.py <provider_id>
+```
+
+输入 `/quit` 或 `/exit` 退出。也可以指定播放器，例如
+`--player ffplay`；设置 `DICE_TTS_PLAYER` 可固定默认播放器。调试脚本只会停止
+本次会话自己启动的 TTS，不会停止已由网页或其他服务运行的 provider。
+
 也可以安装 systemd 服务（可选）：
 
 ```bash
