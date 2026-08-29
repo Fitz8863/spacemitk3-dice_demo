@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(yolov8_k3_opencl LANGUAGES CXX)
 
+option(VISION_GENERIC_ONLY "Build resident generic runtime without dice LLM verifier" ON)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type")
@@ -52,8 +54,11 @@ add_executable(yolov8_camera
     src/gstreamer_camera.cpp
     src/opencl_preprocess.cpp
     src/yolov8_detector.cpp
-    src/llm_dice_verifier.cpp
     src/rtsp_streamer.cpp)
+
+if(NOT VISION_GENERIC_ONLY)
+    target_sources(yolov8_camera PRIVATE src/llm_dice_verifier.cpp)
+endif()
 
 target_include_directories(yolov8_camera PRIVATE
     ${OpenCV_INCLUDE_DIRS}
@@ -76,6 +81,10 @@ set_target_properties(yolov8_camera PROPERTIES
     INSTALL_RPATH "")
 
 target_compile_options(yolov8_camera PRIVATE -O3 -ffast-math -Wall -Wextra -Wpedantic)
+
+if(VISION_GENERIC_ONLY)
+    target_compile_definitions(yolov8_camera PRIVATE VISION_GENERIC_ONLY=1)
+endif()
 
 message(STATUS "OpenCV version: ${OpenCV_VERSION}")
 message(STATUS "OpenCV include dirs: ${OpenCV_INCLUDE_DIRS}")

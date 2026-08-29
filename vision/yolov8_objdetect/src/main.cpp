@@ -1,5 +1,24 @@
 #include "gstreamer_camera.h"
+#ifdef VISION_GENERIC_ONLY
+// Generic builds keep the historical display code source-compatible without
+// linking the retired dice-specific verifier.  The control-fd provider never
+// enters that branch; Python owns all LLM verification.
+enum class LlmWinner { Left, Right, Tie, Unknown };
+enum class LlmVerificationResult { Failure, Timeout, Success };
+struct LlmDiceConfig {};
+class LlmDiceVerifier {
+public:
+    explicit LlmDiceVerifier(LlmDiceConfig = {}) {}
+    bool configured() const { return false; }
+    LlmVerificationResult verify_once(const std::string&, const std::string&, int, int,
+                                      LlmWinner& winner, std::string& error) const {
+        winner = LlmWinner::Unknown; error = "legacy dice verifier disabled";
+        return LlmVerificationResult::Failure;
+    }
+};
+#else
 #include "llm_dice_verifier.h"
+#endif
 #include "rtsp_streamer.h"
 #include "opencl_preprocess.h"
 #include "yolov8_detector.h"
