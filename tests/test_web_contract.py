@@ -21,3 +21,8 @@ def test_frontend_keeps_video_until_terminal_complete():
     assert "phase === 'complete'" in js
     assert "startVisionStream(event)" in js
 
+
+def test_frontend_distinguishes_llm_override_from_consensus():
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    assert "llm_override" in js
+    assert "以大模型结果为准" in js

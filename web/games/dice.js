@@ -213,7 +213,11 @@ export function register(engine) {
       pendingAnalysisResult = result;
       $('analysisStatus').textContent = result.source === 'yolo_timeout_fallback'
         ? '大模型请求超时，已使用稳定的 YOLOv8 结果，结果已锁定。'
-        : 'YOLOv8 与大模型复核一致，结果已锁定。';
+        : result.source === 'llm_override'
+          ? 'YOLOv8 与大模型结果不一致，已以大模型结果为准。'
+          : result.source === 'yolo_only'
+            ? '未启用大模型复核，已使用稳定的 YOLOv8 结果。'
+            : 'YOLOv8 与大模型复核一致，结果已锁定。';
       return true;
     }
     if (snapshot.status === 'error' || snapshot.cancelled) {
@@ -312,7 +316,11 @@ export function register(engine) {
     $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : 'Agent 获胜';
     const verificationText = result.source === 'yolo_timeout_fallback'
       ? '超时，采用 YOLOv8'
-      : `复核：${result.llm_winner || winner}`;
+      : result.source === 'llm_override'
+        ? '结果不一致，以大模型结果为准'
+        : result.source === 'yolo_only'
+          ? '未启用大模型，采用 YOLOv8'
+          : `复核：${result.llm_winner || winner}`;
     $('resultSubtitle').textContent = `YOLOv8：${player} : ${agent}；大模型${verificationText}`;
     banner.classList.toggle('loss', !playerWins && !tie);
     const resultTtsKey = tie ? 'result_tie' : playerWins ? 'result_player_win' : 'result_agent_win';

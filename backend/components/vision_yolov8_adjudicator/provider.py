@@ -272,8 +272,28 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         model = str(game_llm.get("model") or configured.get("model") or "").strip() or None
         return {"endpoint": endpoint, "api_key": key or None, "model": model}
 
+    @staticmethod
+    def _resident_mode(profile: Mapping[str, Any]) -> bool:
+        """Return whether the deployment keeps camera/runtime processes warm."""
+        configured: Mapping[str, Any] = {}
+        try:
+            component = load_component_config(Path(__file__).parent)
+            runtime = component.get("runtime", {})
+            if isinstance(runtime, Mapping):
+                configured = runtime
+        except Exception:
+            configured = {}
+        profile_runtime = profile.get("runtime", {})
+        profile_runtime = profile_runtime if isinstance(profile_runtime, Mapping) else {}
+        mode = profile_runtime.get("mode", configured.get("mode", "per_request"))
+        prewarm = profile_runtime.get(
+            "prewarm_camera", configured.get("prewarm_camera", False)
+        )
+        return mode == "resident" and bool(prewarm)
+
     def adjudicate(self, request: VisionAdjudicationRequest, *, on_log: Callable[[str], None], on_event: Callable[[dict[str, Any]], None], is_cancelled: Callable[[], bool], timeout_seconds: float | None = None) -> dict[str, Any]:
         profile = request.profile; runtimes = []
+        keep_warm = self._resident_mode(profile)
         multi = profile.get("multi_view", {}) if isinstance(profile.get("multi_view"), Mapping) else {}
         views = multi.get("views") if multi.get("enabled") else None
         if not isinstance(views, list) or not views: views = [{"id": "default"}]
@@ -284,7 +304,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         round_started = False
         try:
             def start(v):
-                vid = str(v.get("id", "default")); rt = self._runtime_cache.get(vid)
+                vid = str(v.get("id", "default")); rt = self._runtime_cache.get(vid) if keep_warm else None
                 signature = self._runtime_signature(profile, vid)
                 if rt is not None and self._runtime_signatures.get(vid) != signature:
                     try:
@@ -309,9 +329,10 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                         # while the production adapter receives the per-job
                         # directory above.
                         rt.start(profile, vid, prewarm=True)
-                    self._runtime_cache[vid] = rt
-                    self._runtime_snapshot_dirs[vid] = snapshot_dir
-                    self._runtime_signatures[vid] = signature
+                    if keep_warm:
+                        self._runtime_cache[vid] = rt
+                        self._runtime_snapshot_dirs[vid] = snapshot_dir
+                        self._runtime_signatures[vid] = signature
                 if isinstance(rt, YoloRuntimeProcess):
                     root = self._runtime_snapshot_dirs.get(vid)
                     if root is not None:
@@ -351,19 +372,20 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                         if found is not None:
                             observations[vid] = found
             except (TimeoutError, RuntimeError):
-                for view, rt in zip(views, runtimes):
-                    try:
-                        rt.stop()
-                    except Exception:
-                        pass
-                    vid = str(view.get("id", "default"))
-                    if self._runtime_cache.get(vid) is rt:
-                        self._runtime_cache.pop(vid, None)
-                        self._runtime_signatures.pop(vid, None)
-                        root = self._runtime_snapshot_dirs.pop(vid, None)
-                        if root is not None:
-                            import shutil
-                            shutil.rmtree(root, ignore_errors=True)
+                if not keep_warm:
+                    for view, rt in zip(views, runtimes):
+                        try:
+                            rt.stop()
+                        except Exception:
+                            pass
+                        vid = str(view.get("id", "default"))
+                        if self._runtime_cache.get(vid) is rt:
+                            self._runtime_cache.pop(vid, None)
+                            self._runtime_signatures.pop(vid, None)
+                            root = self._runtime_snapshot_dirs.pop(vid, None)
+                            if root is not None:
+                                import shutil
+                                shutil.rmtree(root, ignore_errors=True)
                 raise
             finally:
                 pool.shutdown(wait=False, cancel_futures=True)
@@ -442,6 +464,11 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             final = project_result(profile, decision, {**normalized[0], "views": normalized})
             final_command = {"command": "FINAL_RESULT", "request_id": request.request_id,
                              "outcome": final["outcome"],
+                             # ``source`` is the compact runtime annotation
+                             # understood by the C++ overlay; retain the
+                             # canonical ``decision_source`` in the public
+                             # Python result contract.
+                             "source": final.get("decision_source", "provider"),
                              "decision_source": final.get("decision_source", "provider"),
                              "verification": final.get("verification", {})}
             for rt in runtimes:
@@ -465,7 +492,22 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     if is_cancelled(): raise RuntimeError("cancelled")
                     remaining = max(0, end-time.monotonic()); on_event({"event":"phase", "phase":"holding", "remaining_ms":int(remaining*1000)})
                     time.sleep(min(0.25, remaining))
-            on_event({"event":"complete", "phase":"complete"}); round_completed = True; return final
+            on_event({"event":"complete", "phase":"complete"}); round_completed = True
+            if not keep_warm:
+                for view, rt in zip(views, runtimes):
+                    try:
+                        rt.stop()
+                    except Exception as exc:
+                        on_log(f"[vision] runtime stop failed: {exc}")
+                    vid = str(view.get("id", "default"))
+                    if self._runtime_cache.get(vid) is rt:
+                        self._runtime_cache.pop(vid, None)
+                        self._runtime_signatures.pop(vid, None)
+                        root = self._runtime_snapshot_dirs.pop(vid, None)
+                        if root is not None:
+                            import shutil
+                            shutil.rmtree(root, ignore_errors=True)
+            return final
         finally:
             # Only unlink paths that crossed the validation boundary above.
             # In particular, never trust an arbitrary snapshot path supplied

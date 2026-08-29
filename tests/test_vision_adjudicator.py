@@ -464,6 +464,124 @@ def test_provider_sends_final_result_and_stops_resident_runtime(tmp_path: Path):
     VisionYolov8Adjudicator(runtime_factory=lambda vid: runtime, verifier=Verifier()).adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
     assert [c["command"] for c in runtime.commands] == ["START_ADJUDICATION", "FINAL_RESULT", "STOP_ADJUDICATION"]
     assert runtime.commands[1]["outcome"] == {"kind":"winner","value":"LEFT"}
+    assert runtime.commands[1]["decision_source"] == "consensus"
+
+
+def test_provider_reuses_resident_runtime_for_two_rounds_without_stale_observation(tmp_path: Path):
+    """A resident camera process must serve consecutive rounds in place."""
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"round-1")
+
+    class Runtime:
+        def __init__(self):
+            self.commands = []
+            self.starts = 0
+            self.rounds = 0
+            self._events = []
+
+        def start(self, *args, **kwargs):
+            self.starts += 1
+
+        def send(self, command):
+            self.commands.append(dict(command))
+            if command.get("command") == "START_ADJUDICATION":
+                self.rounds += 1
+                image.write_bytes(f"round-{self.rounds}".encode())
+                self._events = iter([{
+                    "event": "observation",
+                    "stable": True,
+                    "yolo_outcome": "LEFT" if self.rounds == 1 else "RIGHT",
+                    "snapshot": {"path": str(image)},
+                }])
+
+        def events(self):
+            return self._events
+
+    class Verifier:
+        def __init__(self):
+            self.seen = []
+
+        def verify(self, **kwargs):
+            paths = kwargs.get("image_paths") or [kwargs["image_path"]]
+            self.seen.append(Path(paths[0]).read_bytes())
+            return type("R", (), {"status": "success", "outcome": "LEFT", "error": None})()
+
+    runtime = Runtime()
+    verifier = Verifier()
+    profile = {
+        "game_id": "x",
+        "vision": {"stable_frames": 1},
+        "llm": {
+            "enabled": True,
+            "system_prompt": "s",
+            "user_prompt_template": "u",
+            "allowed_outcomes": ["LEFT", "RIGHT"],
+        },
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    provider = VisionYolov8Adjudicator(runtime_factory=lambda vid: runtime, verifier=verifier)
+
+    first = provider.adjudicate(
+        VisionAdjudicationRequest("x", profile, "round-1", 2),
+        on_log=lambda _: None,
+        on_event=lambda _: None,
+        is_cancelled=lambda: False,
+    )
+    second = provider.adjudicate(
+        VisionAdjudicationRequest("x", profile, "round-2", 2),
+        on_log=lambda _: None,
+        on_event=lambda _: None,
+        is_cancelled=lambda: False,
+    )
+
+    assert first["verification"]["yolo_outcome"] == "LEFT"
+    assert second["verification"]["yolo_outcome"] == "RIGHT"
+    assert runtime.starts == 1
+    assert [command["command"] for command in runtime.commands] == [
+        "START_ADJUDICATION", "FINAL_RESULT", "STOP_ADJUDICATION",
+        "START_ADJUDICATION", "FINAL_RESULT", "STOP_ADJUDICATION",
+    ]
+    assert verifier.seen == [b"round-1", b"round-2"]
+
+
+def test_provider_cancel_keeps_resident_runtime_warm():
+    """Cancellation returns a resident worker to idle instead of restarting it."""
+    class Runtime:
+        def __init__(self):
+            self.commands = []
+            self.stop_calls = 0
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def send(self, command):
+            self.commands.append(dict(command))
+
+        def events(self):
+            return iter(())
+
+        def stop(self):
+            self.stop_calls += 1
+
+    runtime = Runtime()
+    profile = {
+        "game_id": "x",
+        "vision": {"stable_frames": 1},
+        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    provider = VisionYolov8Adjudicator(runtime_factory=lambda vid: runtime)
+    with pytest.raises(RuntimeError, match="cancelled"):
+        provider.adjudicate(
+            VisionAdjudicationRequest("x", profile, "cancelled", 1),
+            on_log=lambda _: None,
+            on_event=lambda _: None,
+            is_cancelled=lambda: True,
+        )
+    assert runtime.stop_calls == 0
+    assert [command["command"] for command in runtime.commands] == [
+        "START_ADJUDICATION", "CANCEL"
+    ]
 
 
 def test_normalize_generic_detections_maps_profile_classes_to_participants():
