@@ -25,6 +25,7 @@
 - 视觉组件只负责采集、推理、稳定帧、证据聚合、LLM 复核、生命周期和统一结果输出。
 - 游戏规则、类别映射、参与方、prompt 和结果允许值全部由 `backend/games/<game_id>/vision_profile.json` 声明。
 - 新增一个使用本地模型、远程模型或云端 LLM 的游戏时，只增加游戏 profile 和资源，不修改视觉组件核心调度。
+- 所有游戏统一消费同一种 YOLO detection 输入，并输出同一种 adjudication result 外壳；不允许每个游戏自行定义一套 runtime 事件格式。
 - 默认按局启动、按局释放摄像头；通过配置支持常驻进程复用。
 - YOLO 稳定帧和 LLM 复核次数保持不变：每局达到稳定条件后最多调用一次 LLM，结果只发送一次。
 - 增加 `post_result_hold_seconds`，让已发送结果后的实时画面继续显示；值为 `0` 时保持现有的立即关闭行为。
@@ -235,7 +236,7 @@ def adjudicate(
 }
 ```
 
-`video.path` 是该游戏对应的 MediaMTX stream path；不同游戏使用不同路径，例如骰子使用 `/dice/`，猜拳使用 `/rps/`。`autoplay` 和 `muted` 只描述前端播放策略，不改变视觉裁决逻辑。
+`video.path` 是该游戏对应的 MediaMTX WebRTC 播放 path；不同游戏使用不同路径，例如骰子使用 `/dice/`，猜拳使用 `/rps/`。它不用于配置或推导 RTSP 路径。`autoplay` 和 `muted` 只描述前端播放策略，不改变视觉裁决逻辑。
 
 后端使用标准 URL 拼接规则，把组件配置中的 `mediamtx.webrtc_base_url` 和游戏 profile 中的 `video.path` 合成为完整播放地址，例如 `http://100.118.229.28:8889` + `/dice/` 得到 `http://100.118.229.28:8889/dice/`。禁止直接进行字符串相加，必须规范化基础地址末尾和 path 开头的 `/`，并保留 path 的结尾 `/`。
 
@@ -256,7 +257,7 @@ MediaMTX 的职责是接收 YOLOv8 runtime 输出的本地 RTSP，再提供 WebR
 }
 ```
 
-新增游戏时需要增加自己的模型文件和 profile；只有出现 profile 尚未支持的规则类型时，才需要扩展 `rules.py`，不需要复制整个 provider。
+新增游戏时只替换模型文件和 `vision_profile.json` 中的输入解释、规则及输出约束。已有声明式规则能够表达的游戏不得修改 `provider.py`、C++ runtime 或游戏 pipeline；若未来确实出现当前规则 schema 无法表达的玩法，应先扩展通用规则解释器及其 schema，而不是增加 `if game_id` 分支或复制整个 provider。
 
 ### 6.3 配置优先级和安全边界
 
@@ -293,7 +294,7 @@ sequenceDiagram
     Pipe->>V: adjudicate(request, callbacks)
     V->>C: 启动一轮进程并打开摄像头
     C-->>V: started / detecting / progress
-    V-->>Job: video（profile 中的 MediaMTX WebRTC URL）
+    V-->>Job: video（base URL + profile path 合成的 WebRTC URL）
     C-->>V: 稳定视觉观测
     V->>L: 本局最多一次复核请求
     L-->>V: 允许值内的结果
@@ -395,13 +396,13 @@ queued → starting → detecting → verifying → holding → complete
 3. provider 在进程启动并确认两层配置有效后发送一次 `video` 事件：
 
    ```json
-   {
-     "event": "video",
-     "url": "http://<board-host>:8889/dice/",
-     "protocol": "webrtc",
-     "game_id": "dice",
-     "source": "game-vision-profile"
-   }
+    {
+      "event": "video",
+      "url": "http://100.118.229.28:8889/dice/",
+      "protocol": "webrtc",
+      "game_id": "dice",
+      "source": "mediamtx-base-plus-game-path"
+    }
    ```
 
 4. 基础地址和 path 只来自后端加载并校验的配置，HTTP 请求体不能提交、替换或拼接视频地址；
@@ -411,14 +412,14 @@ queued → starting → detecting → verifying → holding → complete
 8. SSE 重连时根据快照中的最近 `video`、`result` 和 `phase` 恢复画面，不依赖事件恰好只到达一次；
 9. profile 未启用视频时不发送 `video` 事件，前端隐藏视频区域，但裁决流程保持不变。
 
-MediaMTX 的运行链路固定为：
+MediaMTX 的运行链路在本设计中视为外部基础设施，视觉组件不管理 RTSP 发布细节。对本项目而言，浏览器只接收最终 WebRTC 地址：
 
 ```text
-K3 摄像头 → yolov8_camera → RTSP 发布（例如 /dice）
+K3 摄像头 → YOLOv8 / MediaMTX（外部 RTSP 接管细节）
                               ↓
-                         MediaMTX
+组件 mediamtx.webrtc_base_url + 游戏 profile.video.path
                               ↓
-组件 base URL + 游戏 profile.video.path → 浏览器 iframe 播放
+                         浏览器 iframe 播放
 ```
 
 基础地址只允许 `http` 或 `https`，必须是无 path、query、fragment 和凭据的绝对 URL；游戏 path 必须以 `/` 开头，只允许 URL path 字符，禁止 scheme、host、query、fragment、`..` 和控制字符。为避免跨环境修改 profile，部署环境可使用受限的 `DICE_MEDIAMTX_WEBRTC_BASE_URL` 覆盖基础地址，但不能覆盖游戏 path。默认实现不做 WebRTC 播放探测，因为 MediaMTX 播放页面不保证支持简单的 HTTP `HEAD`；视频可用性由 iframe 加载和播放器页面反馈，裁决结果不依赖视频播放成功。
@@ -436,14 +437,14 @@ C++ 进程保留硬件敏感的高性能部分：
 - SpaceMIT ONNX Runtime EP；
 - YOLOv8 解码和 NMS；
 - 连续稳定帧判断；
-- 将摄像头画面发布到配置的 RTSP stream path；MediaMTX 负责将 RTSP 转成 WebRTC；
+- 输出摄像头画面到现有 MediaMTX 接管的流媒体链路；RTSP 发布路径和 MediaMTX 内部映射不属于视觉裁决器接口；
 - `jsonl-events-v1` 事件输出。
 
 C++ 不再计算游戏胜负，不再拼装骰子专属 prompt，也不再依赖 `DiceResultSnapshot`、`LlmDiceVerifier` 或 5 + 5 颗骰子的固定字段。
 
 ### 10.2 通用观测事件
 
-稳定后输出可供 profile 聚合的观测，例如：
+稳定后输出可供 profile 聚合的观测。该结构是所有游戏唯一允许使用的 YOLO runtime 输出接口：
 
 ```json
 {
@@ -451,12 +452,26 @@ C++ 不再计算游戏胜负，不再拼装骰子专属 prompt，也不再依赖
   "frame_id": 1820,
   "stable": true,
   "detections": [
-    {"class_id": 0, "label": "1", "confidence": 0.96, "bbox":[10,20,80,90]}
+    {
+      "class_id": 0,
+      "label": "1",
+      "confidence": 0.96,
+      "bbox": [10,20,80,90]
+    }
   ]
 }
 ```
 
-Python `rules.py` 根据 profile 的 `participants`、`grouping`、`class_map` 和 `rule` 生成证据与结果。对于当前骰子 divider 逻辑，迁移期允许 C++ 继续输出兼容的骰子观测，provider 内增加一次明确的兼容转换；该转换不能成为新接口，也不能阻止后续迁移到通用 detection 事件。
+字段语义固定如下：
+
+- `frame_id`：当前 runtime 内单调递增的帧编号；
+- `stable`：是否已经满足 profile 声明的连续稳定帧条件；
+- `class_id`：模型原始类别 ID；
+- `label`：按本局 profile `class_map` 解析后的标准标签；
+- `confidence`：范围为 `0.0..1.0` 的检测置信度；
+- `bbox`：输入画面像素坐标中的 `[x1, y1, x2, y2]`。
+
+Python `rules.py` 根据 profile 的 `participants`、`grouping`、`class_map` 和 `rule` 生成证据与结果。骰子、猜拳和后续游戏不能增加额外的顶层 detection 字段；游戏特有信息必须由通用 detection 集合和 profile 推导。对于当前骰子 divider 逻辑，迁移期允许 C++ 继续输出兼容的骰子观测，provider 内增加一次明确的兼容转换；该转换不能成为新接口，也不能阻止后续迁移到通用 detection 事件。
 
 ### 10.3 LLM 适配
 
@@ -482,6 +497,7 @@ Python `rules.py` 根据 profile 的 `participants`、`grouping`、`class_map` �
 - 能加载骰子 profile 和组件 config；非法 JSON、缺字段、未知 schema、负数保持时间和未知 mode 均拒绝；
 - 模型路径和 working directory 不能逃逸项目根目录；MediaMTX base URL 和游戏 video path 必须分别通过 URL 与 path 白名单校验；
 - `numeric_compare` 能验证求和、数量和并列结果；`categorical_relation` 能验证石头、剪刀、布关系；
+- 骰子和猜拳的 fake runtime 使用相同 detection schema，不允许加载游戏专属事件结构；
 - allowed outcomes 不包含未知结果时，LLM 候选被拒绝；
 - 请求体中的 `model`、`prompt`、`rule` 和 `post_result_hold_seconds` 被忽略或拒绝，不能覆盖 profile。
 
@@ -535,5 +551,5 @@ Python `rules.py` 根据 profile 的 `participants`、`grouping`、`class_map` �
 3. 规则、prompt、模型和保持时间均来自经过校验的 profile/config；
 4. 每个游戏的 WebRTC path 来自自己的 profile，并与统一 MediaMTX base URL 正确合成；`holding` 期间 result、SSE 和实时视频同时可见，保持结束后才 success；
 5. 按局和常驻模式的取消、超时、重复任务和资源回收测试通过；
-6. C++ runtime 的骰子业务耦合已移出核心裁决路径，新增游戏只需增加 profile 和模型即可接入；
+6. C++ runtime 的骰子业务耦合已移出核心裁决路径；所有游戏使用统一 detection 输入和 adjudication result 输出，已有规则类型内新增游戏只需增加 profile 和模型即可接入；
 7. K3 实机完成真实模型、LLM、视频保持和摄像头释放验收。
