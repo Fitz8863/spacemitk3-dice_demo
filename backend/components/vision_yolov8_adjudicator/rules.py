@@ -155,14 +155,20 @@ def finalize_outcome(
 ) -> dict[str, Any]:
     """Apply the documented YOLO/LLM precedence and return decision metadata."""
 
-    if llm_status not in {"success", "timeout", "failure", "error"}:
+    if llm_status not in {"success", "timeout", "disabled", "failure", "error"}:
         raise RuleError(f"unsupported LLM status: {llm_status!r}")
     if yolo_outcome is not None and (not isinstance(yolo_outcome, str) or not yolo_outcome.strip()):
         raise RuleError("yolo_outcome must be a non-empty string or None")
     if llm_outcome is not None and (not isinstance(llm_outcome, str) or not llm_outcome.strip()):
         raise RuleError("llm_outcome must be a non-empty string or None")
 
-    if llm_status == "success":
+    if llm_status == "disabled":
+        if yolo_outcome is None:
+            raise RuleError("disabled LLM requires a YOLO outcome")
+        value = yolo_outcome.strip()
+        source = "yolo_only"
+        verification_status = "disabled"
+    elif llm_status == "success":
         if llm_outcome is None:
             raise RuleError("LLM success requires an outcome")
         value = llm_outcome.strip()
@@ -185,7 +191,7 @@ def finalize_outcome(
             "status": verification_status,
             "yolo_outcome": yolo_outcome,
             "llm_outcome": llm_outcome,
-            "llm_called": True,
+            "llm_called": llm_status not in {"disabled"},
         },
     }
 
