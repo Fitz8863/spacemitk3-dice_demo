@@ -27,7 +27,7 @@
 - 新增一个使用本地模型、远程模型或云端 LLM 的游戏时，只增加游戏 profile 和资源，不修改视觉组件核心调度。
 - 所有游戏统一消费同一种 YOLO detection 输入，并输出同一种 adjudication result 外壳；不允许每个游戏自行定义一套 runtime 事件格式。
 - 默认按局启动、按局释放摄像头；通过配置支持常驻进程复用。
-- YOLO 稳定帧数量保持不变：每局达到稳定条件后，从稳定帧中选取一帧画面，连同当前游戏 profile 渲染后的 system prompt 和 user prompt，一次性发送给云端或本地的视觉大模型。请求无历史对话和隐式上下文；每局最多调用一次 LLM，结果只发送一次。
+- YOLO 稳定帧数量保持不变：每局达到稳定条件后，从稳定帧中选取一帧画面，先得到 YOLO 的初步裁决，再将该画面连同当前游戏 profile 的 system prompt 和 user prompt，一次性发送给云端或本地的视觉大模型复核。请求无历史对话和隐式上下文；每局最多调用一次 LLM，结果只发送一次。
 - 增加 `post_result_hold_seconds`，让已发送结果后的实时画面继续显示；值为 `0` 时保持现有的立即关闭行为。
 - 让任务状态、SSE 事件和前端视频生命周期一致，避免结果出现后连接或视频提前关闭。
 - 保留一段迁移期的 `vision_yolo` 兼容别名，避免旧 manifest 或旧客户端突然失效。
@@ -54,6 +54,7 @@
 | 事件协议 | `jsonl-events-v1` | stdout/stderr 只保留诊断用途，业务事件可测试 |
 | 视频播放地址 | 游戏 `vision_profile.json` | 每个游戏可绑定自己的 MediaMTX WebRTC 地址 |
 | LLM 复核输入 | 单轮稳定帧图片 + profile prompt | 不携带历史对话、上一局结果或隐式上下文 |
+| 最终结果策略 | 共识、LLM 覆盖或超时回退 | LLM 成功时以 LLM 为准；超时才回退 YOLO |
 | C++ 业务边界 | 输出通用视觉观测，Python 按 profile 聚合和裁决 | 新增游戏不需要改 C++ 核心 |
 
 ## 4. 目标目录结构与职责
@@ -134,10 +135,17 @@ def adjudicate(
 
 ```json
 {
-  "verified": true,
+  "adjudicated": true,
   "outcome": {
     "kind": "winner",
     "value": "LEFT"
+  },
+  "decision_source": "consensus",
+  "verification": {
+    "status": "agreed",
+    "yolo_outcome": "LEFT",
+    "llm_outcome": "LEFT",
+    "llm_called": true
   },
   "evidence": {
     "observations": [],
@@ -147,6 +155,8 @@ def adjudicate(
   "provider_id": "vision_yolov8_adjudicator"
 }
 ```
+
+`decision_source` 只允许 `consensus`、`llm_override` 和 `yolo_timeout_fallback`。LLM 成功返回合法结果时，无论是否与 YOLO 一致，最终结果都使用 LLM；超时是唯一允许自动回退到 YOLO 初判的情况。`adjudicated=true` 表示已经得到可供游戏使用的最终裁决，不等同于「YOLO 与 LLM 一致」。旧客户端需要的 `verified` 字段在迁移期可以由后端映射为 `adjudicated`，新代码不得再用它表达共识状态。
 
 骰子迁移期可以在同一结果中保留 `left_sum`、`right_sum`、`left_values` 和 `right_values` 等兼容字段，但这些字段由骰子 profile 的结果投影层产生，不能出现在核心接口定义中。LLM 的原始文本永远不能直接作为最终结果；必须解析为允许值、通过 profile 规则校验，并在无法校验时返回错误。
 
@@ -301,8 +311,13 @@ sequenceDiagram
     V-->>Job: video（base URL + profile path 合成的 WebRTC URL）
     C-->>V: 稳定视觉观测
     V->>L: 稳定帧图片 + profile 渲染的 system/user prompt
-    L-->>V: 允许值内的结果
-    V-->>Job: result(verified=true)
+    alt LLM 返回合法结果
+        L-->>V: llm_outcome
+        V-->>Job: result(decision_source=consensus 或 llm_override)
+    else LLM 请求超时
+        L-->>V: timeout
+        V-->>Job: result(decision_source=yolo_timeout_fallback)
+    end
     Job-->>Web: SSE：结果可见，phase=holding
     Note over V,C: 保持视频和摄像头，不重新检测、不重新调用 LLM
     V-->>Job: complete
@@ -310,7 +325,7 @@ sequenceDiagram
     V->>C: 终止进程并释放摄像头
 ```
 
-默认时序是：启动进程 → 稳定帧 → LLM 复核 → 立即发送 `verified` 结果 → 进入 `holding` → 等待保持时间 → 发送 `complete` → 回收进程和摄像头。`post_result_hold_seconds = 0` 时跳过等待，结果事件后立即完成回收。
+默认时序是：启动进程 → 稳定帧 → 得到 YOLO 初判 → 发送一张稳定帧和当前游戏 prompt 给 LLM → 按共识/LLM 覆盖/超时回退策略确定最终结果 → 立即发送 `adjudicated` 结果 → 进入 `holding` → 等待保持时间 → 发送 `complete` → 回收进程和摄像头。`post_result_hold_seconds = 0` 时跳过等待，结果事件后立即完成回收。
 
 ### 7.2 常驻模式
 
@@ -350,7 +365,8 @@ queued → starting → detecting → verifying → holding → complete
 
 ### 8.2 关键不变量
 
-- `result(verified=true)` 代表「裁决结果已经得到」，不代表「视觉资源已经释放」；
+- `result(adjudicated=true)` 代表「最终裁决已经得到」，不代表「视觉资源已经释放」；
+- `decision_source=consensus` 表示 YOLO 和 LLM 结果一致；`decision_source=llm_override` 表示 LLM 成功但覆盖了 YOLO 初判；`decision_source=yolo_timeout_fallback` 表示 LLM 在规定预算内未返回，采用 YOLO 初判；
 - 结果事件发送一次，`holding` 期间不得重新检测或再次调用 LLM；
 - SSE 在 `holding` 期间保持连接，前端可以同时显示结果和实时画面；
 - 取消在 `holding` 期间仍然有效，立即终止进程并将 job 置为 `error`，不发送 success；
@@ -366,7 +382,7 @@ queued → starting → detecting → verifying → holding → complete
 {"event":"phase","phase":"detecting"}
 {"event":"progress","phase":"detecting","stable_count":12,"stable_frames":30}
 {"event":"phase","phase":"verifying"}
-{"event":"result","verified":true,"outcome":{"kind":"winner","value":"LEFT"},"evidence":{}}
+{"event":"result","adjudicated":true,"decision_source":"consensus","outcome":{"kind":"winner","value":"LEFT"},"verification":{"yolo_outcome":"LEFT","llm_outcome":"LEFT","status":"agreed"},"evidence":{}}
 {"event":"phase","phase":"holding","remaining_ms":2500}
 {"event":"complete","phase":"complete"}
 ```
