@@ -254,6 +254,7 @@ Web app.js
 
 ```text
 GET  /api/tts/health
+POST /api/speech/stream    {"game":"dice", "key":"rules_intro", "values":{}}
 POST /api/tts/stream       {"text":"...", "voice":"default", "speed":1.0}
 POST /api/tts/synthesize    {"text":"...", "voice":"default", "speed":1.0}
 ```
@@ -265,7 +266,7 @@ POST /api/tts/synthesize    {"text":"...", "voice":"default", "speed":1.0}
 
 ### 4.6 TTS 文案配置
 
-网页通过 `/api/games` 从 `backend/games/<game_id>/manifest.json` 加载需要播报的文本、默认音色和语速；代码只引用状态键，不把业务文案散落在 `app.js`：
+网页通过 `/api/games` 获取游戏清单，但播放时只向 `/api/speech/stream` 提交状态键。后端从 `backend/games/<game_id>/manifest.json` 决定使用 TTS 或已有 WAV：
 
 ```json
 {
@@ -273,13 +274,13 @@ POST /api/tts/synthesize    {"text":"...", "voice":"default", "speed":1.0}
   "voice": "default",
   "speed": 1.0,
   "texts": {
-    "rules_intro": "...",
-    "result_player_win": "...{player_score}...{agent_score}..."
+    "rules_intro": {"mode": "audio", "audio": "audio/rules_intro.wav"},
+    "result_player_win": {"mode": "tts", "text": "...{player_score}...{agent_score}..."}
   }
 }
 ```
 
-当前状态键：`rules_intro`、`rules_confirmed`、`shake_started`、`shake_stopped`、`analysis_started`、`result_tie`、`result_player_win`、`result_agent_win`。胜负结果使用 `{player_score}` 和 `{agent_score}` 动态替换。修改 JSON 后刷新板端浏览器即可生效；JSON 加载失败时会提示并跳过该次 K3 TTS 请求。
+`mode=tts` 调用当前 TTS provider，`mode=audio` 读取游戏目录内的 WAV。第一版仅支持 WAV，拒绝绝对路径和 `..` 越界。旧字符串条目继续视为 TTS。胜负结果的 `{player_score}` 和 `{agent_score}` 在后端替换；修改 manifest 后需重启后端。
 
 TTS 上游必须使用：
 

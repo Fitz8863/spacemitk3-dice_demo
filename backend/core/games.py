@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -19,6 +20,72 @@ _PROVIDER_SLOT_ALIASES = {
 _PROVIDER_ENV_ALIASES = {
     "vision_adjudicator": ("DICE_VISION_PROVIDER",),
 }
+
+
+def normalize_speech_entry(entry: Any) -> dict[str, str]:
+    """Normalize one manifest speech entry while keeping legacy strings valid."""
+    if isinstance(entry, str):
+        if not entry.strip():
+            raise ValueError("speech text must not be empty")
+        return {"mode": "tts", "text": entry}
+    if not isinstance(entry, dict):
+        raise ValueError("speech entry must be a string or object")
+
+    mode = entry.get("mode", "tts")
+    if mode not in {"tts", "audio"}:
+        raise ValueError("speech mode must be tts or audio")
+    if mode == "tts":
+        text = entry.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("tts speech entry requires non-empty text")
+        return {"mode": "tts", "text": text}
+
+    audio = entry.get("audio")
+    if not isinstance(audio, str) or not audio.strip():
+        raise ValueError("audio speech entry requires a relative wav path")
+    audio = audio.strip()
+    audio_path = Path(audio)
+    if audio_path.is_absolute() or ".." in audio_path.parts or audio_path.suffix.lower() != ".wav":
+        raise ValueError("audio speech entry requires a relative .wav path")
+    normalized = {"mode": "audio", "audio": audio}
+    text = entry.get("text")
+    if text is not None:
+        if not isinstance(text, str):
+            raise ValueError("audio speech entry text must be a string")
+        normalized["text"] = text
+    return normalized
+
+
+def resolve_game_audio_path(game_id: str, audio: str) -> Path:
+    """Resolve a manifest audio path without allowing it to escape its game."""
+    game_root = (GAMES_ROOT / game_id).resolve()
+    relative = Path(audio)
+    if relative.is_absolute() or ".." in relative.parts or relative.suffix.lower() != ".wav":
+        raise ValueError("audio path must be a relative .wav path")
+    candidate = (game_root / relative).resolve()
+    try:
+        candidate.relative_to(game_root)
+    except ValueError as exc:
+        raise ValueError("audio path escapes the game directory") from exc
+    if not candidate.is_file():
+        raise FileNotFoundError(candidate)
+    return candidate
+
+
+def render_speech_text(template: str, values: Any) -> str:
+    """Render scalar result values into a manifest-owned TTS template."""
+    if not isinstance(values, dict):
+        raise ValueError("speech values must be an object")
+    normalized: dict[str, str] = {}
+    for key, value in values.items():
+        if not isinstance(key, str) or not isinstance(value, (str, int, float)):
+            raise ValueError("speech values must contain only scalar fields")
+        normalized[key] = str(value)
+    return re.sub(
+        r"\{([a-zA-Z0-9_]+)\}",
+        lambda match: normalized.get(match.group(1), match.group(0)),
+        template,
+    )
 
 
 class GameRegistry:
@@ -55,7 +122,12 @@ def load_games() -> GameRegistry:
             texts = manifest.get("texts", {})
             if not isinstance(texts, dict):
                 raise ValueError("texts must be an object")
-            manifest["texts"] = texts
+            if not all(isinstance(key, str) and key for key in texts):
+                raise ValueError("text keys must be non-empty strings")
+            manifest["texts"] = {
+                key: normalize_speech_entry(value)
+                for key, value in texts.items()
+            }
 
             if "components" in manifest:
                 legacy_components = manifest["components"]

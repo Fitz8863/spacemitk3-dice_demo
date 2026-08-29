@@ -73,6 +73,26 @@ function getTtsConfig() {
   };
 }
 
+function normalizeSpeechEntry(entry) {
+  if (typeof entry === 'string') {
+    return { mode: 'tts', text: entry };
+  }
+  if (!entry || typeof entry !== 'object') {
+    throw new Error('台词配置必须是字符串或对象');
+  }
+  const mode = entry.mode || 'tts';
+  if (mode !== 'tts' && mode !== 'audio') {
+    throw new Error(`不支持的台词播放模式：${mode}`);
+  }
+  if (mode === 'tts' && (typeof entry.text !== 'string' || !entry.text.trim())) {
+    throw new Error('TTS 台词缺少 text');
+  }
+  if (mode === 'audio' && (typeof entry.audio !== 'string' || !entry.audio.trim())) {
+    throw new Error('音频台词缺少 audio');
+  }
+  return entry;
+}
+
 function renderTtsText(template, values = {}) {
   return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name) => (
     Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match
@@ -196,17 +216,26 @@ async function requestSpeechStream(message, requestId, options, queue) {
   state.ttsAbortController = controller;
   let reader = null;
   try {
-    const response = await fetch('/api/tts/stream', {
+    const source = options.source || { mode: 'tts' };
+    const isManifestSpeech = typeof source.key === 'string' && source.key;
+    const response = await fetch(isManifestSpeech ? '/api/speech/stream' : '/api/tts/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: message, voice: options.voice, speed: options.speed, game: state.selectedGame }),
+      body: JSON.stringify(isManifestSpeech
+        ? { game: state.selectedGame, key: source.key, values: source.values || {} }
+        : {
+          text: message,
+          voice: options.voice,
+          speed: options.speed,
+          game: state.selectedGame,
+        }),
       signal: controller.signal,
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || `HTTP ${response.status}`);
+      throw new Error(payload.error || `语音请求失败：HTTP ${response.status}`);
     }
-    if (!response.body) throw new Error('浏览器不支持 TTS 流式响应');
+    if (!response.body) throw new Error('浏览器不支持语音流式响应');
     reader = response.body.getReader();
     for await (const blob of readTtsFrames(reader)) {
       if (!state.sound || requestId !== state.ttsRequestId) {
@@ -280,7 +309,7 @@ async function playSpeechBlob(blob, requestId) {
 }
 
 async function speak(message, options = { voice: 'default', speed: 1.0 }) {
-  if (!state.sound || !message) return;
+  if (!state.sound || (!message && !options.source?.key)) return;
   stopSpeech();
   const requestId = state.ttsRequestId;
   const queue = createTtsFrameQueue();
@@ -299,8 +328,8 @@ async function speak(message, options = { voice: 'default', speed: 1.0 }) {
   } catch (error) {
     await producer.catch(() => {});
     if (error.name === 'AbortError' || requestId !== state.ttsRequestId || !state.sound) return;
-    console.error(`TTS stream failed after ${playedFrames} frame(s):`, error);
-    toast('TTS 播放失败，请检查当前语音组件');
+    console.error(`Speech stream failed after ${playedFrames} frame(s):`, error);
+    toast('语音播放失败，请检查台词配置或语音组件');
   }
 }
 
@@ -308,11 +337,12 @@ function speakState(key, values = {}) {
   if (!state.sound) return;
   try {
     const config = getTtsConfig();
-    const template = config.texts[key];
-    if (typeof template !== 'string' || !template.trim()) {
-      throw new Error(`未配置 TTS 状态文案：${key}`);
+    const entry = normalizeSpeechEntry(config.texts[key]);
+    if (entry.mode === 'audio') {
+      speak('', { ...config, source: { mode: 'audio', key, values } });
+      return;
     }
-    speak(renderTtsText(template, values), config);
+    speak('', { ...config, source: { mode: 'tts', key, values } });
   } catch (error) {
     console.error(`Failed to load TTS state ${key}:`, error);
     if (!state.ttsConfigErrorNotified) {

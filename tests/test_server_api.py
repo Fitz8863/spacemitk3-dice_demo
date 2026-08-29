@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import threading
+import tempfile
 import time
 import unittest
 from http.client import HTTPConnection
@@ -17,6 +18,7 @@ if str(BACKEND) not in sys.path:
 
 import server  # noqa: E402
 from core.components import ComponentRegistry  # noqa: E402
+from core.games import GameRegistry  # noqa: E402
 from core.jobs import ComponentJob  # noqa: E402
 from core.tts import TtsProvider  # noqa: E402
 from core.vision import VisionAdjudicatorProvider  # noqa: E402
@@ -40,10 +42,14 @@ class DummyVisionAdjudicator(VisionAdjudicatorProvider):
 class DummyTts(TtsProvider):
     id = "tts_dummy"
 
+    def __init__(self):
+        self.last_payload = None
+
     def health(self):
         return {"id": self.id, "type": self.type, "ok": True, "engine": "dummy"}
 
     def synthesize(self, payload):
+        self.last_payload = dict(payload)
         self.validate(payload)
         return WAV, {"Content-Type": "audio/wav"}
 
@@ -132,6 +138,78 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(data[4:-4], WAV)
         self.assertEqual(data[-4:], b"\0\0\0\0")
 
+    def test_audio_speech_stream_reads_manifest_selected_wav(self):
+        import core.games as games_module
+
+        registry = GameRegistry()
+        registry.register({
+            "id": "dice",
+            "name": "Dice",
+            "enabled": True,
+            "providers": {"tts": "tts_dummy"},
+            "texts": {"rules_intro": {"mode": "audio", "audio": "audio/intro.wav"}},
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            audio_path = root / "dice" / "audio" / "intro.wav"
+            audio_path.parent.mkdir(parents=True)
+            audio_path.write_bytes(WAV)
+            original_games = server.GAMES
+            original_games_root = games_module.GAMES_ROOT
+            server.GAMES = registry
+            games_module.GAMES_ROOT = root
+            try:
+                status, headers, data = self.request(
+                    "POST", "/api/speech/stream", {"game": "dice", "key": "rules_intro"}
+                )
+            finally:
+                server.GAMES = original_games
+                games_module.GAMES_ROOT = original_games_root
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["X-Dice-Speech-Key"], "rules_intro")
+        self.assertEqual(headers["X-Dice-Speech-Mode"], "audio")
+        self.assertEqual(int.from_bytes(data[:4], "big"), len(WAV))
+        self.assertEqual(data[4:-4], WAV)
+        self.assertEqual(data[-4:], b"\0\0\0\0")
+
+    def test_tts_speech_stream_renders_manifest_values(self):
+        original_games = server.GAMES
+        registry = GameRegistry()
+        registry.register({
+            "id": "dice",
+            "name": "Dice",
+            "enabled": True,
+            "providers": {"tts": "tts_dummy"},
+            "voice": "announcer",
+            "speed": 1.25,
+            "texts": {
+                "result_player_win": {
+                    "mode": "tts",
+                    "text": "玩家 {player_score}，Agent {agent_score}",
+                }
+            },
+        })
+        server.GAMES = registry
+        try:
+            status, headers, data = self.request(
+                "POST",
+                "/api/speech/stream",
+                {
+                    "game": "dice",
+                    "key": "result_player_win",
+                    "values": {"player_score": 18, "agent_score": 12},
+                },
+            )
+        finally:
+            server.GAMES = original_games
+        provider = server.COMPONENTS.require("tts_dummy", expected_type="tts")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["X-Dice-Speech-Mode"], "tts")
+        self.assertEqual(provider.last_payload["text"], "玩家 18，Agent 12")
+        self.assertEqual(provider.last_payload["voice"], "announcer")
+        self.assertEqual(provider.last_payload["speed"], 1.25)
+        self.assertEqual(data[4:-4], WAV)
+
     def test_sse_pushes_structured_job_updates(self):
         def run(_on_log, _cancelled, on_event):
             on_event({"event": "phase", "phase": "detecting"})
@@ -166,7 +244,7 @@ class ServerApiTests(unittest.TestCase):
         job_id = json.loads(data)["job_id"]
 
         payload = None
-        for _ in range(20):
+        for _ in range(100):
             status, _, data = self.request("GET", f"/api/adjudicate/{job_id}")
             self.assertEqual(status, 200)
             payload = json.loads(data)

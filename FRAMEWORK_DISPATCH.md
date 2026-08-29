@@ -205,7 +205,7 @@ select
 | 阶段 | 触发方式 | 前端动作 | 后端动作 |
 |---|---|---|---|
 | `select` | 页面加载 | 请求 `/api/games`，显示可用游戏 | 返回所有游戏 manifest 的公开字段 |
-| `rules` | 进入「摇骰子」 | 播报 `rules_intro` | 调用 `/api/tts/stream` |
+| `rules` | 进入「摇骰子」 | 播报 `rules_intro` | 调用 `/api/speech/stream`，按台词模式选择 TTS/WAV |
 | `ready` | 确认规则 | 等待用户开始 | 无视觉任务 |
 | `countdown` | 点击开始或停止 | 本地倒计时 | 当前没有机械臂指令 |
 | `shaking` | 倒计时完成 | 显示摇骰动画和 8 秒计时 | 当前没有机械臂指令 |
@@ -469,19 +469,22 @@ SSE 的增量通过 `revision` 和 `event_sequence` 去重，避免每次重新�
 
 ### 11.1 前端调用
 
-游戏文案来自 `backend/games/dice/manifest.json`，例如 `rules_intro`、`shake_started`、`result_player_win`。前端只传状态键对应的文本、音色和语速：
+游戏文案来自 `backend/games/dice/manifest.json`，例如 `rules_intro`、`shake_started`、`result_player_win`。前端只传状态键和动态值，由后端按台词模式选择 TTS 或已有 WAV：
 
 ```http
-POST /api/tts/stream
+POST /api/speech/stream
 Content-Type: application/json
 
 {
   "game": "dice",
-  "text": "开始摇骰。",
-  "voice": "default",
-  "speed": 1.0
+  "key": "result_player_win",
+  "values": {"player_score": 18, "agent_score": 12}
 }
 ```
+
+台词条目使用 `{"mode":"tts","text":"..."}` 或
+`{"mode":"audio","audio":"audio/rules_intro.wav"}`；旧的纯字符串仍视为
+TTS，音频文件第一版仅支持游戏目录内的 WAV。
 
 前端不调用浏览器 `speechSynthesis` 作为隐藏式兜底；当前 provider 不可用时会显示错误提示。
 
@@ -540,6 +543,7 @@ N 字节 WAV 数据
 | GET | `/api/tts/health` | 当前或指定 TTS provider 的健康状态 |
 | GET | `/api/components` | 所有已注册组件及其健康信息 |
 | GET | `/api/games` | 所有游戏 manifest |
+| POST | `/api/speech/stream` | 按 manifest 台词键选择 TTS 或 WAV，返回长度前缀 WAV 帧流 |
 | POST | `/api/tts/stream` | 单次请求返回长度前缀的 WAV 帧流 |
 | POST | `/api/tts/synthesize` | 返回一个完整 WAV，适合手工调试 |
 | POST | `/api/adjudicate` | 创建一次视觉裁决任务，返回 HTTP 202 |

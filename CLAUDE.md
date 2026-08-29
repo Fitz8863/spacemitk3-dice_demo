@@ -98,7 +98,8 @@ file /tmp/dice-tts.wav   # 期望 RIFF/WAVE, 24 kHz, 16-bit, mono
 ```text
 GET  /api/health                      整体状态
 GET  /api/tts/health                  当前 TTS provider 是否可用
-POST /api/tts/stream                  整段文本一次请求，按长度前缀 WAV 帧持续返回
+POST /api/speech/stream               按 manifest 台词键选择 TTS 或已有 WAV
+POST /api/tts/stream                  直接提交文本，按长度前缀 WAV 帧持续返回
 POST /api/tts/synthesize              单段文本转一个 WAV（手工调试）
 POST /api/adjudicate                     启动一轮视觉裁决，返回 job_id（同时只允许一个任务）
 GET  /api/adjudicate/<job_id>            兼容查询状态/阶段/日志/事件/结果
@@ -146,7 +147,7 @@ backend 不再动态加载底层 runtime 的交互脚本。Qwen3 的切分和 HT
 select → rules → ready → countdown → shaking → open → analysis → result → ready/select
 ```
 
-人手操作按钮 = 未来机械臂 Action 的占位：`startShake` / `stopShake` / `revealDice`（见 `AI_PROJECT_CONTEXT.md` 第 4.3 节映射）。所有播报文案集中在 `backend/games/<game_id>/manifest.json`（状态键 + `{player_score}`/`{agent_score}` 占位符），`app.js` 通过 `/api/games` 加载，只引用键、不硬编码文案。
+人手操作按钮 = 未来机械臂 Action 的占位：`startShake` / `stopShake` / `revealDice`（见 `AI_PROJECT_CONTEXT.md` 第 4.3 节映射）。所有播报文案集中在 `backend/games/<game_id>/manifest.json`（状态键可选 `mode=tts` 或 `mode=audio`，TTS 支持 `{player_score}`/`{agent_score}` 占位符），`app.js` 通过 `/api/games` 加载，只引用键、不硬编码文案。
 
 ## 必须遵守的约束（非可选）
 

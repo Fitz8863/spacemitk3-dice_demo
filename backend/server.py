@@ -28,7 +28,15 @@ from core.errors import (
     JobAlreadyExistsError,
     JobNotFoundError,
 )
-from core.games import load_games, require_game, resolve_provider_id, run_game
+from core.games import (
+    load_games,
+    normalize_speech_entry,
+    render_speech_text,
+    require_game,
+    resolve_game_audio_path,
+    resolve_provider_id,
+    run_game,
+)
 from core.jobs import ComponentJob
 from core.tts_dispatch import TtsDispatcher
 from core.tts_protocol import (
@@ -361,6 +369,86 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             except Exception as exc:
                 print(f"[tts] stream provider={provider.id} failed: {exc}", flush=True)
+                try:
+                    self.wfile.write(encode_error_frame(str(exc)))
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            return
+        if path == "/api/speech/stream":
+            try:
+                payload = self.read_json()
+                game_id = str(payload.get("game") or "dice")
+                key = str(payload.get("key") or "").strip()
+                if not key:
+                    raise InvalidRequestError("speech key is required")
+                manifest = require_game(GAMES, game_id)
+                texts = manifest.get("texts", {})
+                if not isinstance(texts, dict) or key not in texts:
+                    raise DiceArenaError(
+                        f"speech entry not found: {game_id}/{key}",
+                        "SPEECH_ENTRY_NOT_FOUND",
+                        404,
+                    )
+                entry = normalize_speech_entry(texts[key])
+                mode = entry["mode"]
+                if mode == "audio":
+                    audio_path = resolve_game_audio_path(game_id, entry["audio"])
+                    frame = encode_audio_frame(audio_path.read_bytes())
+                    provider = None
+                else:
+                    text = render_speech_text(entry["text"], payload.get("values", {}))
+                    speech_payload = {
+                        "game": game_id,
+                        "text": text,
+                        "voice": manifest.get("voice", "default"),
+                        "speed": manifest.get("speed", 1.0),
+                    }
+                    dispatcher = _tts_dispatcher()
+                    provider = dispatcher.provider(speech_payload, game_id=game_id)
+                    if not callable(getattr(provider, "stream", None)):
+                        raise InvalidRequestError(
+                            f"TTS provider {provider.id} does not implement stream()"
+                        )
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
+                return
+            except FileNotFoundError as exc:
+                self.send_error_json(DiceArenaError(
+                    f"audio file not found: {exc}", "AUDIO_FILE_NOT_FOUND", 404
+                ))
+                return
+            except (OSError, ValueError) as exc:
+                self.send_error_json(DiceArenaError(str(exc), "AUDIO_CONFIG_ERROR", 400))
+                return
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/x-dice-arena-wav-stream")
+            self.send_header("X-Dice-Speech-Key", key)
+            self.send_header("X-Dice-Speech-Mode", mode)
+            if provider is not None:
+                provider_health = _provider_health(provider.id, "tts")
+                self.send_header("X-Dice-TTS-Provider", provider.id)
+                self.send_header("X-Dice-TTS-Engine", str(provider_health.get("engine", provider.id)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                if provider is not None:
+                    def write_frame(audio: bytes) -> None:
+                        self.wfile.write(encode_audio_frame(audio))
+                        self.wfile.flush()
+
+                    dispatcher.stream(speech_payload, write_frame, game_id=game_id)
+                else:
+                    self.wfile.write(frame)
+                self.wfile.write(encode_end_frame())
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as exc:
+                print(f"[speech] stream mode={mode} key={key} failed: {exc}", flush=True)
                 try:
                     self.wfile.write(encode_error_frame(str(exc)))
                     self.wfile.flush()

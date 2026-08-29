@@ -16,6 +16,7 @@ if str(BACKEND) not in sys.path:
 from core.components import ComponentRegistry, _validate_manifest  # noqa: E402
 from core.tts import TtsProvider  # noqa: E402
 from core.tts_config import TtsConfigError, validate_tts_component_config  # noqa: E402
+from core.games import normalize_speech_entry  # noqa: E402
 from core.tts_dispatch import TtsDispatcher  # noqa: E402
 from components.tts_qwen3.settings import load_settings as load_qwen_settings  # noqa: E402
 from components.tts_moss_nano.settings import load_settings as load_moss_settings  # noqa: E402
@@ -93,6 +94,20 @@ class DispatcherTests(unittest.TestCase):
 
 
 class TtsContractTests(unittest.TestCase):
+    def test_speech_manifest_entries_normalize_legacy_text_and_audio_modes(self):
+        self.assertEqual(
+            normalize_speech_entry("欢迎"),
+            {"mode": "tts", "text": "欢迎"},
+        )
+        self.assertEqual(
+            normalize_speech_entry({"mode": "audio", "audio": "audio/rules.wav"}),
+            {"mode": "audio", "audio": "audio/rules.wav"},
+        )
+        with self.assertRaises(ValueError):
+            normalize_speech_entry({"mode": "audio", "audio": "../secret.wav"})
+        with self.assertRaises(ValueError):
+            normalize_speech_entry({"mode": "unknown", "text": "bad"})
+
     def test_tts_provider_is_a_real_abstract_base_class(self):
         with self.assertRaises(TypeError):
             MissingSynthesize()

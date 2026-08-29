@@ -98,9 +98,9 @@ chmod 600 .dice-arena.env
 
 键盘操作：游戏列表用 `↑/↓` 选择、`Enter` 确认；规则页按 `Enter` 表示“我明白了”、按 `↓` 再听一次；摇骰阶段按 `Q` 停止。
 
-## 修改 TTS 播报文案
+## 配置游戏语音
 
-每个游戏的页面状态语音集中在 `backend/games/<game_id>/manifest.json` 的 `texts`、`voice`、`speed` 字段，网页通过 `/api/games` 加载，不需要修改 `web/app.js`。例如：
+每个游戏的页面状态语音集中在 `backend/games/<game_id>/manifest.json`。每条台词可选择实时 TTS 或已有 WAV；网页只提交状态键，具体播放策略由后端读取 manifest 决定：
 
 ```json
 {
@@ -108,19 +108,29 @@ chmod 600 .dice-arena.env
   "voice": "default",
   "speed": 1.0,
   "texts": {
-    "rules_intro": "双方各摇五颗骰子，停止后同时开盖。",
-    "result_player_win": "恭喜你，玩家获胜。玩家点数 {player_score}，Agent 点数 {agent_score}。"
+    "rules_intro": {
+      "mode": "audio",
+      "audio": "audio/rules_intro.wav",
+      "text": "双方各摇五颗骰子，停止后同时开盖。"
+    },
+    "result_player_win": {
+      "mode": "tts",
+      "text": "恭喜你，玩家获胜。玩家点数 {player_score}，Agent 点数 {agent_score}。"
+    }
   }
 }
 ```
 
-当前已接入的状态键包括：`rules_intro`、`rules_confirmed`、`shake_started`、`shake_stopped`、`analysis_started`、`result_tie`、`result_player_win` 和 `result_agent_win`。胜负文案支持 `{player_score}`、`{agent_score}` 占位符。`voice` 和 `speed` 会作为每次 TTS 请求的默认参数发送到 K3 后端，`speed` 范围为 `0.25` 到 `4.0`。修改板端挂载目录下的 JSON 后，刷新页面即可生效。
+`mode=tts` 使用当前游戏选中的 TTS provider；`mode=audio` 从该游戏目录读取 WAV，例如上述文件应放在 `backend/games/dice/audio/rules_intro.wav`。第一版只接受 WAV，并拒绝绝对路径和 `..` 越界路径。`text` 在 audio 模式下是可选说明。旧的纯字符串条目仍兼容并视为 TTS。
+
+当前状态键包括：`rules_intro`、`rules_confirmed`、`shake_started`、`shake_stopped`、`analysis_started`、`result_tie`、`result_player_win` 和 `result_agent_win`。TTS 胜负文案支持 `{player_score}`、`{agent_score}` 占位符；`voice` 和 `speed` 是游戏级 TTS 默认参数。修改 manifest 或添加 WAV 后需要重启后端，使 manifest 重新加载。
 
 ## K3 后端接口
 
 ```text
 GET  /api/health                    查看 bridge、YOLOv8、LLM 和 TTS 状态
 GET  /api/tts/health                检查当前选中的 TTS provider
+POST /api/speech/stream              按游戏台词键选择 TTS 或已有 WAV
 POST /api/tts/stream                 单次提交整段文本，按 WAV 帧持续返回
 POST /api/tts/synthesize              手工调试：单段文本转一个 WAV
 POST /api/adjudicate                   启动一轮视觉裁决，返回 job_id
