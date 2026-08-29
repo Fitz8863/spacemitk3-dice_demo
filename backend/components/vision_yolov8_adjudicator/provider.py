@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from typing import Any, Callable, Mapping
 
 from core.vision import VisionAdjudicationRequest, VisionAdjudicatorProvider
@@ -34,13 +34,25 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             with ThreadPoolExecutor(max_workers=len(views)) as pool: runtimes.extend(pool.map(start, views))
             for rt in runtimes: rt.send({"command":"START_ADJUDICATION", "request_id":request.request_id, "profile_id":profile.get("game_id")})
             on_event({"event":"phase", "phase":"detecting"}); observations = {}
-            for rt, view in zip(runtimes, views):
-                vid = str(view.get("id", "default"))
+            def collect(rt, view):
+                vid = str(view.get("id", "default")); found = None
                 for event in rt.events():
-                    if is_cancelled(): raise RuntimeError("cancelled")
                     if event.get("event") == "video": on_event(dict(event, view_id=vid))
                     elif event.get("event") == "observation" and event.get("stable"):
-                        observations[vid] = dict(event, view_id=vid); break
+                        found = dict(event, view_id=vid); break
+                return vid, found
+            deadline = time.monotonic() + float(timeout_seconds or request.timeout_seconds)
+            with ThreadPoolExecutor(max_workers=len(runtimes)) as pool:
+                futures = [pool.submit(collect, rt, view) for rt, view in zip(runtimes, views)]
+                try:
+                    for future in futures:
+                        remaining = max(0.0, deadline - time.monotonic())
+                        vid, found = future.result(timeout=remaining)
+                        if found is not None: observations[vid] = found
+                except FuturesTimeout as exc:
+                    raise TimeoutError("YOLO adjudication timed out") from exc
+            if is_cancelled():
+                raise RuntimeError("cancelled")
             if not observations: raise RuntimeError("no stable observation")
             ordered = [observations[k] for k in sorted(observations)]
             vals = [str(o["yolo_outcome"]) for o in ordered if o.get("yolo_outcome")]
