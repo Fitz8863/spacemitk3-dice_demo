@@ -28,6 +28,8 @@
 - 所有游戏统一消费同一种 YOLO detection 输入，并输出同一种 adjudication result 外壳；不允许每个游戏自行定义一套 runtime 事件格式。
 - 默认按局启动、按局释放摄像头；通过配置支持常驻进程复用。
 - YOLO 稳定帧数量保持不变：每局达到稳定条件后，从稳定帧中选取一帧画面，先得到 YOLO 的初步裁决，再将该画面连同当前游戏 profile 的 system prompt 和 user prompt，一次性发送给云端或本地的视觉大模型复核。请求无历史对话和隐式上下文；每局最多调用一次 LLM，结果只发送一次。
+- 多摄像头用于同一裁决对象的不同视角时，各路 YOLO 必须并行运行；初判采用多数投票，再将多路稳定帧放入同一次无状态 LLM 请求。不得按摄像头串行检测或分别调用 LLM。
+- 视觉裁决的目标响应时间为 2～3 秒量级；实现必须优先采用并行采集、单次多图复核和明确的超时预算，不能通过增加稳定帧或重复请求换取准确性。
 - 增加 `post_result_hold_seconds`，让已发送结果后的实时画面继续显示；值为 `0` 时保持现有的立即关闭行为。
 - 让任务状态、SSE 事件和前端视频生命周期一致，避免结果出现后连接或视频提前关闭。
 - 保留一段迁移期的 `vision_yolo` 兼容别名，避免旧 manifest 或旧客户端突然失效。
@@ -55,6 +57,9 @@
 | 视频播放地址 | 游戏 `vision_profile.json` | 每个游戏可绑定自己的 MediaMTX WebRTC 地址 |
 | LLM 复核输入 | 单轮稳定帧图片 + profile prompt | 不携带历史对话、上一局结果或隐式上下文 |
 | 最终结果策略 | 共识、LLM 覆盖或超时回退 | LLM 成功时以 LLM 为准；超时才回退 YOLO |
+| 多摄像头 YOLO 融合 | 多数投票 | 多路观察同一对象，提高容错并控制延迟 |
+| 多摄像头 LLM 调用 | 一次多图请求 | 所有稳定帧在同一无状态请求中复核 |
+| 性能目标 | 2～3 秒量级 | 并行检测、单次 LLM、有限超时 |
 | C++ 业务边界 | 输出通用视觉观测，Python 按 profile 聚合和裁决 | 新增游戏不需要改 C++ 核心 |
 
 ## 4. 目标目录结构与职责
@@ -218,6 +223,12 @@ def adjudicate(
     "rejudge_on_change": true,
     "grouping": "divider_regions"
   },
+  "multi_view": {
+    "enabled": false,
+    "min_views": 1,
+    "yolo_fusion": "majority_vote",
+    "llm_images": "all_stable_views"
+  },
   "rule": {
     "kind": "numeric_compare",
     "aggregation": "sum",
@@ -273,7 +284,40 @@ MediaMTX 的职责是接收 YOLOv8 runtime 输出的本地 RTSP，再提供 WebR
 
 新增游戏时只替换模型文件和 `vision_profile.json` 中的输入解释、规则及输出约束。已有声明式规则能够表达的游戏不得修改 `provider.py`、C++ runtime 或游戏 pipeline；若未来确实出现当前规则 schema 无法表达的玩法，应先扩展通用规则解释器及其 schema，而不是增加 `if game_id` 分支或复制整个 provider。
 
-### 6.3 配置优先级和安全边界
+### 6.3 多摄像头 profile
+
+当一个游戏需要从多个角度观察同一个裁决对象时，profile 使用 `multi_view` 声明多视角策略。每个 view 只配置自己的摄像头标识和 WebRTC path，规则、类别映射和 LLM prompt 仍然由游戏统一维护：
+
+```json
+{
+  "multi_view": {
+    "enabled": true,
+    "min_views": 2,
+    "yolo_fusion": "majority_vote",
+    "llm_images": "all_stable_views",
+    "views": [
+      {
+        "id": "front",
+        "camera": "/dev/video1",
+        "video": {"path": "/dice-front/"}
+      },
+      {
+        "id": "side",
+        "camera": "/dev/video2",
+        "video": {"path": "/dice-side/"}
+      }
+    ]
+  }
+}
+```
+
+多路 worker 并行执行相同的 YOLO runtime 流程，各自达到 `stable_frames` 后产生一张稳定帧和一个 YOLO 初判。融合器先按 `yolo_fusion=majority_vote` 统计规范化后的 outcome，票数最多者作为 `yolo_outcome`；然后把所有稳定帧按固定 view 顺序放进同一次 LLM 多模态请求。LLM 仍然只调用一次，prompt 不携带历史对话，也不因视角数量增加而重复调用。
+
+`multi_view.min_views` 是本局至少需要成功稳定的视角数；未达到该数量时任务失败，不使用不完整视角伪造结果。为保证延迟，多路检测必须并行，任一路达到稳定后不能阻塞其他路的读取线程；统一等待截止时间到达后再决定是否进入 LLM 阶段。每张图片都带有 `view_id`，但图片内容和 prompt 仍属于同一次无状态请求。
+
+`majority_vote` 要求存在严格多数（票数大于有效视角数的一半）。偶数路出现并列时，融合器不得伪造 `yolo_outcome`；应将状态标记为 `multi_view_no_majority`，仍可把全部稳定帧发送给 LLM。若 LLM 成功，最终结果使用 LLM 并记录 `decision_source=llm_override`；若 LLM 超时且没有 YOLO 多数结果，则任务返回明确错误，不使用 `yolo_timeout_fallback`。
+
+### 6.4 配置优先级和安全边界
 
 有效配置按以下顺序合并：
 
@@ -306,11 +350,11 @@ sequenceDiagram
     Web->>Job: POST /api/adjudicate {game: dice}
     Job->>Pipe: 加载并校验 dice vision_profile
     Pipe->>V: adjudicate(request, callbacks)
-    V->>C: 启动一轮进程并打开摄像头
+    V->>C: 并行启动各路 runtime 并打开摄像头
     C-->>V: started / detecting / progress
     V-->>Job: video（base URL + profile path 合成的 WebRTC URL）
-    C-->>V: 稳定视觉观测
-    V->>L: 稳定帧图片 + profile 渲染的 system/user prompt
+    C-->>V: 各路稳定视觉观测和 snapshot
+    V->>L: 多路稳定帧图片 + profile 渲染的 system/user prompt
     alt LLM 返回合法结果
         L-->>V: llm_outcome
         V-->>Job: result(decision_source=consensus 或 llm_override)
@@ -322,7 +366,7 @@ sequenceDiagram
     Note over V,C: 保持视频和摄像头，不重新检测、不重新调用 LLM
     V-->>Job: complete
     Job-->>Web: SSE：status=success，phase=complete
-    V->>C: 终止进程并释放摄像头
+    V->>C: 终止各路进程并释放摄像头
 ```
 
 默认时序是：启动进程 → 稳定帧 → 得到 YOLO 初判 → 发送一张稳定帧和当前游戏 prompt 给 LLM → 按共识/LLM 覆盖/超时回退策略确定最终结果 → 立即发送 `adjudicated` 结果 → 进入 `holding` → 等待保持时间 → 发送 `complete` → 回收进程和摄像头。`post_result_hold_seconds = 0` 时跳过等待，结果事件后立即完成回收。
