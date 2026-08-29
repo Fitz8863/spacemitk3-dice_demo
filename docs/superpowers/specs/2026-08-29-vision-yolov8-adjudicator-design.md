@@ -27,7 +27,7 @@
 - 新增一个使用本地模型、远程模型或云端 LLM 的游戏时，只增加游戏 profile 和资源，不修改视觉组件核心调度。
 - 所有游戏统一消费同一种 YOLO detection 输入，并输出同一种 adjudication result 外壳；不允许每个游戏自行定义一套 runtime 事件格式。
 - 默认按局启动、按局释放摄像头；通过配置支持常驻进程复用。
-- YOLO 稳定帧和 LLM 复核次数保持不变：每局达到稳定条件后最多调用一次 LLM，结果只发送一次。
+- YOLO 稳定帧数量保持不变：每局达到稳定条件后，从稳定帧中选取一帧画面，连同 profile 渲染后的 system prompt 和 user prompt 一起发送给云端或本地的视觉大模型；每局最多调用一次 LLM，结果只发送一次。
 - 增加 `post_result_hold_seconds`，让已发送结果后的实时画面继续显示；值为 `0` 时保持现有的立即关闭行为。
 - 让任务状态、SSE 事件和前端视频生命周期一致，避免结果出现后连接或视频提前关闭。
 - 保留一段迁移期的 `vision_yolo` 兼容别名，避免旧 manifest 或旧客户端突然失效。
@@ -53,6 +53,7 @@
 | 结果后的画面 | `holding` 阶段 | 结果可立即展示，同时不提前释放视频 |
 | 事件协议 | `jsonl-events-v1` | stdout/stderr 只保留诊断用途，业务事件可测试 |
 | 视频播放地址 | 游戏 `vision_profile.json` | 每个游戏可绑定自己的 MediaMTX WebRTC 地址 |
+| LLM 复核输入 | 稳定帧图片 + profile prompt | 视觉大模型 API 收到一张稳定画面和一组游戏问题 |
 | C++ 业务边界 | 输出通用视觉观测，Python 按 profile 聚合和裁决 | 新增游戏不需要改 C++ 核心 |
 
 ## 4. 目标目录结构与职责
@@ -216,6 +217,8 @@ def adjudicate(
   "llm": {
     "enabled": true,
     "transport": "openai_compatible",
+    "input_mode": "stable_frame_and_prompt",
+    "image_source": "stable_frame",
     "url": "https://api.deepseek.com/v1/",
     "model": "deepseek-v4-flash-vision-exp",
     "timeout_seconds": 3,
@@ -296,7 +299,7 @@ sequenceDiagram
     C-->>V: started / detecting / progress
     V-->>Job: video（base URL + profile path 合成的 WebRTC URL）
     C-->>V: 稳定视觉观测
-    V->>L: 本局最多一次复核请求
+    V->>L: 稳定帧图片 + profile 渲染的 system/user prompt
     L-->>V: 允许值内的结果
     V-->>Job: result(verified=true)
     Job-->>Web: SSE：结果可见，phase=holding
@@ -451,6 +454,10 @@ C++ 不再计算游戏胜负，不再拼装骰子专属 prompt，也不再依赖
   "event": "observation",
   "frame_id": 1820,
   "stable": true,
+  "snapshot": {
+    "format": "image/jpeg",
+    "ref": "runtime://stable-frame/1820"
+  },
   "detections": [
     {
       "class_id": 0,
@@ -470,12 +477,16 @@ C++ 不再计算游戏胜负，不再拼装骰子专属 prompt，也不再依赖
 - `label`：按本局 profile `class_map` 解析后的标准标签；
 - `confidence`：范围为 `0.0..1.0` 的检测置信度；
 - `bbox`：输入画面像素坐标中的 `[x1, y1, x2, y2]`。
+- `snapshot.format`：稳定帧图片格式，只允许 `image/jpeg` 或 `image/png`；
+- `snapshot.ref`：由 runtime 提供的短生命周期稳定帧引用，不能是浏览器提交的 URL。
 
 Python `rules.py` 根据 profile 的 `participants`、`grouping`、`class_map` 和 `rule` 生成证据与结果。骰子、猜拳和后续游戏不能增加额外的顶层 detection 字段；游戏特有信息必须由通用 detection 集合和 profile 推导。对于当前骰子 divider 逻辑，迁移期允许 C++ 继续输出兼容的骰子观测，provider 内增加一次明确的兼容转换；该转换不能成为新接口，也不能阻止后续迁移到通用 detection 事件。
 
 ### 10.3 LLM 适配
 
-通用 verifier 接收 `system_prompt`、`user_prompt_template`、证据 JSON 和 `allowed_outcomes`，只返回结构化候选。HTTP transport 应支持 OpenAI-compatible 云端 endpoint；本地 LLM 只需提供同一 transport 适配，不改变 `VisionAdjudicatorProvider`。密钥和 endpoint 由受信任配置提供，profile 中不保存密钥。
+通用 verifier 每局接收一张稳定帧图片、`system_prompt`、由 `user_prompt_template` 渲染出的文本、结构化证据和 `allowed_outcomes`。图片使用稳定帧的 JPEG/PNG 表示，通过 OpenAI-compatible API 的多模态 `image_url`（或等价的本地 transport 字段）发送；文本 prompt 与图片属于同一次请求。当前骰子 profile 的示例会把 `left_sum`、`right_sum` 等证据渲染进 user prompt，同时附带稳定帧画面。verifier 最多调用一次 LLM，只返回结构化候选；原始自然语言不能直接成为最终结果。HTTP transport 应支持 OpenAI-compatible 云端 endpoint；本地 LLM 只需提供同一 transport 适配，不改变 `VisionAdjudicationRequest`。密钥和 endpoint 由受信任配置提供，profile 中不保存密钥。
+
+runtime 的通用 `observation` 事件必须能够关联这张稳定帧：事件携带 `frame_id`、检测集合和一个短生命周期的 snapshot 引用；provider 在 LLM 请求完成前读取 snapshot 并在请求结束后删除临时资源。snapshot 不是游戏专属字段，所有游戏使用相同的 `image/jpeg` 或 `image/png` 表示。若 runtime 无法提供稳定帧 snapshot，provider 必须返回明确错误，不能退化为仅发送文本或使用未复核结果。
 
 ## 11. 兼容迁移与清理边界
 
