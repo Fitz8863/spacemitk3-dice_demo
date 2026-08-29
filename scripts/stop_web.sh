@@ -5,6 +5,40 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${PORT:-8080}"
 RUNTIME_DIR="${DICE_RUNTIME_DIR:-${ROOT_DIR}/.runtime}"
 PID_FILE="${PID_FILE:-${RUNTIME_DIR}/web-${PORT}.pid}"
+TTS_PROVIDER_FILE="${TTS_PROVIDER_FILE:-${RUNTIME_DIR}/web-${PORT}.tts-provider}"
+PYTHON_BIN="${DICE_PYTHON:-python3}"
+
+resolve_tts_provider() {
+    local provider=""
+    if [[ -f "$TTS_PROVIDER_FILE" ]]; then
+        provider="$(head -n 1 "$TTS_PROVIDER_FILE" 2>/dev/null || true)"
+    fi
+    if [[ -z "$provider" && -n "${DICE_TTS_PROVIDER:-}" ]]; then
+        provider="$DICE_TTS_PROVIDER"
+    fi
+    if [[ -z "$provider" ]]; then
+        provider="$(curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null \
+            | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("tts_provider", ""))' 2>/dev/null || true)"
+    fi
+    if [[ -z "$provider" ]]; then
+        provider="$("$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" selected tts --game "${DICE_GAME:-dice}" 2>/dev/null || true)"
+    fi
+    printf '%s\n' "$provider"
+}
+
+stop_selected_tts() {
+    local provider="${1:-}"
+    if [[ -z "$provider" ]]; then
+        provider="$(resolve_tts_provider)"
+    fi
+    if [[ -z "$provider" ]]; then
+        echo "Unable to resolve selected TTS provider; skipping TTS stop" >&2
+        return 0
+    fi
+    "$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" stop "$provider" || {
+        echo "Warning: failed to stop TTS provider $provider" >&2
+    }
+}
 
 is_expected_web() {
     local pid="$1"
@@ -67,9 +101,13 @@ if [[ -z "$pid" ]]; then
 fi
 if [[ -z "$pid" ]]; then
     echo "Dice Arena web is not running"
+    stop_selected_tts
+    rm -f "$TTS_PROVIDER_FILE"
     exit 0
 fi
 
+running_tts_provider="$(curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null \
+    | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("tts_provider", ""))' 2>/dev/null || true)"
 kill "$pid"
 for _ in {1..30}; do
     kill -0 "$pid" 2>/dev/null || break
@@ -81,3 +119,5 @@ if kill -0 "$pid" 2>/dev/null; then
 fi
 rm -f "$PID_FILE"
 echo "Dice Arena web stopped: pid=$pid"
+stop_selected_tts "$running_tts_provider"
+rm -f "$TTS_PROVIDER_FILE"

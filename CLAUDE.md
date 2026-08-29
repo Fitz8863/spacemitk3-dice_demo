@@ -41,11 +41,10 @@ cd /home/spacemit/projects/dice-game/main
 scripts/start_web.sh   # 启动当前游戏选择的 TTS provider，再启动 backend/server.py
 # 停止
 scripts/stop_web.sh
-/usr/bin/python3 backend/componentctl.py stop-selected tts --game dice
 
-# 默认 Qwen3 provider 也可单独管理
-scripts/start_tts.sh
-scripts/stop_tts.sh
+# 选择 TTS 后启动整体项目
+DICE_TTS_PROVIDER=tts_qwen3 scripts/start_web.sh
+DICE_TTS_PROVIDER=tts_moss_nano scripts/start_web.sh
 ```
 
 健康检查：
@@ -77,11 +76,6 @@ curl -f http://127.0.0.1:8080/api/tts/synthesize \
   -d '{"text":"骰子游戏开始，请双方准备。","voice":"default","speed":1.0}' \
   -o /tmp/dice-tts.wav
 file /tmp/dice-tts.wav   # 期望 RIFF/WAVE, 24 kHz, 16-bit, mono
-```
-
-同步模型资产（模型约 2 GiB，不进 Git）：
-```bash
-scripts/migrate_qwen3_tts_assets.sh
 ```
 
 ## 架构：三个进程 + 一个 HTTP 服务
@@ -120,7 +114,7 @@ POST /api/adjudicate/<job_id>/cancel     取消
 
 ### Qwen3-TTS 启动与调用链
 
-**启动**：`scripts/start_tts.sh` → `tts/qwen3-tts/start_server.sh` → `setsid` 后台拉起 runtime，核心命令：
+**启动**：`scripts/start_web.sh` → `backend/componentctl.py` → 当前选中的 TTS provider 生命周期脚本 → `tts/qwen3-tts/start_server.sh` 或 MOSS daemon，随后启动 Web backend。核心命令：
 
 ```bash
 llama-server --media-backend smt --smt-config-dir qwen3-tts-0.6b \

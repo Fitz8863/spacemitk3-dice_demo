@@ -14,6 +14,7 @@ restarting the provider. Unlike MOSS-TTS-Nano, this adapter does not accept a
 reference WAV for live voice cloning.
 
 A custom embedding can be selected by changing `voice.speaker_file` and
-running `scripts/stop_tts.sh` followed by `scripts/start_tts.sh`. The component
+running the component's internal `scripts/stop_tts.sh` followed by its internal
+`scripts/start_tts.sh`. The component
 launcher creates an ignored runtime model overlay, so the checked-in model
 `config.json` is not modified.

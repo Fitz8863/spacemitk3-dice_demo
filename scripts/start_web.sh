@@ -6,6 +6,7 @@ PORT="${PORT:-8080}"
 HOST="${HOST:-0.0.0.0}"
 RUNTIME_DIR="${DICE_RUNTIME_DIR:-${ROOT_DIR}/.runtime}"
 PID_FILE="${PID_FILE:-${RUNTIME_DIR}/web-${PORT}.pid}"
+TTS_PROVIDER_FILE="${TTS_PROVIDER_FILE:-${RUNTIME_DIR}/web-${PORT}.tts-provider}"
 PYTHON_BIN="${DICE_PYTHON:-python3}"
 LOG_FILE="${LOG_FILE:-${RUNTIME_DIR}/web-${PORT}.log}"
 SELECTED_TTS_PROVIDER="${DICE_TTS_PROVIDER:-}"
@@ -101,6 +102,7 @@ if [[ -n "$pid" ]]; then
         exit 1
     fi
     start_selected_tts
+    printf '%s\n' "$SELECTED_TTS_PROVIDER" > "$TTS_PROVIDER_FILE"
     echo "Dice Arena web is already running: pid=$pid port=$PORT tts_provider=$running_tts_provider"
     exit 0
 fi
@@ -117,10 +119,12 @@ nohup "$PYTHON_BIN" backend/server.py --host "$HOST" --port "$PORT" \
     >>"$LOG_FILE" 2>&1 &
 pid=$!
 printf '%s\n' "$pid" > "$PID_FILE"
+printf '%s\n' "$SELECTED_TTS_PROVIDER" > "$TTS_PROVIDER_FILE"
 
 sleep 0.3
 if ! is_expected_web "$pid"; then
     rm -f "$PID_FILE"
+    rm -f "$TTS_PROVIDER_FILE"
     echo "Failed to start Dice Arena web. See $LOG_FILE" >&2
     exit 1
 fi

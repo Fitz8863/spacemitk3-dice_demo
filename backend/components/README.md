@@ -78,7 +78,7 @@ backend/components/tts_local_xxx/
 ├── config.json          # runtime.kind=local
 ├── settings.py
 ├── provider.py
-└── scripts/start_tts.sh # optional lifecycle hook
+└── scripts/start_tts.sh # optional provider-internal lifecycle hook
 ```
 
 ## TTS interface

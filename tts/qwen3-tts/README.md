@@ -17,13 +17,13 @@ backend/components/tts_qwen3/
 └── scripts/           # componentctl 使用的内部生命周期 hook
 ```
 
-从项目根目录管理服务：
+从项目根目录管理服务（推荐使用整体入口）：
 
 ```bash
 python3 backend/componentctl.py selected tts --game dice
-python3 backend/componentctl.py start-selected tts --game dice
+DICE_TTS_PROVIDER=tts_qwen3 scripts/start_web.sh
 python3 backend/componentctl.py health tts_qwen3
-python3 backend/componentctl.py stop-selected tts --game dice
+scripts/stop_web.sh
 ```
 
 组件 provider 访问本目录的 `start_server.sh`，runtime 再启动 `llama-server`。

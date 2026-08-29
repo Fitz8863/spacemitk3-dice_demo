@@ -44,19 +44,16 @@ http://<K3板端IP>:8080
 ```bash
 cd <repo-root>
 scripts/stop_web.sh
-python3 backend/componentctl.py stop-selected tts --game dice
 ```
 
 也可以安装 systemd 服务（可选）：
 
 ```bash
-sudo cp deploy/dice-arena-tts.service deploy/dice-arena-web.service /etc/systemd/system/
+sudo cp deploy/dice-arena-web.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now dice-arena-web.service
 systemctl status dice-arena-web.service
 
-# 仅当需要把 Qwen3 作为独立固定服务管理时，再启用可选服务：
-# sudo systemctl enable --now dice-arena-tts.service
 ```
 
 `web/` 前端和 `backend/server.py` 都只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。网页请求 `/api/adjudicate` 后，bridge 会在板端直接启动 `vision/yolov8_objdetect/build/yolov8_camera`，所以裁决阶段应该能看到 YOLOv8 进程、OpenCL GPU、SpaceMIT EP 和 LLM 请求日志。浏览器在板端通过 `127.0.0.1` 访问时，可以正常申请摄像头权限；如果从其他设备通过 HTTP IP 访问，浏览器可能因非安全上下文限制摄像头权限，但实际识别仍使用 K3 板端摄像头。
@@ -168,8 +165,7 @@ TTS 在 K3 上作为独立的 `llama-server` 进程运行：
 
 ```bash
 cd <repo-root>
-scripts/migrate_qwen3_tts_assets.sh --source <qwen3-tts-source>
-scripts/start_tts.sh
+scripts/start_web.sh
 curl -fsS http://127.0.0.1:18080/health
 ```
 

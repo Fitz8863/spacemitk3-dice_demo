@@ -95,11 +95,8 @@ main/
 │       ├── CMakeLists.txt
 │       └── build/yolov8_camera      # K3 编译产物，不纳入 Git
 ├── scripts/
-│   ├── start_web.sh                 # 启动板端 Web/API 服务，并默认检查 TTS
-│   ├── stop_web.sh                  # 停止 Web/API 服务
-│   ├── start_tts.sh                 # 启动当前游戏选中的 TTS provider
-│   ├── stop_tts.sh                  # 停止当前游戏选中的 TTS provider
-│   └── migrate_qwen3_tts_assets.sh  # 从板端原项目安全同步模型资产
+│   ├── start_web.sh                 # 启动 Web/API 与当前选中的 TTS provider
+│   └── stop_web.sh                  # 停止 Web/API 与当前运行的 TTS provider
 ├── tts/
 │   ├── qwen3-tts/                   # Qwen3-TTS + SpaceMIT llama-server
 │   └── moss-tts-nano/               # MOSS-TTS-Nano + SpaceMIT EP runtime
@@ -109,7 +106,6 @@ main/
 │       └── patches/                  # realtime llama.cpp patch
 ├── deploy/
 │   ├── dice-arena-web.service       # 可选 systemd Web 服务
-│   └── dice-arena-tts.service       # 可选 systemd TTS 服务
 └── .dice-arena.env                  # 板端本地密钥配置，不纳入 Git
 ```
 
@@ -303,16 +299,9 @@ TTS 上游必须使用：
 /home/spacemit/projects/dice-game/main/tts/qwen3-tts/runtime/bin/llama-server
 ```
 
-不要只看端口健康就声称使用了迁移目录，因为旧的 `/home/spacemit/projects/qwen3-tts` 服务也可能占用 18080。`scripts/start_tts.sh` 会拒绝复用不同 runtime；切换前应显式停止旧服务。
+不要只看端口健康就声称使用了迁移目录，因为旧的 `/home/spacemit/projects/qwen3-tts` 服务也可能占用 18080。切换 provider 前应执行 `scripts/stop_web.sh`，再用目标 provider 重启整体服务。
 
-TTS 资产策略：模型文件约 2 GiB，`*.onnx`、`*.gguf`、speaker `.bin` 和参考录音不提交 GitHub。迁移使用：
-
-```bash
-cd /home/spacemit/projects/dice-game/main
-scripts/migrate_qwen3_tts_assets.sh
-```
-
-脚本只复制当前配置指定的 speaker 文件，不复制 `voice_presets/source_audio` 或未配置的 embedding。`runtime/bin/` 约 18 MiB，可作为 K3 riscv64 runtime 随仓库提交；若重新克隆后模型资产缺失，必须在板端重新执行迁移脚本或准备资产包。
+TTS 资产策略：模型文件约 2 GiB，`*.onnx`、`*.gguf`、speaker `.bin` 和参考录音不提交 GitHub。重新部署时请准备与 `config.json` 匹配的板端资产包；仓库不再提供单独的资产迁移入口脚本。
 
 ### 4.6 当前 YOLOv8 调用链
 
@@ -407,7 +396,6 @@ scripts/start_web.sh  # 自动启动当前选中的 TTS provider
 ```bash
 cd /home/spacemit/projects/dice-game/main
 scripts/stop_web.sh
-scripts/stop_tts.sh
 ```
 
 ### 5.3 健康检查
@@ -488,7 +476,7 @@ cd /home/spacemit/projects/dice-game/main
 scripts/stop_web.sh || true
 cd /home/spacemit/projects/qwen3-tts && ./stop_server.sh
 cd /home/spacemit/projects/dice-game/main
-scripts/start_tts.sh
+scripts/start_web.sh
 pgrep -af llama-server
 pid="$(cat tts/qwen3-tts/llama-server.pid)"
 readlink -f "/proc/$pid/exe"
