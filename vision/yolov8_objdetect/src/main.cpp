@@ -5,7 +5,14 @@
 // enters that branch; Python owns all LLM verification.
 enum class LlmWinner { Left, Right, Tie, Unknown };
 enum class LlmVerificationResult { Failure, Timeout, Success };
-struct LlmDiceConfig {};
+struct LlmDiceConfig {
+    std::string url;
+    std::string api_key;
+    std::string model;
+    int timeout_seconds = 0;
+    std::string system_prompt;
+    std::string user_prompt_template;
+};
 class LlmDiceVerifier {
 public:
     explicit LlmDiceVerifier(LlmDiceConfig = {}) {}

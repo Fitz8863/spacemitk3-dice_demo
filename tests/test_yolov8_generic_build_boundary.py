@@ -32,3 +32,16 @@ def test_generic_stability_signature_ignores_detector_jitter():
     assert "d.x1" in signature and "d.y1" in signature
     assert "d.x2" in signature and "d.y2" in signature
     assert "quant" in signature.lower()
+
+
+def test_generic_stub_accepts_legacy_config_shape_without_linking_verifier():
+    source = SOURCE.read_text(encoding="utf-8")
+    stub = source.split("#ifdef VISION_GENERIC_ONLY", 1)[1].split(
+        "#else", 1
+    )[0]
+    assert "std::string url" in stub
+    assert "std::string api_key" in stub
+    assert "std::string model" in stub
+    assert "int timeout_seconds" in stub
+    assert "std::string system_prompt" in stub
+    assert "std::string user_prompt_template" in stub
