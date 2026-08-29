@@ -62,13 +62,23 @@ class DummyLocalizer(VisionLocalizerProvider):
 class ComponentTests(unittest.TestCase):
     def test_registry_loads_packaged_providers(self):
         registry = build_registry()
-        self.assertEqual(registry.provider_ids("vision"), ["vision_yolo"])
-        self.assertEqual(registry.provider_ids("vision", "adjudicator"), ["vision_yolo"])
+        self.assertEqual(
+            registry.provider_ids("vision"),
+            ["vision_yolo", "vision_yolov8_adjudicator"],
+        )
+        self.assertEqual(
+            registry.provider_ids("vision", "adjudicator"),
+            ["vision_yolo", "vision_yolov8_adjudicator"],
+        )
         self.assertEqual(registry.provider_ids("vision", "localizer"), [])
         self.assertEqual(registry.provider_ids("tts"), ["tts_moss_nano", "tts_qwen3"])
         self.assertEqual(registry.get_manifest("tts_qwen3")["entry"], "provider.py:TtsQwen3")
         self.assertEqual(registry.get_manifest("tts_moss_nano")["entry"], "provider.py:TtsMossNano")
         self.assertEqual(registry.get_manifest("vision_yolo")["role"], "adjudicator")
+        self.assertEqual(
+            registry.get_manifest("vision_yolov8_adjudicator")["entry"],
+            "provider.py:VisionYolov8Adjudicator",
+        )
 
     def test_tts_components_have_independent_configs(self):
         moss = load_component_config(ROOT / "backend" / "components" / "tts_moss_nano")
@@ -201,7 +211,12 @@ class ComponentTests(unittest.TestCase):
                 lambda: False,
                 1.0,
                 components=registry,
-                manifest={"providers": {"vision_adjudicator": "vision_dummy_adjudicator"}},
+                manifest={
+                    "providers": {"vision_adjudicator": "vision_dummy_adjudicator"},
+                    "vision_profile": json.loads(
+                        (ROOT / "backend/games/dice/vision_profile.json").read_text()
+                    ),
+                },
                 on_event=lambda _event: None,
             )
         self.assertEqual(result["winner"], "LEFT")

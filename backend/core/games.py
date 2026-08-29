@@ -146,6 +146,14 @@ def load_games() -> GameRegistry:
             if "tts" not in providers and isinstance(manifest.get("tts_provider"), str):
                 providers["tts"] = manifest["tts_provider"]
             manifest["providers"] = providers
+            profile_path = manifest_path.parent / "vision_profile.json"
+            if profile_path.is_file():
+                from components.vision_yolov8_adjudicator.profile import load_profile
+
+                profile = load_profile(profile_path)
+                if profile.get("game_id") != game_id:
+                    raise ValueError("vision profile game_id does not match manifest id")
+                manifest["vision_profile"] = profile
             registry.register(manifest)
         except (OSError, ValueError, TypeError) as exc:
             print(f"[games] skip {manifest_path}: {exc}", flush=True)

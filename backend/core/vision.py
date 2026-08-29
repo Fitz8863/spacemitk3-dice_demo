@@ -12,7 +12,8 @@ into a game-decision slot merely because both packages happen to use YOLO.
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping
 
 from core.components import Component
 
@@ -24,6 +25,16 @@ class VisionProvider(Component):
     role = ""
 
 
+@dataclass(frozen=True)
+class VisionAdjudicationRequest:
+    """Trusted, game-agnostic input for one visual adjudication round."""
+
+    game_id: str
+    profile: Mapping[str, Any]
+    request_id: str
+    timeout_seconds: float
+
+
 class VisionAdjudicatorProvider(VisionProvider):
     """Visual adapter that returns a verified game adjudication result."""
 
@@ -32,11 +43,12 @@ class VisionAdjudicatorProvider(VisionProvider):
     @abstractmethod
     def adjudicate(
         self,
+        request: VisionAdjudicationRequest,
         *,
         on_log: Callable[[str], None],
         on_event: Callable[[dict[str, Any]], None],
         is_cancelled: Callable[[], bool],
-        timeout_seconds: float,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         """Run one bounded adjudication and return its final business result."""
         raise NotImplementedError
