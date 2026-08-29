@@ -96,6 +96,9 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         raise ProfileError("vision.class_map must be a non-empty object")
     if not isinstance(vision.get("participants"), list) or not vision["participants"]:
         raise ProfileError("vision.participants must be a non-empty array")
+    assignment = vision.get("participant_assignment", "")
+    if assignment not in {"", "x_midpoint"}:
+        raise ProfileError("vision.participant_assignment must be x_midpoint when provided")
     if not isinstance(vision.get("stable_frames"), int) or vision["stable_frames"] <= 0:
         raise ProfileError("vision.stable_frames must be a positive integer")
 

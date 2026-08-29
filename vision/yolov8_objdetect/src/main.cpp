@@ -603,6 +603,12 @@ static bool parse(int argc, char** argv, Args& a) {
 // verbs so malformed input cannot alter runtime options.
 static std::optional<std::string> read_control_command(int fd, std::string& buffer) {
     if (fd < 0) return std::nullopt;
+    const size_t buffered_newline = buffer.find('\n');
+    if (buffered_newline != std::string::npos) {
+        std::string line = buffer.substr(0, buffered_newline);
+        buffer.erase(0, buffered_newline + 1);
+        return line;
+    }
     char chunk[1024];
     const ssize_t n = ::read(fd, chunk, sizeof(chunk));
     if (n <= 0) return std::nullopt;

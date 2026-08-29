@@ -71,7 +71,7 @@ class OpenAICompatibleVisionVerifier:
             image_parts = []
             for path in paths:
                 data = path.read_bytes()
-                mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+                mime = mimetypes.guess_type(path.name)[0]
                 if mime not in {"image/jpeg", "image/png"}:
                     return VerificationResult("failure", error="unsupported image format")
                 encoded = base64.b64encode(data).decode("ascii")

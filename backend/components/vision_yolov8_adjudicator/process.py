@@ -61,11 +61,13 @@ class YoloRuntimeProcess:
         if workdir: self.working_dir = str(workdir)
         # Component deployment defaults live next to this package.  A game
         # profile may override them for tests or a custom local runtime.
+        component_config: Mapping[str, Any] = {}
         if not binary:
             try:
                 from components.vision_yolov8_adjudicator.profile import load_component_config
 
                 component = load_component_config(Path(__file__).parent)
+                component_config = component
                 defaults = component.get("runtime", {})
                 if not self.binary or self.binary == "yolov8_camera":
                     configured = defaults.get("binary") if isinstance(defaults, Mapping) else None
@@ -79,11 +81,74 @@ class YoloRuntimeProcess:
                 # A fake/injected runtime binary need not have a component
                 # config.  Let subprocess report its normal launch error.
                 pass
+        if not component_config:
+            try:
+                from components.vision_yolov8_adjudicator.profile import load_component_config
+                component_config = load_component_config(Path(__file__).parent)
+            except Exception:
+                component_config = {}
+
+        # Game profiles own the model and camera semantics.  Forward only
+        # those validated, non-secret values as command-line overrides; the
+        # component config remains the deployment default.  Resolving the
+        # model against the repository root is important because the C++
+        # process runs with its own working directory.
+        project_root = Path(__file__).resolve().parents[3]
+        runtime_overrides: list[str] = []
+        vision = profile.get("vision", {}) if isinstance(profile, Mapping) else {}
+        if isinstance(vision, Mapping):
+            model = vision.get("model")
+            if isinstance(model, str) and model.strip():
+                model_path = Path(model)
+                if not model_path.is_absolute():
+                    model_path = (project_root / model_path).resolve()
+                runtime_overrides.extend(["--model", str(model_path)])
+            stable_frames = vision.get("stable_frames")
+            if isinstance(stable_frames, int) and not isinstance(stable_frames, bool):
+                runtime_overrides.extend(["--stable-frames", str(stable_frames)])
+            confidence = vision.get("confidence", vision.get("conf"))
+            if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+                runtime_overrides.extend(["--conf", str(confidence)])
+
+        # A multi-view profile selects the camera per view.  Single-view
+        # profiles intentionally inherit the component/C++ camera default.
+        selected_view: Mapping[str, Any] | None = None
+        multi = profile.get("multi_view", {}) if isinstance(profile, Mapping) else {}
+        if isinstance(multi, Mapping) and multi.get("enabled"):
+            for candidate in multi.get("views", []):
+                if isinstance(candidate, Mapping) and str(candidate.get("id")) == str(view_id):
+                    selected_view = candidate
+                    break
+        if selected_view is not None:
+            camera = selected_view.get("camera")
+            if isinstance(camera, str) and camera.strip():
+                if camera.strip().isdigit():
+                    runtime_overrides.extend(["--camera", camera.strip()])
+                else:
+                    runtime_overrides.extend(["--device", camera.strip()])
+            selected_video = selected_view.get("video")
+        else:
+            selected_video = profile.get("video") if isinstance(profile, Mapping) else None
 
         control_read, control_write = os.pipe()
         event_read, event_write = os.pipe()
         cmd = [self.binary, "--no-display", "--control-fd", str(control_read),
-               "--event-fd", str(event_write), "--view-id", str(view_id)]
+               "--event-fd", str(event_write), "--view-id", str(view_id), *runtime_overrides]
+        rtsp = component_config.get("rtsp", {})
+        if isinstance(rtsp, Mapping) and rtsp.get("enabled", False):
+            cmd.extend(["--rtsp"])
+            for option, key in (("--rtsp-host", "host"), ("--rtsp-port", "port"), ("--rtsp-path", "path")):
+                value = rtsp.get(key)
+                if value is not None:
+                    cmd.extend([option, str(value)])
+            # Keep each camera's RTSP mount aligned with its profile-owned
+            # MediaMTX path.  The browser still receives only the WebRTC URL;
+            # this argument is solely for the local publisher-to-MediaMTX
+            # hand-off and avoids collisions in multi-view mode.
+            if isinstance(selected_video, Mapping):
+                video_path = selected_video.get("path")
+                if isinstance(video_path, str) and video_path.strip():
+                    cmd.extend(["--rtsp-path", video_path.rstrip("/") or "/"])
         if prewarm: cmd.append("--prewarm")
         if snapshot_dir is not None:
             Path(snapshot_dir).mkdir(parents=True, exist_ok=True)

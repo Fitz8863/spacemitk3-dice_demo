@@ -11,5 +11,16 @@
   "mediamtx": {
     "webrtc_base_url": "http://100.118.229.28:8889"
   },
+  "llm": {
+    "endpoint": "https://api.deepseek.com/v1",
+    "model": "deepseek-v4-flash-vision-exp",
+    "api_key": ""
+  },
+  "rtsp": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8554,
+    "path": "/dice"
+  },
   "events": {"protocol": "jsonl-events-v1"}
 }

@@ -83,6 +83,8 @@ def normalize_observation(
         mapped = class_map.get(str(class_id), detection.get("label"))
         if mapped is None:
             continue
+        if mapped is None:
+            continue
         participant = grouped[str(participant_names[0])] if center_x < float(width) / 2 else grouped[str(participant_names[1])]
         participant.append(mapped)
     if any(grouped.values()):
@@ -251,7 +253,9 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 signature = self._runtime_signature(profile, vid)
                 if rt is not None and self._runtime_signatures.get(vid) != signature:
                     try:
-                        rt.stop()
+                        stop = getattr(rt, "stop", None)
+                        if callable(stop):
+                            stop()
                     finally:
                         self._runtime_cache.pop(vid, None)
                         self._runtime_signatures.pop(vid, None)
@@ -283,6 +287,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 rt.send({"command":"START_ADJUDICATION", "request_id":request.request_id, "profile_id":profile.get("game_id")})
             round_started = True
             on_event({"event":"phase", "phase":"detecting"}); observations = {}
+            emitted_video_views: set[str] = set()
             def collect(rt, view):
                 vid = str(view.get("id", "default")); found = None
                 for event in rt.events():
@@ -290,6 +295,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                         video_event = self._video_event(profile, vid, event)
                         if video_event is not None:
                             on_event(video_event)
+                            emitted_video_views.add(vid)
                     elif event.get("event") == "observation" and event.get("stable"):
                         found = dict(event, view_id=vid); break
                 return vid, found
@@ -326,6 +332,15 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 raise
             finally:
                 pool.shutdown(wait=False, cancel_futures=True)
+            # Cached resident runtimes may have emitted their video event in a
+            # previous round.  Ensure each current view still gets one event,
+            # without duplicating a startup event observed above.
+            for view in views:
+                vid = str(view.get("id", "default"))
+                if vid not in emitted_video_views:
+                    video_event = self._video_event(profile, vid, {"event": "video"})
+                    if video_event is not None:
+                        on_event(video_event)
             if is_cancelled():
                 raise RuntimeError("cancelled")
             if not observations: raise RuntimeError("no stable observation")
