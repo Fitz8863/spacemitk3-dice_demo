@@ -29,7 +29,7 @@
 - 默认按局启动、按局释放摄像头；通过配置支持常驻进程复用。
 - YOLO 稳定帧数量保持不变：每局达到稳定条件后，从稳定帧中选取一帧画面，先得到 YOLO 的初步裁决，再将该画面连同当前游戏 profile 的 system prompt 和 user prompt，一次性发送给云端或本地的视觉大模型复核。请求无历史对话和隐式上下文；每局最多调用一次 LLM，结果只发送一次。
 - 多摄像头用于同一裁决对象的不同视角时，各路 YOLO 必须并行运行；初判采用多数投票，再将多路稳定帧放入同一次无状态 LLM 请求。不得按摄像头串行检测或分别调用 LLM。
-- 视觉裁决的目标响应时间为 2～3 秒量级；实现必须优先采用并行采集、单次多图复核和明确的超时预算，不能通过增加稳定帧或重复请求换取准确性。
+- 视觉裁决从用户点击「双方已开盖 / 开始裁决」开始计时，目标响应时间为 2～3 秒量级；为此 runtime 支持提前预热摄像头和视频链路，裁决信号到达后才启用 YOLO。实现必须优先采用并行采集、单次多图复核和明确的超时预算，不能通过增加稳定帧或重复请求换取准确性。
 - 增加 `post_result_hold_seconds`，让已发送结果后的实时画面继续显示；值为 `0` 时保持现有的立即关闭行为。
 - 让任务状态、SSE 事件和前端视频生命周期一致，避免结果出现后连接或视频提前关闭。
 - 保留一段迁移期的 `vision_yolo` 兼容别名，避免旧 manifest 或旧客户端突然失效。
@@ -59,7 +59,8 @@
 | 最终结果策略 | 共识、LLM 覆盖或超时回退 | LLM 成功时以 LLM 为准；超时才回退 YOLO |
 | 多摄像头 YOLO 融合 | 多数投票 | 多路观察同一对象，提高容错并控制延迟 |
 | 多摄像头 LLM 调用 | 一次多图请求 | 所有稳定帧在同一无状态请求中复核 |
-| 性能目标 | 2～3 秒量级 | 并行检测、单次 LLM、有限超时 |
+| 性能目标 | 点击裁决后 2～3 秒量级 | 预热摄像头 / 视频，运行时启用 YOLO，并行检测、单次 LLM、有限超时 |
+| 运行时控制 | 预热与裁决分离 | 避免反复停止 / 启动摄像头和模型进程 |
 | C++ 业务边界 | 输出通用视觉观测，Python 按 profile 聚合和裁决 | 新增游戏不需要改 C++ 核心 |
 
 ## 4. 目标目录结构与职责
@@ -178,6 +179,9 @@ def adjudicate(
     "binary": "vision/yolov8_objdetect/build/yolov8_camera",
     "working_dir": "vision/yolov8_objdetect",
     "mode": "per_request",
+    "prewarm_camera": true,
+    "yolo_start_command": "START_ADJUDICATION",
+    "yolo_stop_command": "STOP_ADJUDICATION",
     "request_timeout_seconds": 120,
     "terminate_grace_seconds": 5,
     "post_result_hold_seconds": 0
@@ -197,7 +201,7 @@ def adjudicate(
 }
 ```
 
-`mode` 只允许 `per_request` 或 `resident`。模型路径、LLM endpoint、类别映射和游戏规则不放在这里。`mediamtx.webrtc_base_url` 是板端部署级基础地址，只配置协议、主机和端口，不包含游戏 stream path。
+`mode` 只允许 `per_request` 或 `resident`。`prewarm_camera=true` 时，组件启动 resident runtime，先打开摄像头和视频链路，再通过私有 Unix 控制通道发送 `START_ADJUDICATION` 开始 YOLO；`STOP_ADJUDICATION` 停止当前轮推理但不关闭摄像头，`CANCEL` 终止当前轮并回到 idle。模型路径、LLM endpoint、类别映射和游戏规则不放在这里。`mediamtx.webrtc_base_url` 是板端部署级基础地址，只配置协议、主机和端口，不包含游戏 stream path。
 
 ### 6.2 游戏视觉 profile
 
@@ -373,13 +377,15 @@ sequenceDiagram
 
 ### 7.2 常驻模式
 
-常驻模式不是把一次性函数简单地改成不退出，而是一个带会话边界的内部 worker：
+常驻模式不是把一次性函数简单地改成不退出，而是一个带会话边界的内部 worker。为满足「点击裁决后 2～3 秒量级」的目标，`prewarm_camera=true` 时必须在用户进入可裁决页面或服务启动阶段完成摄像头打开、MediaMTX 视频链路接入和必要的模型资源初始化；用户点击后只发送 START 控制命令，不重新创建这些资源：
 
 ```text
-启动一次 runtime 和摄像头
-  → idle
-  → 接收一个 profile 裁决请求
+启动一次 runtime
+  → prewarming：打开摄像头并接入 MediaMTX 视频链路，YOLO 默认关闭
+  → idle，等待裁决信号
+  → 收到 START_ADJUDICATION 和 profile 请求
   → detecting / verifying / holding
+  → 收到 STOP_ADJUDICATION，结束本局推理但保持摄像头和视频
   → complete
   → 清理本局内存和事件
   → idle，等待下一局
@@ -393,6 +399,19 @@ sequenceDiagram
 - 取消和超时能中断当前会话并回到可恢复的 `idle`，不能留下占用摄像头的孤儿进程；
 - runtime 异常退出时，当前 job 失败，下一局可以重新拉起 worker；
 - `holding` 只属于当前 job，结束后才允许接收下一局。
+- 预热状态下不计稳定帧、不调用 LLM、不生成裁决结果；START 信号之后才开始稳定帧计数。
+
+### 7.3 运行时控制通道
+
+组件与常驻 `yolov8_camera` 之间使用私有 Unix domain socket（或等价的继承 pipe）传递控制命令，不暴露 HTTP/CLI 给前端。命令采用一行一个 JSON 的 `vision-control-v1` 协议：
+
+```json
+{"command":"START_ADJUDICATION","request_id":"job-abc","profile_id":"dice"}
+{"command":"STOP_ADJUDICATION","request_id":"job-abc"}
+{"command":"CANCEL","request_id":"job-abc"}
+```
+
+runtime 必须返回对应的确认事件；provider 只有在收到 `started` 后才把预热完成视为可用。控制通道断开、命令确认超时或 runtime 异常退出时，当前 job 失败并回收所有资源。通道只允许本机组件用户访问，不能让浏览器或局域网客户端直接写入。
 
 ## 8. 结果保持与任务状态
 
@@ -506,6 +525,8 @@ C++ 进程保留硬件敏感的高性能部分：
 
 C++ 不再计算游戏胜负，不再拼装骰子专属 prompt，也不再依赖 `DiceResultSnapshot`、`LlmDiceVerifier` 或 5 + 5 颗骰子的固定字段。
 
+现有 `vision/yolov8_objdetect/config.json` 中的 `yolov8_enabled` 只在进程启动时生效，目前只能选择「启动即推理」或「启动后仅采集画面」。重构后保留其兼容含义，但新增 `vision-control-v1` 运行时开关：预热模式启动时等价于 `yolov8_enabled=false`，收到 `START_ADJUDICATION` 后在同一进程内切换为推理状态。配置和控制通道都不能改变摄像头或 MediaMTX 的外部播放地址。
+
 ### 10.2 通用观测事件
 
 稳定后输出可供 profile 聚合的观测。该结构是所有游戏唯一允许使用的 YOLO runtime 输出接口：
@@ -579,6 +600,9 @@ runtime 的通用 `observation` 事件必须能够关联这张稳定帧：事件
 - 每局只调用一次 LLM，result 事件只发送一次；
 - `post_result_hold_seconds=0` 时 result 后立即终止进程；
 - 保持时间为正数时，在保持期间进程仍存活、摄像头未释放、job phase 为 holding，保持结束后才 success；
+- 用户点击裁决到最终结果的耗时单独记录，并以 2～3 秒量级作为目标；预热模式不把摄像头 / MediaMTX 初始化计入点击后的 YOLO 阶段；
+- 预热模式下 runtime 已经打开摄像头且 YOLO 未运行，发送 START 后才计稳定帧；
+- 多视角检测线程并行启动，不能因一路加载或读取阻塞其他视角；
 - holding 期间取消立即终止进程并产生 error；
 - timeout 覆盖检测、LLM 和 holding 总时间；
 - runtime 非零退出、event FD EOF、无 verified 结果和无效 JSON 都能回收资源并返回明确错误；
