@@ -63,6 +63,25 @@ def test_profile_rejects_full_url_in_game_path(tmp_path: Path):
         load_profile(path)
 
 
+def test_profile_accepts_optional_multiview_camera_and_video_paths(tmp_path: Path):
+    profile = _minimal_profile()
+    profile["multi_view"] = {
+        "enabled": True,
+        "min_views": 2,
+        "yolo_fusion": "majority_vote",
+        "llm_images": "all_stable_views",
+        "views": [
+            {"id": "front", "camera": "/dev/video1", "video": {"path": "/dice-front/"}},
+            {"id": "side", "camera": "/dev/video2", "video": {"path": "/dice-side/"}},
+        ],
+    }
+    path = tmp_path / "vision_profile.json"
+    path.write_text(json.dumps(profile))
+    loaded = load_profile(path)
+    assert [view["id"] for view in loaded["multi_view"]["views"]] == ["front", "side"]
+    assert loaded["multi_view"]["views"][1]["video"]["path"] == "/dice-side/"
+
+
 def test_compose_video_url_rejects_path_traversal():
     with pytest.raises(ProfileError, match="video.path"):
         compose_video_url("http://localhost:8889", "/../secret")

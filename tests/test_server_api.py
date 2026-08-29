@@ -172,6 +172,75 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(payload["adjudicator"]["profile_id"], "dice")
         self.assertEqual(payload["adjudicator"]["video_path"], "/dice/")
 
+    def test_health_exposes_multiview_profiles_and_mediamtx_base_url(self):
+        original_games = server.GAMES
+        original_components = server.COMPONENTS
+        registry = ComponentRegistry()
+        registry.register(DummyVisionAdjudicator(), {
+            "id": "vision_dummy", "type": "vision", "role": "adjudicator",
+            "name": "Dummy Vision Adjudicator", "version": "1", "enabled": True,
+            "entry": "provider.py:DummyVisionAdjudicator",
+        })
+        server.COMPONENTS = registry
+        games = GameRegistry()
+        games.register({
+            "id": "dice", "name": "Dice", "enabled": True,
+            "providers": {"vision_adjudicator": "vision_dummy"}, "texts": {},
+            "vision_profile": {
+                "game_id": "dice", "video": {"enabled": True, "path": "/dice/"},
+                "multi_view": {"enabled": True, "min_views": 2, "views": [
+                    {"id": "front", "camera": "/dev/video1", "video": {"path": "/front/"}},
+                    {"id": "side", "camera": "/dev/video2", "video": {"path": "/side/"}},
+                ]},
+            },
+        })
+        server.GAMES = games
+        try:
+            with patch.object(server, "load_component_config", return_value={
+                "runtime": {"mode": "resident", "prewarm_camera": True},
+                "mediamtx": {"webrtc_base_url": "http://100.118.229.28:8889"},
+            }):
+                status, _, data = self.request("GET", "/api/health")
+        finally:
+            server.GAMES = original_games
+            server.COMPONENTS = original_components
+        payload = json.loads(data)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["adjudicator"]["mode"], "resident")
+        self.assertTrue(payload["adjudicator"]["prewarm"])
+        self.assertEqual(payload["adjudicator"]["mediamtx_base_url"], "http://100.118.229.28:8889")
+        self.assertTrue(payload["adjudicator"]["multi_view"]["enabled"])
+        self.assertEqual(len(payload["adjudicator"]["profiles"]), 1)
+
+    def test_games_api_exposes_only_safe_vision_video_metadata(self):
+        original_games = server.GAMES
+        games = GameRegistry()
+        games.register({
+            "id": "dice", "name": "Dice", "enabled": True, "providers": {}, "texts": {},
+            "vision_profile": {
+                "game_id": "dice",
+                "llm": {"api_key": "SECRET", "system_prompt": "PRIVATE PROMPT", "model": "secret-model"},
+                "vision": {"model": "/tmp/private.onnx"},
+                "video": {"enabled": True, "path": "/dice/"},
+                "multi_view": {"enabled": True, "views": [
+                    {"id": "front", "camera": "/dev/video1", "video": {"path": "/front/"}},
+                ]},
+            },
+        })
+        server.GAMES = games
+        try:
+            status, _, data = self.request("GET", "/api/games")
+        finally:
+            server.GAMES = original_games
+        payload = json.loads(data)
+        self.assertEqual(status, 200)
+        profile = payload["games"][0]["vision_profile"]
+        self.assertEqual(profile["video"], {"enabled": True, "path": "/dice/"})
+        self.assertEqual(profile["multi_view"]["views"][0], {"id": "front", "video": {"enabled": True, "path": "/front/"}})
+        serialized = json.dumps(payload)
+        for secret in ("PRIVATE PROMPT", "SECRET", "secret-model", "/tmp/private.onnx", "/dev/video1"):
+            self.assertNotIn(secret, serialized)
+
     def test_audio_speech_stream_reads_manifest_selected_wav(self):
         import core.games as games_module
 

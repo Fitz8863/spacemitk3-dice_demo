@@ -104,6 +104,49 @@ class GameRegistry:
     def all(self) -> list[dict[str, Any]]:
         return list(self._games.values())
 
+    def public_all(self) -> list[dict[str, Any]]:
+        """Return browser-safe manifests without model, prompt, or device data."""
+        return [public_game_manifest(manifest) for manifest in self._games.values()]
+
+
+def _public_video(video: Any) -> dict[str, Any]:
+    if not isinstance(video, dict):
+        return {"enabled": False, "path": ""}
+    result = {"enabled": bool(video.get("enabled", True)), "path": video.get("path", "")}
+    if not isinstance(result["path"], str):
+        result["path"] = ""
+    return result
+
+
+def public_game_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Project a game manifest to fields safe for an untrusted browser client."""
+    public: dict[str, Any] = {
+        key: manifest[key]
+        for key in ("id", "name", "icon", "description", "enabled", "voice", "speed", "texts", "providers")
+        if key in manifest
+    }
+    profile = manifest.get("vision_profile")
+    if isinstance(profile, dict):
+        safe_profile: dict[str, Any] = {"game_id": profile.get("game_id", manifest.get("id"))}
+        safe_profile["video"] = _public_video(profile.get("video"))
+        multi = profile.get("multi_view")
+        if isinstance(multi, dict):
+            safe_multi: dict[str, Any] = {
+                "enabled": bool(multi.get("enabled", False)),
+                "min_views": int(multi.get("min_views", 1)),
+                "views": [],
+            }
+            for view in multi.get("views", []):
+                if not isinstance(view, dict) or not isinstance(view.get("id"), str):
+                    continue
+                safe_multi["views"].append({
+                    "id": view["id"],
+                    "video": _public_video(view.get("video")),
+                })
+            safe_profile["multi_view"] = safe_multi
+        public["vision_profile"] = safe_profile
+    return public
+
 
 def load_games() -> GameRegistry:
     registry = GameRegistry()

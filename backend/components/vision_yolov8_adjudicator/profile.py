@@ -57,6 +57,14 @@ def _validate_video_path(path: Any) -> str:
     return path
 
 
+def _validate_camera(value: Any, field: str) -> str:
+    """Validate a profile-owned camera selector without accepting traversal."""
+    camera = _required_string(value, field)
+    if any(ord(ch) < 32 for ch in camera) or ".." in Path(camera).parts:
+        raise ProfileError(f"{field} contains unsafe characters")
+    return camera
+
+
 def _validate_base_url(value: Any) -> str:
     value = _required_string(value, "mediamtx.webrtc_base_url")
     parsed = urlsplit(value)
@@ -126,6 +134,33 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         raise ProfileError("multi_view must be an object with boolean enabled")
     if not isinstance(multi.get("min_views", 1), int) or multi.get("min_views", 1) < 1:
         raise ProfileError("multi_view.min_views must be a positive integer")
+    views = multi.get("views", [])
+    if views is None:
+        views = []
+    if not isinstance(views, list):
+        raise ProfileError("multi_view.views must be an array")
+    seen_view_ids: set[str] = set()
+    for index, view in enumerate(views):
+        field = f"multi_view.views[{index}]"
+        if not isinstance(view, dict):
+            raise ProfileError(f"{field} must be an object")
+        view_id = _required_string(view.get("id"), f"{field}.id")
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", view_id) or view_id in seen_view_ids:
+            raise ProfileError(f"{field}.id must be unique and identifier-like")
+        seen_view_ids.add(view_id)
+        _validate_camera(view.get("camera"), f"{field}.camera")
+        view_video = view.get("video")
+        if not isinstance(view_video, dict):
+            raise ProfileError(f"{field}.video must be an object")
+        _validate_video_path(view_video.get("path"))
+        if view_video.get("enabled", True) not in {True, False}:
+            raise ProfileError(f"{field}.video.enabled must be boolean")
+    if bool(multi.get("enabled", False)) and len(views) < int(multi.get("min_views", 1)):
+        raise ProfileError("multi_view.views must contain at least min_views entries when enabled")
+    if multi.get("yolo_fusion", "majority_vote") not in {"majority_vote"}:
+        raise ProfileError("multi_view.yolo_fusion must be majority_vote")
+    if multi.get("llm_images", "all_stable_views") not in {"all_stable_views"}:
+        raise ProfileError("multi_view.llm_images must be all_stable_views")
     return profile
 
 

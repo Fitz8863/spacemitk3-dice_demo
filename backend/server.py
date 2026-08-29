@@ -117,6 +117,43 @@ def _selected_tts_id(game_id: str = "dice") -> str:
         return "tts_qwen3"
 
 
+def _safe_profile_metadata(profile: dict[str, Any], base_url: str, runtime: dict[str, Any]) -> dict[str, Any]:
+    """Project one profile to public health fields; never recurse into registry metadata."""
+    video = profile.get("video", {})
+    path = video.get("path") if isinstance(video, dict) else ""
+    result: dict[str, Any] = {
+        "profile_id": profile.get("game_id", ""),
+        "video_enabled": bool(video.get("enabled", True)) if isinstance(video, dict) else False,
+        "video_path": path if isinstance(path, str) else "",
+        "mode": runtime.get("mode", ""),
+        "prewarm": bool(runtime.get("prewarm_camera", False)),
+        "runtime_mode": runtime.get("mode", ""),
+        "prewarm_camera": bool(runtime.get("prewarm_camera", False)),
+        "mediamtx_base_url": base_url,
+    }
+    if result["video_enabled"] and result["video_path"] and isinstance(base_url, str):
+        try:
+            result["video_url"] = compose_video_url(base_url, result["video_path"])
+        except Exception:
+            pass
+    multi = profile.get("multi_view") if isinstance(profile.get("multi_view"), dict) else {}
+    views: list[dict[str, Any]] = []
+    for view in multi.get("views", []) if isinstance(multi.get("views", []), list) else []:
+        if not isinstance(view, dict) or not isinstance(view.get("id"), str):
+            continue
+        view_video = view.get("video") if isinstance(view.get("video"), dict) else {}
+        view_path = view_video.get("path", "")
+        item = {"id": view["id"], "video_path": view_path if isinstance(view_path, str) else ""}
+        if bool(view_video.get("enabled", True)) and item["video_path"] and isinstance(base_url, str):
+            try:
+                item["video_url"] = compose_video_url(base_url, item["video_path"])
+            except Exception:
+                pass
+        views.append(item)
+    result["multi_view"] = {"enabled": bool(multi.get("enabled", False)), "min_views": int(multi.get("min_views", 1)), "views": views}
+    return result
+
+
 def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
     """Expose safe, deployment-facing vision metadata without prompts/secrets."""
     try:
@@ -128,17 +165,14 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
         config = load_component_config(package_dir)
         mediamtx = config.get("mediamtx", {})
         base_url = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or mediamtx.get("webrtc_base_url", "")
-        video = profile.get("video", {})
-        path = video.get("path") if isinstance(video, dict) else None
-        metadata: dict[str, Any] = {
-            "profile_id": profile.get("game_id"),
-            "video_enabled": bool(video.get("enabled", True)) if isinstance(video, dict) else False,
-            "video_path": path or "",
-            "runtime_mode": config.get("runtime", {}).get("mode", "") if isinstance(config.get("runtime"), dict) else "",
-            "prewarm_camera": bool(config.get("runtime", {}).get("prewarm_camera", False)) if isinstance(config.get("runtime"), dict) else False,
-        }
-        if metadata["video_enabled"] and isinstance(base_url, str) and isinstance(path, str):
-            metadata["video_url"] = compose_video_url(base_url, path)
+        runtime = config.get("runtime", {})
+        runtime = runtime if isinstance(runtime, dict) else {}
+        metadata = _safe_profile_metadata(profile, base_url, runtime)
+        metadata["profiles"] = [
+            _safe_profile_metadata(item["vision_profile"], base_url, runtime)
+            for item in GAMES.all()
+            if isinstance(item.get("vision_profile"), dict)
+        ]
         return metadata
     except Exception:
         # Provider health already reports component/configuration failures;
@@ -337,7 +371,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"components": COMPONENTS.all(include_health=True)})
             return
         if path == "/api/games":
-            self.send_json({"games": GAMES.all()})
+            self.send_json({"games": GAMES.public_all()})
             return
         remainder = _adjudication_job_remainder(path)
         if remainder is not None:
