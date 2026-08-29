@@ -14,6 +14,7 @@ export function register(engine) {
   let shakeTimer = null;
   let countdownTimer = null;
   let visionStreamToken = 0;
+  let pendingAnalysisResult = null;
 
   const phases = ['select', 'rules', 'ready', 'countdown', 'shaking', 'open', 'analysis', 'result'];
   const phaseMeta = {
@@ -42,15 +43,21 @@ export function register(engine) {
     if (status) status.textContent = '实时画面已关闭';
   }
 
-  function startVisionStream() {
+  function startVisionStream(event) {
     const panel = $('analysisStreamPanel');
     const frame = $('analysisStream');
     if (!panel || !frame) return;
-    const configuredUrl = frame.dataset.streamUrl;
+    const configuredUrl = event && typeof event.url === 'string' ? event.url.trim() : '';
     if (!configuredUrl) return;
 
     const token = ++visionStreamToken;
-    const streamUrl = new URL(configuredUrl, window.location.href);
+    let streamUrl;
+    try {
+      streamUrl = new URL(configuredUrl, window.location.href);
+      if (!['http:', 'https:'].includes(streamUrl.protocol)) return;
+    } catch (_) {
+      return;
+    }
     // The MediaMTX WebRTC page reads these options and starts muted playback,
     // which is allowed when the analysis page opens without a user gesture.
     streamUrl.searchParams.set('autoplay', '1');
@@ -125,6 +132,7 @@ export function register(engine) {
 
   function resetAnalysisSteps() {
     stopVisionStream();
+    pendingAnalysisResult = null;
     $('stepCapture').classList.add('active');
     $('stepCapture').querySelector('span').textContent = '✓';
     $('stepDetect').classList.remove('active');
@@ -151,6 +159,15 @@ export function register(engine) {
       $('stepJudge').classList.add('active');
       $('stepJudge').querySelector('span').textContent = '…';
       $('analysisStatus').textContent = 'YOLOv8 结果已稳定，正在调用大模型复核…';
+    } else if (job.phase === 'holding') {
+      const remaining = Number(job.remaining_ms);
+      $('stepDetect').classList.add('active');
+      $('stepDetect').querySelector('span').textContent = '✓';
+      $('stepJudge').classList.add('active');
+      $('stepJudge').querySelector('span').textContent = '✓';
+      $('analysisStatus').textContent = Number.isFinite(remaining) && remaining > 0
+        ? `结果已锁定，实时画面将继续播放 ${Math.ceil(remaining / 1000)} 秒…`
+        : '结果已锁定，实时画面仍在播放…';
     } else {
       $('analysisStatus').textContent = 'K3 推理进程已启动，等待识别结果…';
     }
@@ -158,7 +175,13 @@ export function register(engine) {
 
   function updateStructuredEvent(event) {
     if (!event || typeof event !== 'object') return;
-    if (event.event === 'phase' || event.event === 'progress') {
+    if (event.event === 'video') {
+      startVisionStream(event);
+    } else if (event.event === 'result') {
+      pendingAnalysisResult = event.result && typeof event.result === 'object'
+        ? event.result
+        : event;
+    } else if (event.event === 'phase' || event.event === 'progress') {
       updateAnalysisProgress(event);
     }
   }
@@ -171,17 +194,31 @@ export function register(engine) {
         updateStructuredEvent(event);
       }
     }
-    if (snapshot.status === 'success' && snapshot.result) {
+    if (snapshot.phase === 'holding') {
+      updateAnalysisProgress(snapshot);
+    }
+    // A provider emits ``complete`` before its worker returns to ComponentJob;
+    // during that small window the snapshot can still be ``running`` with
+    // only the earlier result event available. Wait for the terminal success
+    // snapshot (which carries the canonical result) before closing SSE or
+    // switching to the result view.
+    const terminal = snapshot.status === 'success'
+      || (snapshot.phase === 'complete' && snapshot.result);
+    if (terminal && (snapshot.result || pendingAnalysisResult)) {
       $('stepDetect').classList.add('active');
       $('stepDetect').querySelector('span').textContent = '✓';
       $('stepJudge').classList.add('active');
       $('stepJudge').querySelector('span').textContent = '✓';
-      $('analysisStatus').textContent = snapshot.result.source === 'yolo_timeout_fallback'
+      const result = snapshot.result || pendingAnalysisResult;
+      pendingAnalysisResult = result;
+      $('analysisStatus').textContent = result.source === 'yolo_timeout_fallback'
         ? '大模型请求超时，已使用稳定的 YOLOv8 结果，结果已锁定。'
         : 'YOLOv8 与大模型复核一致，结果已锁定。';
       return true;
     }
-    if (snapshot.status === 'error') throw new Error(snapshot.error || 'K3 视觉裁决失败');
+    if (snapshot.status === 'error' || snapshot.cancelled) {
+      throw new Error(snapshot.error || 'K3 视觉裁决已取消');
+    }
     updateAnalysisProgress(snapshot);
     return false;
   }
@@ -238,7 +275,9 @@ export function register(engine) {
       await pollAnalysisFallback(jobId);
     }
     const job = await requestJson(`/api/adjudicate/${jobId}`);
-    if (job.status === 'success' && job.result) setTimeout(() => showResult(job.result), 450);
+    if ((job.status === 'success' || job.phase === 'complete') && (job.result || pendingAnalysisResult)) {
+      showResult(job.result || pendingAnalysisResult);
+    }
   }
 
   async function reveal() {
@@ -247,9 +286,6 @@ export function register(engine) {
     speakState('analysis_started');
     try {
       const job = await requestJson('/api/adjudicate', { method: 'POST', body: JSON.stringify({ game: 'dice' }) });
-      // Only connect the preview after the YOLO job has been accepted.
-      // This avoids leaving a stale stream player behind when task creation fails.
-      startVisionStream();
       await pollAnalysis(job.job_id);
     } catch (error) {
       stopVisionStream();
