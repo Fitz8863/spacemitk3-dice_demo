@@ -15,6 +15,7 @@ export function register(engine) {
   let countdownTimer = null;
   let visionStreamToken = 0;
   let pendingAnalysisResult = null;
+  let participantSides = null;
 
   const phases = ['select', 'rules', 'ready', 'countdown', 'shaking', 'open', 'analysis', 'result'];
   const phaseMeta = {
@@ -29,6 +30,28 @@ export function register(engine) {
   };
 
   function sum(dice) { return dice.reduce((a, b) => a + b, 0); }
+
+  function configureParticipants(manifest) {
+    const participants = manifest && manifest.participants;
+    const player = participants && participants.player;
+    const agent = participants && participants.agent;
+    if (!['LEFT', 'RIGHT'].includes(player)
+        || !['LEFT', 'RIGHT'].includes(agent)
+        || player === agent) {
+      throw new Error('游戏参与者左右位置配置无效');
+    }
+    participantSides = { player, agent };
+    $('playerScoreSide').style.gridColumn = player === 'LEFT' ? '1' : '3';
+    $('agentScoreSide').style.gridColumn = agent === 'LEFT' ? '1' : '3';
+  }
+
+  function assertResultParticipants(result) {
+    if (!participantSides
+        || result.player_side !== participantSides.player
+        || result.agent_side !== participantSides.agent) {
+      throw new Error('裁决结果与游戏参与者位置配置不一致');
+    }
+  }
 
   function stopVisionStream() {
     visionStreamToken += 1;
@@ -85,9 +108,7 @@ export function register(engine) {
     return values.map((value) => `<div class="die ${className}" aria-label="${value}点">${Array.from({ length: 9 }, (_, i) => `<span class="${dicePips[value].includes(i) ? 'on' : ''}"></span>`).join('')}</div>`).join('');
   }
 
-  function updateScores() {
-    const player = sum(playerDice);
-    const agent = sum(agentDice);
+  function updateScores(player = sum(playerDice), agent = sum(agentDice)) {
     $('playerScore').textContent = playerDice.length ? player : '—';
     $('agentScore').textContent = agentDice.length ? agent : '—';
     $('playerDice').innerHTML = diceMarkup(playerDice);
@@ -303,17 +324,25 @@ export function register(engine) {
   }
 
   function showResult(result) {
+    assertResultParticipants(result);
     stopVisionStream();
-    playerDice = Array.isArray(result.first_dice) ? result.first_dice : [];
-    agentDice = Array.isArray(result.second_dice) ? result.second_dice : [];
-    updateScores();
+    playerDice = Array.isArray(result.player_values) ? result.player_values : [];
+    agentDice = Array.isArray(result.agent_values) ? result.agent_values : [];
+    const player = Number(result.player_score);
+    const agent = Number(result.agent_score);
+    if (!Number.isFinite(player) || !Number.isFinite(agent)) {
+      throw new Error('裁决结果缺少有效的玩家或 Agent 分数');
+    }
+    updateScores(player, agent);
     setPhase('result');
-    const player = Number(result.first_sum);
-    const agent = Number(result.second_sum);
     const banner = $('resultBanner');
     const winner = result.winner;
-    const tie = winner === 'TIE';
-    const playerWins = winner === 'LEFT';
+    const winnerRole = result.winner_role;
+    const tie = winnerRole === 'TIE';
+    const playerWins = winnerRole === 'PLAYER';
+    if (!tie && !playerWins && winnerRole !== 'AGENT') {
+      throw new Error('裁决结果缺少有效 winner_role');
+    }
     $('resultEmoji').textContent = tie ? '🤝' : playerWins ? '🏆' : '✨';
     $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : 'Agent 获胜';
     const verificationText = result.source === 'yolo_timeout_fallback'
@@ -323,7 +352,7 @@ export function register(engine) {
         : result.source === 'yolo_only'
           ? '未启用大模型，采用 YOLOv8'
           : `复核：${result.llm_winner || winner}`;
-    $('resultSubtitle').textContent = `YOLOv8：${player} : ${agent}；大模型${verificationText}`;
+    $('resultSubtitle').textContent = `YOLOv8：玩家 ${player} : Agent ${agent}；大模型${verificationText}`;
     banner.classList.toggle('loss', !playerWins && !tie);
     const resultTtsKey = tie ? 'result_tie' : playerWins ? 'result_player_win' : 'result_agent_win';
     speakState(resultTtsKey, { player_score: player, agent_score: agent });
@@ -367,7 +396,8 @@ export function register(engine) {
     backFromRules: () => backFromRules(),
   };
 
-  function enter() {
+  function enter(manifest) {
+    configureParticipants(manifest);
     stopVisionStream();
     round = 1;
     playerDice = [];
@@ -386,6 +416,7 @@ export function register(engine) {
     clearInterval(countdownTimer);
     shakeTimer = null;
     countdownTimer = null;
+    participantSides = null;
     Object.entries(handlers).forEach(([id, fn]) => $(id).removeEventListener('click', fn));
     stopSpeech();
   }

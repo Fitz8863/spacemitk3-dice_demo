@@ -46,3 +46,23 @@ def test_frontend_does_not_mark_yolo_complete_while_still_detecting():
     assert "querySelector('span').textContent = '…'" in detecting
     assert "querySelector('span').textContent = '✓'" not in detecting
     assert "以大模型结果为准" in js
+
+
+def test_frontend_uses_manifest_participant_layout_and_role_result():
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    dice = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+
+    assert "module.enter(manifest)" in app
+    assert "playerScoreSide" in html
+    assert "agentScoreSide" in html
+    assert "result.player_values" in dice
+    assert "result.agent_values" in dice
+    assert "result.player_score" in dice
+    assert "result.agent_score" in dice
+    assert "result.winner_role" in dice
+    assert "result.player_side" in dice
+    assert "result.agent_side" in dice
+    assert "winner === 'LEFT'" not in dice
+    assert "result.first_dice" not in dice
+    assert "result.second_dice" not in dice

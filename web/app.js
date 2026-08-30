@@ -455,8 +455,13 @@ function enterSelectedGame() {
     toast(`未注册游戏：${state.selectedGame}`);
     return;
   }
+  const manifest = games.find((game) => game.id === state.selectedGame);
+  if (!manifest) {
+    toast(`缺少游戏配置：${state.selectedGame}`);
+    return;
+  }
   activeGame = module;
-  module.enter();
+  module.enter(manifest);
 }
 
 // ---- 启动 ----
