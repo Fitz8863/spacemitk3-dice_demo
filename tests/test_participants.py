@@ -104,3 +104,54 @@ def test_project_participant_result_rejects_missing_side_evidence():
     del result["left_values"]
     with pytest.raises(ValueError, match="left_values"):
         project_participant_result(result, {"player": "LEFT", "agent": "RIGHT"})
+
+
+def test_project_participant_result_derives_scores_from_values_without_sum_fields():
+    result = physical_result()
+    del result["left_sum"]
+    del result["right_sum"]
+    projected = project_participant_result(
+        result, {"player": "LEFT", "agent": "RIGHT"}
+    )
+    assert projected["player_score"] == 11
+    assert projected["agent_score"] == 19
+
+
+def test_project_participant_result_rejects_inconsistent_physical_sum():
+    result = physical_result()
+    result["left_sum"] = 999
+    with pytest.raises(ValueError, match="left_sum"):
+        project_participant_result(result, {"player": "LEFT", "agent": "RIGHT"})
+
+
+@pytest.mark.parametrize("values", [[], ["bad"], [True], [0], [7], [2.5]])
+def test_project_participant_result_rejects_invalid_dice_values(values):
+    result = physical_result()
+    result["left_values"] = values
+    with pytest.raises(ValueError, match="left_values"):
+        project_participant_result(result, {"player": "LEFT", "agent": "RIGHT"})
+
+
+def test_project_participant_result_rejects_conflicting_physical_winners():
+    result = physical_result("LEFT")
+    result["outcome"]["value"] = "RIGHT"
+    with pytest.raises(ValueError, match="outcome.value"):
+        project_participant_result(result, {"player": "LEFT", "agent": "RIGHT"})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("first_dice", [6]),
+        ("second_dice", [6]),
+        ("first_sum", 999),
+        ("second_sum", 999),
+    ],
+)
+def test_project_participant_result_rejects_conflicting_compatibility_fields(
+    field, value
+):
+    result = physical_result()
+    result[field] = value
+    with pytest.raises(ValueError, match=field):
+        project_participant_result(result, {"player": "LEFT", "agent": "RIGHT"})

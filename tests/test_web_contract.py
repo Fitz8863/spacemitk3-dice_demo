@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,3 +67,5 @@ def test_frontend_uses_manifest_participant_layout_and_role_result():
     assert "winner === 'LEFT'" not in dice
     assert "result.first_dice" not in dice
     assert "result.second_dice" not in dice
+    assert "result.llm_winner" not in dice
+    assert re.search(r"result\.winner(?!_role)", dice) is None

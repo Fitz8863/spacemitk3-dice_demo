@@ -336,7 +336,6 @@ export function register(engine) {
     updateScores(player, agent);
     setPhase('result');
     const banner = $('resultBanner');
-    const winner = result.winner;
     const winnerRole = result.winner_role;
     const tie = winnerRole === 'TIE';
     const playerWins = winnerRole === 'PLAYER';
@@ -347,11 +346,13 @@ export function register(engine) {
     $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : 'Agent 获胜';
     const verificationText = result.source === 'yolo_timeout_fallback'
       ? '超时，采用 YOLOv8'
+      : result.source === 'yolo_failure_fallback'
+        ? '请求失败，采用 YOLOv8'
       : result.source === 'llm_override'
         ? '结果不一致，以大模型结果为准'
         : result.source === 'yolo_only'
           ? '未启用大模型，采用 YOLOv8'
-          : `复核：${result.llm_winner || winner}`;
+          : '复核一致';
     $('resultSubtitle').textContent = `YOLOv8：玩家 ${player} : Agent ${agent}；大模型${verificationText}`;
     banner.classList.toggle('loss', !playerWins && !tie);
     const resultTtsKey = tie ? 'result_tie' : playerWins ? 'result_player_win' : 'result_agent_win';
