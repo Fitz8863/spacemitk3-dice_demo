@@ -187,15 +187,21 @@ export function register(engine) {
   }
 
   function applyAnalysisSnapshot(snapshot, eventSequence) {
+    let latestHoldingEvent = null;
     for (const event of (snapshot.events || [])) {
       const sequence = Number(event.sequence || 0);
       if (sequence > eventSequence.value) {
         eventSequence.value = sequence;
+        if (event.phase === 'holding') latestHoldingEvent = event;
         updateStructuredEvent(event);
       }
     }
     if (snapshot.phase === 'holding') {
-      updateAnalysisProgress(snapshot);
+      // SSE snapshots expose the lifecycle phase at the top level, while the
+      // countdown value belongs to the structured holding event. Preserve
+      // that richer event instead of immediately overwriting it with a
+      // generic "still playing" message.
+      updateAnalysisProgress(latestHoldingEvent || snapshot);
     }
     // A provider emits ``complete`` before its worker returns to ComponentJob;
     // during that small window the snapshot can still be ``running`` with

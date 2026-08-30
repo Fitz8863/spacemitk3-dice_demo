@@ -22,6 +22,13 @@ def test_frontend_keeps_video_until_terminal_complete():
     assert "startVisionStream(event)" in js
 
 
+def test_frontend_preserves_holding_countdown_from_structured_event():
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+
+    assert "latestHoldingEvent" in js
+    assert "updateAnalysisProgress(latestHoldingEvent || snapshot)" in js
+
+
 def test_frontend_distinguishes_llm_override_from_consensus():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     assert "llm_override" in js
