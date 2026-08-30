@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -474,6 +476,37 @@ raise SystemExit(7)
         assert any("camera open failed" in line for line in logs)
     finally:
         runtime.stop()
+
+
+def test_runtime_stop_unblocks_reader_waiting_for_events(tmp_path: Path):
+    """Stopping a resident runtime must release a blocked events reader."""
+    script = tmp_path / "blocked_runtime.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import argparse, os, time
+p=argparse.ArgumentParser(); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--view-id',default='default'); p.add_argument('--no-display',action='store_true'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--rtsp',action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path'); p.add_argument('--snapshot-dir')
+a=p.parse_args()
+os.close(a.control_fd)
+time.sleep(60)
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess
+
+    runtime = YoloRuntimeProcess(binary=script)
+    runtime.start({}, "front", prewarm=True)
+    reader = threading.Thread(target=lambda: list(runtime.events()), daemon=True)
+    reader.start()
+    time.sleep(0.1)
+
+    started = time.monotonic()
+    runtime.stop()
+    elapsed = time.monotonic() - started
+
+    reader.join(timeout=1)
+    assert elapsed < 1.5
+    assert not reader.is_alive()
 
 
 def test_provider_sends_final_result_and_stops_resident_runtime(tmp_path: Path):

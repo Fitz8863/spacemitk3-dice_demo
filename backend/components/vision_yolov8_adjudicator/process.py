@@ -39,6 +39,7 @@ class YoloRuntimeProcess:
         self._stdout_thread: threading.Thread | None = None
         self._on_log: Any = lambda _line: None
         self._runtime_exit_emitted = False
+        self._lifecycle_lock = threading.Lock()
 
     def start(
         self,
@@ -231,34 +232,44 @@ class YoloRuntimeProcess:
             yield {"event": "runtime_exit", "returncode": returncode}
 
     def stop(self) -> None:
-        process = self._process
-        self._process = None
-        for stream_name in ("_event_stream",):
-            stream = getattr(self, stream_name)
-            setattr(self, stream_name, None)
+        # Terminate the child before closing the event stream.  A provider
+        # collector may be blocked in ``TextIOWrapper`` while waiting for the
+        # child's next event; closing that wrapper first can wait forever on
+        # its read lock.  Child exit closes the inherited event writer and
+        # releases the collector via EOF.
+        with self._lifecycle_lock:
+            process = self._process
+            self._process = None
+            if process is not None:
+                try:
+                    if process.poll() is None:
+                        process.terminate()
+                    process.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    try:
+                        process.wait(timeout=1)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+
+            stream = self._event_stream
+            self._event_stream = None
             if stream is not None:
                 try:
                     stream.close()
-                except OSError:
+                except (OSError, ValueError):
                     pass
-        for fd_name in ("_control_write", "_event_read"):
-            fd = getattr(self, fd_name)
-            setattr(self, fd_name, None)
-            if fd is not None:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-        if process is None:
-            return
-        try:
-            process.terminate()
-            process.wait(timeout=2)
-        except (OSError, subprocess.TimeoutExpired):
-            try:
-                process.kill()
-            except OSError:
-                pass
+            for fd_name in ("_control_write", "_event_read"):
+                fd = getattr(self, fd_name)
+                setattr(self, fd_name, None)
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
 
 
 def _snapshot_path(observation: Mapping[str, Any], task_dir: Path) -> Path:
