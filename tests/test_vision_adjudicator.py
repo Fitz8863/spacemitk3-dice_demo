@@ -983,6 +983,50 @@ def test_provider_reuses_resident_runtime_for_two_rounds_without_stale_observati
     assert verifier.seen == [b"round-1", b"round-2"]
 
 
+def test_provider_ignores_stale_idle_event_before_current_round_detection(tmp_path: Path):
+    image = tmp_path / "diagnostic.jpg"
+    image.write_bytes(b"jpeg")
+
+    class Runtime:
+        def start(self, *args, **kwargs):
+            self.round = 0
+
+        def send(self, command):
+            self.commands = getattr(self, "commands", []) + [dict(command)]
+            if command.get("command") == "START_ADJUDICATION":
+                self.round += 1
+
+        def events(self):
+            # Resident processes can leave the prior round's idle transition
+            # queued ahead of the current START phase.
+            return iter([
+                {"event": "phase", "phase": "idle"},
+                {"event": "phase", "phase": "detecting"},
+                {"event": "observation", "stable": True, "yolo_outcome": "LEFT",
+                 "snapshot": {"path": str(image)}},
+            ])
+
+        def stop(self):
+            pass
+
+    class Verifier:
+        def verify(self, **kwargs):
+            return type("R", (), {"status": "success", "outcome": "LEFT"})()
+
+    profile = {
+        "game_id": "x",
+        "vision": {"stable_frames": 1},
+        "llm": {"enabled": True, "system_prompt": "s", "user_prompt_template": "u", "allowed_outcomes": ["LEFT"]},
+        "runtime": {"mode": "resident", "prewarm_camera": True},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    result = VisionYolov8Adjudicator(runtime_factory=lambda _view_id: Runtime(), verifier=Verifier()).adjudicate(
+        VisionAdjudicationRequest("x", profile, "stale-idle", 2),
+        on_log=lambda _: None, on_event=lambda _: None, is_cancelled=lambda: False,
+    )
+    assert result["outcome"]["value"] == "LEFT"
+
+
 def test_provider_cancel_keeps_resident_runtime_warm():
     """Cancellation returns a resident worker to idle instead of restarting it."""
     class Runtime:

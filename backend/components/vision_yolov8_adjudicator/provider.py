@@ -561,7 +561,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             latest_by_view: dict[str, dict[str, Any]] = {}
             latest_lock = threading.Lock()
             def collect(rt, view):
-                vid = str(view.get("id", "default")); found = None
+                vid = str(view.get("id", "default")); found = None; active_seen = False
                 for event in rt.events():
                     if event.get("event") == "video":
                         video_event = self._video_event(profile, vid, event)
@@ -569,6 +569,8 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                             on_event(video_event)
                             emitted_video_views.add(vid)
                     elif event.get("event") == "progress":
+                        if event.get("phase") == "detecting":
+                            active_seen = True
                         on_event({**event, "view_id": vid})
                     elif event.get("event") == "runtime_exit":
                         returncode = event.get("returncode")
@@ -583,8 +585,10 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                         if event.get("event") == "observation" and event.get("stable"):
                             found = candidate
                             break
+                    elif event.get("event") == "phase" and event.get("phase") == "detecting":
+                        active_seen = True
                     elif event.get("event") == "cancelled" or (
-                        event.get("event") == "phase" and event.get("phase") == "idle"
+                        event.get("event") == "phase" and event.get("phase") == "idle" and active_seen
                     ):
                         break
                 return vid, found
