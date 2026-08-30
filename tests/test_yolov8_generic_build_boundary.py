@@ -13,6 +13,11 @@ def test_runtime_has_adjudicator_directory_and_no_objdetect_directory():
     assert not (ROOT / "vision" / "yolov8_objdetect").exists()
 
 
+def test_divider_assist_runs_only_during_active_adjudication():
+    source = SOURCE.read_text(encoding="utf-8")
+    assert "a.divider_detection_enabled && adjudication_active.load()" in source
+
+
 def test_generic_build_does_not_link_or_include_dice_verifier_directly():
     source = SOURCE.read_text(encoding="utf-8")
     cmake = CMAKE.read_text(encoding="utf-8")

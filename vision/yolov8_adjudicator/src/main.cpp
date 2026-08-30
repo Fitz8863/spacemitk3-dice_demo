@@ -1189,7 +1189,11 @@ int main(int argc, char** argv) {
         DividerLine divider_assist;
         if (item->nv12 && !item->nv12->empty()) {
             cv::cvtColor(*item->nv12, bgr, cv::COLOR_YUV2BGR_NV12);
-            if (a.divider_detection_enabled) {
+            // Divider assistance belongs to the active YOLO adjudication
+            // phase.  A resident process may keep the camera/RTSP path warm
+            // while idle, but must not spend CPU on scene geometry until a
+            // START_ADJUDICATION command enables inference.
+            if (a.divider_detection_enabled && adjudication_active.load()) {
                 divider_assist.valid = detect_black_divider(bgr, divider_assist);
             }
             std::string scene_status = !adjudication_active.load()
