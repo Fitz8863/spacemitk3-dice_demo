@@ -166,3 +166,56 @@ vision/yolov8_adjudicator/build/yolov8_camera --config vision/yolov8_adjudicator
 
 再通过 `scripts/start_web.sh` 和 `/api/adjudicate` 验证 control-fd 进入 detecting、发送
 WebRTC 视频事件、输出 YOLO 推理日志，最后 `scripts/stop_web.sh` 确认只保留 MediaMTX。
+
+---
+
+### 任务 6：修复类别稳定与 LLM 降级
+
+**文件：**
+- 修改：`tests/test_yolov8_generic_build_boundary.py`
+- 修改：`tests/test_vision_adjudicator.py`
+- 修改：`vision/yolov8_adjudicator/src/main.cpp`
+- 修改：`backend/components/vision_yolov8_adjudicator/rules.py`
+
+- [ ] **步骤 1：建立类别稳定失败测试**
+
+断言 `detection_signature` 只读取 `class_id`，不读取 confidence 或任何 bbox 坐标；断言
+runtime 发布 `stable_count/stable_frames` progress 事件。
+
+- [ ] **步骤 2：验证类别稳定测试失败**
+
+运行：
+
+```bash
+python3 -m pytest tests/test_yolov8_generic_build_boundary.py -q
+```
+
+预期：当前签名仍包含 `d.x1/d.y1/d.x2/d.y2`，测试失败。
+
+- [ ] **步骤 3：建立 LLM failure 回退失败测试**
+
+将现有 `failure` 抛错测试改为断言采用 YOLO outcome，且
+`decision_source=\"yolo_failure_fallback\"`、verification status 为
+`failure_fallback`。
+
+- [ ] **步骤 4：验证 LLM failure 测试失败**
+
+运行：
+
+```bash
+python3 -m pytest tests/test_vision_adjudicator.py::test_llm_failure_falls_back_to_yolo -q
+```
+
+预期：当前 `finalize_outcome` 抛出 `RuleError`。
+
+- [ ] **步骤 5：实现最小修复并运行完整回归**
+
+类别签名改为排序后的 `class_id` 序列；`failure/error` 与 `timeout` 一样要求已有 YOLO
+结果并返回明确的 fallback 元数据。运行 `python3 -m pytest tests -q`、C++ 语法检查、
+`python3 -m compileall -q backend tests` 和 `git diff --check`。
+
+- [ ] **步骤 6：K3 构建与真实链路验证**
+
+同步提交后板端重新构建，恢复不入库的 `DICE_LLM_API_KEY` 部署配置，启动一次 dice
+裁决；确认约 30 个类别稳定帧后依次出现 observation、verifying、result、holding 和
+complete。若云端失败，确认 3 秒边界内返回 `yolo_failure_fallback`，不得等待 120 秒。

@@ -32,6 +32,19 @@
 被骰子分区规则耦合。骰子 profile 通过 `vision.divider_detection=true` 启用该辅助处理，
 其他游戏默认关闭。
 
+## 类别稳定与 LLM 降级
+
+稳定帧只比较当前检测结果的类别多重集合，即每个类别出现的次数；置信度和检测框的
+`x1/y1/x2/y2` 坐标均不得进入稳定签名。框坐标只保留为当前帧的画面标注和参与方分区
+证据，不能因为检测框轻微抖动重置连续稳定帧计数。runtime 在稳定计数变化时发布
+`progress`，达到游戏 profile 配置的 `stable_frames` 后发布一次稳定 observation。
+
+Python provider 在稳定 observation 上计算 YOLO 初判，再发起受
+`llm.timeout_seconds` 限制的单轮无状态复核。LLM 成功时保留一致/覆盖规则；网络超时、
+连接失败、缺少认证、HTTP 错误和无效响应统一使用 YOLO 初判，并在 verification 元数据
+中区分 `timeout_fallback` 与 `failure_fallback`。产生最终结果后停止 YOLO 推理，继续按
+`lifecycle.post_result_hold_seconds` 播放 resident 视频。
+
 ## 配置与接口
 
 - `backend/components/vision_yolov8_adjudicator/config.json` 的 runtime binary 和
