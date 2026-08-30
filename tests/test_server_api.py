@@ -67,7 +67,19 @@ class DummyVisionAdjudicator(VisionAdjudicatorProvider):
         return {"id": self.id, "type": self.type, "ok": True, "ready": True}
 
     def adjudicate(self, *, on_log, on_event, is_cancelled, timeout_seconds):
-        return {"verified": True, "winner": "LEFT"}
+        return {
+            "verified": True,
+            "winner": "LEFT",
+            "outcome": {"kind": "winner", "value": "LEFT"},
+            "left_values": [6, 5, 4, 3, 2],
+            "right_values": [1, 1, 1, 1, 1],
+            "left_sum": 20,
+            "right_sum": 5,
+            "first_dice": [6, 5, 4, 3, 2],
+            "second_dice": [1, 1, 1, 1, 1],
+            "first_sum": 20,
+            "second_sum": 5,
+        }
 
 
 class DummyTts(TtsProvider):
@@ -391,6 +403,9 @@ class ServerApiTests(unittest.TestCase):
         self.assertIsNotNone(payload)
         self.assertEqual(payload["status"], "success")
         self.assertEqual(payload["result"]["winner"], "LEFT")
+        self.assertEqual(payload["result"]["winner_role"], "PLAYER")
+        self.assertEqual(payload["result"]["player_score"], 20)
+        self.assertEqual(payload["result"]["agent_score"], 5)
 
         # Old clients can still read the same adjudication job during migration.
         status, _, legacy_data = self.request("GET", f"/api/analyze/{job_id}")
