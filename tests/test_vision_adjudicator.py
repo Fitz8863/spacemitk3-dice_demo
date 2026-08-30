@@ -394,6 +394,56 @@ def test_provider_runs_one_round_and_holds_result(tmp_path: Path):
     assert progress_events == [{"event":"progress","phase":"detecting","stable_count":1,"stable_frames":2,"view_id":"default"}]
 
 
+def test_post_result_hold_is_not_consumed_by_adjudication_deadline(tmp_path: Path):
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"jpeg")
+
+    class Runtime:
+        def start(self, *args, **kwargs):
+            self.events_data = iter([{
+                "event": "observation",
+                "stable": True,
+                "yolo_outcome": "LEFT",
+                "snapshot": {"path": str(image)},
+            }])
+
+        def send(self, command):
+            pass
+
+        def events(self):
+            return self.events_data
+
+        def stop(self):
+            pass
+
+    profile = {
+        "game_id": "x",
+        "vision": {"stable_frames": 1},
+        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
+        "lifecycle": {"post_result_hold_seconds": 0.12},
+        "timeouts": {"adjudication_seconds": 0.01},
+    }
+    events = []
+    event_times = []
+
+    def record_event(event):
+        events.append(event)
+        event_times.append((event.get("event"), time.monotonic()))
+
+    VisionYolov8Adjudicator(runtime_factory=lambda _view_id: Runtime()).adjudicate(
+        VisionAdjudicationRequest("x", profile, "r", 1),
+        on_log=lambda _line: None,
+        on_event=record_event,
+        is_cancelled=lambda: False,
+    )
+
+    result_at = next(timestamp for event, timestamp in event_times if event == "result")
+    complete_at = next(timestamp for event, timestamp in event_times if event == "complete")
+    assert complete_at - result_at >= 0.10
+    assert any(event.get("phase") == "holding" for event in events)
+    assert events[-1] == {"event": "complete", "phase": "complete"}
+
+
 def test_provider_multiview_sends_single_llm_request(tmp_path: Path):
     (tmp_path / "a.jpg").write_bytes(b"a"); (tmp_path / "b.jpg").write_bytes(b"b")
     class Runtime:

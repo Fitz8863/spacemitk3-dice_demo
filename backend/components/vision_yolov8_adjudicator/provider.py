@@ -558,8 +558,11 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     rt.send({"command": "STOP_ADJUDICATION", "request_id": request.request_id})
                 except Exception as exc:
                     on_log(f"[vision] STOP_ADJUDICATION send failed: {exc}")
+            # The adjudication deadline bounds detection and LLM verification.
+            # Holding starts only after a verdict exists, so consuming it from
+            # the remaining adjudication budget would silently shorten the
+            # game-owned post-result display contract.
             hold = float(profile.get("lifecycle", {}).get("post_result_hold_seconds", 0))
-            hold = min(hold, max(0.0, deadline - time.monotonic()))
             if hold > 0:
                 end = time.monotonic() + hold
                 while time.monotonic() < end:

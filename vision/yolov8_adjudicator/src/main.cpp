@@ -2,6 +2,7 @@
 #include "rtsp_streamer.h"
 #include "opencl_preprocess.h"
 #include "yolov8_detector.h"
+#include "control_protocol.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -23,7 +24,6 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
-#include <optional>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -33,7 +33,6 @@
 #include <deque>
 #include <cerrno>
 #include <unistd.h>
-#include <poll.h>
 
 
 
@@ -541,29 +540,6 @@ static bool parse(int argc, char** argv, Args& a) {
     return validate_args(a);
 }
 
-// Read one newline-delimited control command without blocking the video loop.
-// The protocol is intentionally tiny and forwards JSON untouched to higher
-// layers; command matching is limited to the well-known vision-control-v1
-// verbs so malformed input cannot alter runtime options.
-static std::optional<std::string> read_control_command(int fd, std::string& buffer) {
-    if (fd < 0) return std::nullopt;
-    const size_t buffered_newline = buffer.find('\n');
-    if (buffered_newline != std::string::npos) {
-        std::string line = buffer.substr(0, buffered_newline);
-        buffer.erase(0, buffered_newline + 1);
-        return line;
-    }
-    char chunk[1024];
-    const ssize_t n = ::read(fd, chunk, sizeof(chunk));
-    if (n <= 0) return std::nullopt;
-    buffer.append(chunk, static_cast<size_t>(n));
-    const size_t newline = buffer.find('\n');
-    if (newline == std::string::npos) return std::nullopt;
-    std::string line = buffer.substr(0, newline);
-    buffer.erase(0, newline + 1);
-    return line;
-}
-
 static std::string control_command_name(const std::string& json) {
     for (const char* command : {"START_ADJUDICATION", "STOP_ADJUDICATION",
                                 "FINAL_RESULT", "CANCEL"}) {
@@ -1012,39 +988,40 @@ int main(int argc, char** argv) {
     std::thread control_thread;
     if (a.control_fd >= 0) {
         control_thread = std::thread([&] {
-            std::string buffer;
+            vision_control::CommandReader reader;
             while (!g_signal_stop && !abort.load()) {
-                struct pollfd pfd{a.control_fd, POLLIN | POLLHUP | POLLERR, 0};
-                const int ready = ::poll(&pfd, 1, 250);
-                if (ready <= 0) continue;
-                if (pfd.revents & (POLLHUP | POLLERR)) break;
-                auto line = read_control_command(a.control_fd, buffer);
-                if (!line) continue;
-                const std::string command = control_command_name(*line);
-                if (command == "START_ADJUDICATION") {
-                    adjudication_active.store(true);
-                    generic_observation_sent.store(false);
-                    generic_stable_count.store(0);
-                    generic_last_reported_count.store(0);
-                    std::lock_guard<std::mutex> lock(generic_mutex);
-                    generic_last_signature.clear();
-                    emit_event("{\"event\":\"phase\",\"phase\":\"detecting\"}");
-                } else if (command == "STOP_ADJUDICATION") {
-                    adjudication_active.store(false);
-                    emit_event("{\"event\":\"phase\",\"phase\":\"idle\"}");
-                } else if (command == "CANCEL") {
-                    adjudication_active.store(false);
-                    emit_event("{\"event\":\"cancelled\"}");
-                } else if (command == "FINAL_RESULT") {
-                    // Provider owns the generic verdict payload. Preserve it
-                    // as an opaque result event and let the job state machine
-                    // interpret its fields.
-                    const std::string outcome = json_outcome_value(*line);
-                    const std::string source = json_string_field(*line, "source");
-                    emit_event("{\"event\":\"result\",\"outcome\":{\"kind\":\"winner\",\"value\":\"" +
-                               json_escape(outcome) + "\"},\"source\":\"" +
-                               json_escape(source.empty() ? "provider" : source) + "\"}");
-                    emit_event("{\"event\":\"complete\",\"phase\":\"complete\"}");
+                const auto lines = reader.read_ready(a.control_fd, 250);
+                if (lines.empty() && reader.closed()) break;
+                for (const std::string& line : lines) {
+                    const std::string command = control_command_name(line);
+                    if (command == "START_ADJUDICATION") {
+                        adjudication_active.store(true);
+                        generic_observation_sent.store(false);
+                        generic_stable_count.store(0);
+                        generic_last_reported_count.store(0);
+                        std::lock_guard<std::mutex> lock(generic_mutex);
+                        generic_last_signature.clear();
+                        emit_event("{\"event\":\"phase\",\"phase\":\"detecting\"}");
+                    } else if (command == "STOP_ADJUDICATION") {
+                        adjudication_active.store(false);
+                        emit_event("{\"event\":\"phase\",\"phase\":\"idle\"}");
+                    } else if (command == "CANCEL") {
+                        adjudication_active.store(false);
+                        emit_event("{\"event\":\"cancelled\"}");
+                    } else if (command == "FINAL_RESULT") {
+                        // A final verdict closes the inference phase by
+                        // itself. STOP_ADJUDICATION remains an idempotent
+                        // lifecycle command, but is no longer a single point
+                        // of failure for releasing YOLO compute.
+                        adjudication_active.store(false);
+                        const std::string outcome = json_outcome_value(line);
+                        const std::string source = json_string_field(line, "source");
+                        emit_event("{\"event\":\"result\",\"outcome\":{\"kind\":\"winner\",\"value\":\"" +
+                                   json_escape(outcome) + "\"},\"source\":\"" +
+                                   json_escape(source.empty() ? "provider" : source) + "\"}");
+                        // The Python provider owns post-result holding and is
+                        // the only layer allowed to publish lifecycle complete.
+                    }
                 }
             }
         });
