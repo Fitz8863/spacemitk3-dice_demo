@@ -59,4 +59,4 @@ git push -u origin codex/vision-yolov8-adjudicator
 
 - [x] 验证测试和语法检查退出码为 0；K3 只读检查因 SSH 凭据和 HTTP 502 阻断。
 - [x] 只暂存本计划列出的整理文件，不使用 `git add .`。
-- [ ] 推送后用 `git ls-remote` 核对远程分支提交。
+- [x] 推送后用 `git ls-remote` 核对远程分支提交。
