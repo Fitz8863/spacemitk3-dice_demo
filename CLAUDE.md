@@ -23,15 +23,21 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
 
 可以在开发机编辑文件，但**编译、跑摄像头、OpenCL/SpaceMIT EP、算力核验证必须在 K3 板端执行**。不要用开发机编译结果声称板端可用。登录板端：`ssh spacemit@<K3-IP>`。
 
-## 当前组件调度实现（2026-08-28）
+## 当前组件调度实现（2026-08-30）
 
 - `backend/components/<id>/manifest.json` + `provider.py` 是可插拔功能包；`backend/core/components.py` 动态扫描并注册 provider，并校验视觉/TTS 的正式接口。
-- 游戏通过语义插槽选择 provider；当前骰子配置为 `providers.vision_adjudicator=vision_yolo` 与 `providers.tts=tts_qwen3`。
+- 游戏通过语义插槽选择 provider；当前骰子配置为
+  `providers.vision_adjudicator=vision_yolov8_adjudicator` 与
+  `providers.tts=tts_moss_nano`。`tts_qwen3` 是可选 provider。
 - 新 TTS 复制一个功能包并继承 `TtsProvider`，最小实现 `health()`、`synthesize()` 即可接入；需要分段低延迟时再覆盖 `stream()`；可用 `DICE_TTS_PROVIDER=<id>` 切换默认 provider，前端请求保持不变。Provider 可用 `manifest.lifecycle.start/stop` 声明本地模型进程管理命令，`componentctl.py`/`start_web.sh` 会按所选 provider 调度。
 - 当前 YOLO 包是 `type=vision, role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于目标坐标的 YOLO 包应使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得混入裁决器插槽。算法名不是职责接口。
+- 游戏视觉配置必须内嵌在 `backend/games/<game_id>/manifest.json` 的
+  `vision_profile` 节点；不要新增外置 `vision_profile.json`。视觉 runtime 的硬件、RTSP
+  和 MediaMTX WebRTC 基础地址统一由 `vision/yolov8_adjudicator/config.json` 提供，游戏
+  只声明自己的视频 path。
 - 裁决器通过 `--event-fd` 输出结构化 JSONL 事件，后端从独立管道读取事件；stdout/stderr 只保存诊断日志。2026-08-27 已在 K3 编译并完成结构化事件/SSE/LLM 全链路验证；旧二进制仍兼容 `[RESULT]`。
 - 裁决主接口为 `GET/POST /api/adjudicate...`；`/api/analyze...` 仅作为旧客户端迁移别名。
-- 2026-08-28 已在 K3 通过 14 个后端测试，重启 Web/TTS，并验证裁决器注册、`/api/adjudicate` 结构化事件到 `verifying`、取消与子进程退出。
+- 已在 K3 验证裁决器注册、`/api/adjudicate` 结构化事件、取消与子进程退出；本地回归测试以仓库 `tests/` 为准，板端硬件测试需在 K3 上重新执行。
 
 ## 构建、运行与测试命令
 

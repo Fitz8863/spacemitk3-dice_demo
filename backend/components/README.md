@@ -1,11 +1,16 @@
 # Provider packages
 
+`backend/components/` is the shared provider registry for all games. A package
+owns its adapter and deployment details; a game owns the semantic parameters
+that describe how that adapter is used. Adding a package does not require
+editing `backend/server.py` or a game pipeline.
+
 Each runtime adapter is one directory:
 
 ```text
 backend/components/<provider_id>/
 ├── manifest.json
-├── config.json        # required for TTS; component-local runtime settings
+├── config.json        # component-local runtime settings (required for TTS)
 ├── provider.py
 └── scripts/            # optional; local runtime lifecycle only
 ```
@@ -109,6 +114,11 @@ Business progress/results go to `on_event({...})`; `on_log(...)` is diagnostic
 text only. A verified result event uses
 `{"event":"result","verified":true,...}`.
 
+The adjudicator returns physical outcomes (`LEFT`, `RIGHT`, or `TIE`). It does
+not decide which side is the human player or the agent. That mapping belongs
+to `backend/games/<game_id>/manifest.json` and is projected by the game
+pipeline.
+
 Current package manifest:
 
 ```json
@@ -145,3 +155,19 @@ Games select adapters through semantic slots:
 `DICE_VISION_ADJUDICATOR_PROVIDER=<id>` temporarily overrides the adjudicator.
 The old `providers.vision` key and `DICE_VISION_PROVIDER` variable remain only
 as migration aliases.
+
+## Vision configuration ownership
+
+Game-specific vision settings are embedded in
+`backend/games/<game_id>/manifest.json` under `vision_profile`. They include
+the model, class map, rule, prompts, per-game video path, timeout and
+post-result hold. Do not add a second `vision_profile.json` beside the
+manifest.
+
+The YOLO runtime's deployment defaults live in
+`vision/yolov8_adjudicator/config.json`: camera, inference/EP settings, RTSP
+and the MediaMTX WebRTC base URL. The vision component config only contains
+provider lifecycle/runtime paths and LLM endpoint/model/key settings. A
+deployment may override the WebRTC base with
+`DICE_MEDIAMTX_WEBRTC_BASE_URL`; games still provide only a safe path such as
+`/dice/`.

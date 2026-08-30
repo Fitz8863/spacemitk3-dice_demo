@@ -41,6 +41,10 @@ cmake --build build -j4
 只有收到 `START_ADJUDICATION` 后才开始稳定帧计数并发布 observation，收到最终结果后
 可继续保持画面一段时间，之后回到 `idle`。取消或异常时才释放 runtime。
 
+默认 `config.json` 使用 `"yolov8_enabled": false`，表示预热阶段不主动做推理；当进程
+通过控制通道运行时，`START_ADJUDICATION` 会按本局 profile 启用 YOLO，
+`STOP_ADJUDICATION` 会立即停止推理但保留摄像头和 RTSP/MediaMTX 画面。
+
 启动命令由 provider 内部生成，示意如下（路径和参数来自组件配置，不应由网页拼接）：
 
 ```text
@@ -50,7 +54,7 @@ build/yolov8_camera --config config.json --no-display --prewarm \
 ```
 
 `config.json` 只保存 runtime、硬件和部署视频基础地址默认值；模型、参与方、稳定帧阈值、规则、提示词、
-LLM 超时和每个游戏的视频 path 均由组件配置或游戏 profile 管理。
+LLM 超时和每个游戏的视频 path 均由游戏 manifest 的 `vision_profile` 管理。
 
 ## vision-control-v1 协议
 

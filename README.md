@@ -9,6 +9,10 @@
 - `tts/moss-tts-nano/`：迁移的 MOSS-TTS-Nano SpaceMIT EP runtime 源码与板端交付目录，布局与 `tts/qwen3-tts/` 一致；模型、riscv64 Python 包和 native 库按该目录 `.gitignore` 保留为板端运行时文件。
 - `backend/components/tts_moss_nano/`：MOSS-TTS-Nano 组件适配器；调用仓库内 runtime，按文本 chunk 流式返回 WAV。
 
+文档索引见 [`docs/README.md`](docs/README.md)。想了解端到端请求如何调度，请阅读
+[`FRAMEWORK_DISPATCH.md`](FRAMEWORK_DISPATCH.md)；想接手或修改代码，请先阅读
+[`AI_PROJECT_CONTEXT.md`](AI_PROJECT_CONTEXT.md) 和 [`CLAUDE.md`](CLAUDE.md)。
+
 当前阶段**不接机械臂**，用人手和网页按钮代替机械臂的摇骰、停骰、开盖指令。胜负由 K3 板端摄像头上的 YOLOv8 检测和大模型复核产生，不由网页随机生成。浏览器摄像头只用于页面预览；实际识别直接读取 K3 摄像头设备。
 
 ## 在 K3 板端运行前端
@@ -50,7 +54,7 @@ scripts/stop_web.sh
 自动启动并预热 provider；每次输入一行文字并回车后，音频会通过板端播放器播放：
 
 ```bash
-# Qwen3-TTS（默认音频播放器自动检测为 aplay）
+# Qwen3-TTS（可选 provider；音频播放器自动检测为 aplay）
 backend/components/tts_qwen3/scripts/debug_tts.sh
 
 # MOSS-TTS-Nano
@@ -254,6 +258,12 @@ tts_qwen3     -> tts provider，代理 Qwen3-TTS
 tts_moss_nano -> tts provider，代理仓库内 `tts/moss-tts-nano` 的 MOSS-TTS-Nano SpaceMIT EP runtime，支持 chunk 级 WAV 流式
 ```
 
+当前骰子游戏默认选择 `tts_moss_nano`；`tts_qwen3` 仍是可选的本地 provider，可通过游戏
+manifest 或 `DICE_TTS_PROVIDER` 切换。视觉裁决器的模型、类别映射、规则、LLM prompt、视频
+path、超时和结果保持时间统一放在游戏 `manifest.json` 的 `vision_profile` 中；不要再创建
+同目录的外置 `vision_profile.json`。视觉 runtime 的摄像头、推理、RTSP 和 MediaMTX
+WebRTC 基础地址只在 `vision/yolov8_adjudicator/config.json` 保存部署默认值。
+
 `vision_yolov8_adjudicator` 是当前 YOLOv8 实现，`role=adjudicator` 表示它在系统里的职责。旧 ID `vision_yolo` 仅作为一次性 registry 迁移别名，不再作为独立组件注册。以后即使新增的空间定位模块也使用 YOLO，也必须注册为 `role=localizer` 并继承 `VisionLocalizerProvider`，不能接入裁决器插槽。
 
 游戏通过 `manifest.json` 的 `providers` 选择具体实现：
@@ -261,9 +271,12 @@ tts_moss_nano -> tts provider，代理仓库内 `tts/moss-tts-nano` 的 MOSS-TTS
 ```json
 "providers": {
   "vision_adjudicator": "vision_yolov8_adjudicator",
-  "tts": "tts_qwen3"
+  "tts": "tts_moss_nano"
 }
 ```
+
+`vision_adjudicator` 只返回物理侧 `LEFT`、`RIGHT` 或 `TIE`。玩家和 Agent 的身份由游戏
+manifest 顶层 `participants` 映射，属于上层业务，不由视觉功能包解释。
 
 临时切换到板端 MOSS-TTS-Nano：
 

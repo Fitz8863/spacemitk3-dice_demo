@@ -1,13 +1,14 @@
 # Dice Arena 项目上下文（供后续 AI / 开发者快速接手）
 
 > **用途**：新对话或新开发者进入项目时，先阅读本文件，再检查代码和板端实际状态。
-> **记录日期**：2026-08-28
+> **记录日期**：2026-08-30
 > **当前阶段**：K3 板端 Web 交互 + YOLOv8 骰子识别 + 大模型复核已接通；机械臂尚未接入，目前由人手完成摇骰、停骰和开盖。
 > **重要原则**：本文将“已实现/已验证”和“未来规划”分开描述。未来规划不能被当成当前已有功能。
 
-## 当前实现覆盖（2026-08-28）
+## 当前实现覆盖（2026-08-30）
 
-以下内容覆盖本文中关于组件调度的旧描述：后端扫描 `backend/components/*/manifest.json`，按 `entry` 动态加载功能包并通过 `ComponentRegistry` 按 ID 注入游戏流程。视觉 provider 继续使用广义 `type=vision`，但必须再声明职责 `role`：当前骰子 YOLO 包是 `role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于获取目标坐标/空间位置的 YOLO 包必须使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得接入裁决器插槽。骰子游戏通过 `manifest.json.providers.vision_adjudicator` 选择裁决器。TTS 通过 `providers.tts` 或 `DICE_TTS_PROVIDER` 选择 provider；请求体中的 `provider` 不会覆盖后端选择。新增 TTS 不需要修改 `server.py` 或前端：新增功能包并继承 `TtsProvider`，最小实现 `health()` 与 `synthesize()`；只有需要分段低延迟时才覆盖 `stream()`。
+以下内容覆盖本文中关于组件调度的旧描述：后端扫描 `backend/components/*/manifest.json`，按 `entry` 动态加载功能包并通过 `ComponentRegistry` 按 ID 注入游戏流程。视觉 provider 继续使用广义 `type=vision`，但必须再声明职责 `role`：当前骰子 YOLO 包是 `role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于获取目标坐标/空间位置的 YOLO 包必须使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得接入裁决器插槽。骰子游戏通过 `manifest.json.providers.vision_adjudicator` 选择裁决器。TTS 通过 `providers.tts` 或 `DICE_TTS_PROVIDER` 选择 provider；当前骰子默认使用 `tts_moss_nano`，`tts_qwen3` 是可选 provider。请求体中的 `provider` 不会覆盖后端选择。新增 TTS 不需要修改 `server.py` 或前端：新增功能包并继承 `TtsProvider`，最小实现 `health()` 与 `synthesize()`；只有需要分段低延迟时才覆盖 `stream()`。
+游戏视觉 profile 已正式内嵌到 `backend/games/<game_id>/manifest.json` 的 `vision_profile` 节点；不要再创建外置 `vision_profile.json`。该节点负责模型、类别、规则、LLM prompt、视频 path、任务超时和结果保持时长。`vision/yolov8_adjudicator/config.json` 是 YOLO runtime 的硬件、RTSP 和 MediaMTX WebRTC 基础地址配置；组件配置只负责 provider 生命周期与 LLM endpoint/model/key。
 Provider 可在 manifest 的 `lifecycle.start/stop` 中声明本地模型进程管理命令；`backend/componentctl.py` 和 `scripts/start_web.sh` 会按当前选中的 TTS provider 启动对应 runtime，不再把 Web 启动流程绑定到 Qwen3。新增/删除功能包或修改游戏 provider 后需重启后端以重新扫描。
 当前已加入 `tts_moss_nano` 组件：它只负责 Dice Arena 的 `TtsProvider` 适配和本地 HTTP bridge，完整 MOSS-TTS-Nano runtime 源码已迁移到仓库 `tts/moss-tts-nano`，模型/依赖按该目录 `.gitignore` 保留为板端运行时文件；通过 `DICE_MOSS_TTS_ROOT`/`DICE_MOSS_TTS_MODEL_DIR` 可替换路径。bridge 直接复用板端 `OnnxTtsRuntime` 的 `on_pcm_chunk` 回调，按文本 chunk 生成并即时发送 WAV 帧，前端可在首个 chunk 完成后立即播放；当前是 chunk 级流式，不是逐 codec 帧真流式。默认 voice 为 `Junhao`，不支持通用 `speed` 调节，因此适配器只接受 `speed=1.0`。更新 MOSS 独立项目时无需修改 Dice Arena 核心调度；只有外部 runtime Python 接口改变时才需要更新该组件适配器。
 
@@ -42,22 +43,23 @@ git@github.com:Fitz8863/spacemitk3-dice_demo.git
 当前使用分支：
 
 ```text
-main
+codex/vision-yolov8-adjudicator
 ```
 
-本文件创建时的已提交基线：
+本轮整理前的已提交基线：
 
 ```text
-86f44a5 chore: expose board vision logs
+a8c77ea docs: align vision configuration ownership
 ```
 
-创建本文件时，`main` 与 `origin/main` 指向同一提交，但工作区存在一个用户本地修改：
+当前工作区存在两项用户本地内容，提交时必须避开：
 
 ```text
-vision/yolov8_adjudicator/config.json
+backend/components/vision_yolov8_adjudicator/config.json
+backend/games/dice/audio/fll.wav
 ```
 
-该修改涉及 LLM 模型配置。**不要擅自回滚、覆盖或把密钥写入 Git。** 后续操作前必须重新执行 `git status`，因为以上状态可能已经变化。
+前者包含板端 LLM 配置，后者是用户新增音频。**不要擅自回滚、覆盖、暂存或提交它们。** 后续操作前必须重新执行 `git status`，因为以上状态可能已经变化。
 
 ### 本地开发机看到的目录
 
@@ -82,7 +84,15 @@ main/
 ├── AI_PROJECT_CONTEXT.md            # 本文件，AI 接手入口
 ├── README.md                        # 项目运行说明；部分描述可能滞后，以代码和本文件为辅助
 ├── backend/
-│   └── server.py                    # K3 HTTP 服务、静态文件服务、视觉任务管理
+│   ├── server.py                    # K3 HTTP 服务、静态文件服务、任务路由
+│   ├── core/                        # 组件、游戏、job、TTS、视觉接口
+│   ├── components/                  # 可插拔 provider 功能包
+│   │   ├── vision_yolov8_adjudicator/
+│   │   ├── tts_qwen3/
+│   │   └── tts_moss_nano/
+│   └── games/                       # 游戏 manifest 与 pipeline
+│       ├── dice/
+│       └── rps/
 ├── web/
 │   ├── index.html                   # Web 页面结构
 │   ├── app.js                       # 游戏交互、状态切换、后端调用
@@ -91,7 +101,7 @@ main/
 │   └── yolov8_adjudicator/
 │       ├── src/                     # YOLOv8 C++ 源码
 │       ├── models/best.q.onnx       # K3 使用的量化 ONNX 模型
-│       ├── config.json              # 摄像头、推理、稳定帧、RTSP 等硬件默认配置
+│       ├── config.json              # 摄像头、推理、RTSP、WebRTC 基础地址默认配置
 │       ├── CMakeLists.txt
 │       └── build/yolov8_camera      # K3 编译产物，不纳入 Git
 ├── scripts/
@@ -99,11 +109,13 @@ main/
 │   └── stop_web.sh                  # 停止 Web/API 与当前运行的 TTS provider
 ├── tts/
 │   ├── qwen3-tts/                   # Qwen3-TTS + SpaceMIT llama-server
-│   └── moss-tts-nano/               # MOSS-TTS-Nano + SpaceMIT EP runtime
-│       ├── runtime/bin/              # riscv64 runtime；可提交的小型二进制
-│       ├── qwen3-tts-0.6b/           # 配置、模型权重和 speaker 文件
-│       ├── docs/                     # realtime runtime 构建记录
-│       └── patches/                  # realtime llama.cpp patch
+│   └── moss-tts-nano/               # MOSS-TTS-Nano runtime 源码和板端交付目录
+│       ├── include/、src/、licenses/ # 可审查的源码、头文件和许可证
+│       └── models/、python/、voice/  # 板端资产，按 .gitignore 排除
+├── docs/                            # 当前文档索引、归档资料和历史设计记录
+│   ├── README.md
+│   ├── archive/
+│   └── superpowers/plans、specs/
 ├── deploy/
 │   ├── dice-arena-web.service       # 可选 systemd Web 服务
 └── .dice-arena.env                  # 板端本地密钥配置，不纳入 Git
@@ -454,13 +466,13 @@ DICE_LLM_API_KEY=<secret>
 chmod 600 .dice-arena.env
 ```
 
-`vision/yolov8_adjudicator/config.json` 只保存硬件 runtime 默认值；LLM endpoint/model 位于组件配置，真实 API key 优先由环境变量提供，不进入 Git。
+`vision/yolov8_adjudicator/config.json` 只保存硬件 runtime 默认值和 MediaMTX WebRTC 基础地址；LLM endpoint/model/key 位于 `backend/components/vision_yolov8_adjudicator/config.json`，真实 API key 优先由环境变量提供，不进入 Git。游戏 manifest 只保存 `vision_profile.video.path`，不能把主机地址写进每个游戏。
 
 ---
 
 ## 6.1 TTS 当前验证与注意事项
 
-截至 2026-08-26，旧源项目中的服务曾运行于：
+历史验证记录中，旧源项目中的服务曾运行于：
 
 ```text
 /home/spacemit/projects/qwen3-tts/runtime/bin/llama-server
@@ -595,7 +607,7 @@ ros2_ws/
 
 现有 C++ YOLOv8 不需要立即重写为 ROS2 节点。第一阶段继续由
 `vision_yolov8_adjudicator` 通过控制通道调度 resident `yolov8_camera`；新游戏只需在
-自己的 `manifest.json` 的 `vision_profile` 节点中声明模型、规则、提示词和视频 path，MediaMTX 基础地址统一由组件 `video.webrtc_base_url` 提供。
+自己的 `manifest.json` 的 `vision_profile` 节点中声明模型、规则、提示词和视频 path；MediaMTX 基础地址统一由 `vision/yolov8_adjudicator/config.json` 的 `video.webrtc_base_url` 提供，部署环境可用 `DICE_MEDIAMTX_WEBRTC_BASE_URL` 覆盖。
 
 ---
 
