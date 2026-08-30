@@ -8,4 +8,5 @@
 通过 `control-fd` / `event-fd` JSONL 通道发送 `START_ADJUDICATION`、
 `FINAL_RESULT`、`STOP_ADJUDICATION` 和 `CANCEL`，runtime 输出通用 detection、stable
 snapshot 与生命周期事件。游戏规则和 LLM prompt 不在此目录实现，而是在
-`backend/games/<game_id>/vision_profile.json` 中声明；详细协议见同目录 `README.md`。
+`backend/games/<game_id>/manifest.json` 的 `vision_profile` 节点中声明；视频 WebRTC
+基础地址和游戏 path 也由该节点管理。详细协议见同目录 `README.md`。

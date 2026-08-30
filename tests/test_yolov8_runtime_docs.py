@@ -12,7 +12,9 @@ def test_runtime_readme_describes_private_profile_driven_protocol():
         "control-fd",
         "event-fd",
         "snapshot-dir",
-        "vision_profile.json",
+        "manifest.json",
+        "vision_profile",
+        "video.webrtc_base_url",
         "MediaMTX",
         "post_result_hold_seconds",
     ):

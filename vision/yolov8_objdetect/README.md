@@ -3,7 +3,7 @@
 本目录是 `vision_yolov8_adjudicator` 使用的私有硬件 runtime。它只负责摄像头采集、
 OpenCL 预处理、YOLOv8 推理、稳定观测、稳定帧快照和 RTSP 发布，不负责游戏规则、
 胜负语义或云端大模型请求。游戏差异由后端的
-`backend/games/<game_id>/vision_profile.json` 描述，Python provider 负责读取 profile、
+`backend/games/<game_id>/manifest.json` 的 `vision_profile` 节点描述，Python provider 负责读取 profile、
 聚合多视角结果、调用无状态多模态 LLM 并生成最终裁决。
 
 ## Runtime 数据流
@@ -18,7 +18,8 @@ K3 摄像头
   -> GStreamer H.264/VPU 编码 -> MediaMTX RTSP 发布 -> WebRTC
 ```
 
-MediaMTX 由部署管理。浏览器使用后端根据组件基础地址和游戏 profile path 合成的
+MediaMTX 由部署管理。浏览器使用后端根据游戏 manifest 中 `video.webrtc_base_url` 和
+profile path 合成的
 WebRTC URL；runtime 自身产生的 RTSP/内部地址不能直接作为浏览器地址。
 
 ## 编译（在 K3 板端）
@@ -91,24 +92,26 @@ winner。多视角由 provider 并行启动多个 runtime，并以 `view_id` 区
 ```text
 backend/components/vision_yolov8_adjudicator/config.json
   runtime.binary / runtime.working_dir / runtime.mode
-  runtime.prewarm_camera / runtime.request_timeout_seconds
-  mediamtx.webrtc_base_url
+  runtime.prewarm_camera / runtime.terminate_grace_seconds
+  llm.endpoint / llm.model / llm.api_key
+  rtsp.* / events.protocol
 ```
 
 游戏级 profile：
 
 ```text
-backend/games/<game_id>/vision_profile.json
+backend/games/<game_id>/manifest.json -> vision_profile
   vision.model / class_map / participants / stable_frames
   rule（numeric_compare 或 categorical_relation）
   llm.system_prompt / user_prompt_template / allowed_outcomes
   multi_view.views[].camera / multi_view.views[].video.path
-  video.path / lifecycle.post_result_hold_seconds
+  video.webrtc_base_url / video.path / lifecycle.post_result_hold_seconds
+  timeouts.adjudication_seconds
 ```
 
-新增游戏不需要修改本 runtime：新增模型文件和 profile 即可。profile 中的 path 只能是
-URL 路径（例如 `/dice/`），不能包含主机、查询串或 `..`；MediaMTX 基础地址由部署配置
-提供。API key 通过板端环境变量注入，不写入仓库。
+新增游戏不需要修改本 runtime：新增模型文件和 manifest 中的 `vision_profile` 即可。
+profile 中的 path 只能是 URL 路径（例如 `/dice/`），不能包含主机、查询串或 `..`；
+WebRTC 基础地址通过 `video.webrtc_base_url` 配置。API key 通过板端环境变量注入，不写入仓库。
 
 ## 诊断模式
 

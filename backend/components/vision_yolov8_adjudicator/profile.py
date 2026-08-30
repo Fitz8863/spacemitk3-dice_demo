@@ -65,13 +65,13 @@ def _validate_camera(value: Any, field: str) -> str:
     return camera
 
 
-def _validate_base_url(value: Any) -> str:
-    value = _required_string(value, "mediamtx.webrtc_base_url")
+def _validate_base_url(value: Any, field: str = "video.webrtc_base_url") -> str:
+    value = _required_string(value, field)
     parsed = urlsplit(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
-        raise ProfileError("mediamtx.webrtc_base_url must be an absolute HTTP(S) URL")
+        raise ProfileError(f"{field} must be an absolute HTTP(S) URL")
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-        raise ProfileError("mediamtx.webrtc_base_url must not contain a path or query")
+        raise ProfileError(f"{field} must not contain a path or query")
     return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
 
 
@@ -134,9 +134,23 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
     video = profile.get("video")
     if not isinstance(video, dict):
         raise ProfileError("video must be an object")
+    _validate_base_url(video.get("webrtc_base_url"), "video.webrtc_base_url")
     _validate_video_path(video.get("path"))
     if video.get("enabled", True) not in {True, False}:
         raise ProfileError("video.enabled must be boolean")
+
+    timeouts = profile.get("timeouts", {"adjudication_seconds": 120})
+    if not isinstance(timeouts, dict):
+        raise ProfileError("timeouts must be an object")
+    adjudication_timeout = timeouts.get("adjudication_seconds")
+    if (
+        not isinstance(adjudication_timeout, (int, float))
+        or isinstance(adjudication_timeout, bool)
+        or not math.isfinite(adjudication_timeout)
+        or adjudication_timeout <= 0
+    ):
+        raise ProfileError("timeouts.adjudication_seconds must be a positive number")
+    profile["timeouts"] = {"adjudication_seconds": float(adjudication_timeout)}
 
     lifecycle = profile.get("lifecycle", {})
     if not isinstance(lifecycle, dict):
@@ -195,8 +209,4 @@ def load_component_config(package_dir: Path) -> dict[str, Any]:
         resolve_project_path(runtime["binary"])
     if "working_dir" in runtime:
         resolve_project_path(runtime["working_dir"])
-    mediamtx = payload.get("mediamtx")
-    if not isinstance(mediamtx, dict):
-        raise ProfileError("mediamtx must be an object")
-    _validate_base_url(mediamtx.get("webrtc_base_url"))
     return payload

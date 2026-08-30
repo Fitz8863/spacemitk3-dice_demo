@@ -231,8 +231,8 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         """Project runtime video notifications to the public WebRTC endpoint.
 
         Runtime URLs may be RTSP, loopback, or otherwise deployment-private;
-        only the MediaMTX base URL from component config and profile-owned path
-        are allowed to cross the provider boundary.
+        only the profile-owned WebRTC base URL and path are allowed to cross
+        the provider boundary.
         """
         multi = profile.get("multi_view", {})
         path: Any = None
@@ -259,17 +259,22 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             video_enabled = bool(profile["video"].get("enabled", True))
         if not video_enabled:
             return None
-        config = load_component_config(Path(__file__).parent)
-        # A deployment may override the board's MediaMTX host without
-        # changing game profiles.  The path remains profile-owned and is
-        # validated by ``compose_video_url`` before crossing the API boundary.
-        mediamtx = config.get("mediamtx", {})
+        video = profile.get("video", {})
         base = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or (
-            mediamtx.get("webrtc_base_url") if isinstance(mediamtx, Mapping) else ""
+            video.get("webrtc_base_url") if isinstance(video, Mapping) else ""
         )
         if not isinstance(base, str) or not base.strip():
             return None
         return {"event": "video", "url": compose_video_url(base, path), "view_id": view_id}
+
+    @staticmethod
+    def _adjudication_timeout(profile: Mapping[str, Any], fallback: float) -> float:
+        """Resolve the game-owned total budget, retaining the global fallback."""
+        timeouts = profile.get("timeouts", {})
+        value = timeouts.get("adjudication_seconds") if isinstance(timeouts, Mapping) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return float(value)
+        return float(fallback)
 
     @staticmethod
     def _llm_transport_config(profile: Mapping[str, Any]) -> dict[str, Any]:
@@ -404,7 +409,8 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     elif event.get("event") == "observation" and event.get("stable"):
                         found = dict(event, view_id=vid); break
                 return vid, found
-            deadline = time.monotonic() + float(timeout_seconds or request.timeout_seconds)
+            fallback_timeout = float(timeout_seconds or request.timeout_seconds)
+            deadline = time.monotonic() + self._adjudication_timeout(profile, fallback_timeout)
             pool = ThreadPoolExecutor(max_workers=len(runtimes))
             futures = [pool.submit(collect, rt, view) for rt, view in zip(runtimes, views)]
             pending = set(futures)
@@ -501,14 +507,18 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     cleanup_paths.add(path)
                 verifier = self.verifier
                 transport = self._llm_transport_config(profile)
-                if not isinstance(verifier, OpenAICompatibleVisionVerifier):
-                    vr = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=float(cfg.get("timeout_seconds", timeout_seconds or request.timeout_seconds)), model=transport["model"])
-                else:
-                    endpoint = transport["endpoint"]
-                    if endpoint and not endpoint.rstrip("/").endswith("chat/completions"): endpoint = endpoint.rstrip("/") + "/chat/completions"
-                    verifier = OpenAICompatibleVisionVerifier(endpoint, model=transport["model"], api_key=transport["api_key"])
-                    vr = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=float(cfg.get("timeout_seconds", timeout_seconds or request.timeout_seconds)), model=transport["model"])
-                status, out = vr.status, vr.outcome
+                remaining = max(0.0, deadline - time.monotonic())
+                if remaining > 0:
+                    llm_timeout = float(cfg.get("timeout_seconds", fallback_timeout))
+                    llm_timeout = min(llm_timeout, remaining)
+                    if not isinstance(verifier, OpenAICompatibleVisionVerifier):
+                        vr = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=llm_timeout, model=transport["model"])
+                    else:
+                        endpoint = transport["endpoint"]
+                        if endpoint and not endpoint.rstrip("/").endswith("chat/completions"): endpoint = endpoint.rstrip("/") + "/chat/completions"
+                        verifier = OpenAICompatibleVisionVerifier(endpoint, model=transport["model"], api_key=transport["api_key"])
+                        vr = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=llm_timeout, model=transport["model"])
+                    status, out = vr.status, vr.outcome
             decision = finalize_outcome(yolo_outcome=yolo, llm_outcome=out, llm_status=status)
             final = project_result(profile, decision, {**normalized[0], "views": normalized})
             final_command = {"command": "FINAL_RESULT", "request_id": request.request_id,
@@ -535,6 +545,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 except Exception as exc:
                     on_log(f"[vision] STOP_ADJUDICATION send failed: {exc}")
             hold = float(profile.get("lifecycle", {}).get("post_result_hold_seconds", 0))
+            hold = min(hold, max(0.0, deadline - time.monotonic()))
             if hold > 0:
                 end = time.monotonic() + hold
                 while time.monotonic() < end:

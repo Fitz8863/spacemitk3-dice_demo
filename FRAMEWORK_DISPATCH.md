@@ -130,7 +130,7 @@ main/
 │   │   ├── tts_qwen3/           # Qwen3-TTS 适配器
 │   │   └── tts_moss_nano/       # MOSS-TTS-Nano 适配器和 bridge
 │   └── games/dice/
-│       ├── manifest.json        # 游戏文案、默认 provider、音色、语速
+│       ├── manifest.json        # 游戏文案、provider、视觉裁决 profile、音视频参数
 │       └── pipeline.py          # 将 dice 游戏请求交给 adjudicator
 ├── vision/yolov8_objdetect/     # K3 YOLOv8 C++ 工程和模型配置
 ├── tts/qwen3-tts/               # Qwen3 runtime、模型配置、启动脚本
@@ -147,10 +147,10 @@ main/
 
 1. 计算项目根目录和 `web/` 路径；
 2. 调用 `load_board_env()`，读取板端本地 `.dice-arena.env` 和环境变量；
-3. 读取 `DICE_JOB_TIMEOUT_SECONDS`，默认视觉任务超时为 120 秒；
+3. 读取 `DICE_JOB_TIMEOUT_SECONDS`，作为未配置游戏 profile 时的视觉任务默认超时（120 秒）；
 4. 调用 `build_registry()`，扫描 `backend/components/*/manifest.json`；
 5. 动态加载每个 manifest 中的 `entry`，实例化 provider，并校验类型、角色和接口；
-6. 调用 `load_games()`，扫描 `backend/games/*/manifest.json`；
+6. 调用 `load_games()`，扫描 `backend/games/*/manifest.json`，并校验其中可选的 `vision_profile`；
 7. 创建全局 `COMPONENTS`、`GAMES`、`jobs` 和单任务锁 `active_job_id`；
 8. 启动 `ThreadingHTTPServer`，同时提供静态网页和 `/api/*`。
 

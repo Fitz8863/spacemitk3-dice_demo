@@ -33,6 +33,7 @@ from components.vision_yolov8_adjudicator.llm import (  # noqa: E402
 )
 from components.vision_yolov8_adjudicator.process import (  # noqa: E402
     SnapshotError,
+    build_rtsp_args,
     verify_snapshot,
 )
 from components.vision_yolov8_adjudicator.provider import (  # noqa: E402
@@ -43,16 +44,28 @@ from games.dice import pipeline as dice_pipeline  # noqa: E402
 
 
 def test_profile_loads_dice_and_composes_mediamtx_url():
-    profile = load_profile(ROOT / "backend/games/dice/vision_profile.json")
-    config = json.loads(
-        (ROOT / "backend/components/vision_yolov8_adjudicator/config.json").read_text()
-    )
+    manifest = json.loads((ROOT / "backend/games/dice/manifest.json").read_text())
+    profile = manifest["vision_profile"]
     assert profile["game_id"] == "dice"
     assert profile["llm"]["context_mode"] == "single_turn_no_history"
     assert profile["video"]["path"] == "/dice/"
-    assert compose_video_url(config["mediamtx"]["webrtc_base_url"], profile["video"]["path"]) == (
+    assert compose_video_url(profile["video"]["webrtc_base_url"], profile["video"]["path"]) == (
         "http://100.118.229.28:8889/dice/"
     )
+
+
+def test_profile_requires_webrtc_base_url_and_adjudication_timeout(tmp_path: Path):
+    profile = _minimal_profile()
+    profile["video"]["webrtc_base_url"] = "http://localhost:8889"
+    profile["timeouts"] = {"adjudication_seconds": 15}
+    path = tmp_path / "vision_profile.json"
+    path.write_text(json.dumps(profile))
+    assert load_profile(path)["timeouts"]["adjudication_seconds"] == 15
+
+    profile["video"]["webrtc_base_url"] = "http://localhost:8889/dice"
+    path.write_text(json.dumps(profile))
+    with pytest.raises(ProfileError, match="webrtc_base_url"):
+        load_profile(path)
 
 
 def test_profile_rejects_full_url_in_game_path(tmp_path: Path):
@@ -62,7 +75,7 @@ def test_profile_rejects_full_url_in_game_path(tmp_path: Path):
         "vision": {"model": "vision/model.onnx", "class_map": {"0": "x"}, "participants": ["A"], "stable_frames": 1},
         "llm": {"system_prompt": "judge", "user_prompt_template": "judge", "allowed_outcomes": ["A"], "context_mode": "single_turn_no_history"},
     }
-    valid["video"] = {"path": "https://x/"}
+    valid["video"] = {"path": "https://x/", "webrtc_base_url": "http://localhost:8889"}
     path = tmp_path / "vision_profile.json"
     path.write_text(json.dumps(valid))
     with pytest.raises(ProfileError, match="video.path"):
@@ -93,6 +106,17 @@ def test_compose_video_url_rejects_path_traversal():
         compose_video_url("http://localhost:8889", "/../secret")
 
 
+def test_video_event_uses_profile_webrtc_base_url():
+    profile = {"video": {"enabled": True, "path": "/rps/", "webrtc_base_url": "http://example.test:8889"}}
+    event = VisionYolov8Adjudicator._video_event(profile, "default", {"event": "video"})
+    assert event == {"event": "video", "url": "http://example.test:8889/rps/", "view_id": "default"}
+
+
+def test_provider_prefers_game_adjudication_timeout_over_request_fallback():
+    profile = {"timeouts": {"adjudication_seconds": 7}}
+    assert VisionYolov8Adjudicator._adjudication_timeout(profile, 120) == 7
+
+
 def test_adjudication_request_is_immutable_and_contains_profile():
     request = VisionAdjudicationRequest(
         game_id="dice", profile={"game_id": "dice"}, request_id="abc", timeout_seconds=2.0
@@ -109,7 +133,8 @@ def _minimal_profile():
         "game_id": "bad",
         "vision": {"model": "vision/model.onnx", "class_map": {"0": "x"}, "participants": ["A"], "stable_frames": 1},
         "llm": {"system_prompt": "judge", "user_prompt_template": "judge", "allowed_outcomes": ["A"], "context_mode": "single_turn_no_history"},
-        "video": {"path": "/bad/"},
+        "video": {"path": "/bad/", "webrtc_base_url": "http://localhost:8889"},
+        "timeouts": {"adjudication_seconds": 15},
     }
 
 
@@ -135,6 +160,23 @@ def test_component_config_requires_valid_schema(tmp_path: Path):
     (tmp_path / "config.json").write_text(json.dumps({"schema_version": 2}))
     with pytest.raises(ProfileError, match="schema_version"):
         load_component_config(tmp_path)
+
+
+def test_component_config_does_not_require_mediamtx(tmp_path: Path):
+    (tmp_path / "config.json").write_text(json.dumps({
+        "schema_version": 1,
+        "runtime": {"mode": "resident", "prewarm_camera": True},
+    }))
+    assert load_component_config(tmp_path)["runtime"]["mode"] == "resident"
+
+
+def test_rtsp_args_emit_one_profile_owned_path():
+    args = build_rtsp_args(
+        {"rtsp": {"enabled": True, "host": "127.0.0.1", "port": 8554, "path": "/default"}},
+        {"path": "/dice/"},
+    )
+    assert args.count("--rtsp-path") == 1
+    assert args[args.index("--rtsp-path") + 1] == "/dice"
 
 
 def test_dice_pipeline_requires_loaded_profile():
@@ -302,7 +344,7 @@ def test_provider_runs_one_round_and_holds_result(tmp_path: Path):
         def __init__(self): self.calls=0
         def verify(self, **kwargs):
             self.calls += 1; return type("R", (), {"status":"success","outcome":"LEFT","error":None})()
-    profile={"game_id":"dice","vision":{"stable_frames":1},"llm":{"enabled":True,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT","TIE"]},"video":{"path":"/dice/"},"multi_view":{"enabled":False,"min_views":1},"lifecycle":{"post_result_hold_seconds":0}}
+    profile={"game_id":"dice","vision":{"stable_frames":1},"llm":{"enabled":True,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT","TIE"]},"video":{"path":"/dice/","webrtc_base_url":"http://100.118.229.28:8889"},"multi_view":{"enabled":False,"min_views":1},"lifecycle":{"post_result_hold_seconds":0},"timeouts":{"adjudication_seconds":15}}
     events=[]; verifier=Verifier()
     result=VisionYolov8Adjudicator(runtime_factory=factory, verifier=verifier).adjudicate(VisionAdjudicationRequest("dice",profile,"r1",2),on_log=lambda x:None,on_event=events.append,is_cancelled=lambda:False)
     assert result["decision_source"] == "consensus"; assert verifier.calls == 1

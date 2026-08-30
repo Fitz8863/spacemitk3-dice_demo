@@ -19,7 +19,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from core.components import Component, ComponentRegistry, _validate_manifest, build_registry  # noqa: E402
-from core.games import resolve_provider_id  # noqa: E402
+from core.games import load_games, resolve_provider_id  # noqa: E402
 from core.jobs import ComponentJob  # noqa: E402
 from core.tts import TtsProvider  # noqa: E402
 from core.tts_config import TtsConfigError, load_component_config, resolve_config_path  # noqa: E402
@@ -60,6 +60,30 @@ class DummyLocalizer(VisionLocalizerProvider):
 
 
 class ComponentTests(unittest.TestCase):
+    def test_game_loader_prefers_inline_vision_profile(self):
+        import core.games as games_module
+
+        profile = json.loads((ROOT / "backend/games/dice/manifest.json").read_text())["vision_profile"]
+        profile["video"]["webrtc_base_url"] = "http://inline.example:8889"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            game_dir = Path(temp_dir) / "dice"
+            game_dir.mkdir()
+            (game_dir / "manifest.json").write_text(json.dumps({
+                "id": "dice",
+                "name": "Dice",
+                "enabled": True,
+                "providers": {},
+                "texts": {},
+                "vision_profile": profile,
+            }), encoding="utf-8")
+            with patch.object(games_module, "GAMES_ROOT", Path(temp_dir)):
+                registry = load_games()
+        loaded = registry.get("dice")
+        self.assertEqual(
+            loaded["vision_profile"]["video"]["webrtc_base_url"],
+            "http://inline.example:8889",
+        )
+
     def test_registry_loads_packaged_providers(self):
         registry = build_registry()
         self.assertEqual(
@@ -235,8 +259,8 @@ class ComponentTests(unittest.TestCase):
                 manifest={
                     "providers": {"vision_adjudicator": "vision_dummy_adjudicator"},
                     "vision_profile": json.loads(
-                        (ROOT / "backend/games/dice/vision_profile.json").read_text()
-                    ),
+                        (ROOT / "backend/games/dice/manifest.json").read_text()
+                    )["vision_profile"],
                 },
                 on_event=lambda _event: None,
             )

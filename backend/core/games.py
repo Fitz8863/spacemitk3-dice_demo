@@ -189,11 +189,19 @@ def load_games() -> GameRegistry:
             if "tts" not in providers and isinstance(manifest.get("tts_provider"), str):
                 providers["tts"] = manifest["tts_provider"]
             manifest["providers"] = providers
+            profile = manifest.get("vision_profile")
             profile_path = manifest_path.parent / "vision_profile.json"
-            if profile_path.is_file():
+            if profile is not None:
+                from components.vision_yolov8_adjudicator.profile import validate_profile
+
+                profile = validate_profile(profile)
+            elif profile_path.is_file():
                 from components.vision_yolov8_adjudicator.profile import load_profile
 
                 profile = load_profile(profile_path)
+            else:
+                profile = None
+            if profile is not None:
                 if profile.get("game_id") != game_id:
                     raise ValueError("vision profile game_id does not match manifest id")
                 manifest["vision_profile"] = profile
@@ -237,6 +245,20 @@ def resolve_provider_id(
             if isinstance(configured, str) and configured.strip():
                 return configured.strip()
     return fallback
+
+
+def resolve_adjudication_timeout(manifest: dict[str, Any], default: float) -> float:
+    """Resolve a game's total visual adjudication budget.
+
+    The game owns this deadline because detection time is part of its rules;
+    the process-wide value remains an operational fallback/override.
+    """
+    profile = manifest.get("vision_profile")
+    timeouts = profile.get("timeouts") if isinstance(profile, dict) else None
+    configured = timeouts.get("adjudication_seconds") if isinstance(timeouts, dict) else None
+    if isinstance(configured, (int, float)) and not isinstance(configured, bool) and configured > 0:
+        return float(configured)
+    return float(default)
 
 
 def run_game(

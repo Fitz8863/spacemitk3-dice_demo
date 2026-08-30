@@ -19,6 +19,24 @@ class SnapshotError(ValueError):
     """Raised when a runtime snapshot reference is invalid or unsafe."""
 
 
+def build_rtsp_args(config: Mapping[str, Any], selected_video: Mapping[str, Any] | None) -> list[str]:
+    """Build one RTSP publisher argument set with a profile-owned path."""
+    rtsp = config.get("rtsp", {}) if isinstance(config, Mapping) else {}
+    if not isinstance(rtsp, Mapping) or not rtsp.get("enabled", False):
+        return []
+    args = ["--rtsp"]
+    for option, key in (("--rtsp-host", "host"), ("--rtsp-port", "port")):
+        value = rtsp.get(key)
+        if value is not None:
+            args.extend([option, str(value)])
+    video_path = selected_video.get("path") if isinstance(selected_video, Mapping) else None
+    if not isinstance(video_path, str) or not video_path.strip():
+        video_path = rtsp.get("path")
+    if video_path is not None:
+        args.extend(["--rtsp-path", str(video_path).rstrip("/") or "/"])
+    return args
+
+
 class YoloRuntimeProcess:
     """Adapter for a resident YOLO process using the vision-control-v1 pipes.
 
@@ -140,21 +158,7 @@ class YoloRuntimeProcess:
         event_read, event_write = os.pipe()
         cmd = [self.binary, "--no-display", "--control-fd", str(control_read),
                "--event-fd", str(event_write), "--view-id", str(view_id), *runtime_overrides]
-        rtsp = component_config.get("rtsp", {})
-        if isinstance(rtsp, Mapping) and rtsp.get("enabled", False):
-            cmd.extend(["--rtsp"])
-            for option, key in (("--rtsp-host", "host"), ("--rtsp-port", "port"), ("--rtsp-path", "path")):
-                value = rtsp.get(key)
-                if value is not None:
-                    cmd.extend([option, str(value)])
-            # Keep each camera's RTSP mount aligned with its profile-owned
-            # MediaMTX path.  The browser still receives only the WebRTC URL;
-            # this argument is solely for the local publisher-to-MediaMTX
-            # hand-off and avoids collisions in multi-view mode.
-            if isinstance(selected_video, Mapping):
-                video_path = selected_video.get("path")
-                if isinstance(video_path, str) and video_path.strip():
-                    cmd.extend(["--rtsp-path", video_path.rstrip("/") or "/"])
+        cmd.extend(build_rtsp_args(component_config, selected_video))
         if prewarm: cmd.append("--prewarm")
         if snapshot_dir is not None:
             Path(snapshot_dir).mkdir(parents=True, exist_ok=True)

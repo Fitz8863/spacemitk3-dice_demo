@@ -184,14 +184,13 @@ class ServerApiTests(unittest.TestCase):
             "id": "dice", "name": "Dice", "enabled": True,
             "providers": {"vision_adjudicator": "vision_dummy"}, "texts": {},
             "vision_profile": {
-                "game_id": "dice", "video": {"enabled": True, "path": "/dice/"},
+                "game_id": "dice", "video": {"enabled": True, "path": "/dice/", "webrtc_base_url": "http://100.118.229.28:8889"},
             },
         })
         server.GAMES = games
         try:
             with patch.object(server, "load_component_config", return_value={
                 "runtime": {"mode": "resident", "prewarm_camera": True},
-                "mediamtx": {"webrtc_base_url": "http://100.118.229.28:8889"},
             }):
                 status, _, data = self.request("GET", "/api/health")
         finally:
@@ -217,7 +216,7 @@ class ServerApiTests(unittest.TestCase):
             "id": "dice", "name": "Dice", "enabled": True,
             "providers": {"vision_adjudicator": "vision_dummy"}, "texts": {},
             "vision_profile": {
-                "game_id": "dice", "video": {"enabled": True, "path": "/dice/"},
+                "game_id": "dice", "video": {"enabled": True, "path": "/dice/", "webrtc_base_url": "http://100.118.229.28:8889"},
                 "multi_view": {"enabled": True, "min_views": 2, "views": [
                     {"id": "front", "camera": "/dev/video1", "video": {"path": "/front/"}},
                     {"id": "side", "camera": "/dev/video2", "video": {"path": "/side/"}},
@@ -228,7 +227,6 @@ class ServerApiTests(unittest.TestCase):
         try:
             with patch.object(server, "load_component_config", return_value={
                 "runtime": {"mode": "resident", "prewarm_camera": True},
-                "mediamtx": {"webrtc_base_url": "http://100.118.229.28:8889"},
             }):
                 status, _, data = self.request("GET", "/api/health")
         finally:
@@ -239,6 +237,7 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(payload["adjudicator"]["mode"], "resident")
         self.assertTrue(payload["adjudicator"]["prewarm"])
         self.assertEqual(payload["adjudicator"]["mediamtx_base_url"], "http://100.118.229.28:8889")
+        self.assertEqual(payload["adjudicator"]["webrtc_base_url"], "http://100.118.229.28:8889")
         self.assertTrue(payload["adjudicator"]["multi_view"]["enabled"])
         self.assertEqual(len(payload["adjudicator"]["profiles"]), 1)
 

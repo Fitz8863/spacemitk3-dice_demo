@@ -5,19 +5,74 @@
   "description": "双方各 5 颗 · 比较点数总和",
   "enabled": true,
   "providers": {
-    "vision_adjudicator": "vision_yolo",
-    "tts": "tts_qwen3"
+    "vision_adjudicator": "vision_yolov8_adjudicator",
+    "tts": "tts_moss_nano"
+  },
+  "vision_profile": {
+    "schema_version": 1,
+    "game_id": "dice",
+    "vision": {
+      "model": "vision/yolov8_objdetect/models/best.q.onnx",
+      "class_map": {"0": "1", "1": "2", "2": "3", "3": "4", "4": "5", "5": "6"},
+      "participants": ["LEFT", "RIGHT"],
+      "participant_assignment": "x_midpoint",
+      "expected_count": 5,
+      "stable_frames": 30,
+      "rejudge_on_change": true,
+      "grouping": "divider_regions"
+    },
+    "multi_view": {"enabled": false, "min_views": 1, "yolo_fusion": "majority_vote", "llm_images": "all_stable_views"},
+    "rule": {"kind": "numeric_compare", "aggregation": "sum", "higher_wins": true, "tie_value": "TIE"},
+    "llm": {
+      "enabled": true,
+      "transport": "openai_compatible",
+      "input_mode": "stable_frame_and_prompt",
+      "image_source": "stable_frame",
+      "context_mode": "single_turn_no_history",
+      "timeout_seconds": 3,
+      "system_prompt": "You are a strict dice-sum judge. Use only the supplied image. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
+      "user_prompt_template": "Inspect the supplied stable frame and compare the two sides. Return {\"winner\":\"LEFT|RIGHT|TIE\"}.",
+      "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]
+    },
+    "video": {"enabled": true, "protocol": "webrtc", "webrtc_base_url": "http://100.118.229.28:8889", "path": "/dice/", "autoplay": true, "muted": true},
+    "lifecycle": {"post_result_hold_seconds": 3},
+    "timeouts": {"adjudication_seconds": 120}
   },
   "voice": "default",
   "speed": 1.0,
   "texts": {
-    "rules_intro": "欢迎来到摇骰子游戏，下面由我去宣读规则，当前双方各有五颗骰子，听语音提示开始摇骰子，屏幕的倒计时结束后就停止摇骰，然后同时开盖，点数总和更大的一方获胜，如果明白了，请按绿色按钮开始游戏；如果需要再听一次，请按黄色的按钮",
-    "rules_confirmed": "规则确认完成，请准备。",
-    "shake_started": "开始摇骰。",
-    "shake_stopped": "停止摇骰。",
-    "analysis_started": "正在调用 K3 YOLOv8 和大模型复核。",
-    "result_tie": "本局平局。玩家点数 {player_score}，Agent 点数 {agent_score}，再来一局吧。",
-    "result_player_win": "恭喜你，玩家获胜。玩家点数 {player_score}，Agent 点数 {agent_score}。",
-    "result_agent_win": "本局 Agent 获胜。玩家点数 {player_score}，Agent 点数 {agent_score}。"
+    "rules_intro": {
+      "mode": "tts",
+      "text": " 欢迎来到摇骰子游戏，下面由我去宣读规则，当前双方各有五颗骰子，听语音提示后开始摇骰子，屏幕的倒计时结束后就停止摇骰，然后同时开盖，点数总和更大的一方获胜，如果明白了，请按绿色按钮开始游戏；如果需要再听一次，请按黄色的按钮"
+    },
+    "rules_confirmed": {
+      "mode": "tts",
+      "text": " 规则确认完成，请准备。"
+    },
+    "shake_started": {
+      "mode": "audio",
+      "audio": "audio/fll.wav",
+      "text": "Optional transcript for operators"
+    },
+    "shake_stopped": {
+      "mode": "tts",
+      "text": "停止摇骰。"
+    },
+    "analysis_started": {
+      "mode": "tts",
+      "text": "正在调用视觉判断结果"
+    },
+    "result_tie": {
+      "mode": "tts",
+      "text": "本局平局。玩家点数 {player_score}，Agent 点数 {agent_score}，再来一局吧。"
+    },
+    "result_player_win": {
+      "mode": "tts",
+      "text": "恭喜你，玩家获胜。玩家点数 {player_score}，Agent 点数 {agent_score}。"
+    },
+    "result_agent_win": {
+      "mode": "tts",
+      "text": "本局 Agent 获胜。玩家点数 {player_score}，Agent 点数 {agent_score}。"
+    }
   }
 }

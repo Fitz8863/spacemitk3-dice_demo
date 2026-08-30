@@ -602,8 +602,8 @@ ros2_ws/
 ```
 
 现有 C++ YOLOv8 不需要立即重写为 ROS2 节点。第一阶段继续由
-`vision_yolov8_adjudicator` 通过控制通道调度已验证的 `yolov8_camera`；新游戏只需
-提供自己的 `vision_profile.json`（模型、规则、提示词和 MediaMTX path）。
+`vision_yolov8_adjudicator` 通过控制通道调度已验证的 `yolov8_camera`；新游戏只需在
+自己的 `manifest.json` 的 `vision_profile` 节点中声明模型、规则、提示词和视频 path。
 
 ---
 

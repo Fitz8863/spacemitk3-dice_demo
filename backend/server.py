@@ -36,6 +36,7 @@ from core.games import (
     require_game,
     resolve_game_audio_path,
     resolve_provider_id,
+    resolve_adjudication_timeout,
     run_game,
 )
 from core.jobs import ComponentJob
@@ -131,6 +132,7 @@ def _safe_profile_metadata(profile: dict[str, Any], base_url: str, runtime: dict
         "runtime_mode": runtime.get("mode", ""),
         "prewarm_camera": bool(runtime.get("prewarm_camera", False)),
         "mediamtx_base_url": base_url,
+        "webrtc_base_url": base_url,
     }
     if result["video_enabled"] and result["video_path"] and isinstance(base_url, str):
         try:
@@ -164,16 +166,22 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
             return {}
         package_dir = ROOT / "backend" / "components" / provider_id
         config = load_component_config(package_dir)
-        mediamtx = config.get("mediamtx", {})
-        base_url = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or mediamtx.get("webrtc_base_url", "")
+        video = profile.get("video", {}) if isinstance(profile.get("video"), dict) else {}
+        base_url = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or video.get("webrtc_base_url", "")
         runtime = config.get("runtime", {})
         runtime = runtime if isinstance(runtime, dict) else {}
         metadata = _safe_profile_metadata(profile, base_url, runtime)
-        metadata["profiles"] = [
-            _safe_profile_metadata(item["vision_profile"], base_url, runtime)
-            for item in GAMES.all()
-            if isinstance(item.get("vision_profile"), dict)
-        ]
+        profile_metadata = []
+        for item in GAMES.all():
+            item_profile = item.get("vision_profile")
+            if not isinstance(item_profile, dict):
+                continue
+            item_video = item_profile.get("video", {})
+            item_base = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or (
+                item_video.get("webrtc_base_url", "") if isinstance(item_video, dict) else ""
+            )
+            profile_metadata.append(_safe_profile_metadata(item_profile, item_base, runtime))
+        metadata["profiles"] = profile_metadata
         return metadata
     except Exception:
         # Provider health already reports component/configuration failures;
@@ -239,7 +247,7 @@ def create_adjudication_job(game_id: str) -> ComponentJob:
         def run_fn(on_log, is_cancelled, on_event):
             return run_game(
                 GAMES, game_id, on_log, is_cancelled, on_event,
-                JOB_TIMEOUT_SECONDS, COMPONENTS,
+                resolve_adjudication_timeout(require_game(GAMES, game_id), JOB_TIMEOUT_SECONDS), COMPONENTS,
             )
 
         job = ComponentJob(run_fn=run_fn, name=f"{game_id}-job")
