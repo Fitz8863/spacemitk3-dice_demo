@@ -15,6 +15,9 @@
   "yolov8_enabled": false,
   "divider_detection": false,
   "stable_frames": 30,
+  "video": {
+    "webrtc_base_url": "http://100.118.229.28:8889"
+  },
   "rtsp": {
     "enabled": true,
     "host": "127.0.0.1",
