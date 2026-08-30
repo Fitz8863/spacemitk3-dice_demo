@@ -246,6 +246,7 @@ class ServerApiTests(unittest.TestCase):
         games = GameRegistry()
         games.register({
             "id": "dice", "name": "Dice", "enabled": True, "providers": {}, "texts": {},
+            "participants": {"player": "RIGHT", "agent": "LEFT"},
             "vision_profile": {
                 "game_id": "dice",
                 "llm": {"api_key": "SECRET", "system_prompt": "PRIVATE PROMPT", "model": "secret-model"},
@@ -263,6 +264,10 @@ class ServerApiTests(unittest.TestCase):
             server.GAMES = original_games
         payload = json.loads(data)
         self.assertEqual(status, 200)
+        self.assertEqual(
+            payload["games"][0]["participants"],
+            {"player": "RIGHT", "agent": "LEFT"},
+        )
         profile = payload["games"][0]["vision_profile"]
         self.assertEqual(profile["video"], {"enabled": True, "path": "/dice/"})
         self.assertEqual(profile["multi_view"]["views"][0], {"id": "front", "video": {"enabled": True, "path": "/front/"}})

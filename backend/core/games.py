@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from core.errors import GameDisabledError, GameNotFoundError
+from core.participants import normalize_participants
 
 ROOT = Path(__file__).resolve().parents[2]
 GAMES_ROOT = ROOT / "backend" / "games"
@@ -122,7 +123,10 @@ def public_game_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     """Project a game manifest to fields safe for an untrusted browser client."""
     public: dict[str, Any] = {
         key: manifest[key]
-        for key in ("id", "name", "icon", "description", "enabled", "voice", "speed", "texts", "providers")
+        for key in (
+            "id", "name", "icon", "description", "enabled", "participants",
+            "voice", "speed", "texts", "providers",
+        )
         if key in manifest
     }
     profile = manifest.get("vision_profile")
@@ -162,6 +166,7 @@ def load_games() -> GameRegistry:
                 raise ValueError("missing or invalid name")
             if not isinstance(manifest.get("enabled"), bool):
                 raise ValueError("missing or invalid enabled")
+            manifest["participants"] = normalize_participants(manifest.get("participants"))
             texts = manifest.get("texts", {})
             if not isinstance(texts, dict):
                 raise ValueError("texts must be an object")

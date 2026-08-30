@@ -4,6 +4,10 @@
   "icon": "✊",
   "description": "石头 · 剪刀 · 布（占位，待接识别模型）",
   "enabled": false,
+  "participants": {
+    "player": "LEFT",
+    "agent": "RIGHT"
+  },
   "voice": "default",
   "speed": 1.0,
   "texts": {

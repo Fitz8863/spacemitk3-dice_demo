@@ -72,6 +72,7 @@ class ComponentTests(unittest.TestCase):
                 "id": "dice",
                 "name": "Dice",
                 "enabled": True,
+                "participants": {"player": "LEFT", "agent": "RIGHT"},
                 "providers": {},
                 "texts": {},
                 "vision_profile": profile,
@@ -83,6 +84,28 @@ class ComponentTests(unittest.TestCase):
             loaded["vision_profile"]["video"]["webrtc_base_url"],
             "http://inline.example:8889",
         )
+        self.assertEqual(
+            loaded["participants"],
+            {"player": "LEFT", "agent": "RIGHT"},
+        )
+
+    def test_game_loader_rejects_ambiguous_participant_layout(self):
+        import core.games as games_module
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            game_dir = Path(temp_dir) / "dice"
+            game_dir.mkdir()
+            (game_dir / "manifest.json").write_text(json.dumps({
+                "id": "dice",
+                "name": "Dice",
+                "enabled": True,
+                "participants": {"player": "LEFT", "agent": "LEFT"},
+                "providers": {},
+                "texts": {},
+            }), encoding="utf-8")
+            with patch.object(games_module, "GAMES_ROOT", Path(temp_dir)):
+                registry = load_games()
+        self.assertEqual(registry.all(), [])
 
     def test_registry_loads_packaged_providers(self):
         registry = build_registry()
