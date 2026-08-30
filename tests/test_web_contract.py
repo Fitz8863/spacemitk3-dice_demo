@@ -24,9 +24,13 @@ def test_frontend_keeps_video_until_terminal_complete():
 
 def test_frontend_preserves_holding_countdown_from_structured_event():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    apply_snapshot = js.split("function applyAnalysisSnapshot", 1)[1].split(
+        "function streamAnalysis", 1
+    )[0]
 
     assert "latestHoldingEvent" in js
     assert "updateAnalysisProgress(latestHoldingEvent || snapshot)" in js
+    assert "updateAnalysisProgress(snapshot);" not in apply_snapshot
 
 
 def test_frontend_distinguishes_llm_override_from_consensus():

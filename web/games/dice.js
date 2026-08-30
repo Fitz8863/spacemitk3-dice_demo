@@ -196,13 +196,6 @@ export function register(engine) {
         updateStructuredEvent(event);
       }
     }
-    if (snapshot.phase === 'holding') {
-      // SSE snapshots expose the lifecycle phase at the top level, while the
-      // countdown value belongs to the structured holding event. Preserve
-      // that richer event instead of immediately overwriting it with a
-      // generic "still playing" message.
-      updateAnalysisProgress(latestHoldingEvent || snapshot);
-    }
     // A provider emits ``complete`` before its worker returns to ComponentJob;
     // during that small window the snapshot can still be ``running`` with
     // only the earlier result event available. Wait for the terminal success
@@ -229,7 +222,10 @@ export function register(engine) {
     if (snapshot.status === 'error' || snapshot.cancelled) {
       throw new Error(snapshot.error || 'K3 视觉裁决已取消');
     }
-    updateAnalysisProgress(snapshot);
+    // SSE snapshots expose the lifecycle phase at the top level, while the
+    // countdown value belongs to the structured holding event. Preserve that
+    // richer event instead of overwriting it with a generic message.
+    updateAnalysisProgress(latestHoldingEvent || snapshot);
     return false;
   }
 
