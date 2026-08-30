@@ -6,6 +6,7 @@ import uuid
 
 from core.games import resolve_provider_id
 from core.vision import VisionAdjudicationRequest
+from games.dice.result import project_participant_result
 
 GAME_ID = "dice"
 
@@ -40,7 +41,7 @@ def run(
         timeout_seconds=timeout_seconds,
     )
     try:
-        return adjudicate(
+        physical_result = adjudicate(
             request,
             on_log=on_log,
             on_event=on_event,
@@ -52,9 +53,10 @@ def run(
         # keyword-only interface; new adapters must accept the request object.
         if "positional" not in str(exc) and "required positional" not in str(exc):
             raise
-        return adjudicate(
+        physical_result = adjudicate(
             on_log=on_log,
             on_event=on_event,
             is_cancelled=is_cancelled,
             timeout_seconds=timeout_seconds,
         )
+    return project_participant_result(physical_result, manifest["participants"])

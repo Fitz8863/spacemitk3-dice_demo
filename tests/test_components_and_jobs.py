@@ -45,11 +45,34 @@ class InvalidVision(Component):
     role = "adjudicator"
 
 
+def physical_dice_result(winner="LEFT"):
+    return {
+        "verified": True,
+        "winner": winner,
+        "outcome": {"kind": "winner", "value": winner},
+        "left_values": [6, 5, 4, 3, 2],
+        "right_values": [1, 1, 1, 1, 1],
+        "left_sum": 20,
+        "right_sum": 5,
+        "first_dice": [6, 5, 4, 3, 2],
+        "second_dice": [1, 1, 1, 1, 1],
+        "first_sum": 20,
+        "second_sum": 5,
+    }
+
+
 class DummyAdjudicator(VisionAdjudicatorProvider):
     id = "vision_dummy_adjudicator"
 
     def adjudicate(self, *, on_log, on_event, is_cancelled, timeout_seconds):
-        return {"verified": True, "winner": "LEFT"}
+        return physical_dice_result()
+
+
+class RequestAwareDummyAdjudicator(VisionAdjudicatorProvider):
+    id = "vision_request_aware_adjudicator"
+
+    def adjudicate(self, request, *, on_log, on_event, is_cancelled, timeout_seconds):
+        return physical_dice_result()
 
 
 class DummyLocalizer(VisionLocalizerProvider):
@@ -280,6 +303,7 @@ class ComponentTests(unittest.TestCase):
                 1.0,
                 components=registry,
                 manifest={
+                    "participants": {"player": "LEFT", "agent": "RIGHT"},
                     "providers": {"vision_adjudicator": "vision_dummy_adjudicator"},
                     "vision_profile": json.loads(
                         (ROOT / "backend/games/dice/manifest.json").read_text()
@@ -288,6 +312,38 @@ class ComponentTests(unittest.TestCase):
                 on_event=lambda _event: None,
             )
         self.assertEqual(result["winner"], "LEFT")
+        self.assertEqual(result["winner_role"], "PLAYER")
+        self.assertEqual(result["player_score"], 20)
+        self.assertEqual(result["agent_score"], 5)
+
+    def test_dice_pipeline_projects_request_aware_adjudicator_result(self):
+        registry = ComponentRegistry()
+        registry.register(RequestAwareDummyAdjudicator(), {
+            "id": "vision_request_aware_adjudicator",
+            "type": "vision",
+            "role": "adjudicator",
+            "entry": "provider.py:RequestAwareDummyAdjudicator",
+        })
+        result = dice_pipeline.run(
+            lambda _line: None,
+            lambda: False,
+            1.0,
+            components=registry,
+            manifest={
+                "participants": {"player": "RIGHT", "agent": "LEFT"},
+                "providers": {
+                    "vision_adjudicator": "vision_request_aware_adjudicator"
+                },
+                "vision_profile": json.loads(
+                    (ROOT / "backend/games/dice/manifest.json").read_text()
+                )["vision_profile"],
+            },
+            on_event=lambda _event: None,
+        )
+        self.assertEqual(result["winner"], "LEFT")
+        self.assertEqual(result["winner_role"], "AGENT")
+        self.assertEqual(result["player_score"], 5)
+        self.assertEqual(result["agent_score"], 20)
 
     def test_untagged_json_stdout_remains_diagnostic_log(self):
         logs = []
