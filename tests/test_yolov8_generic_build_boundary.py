@@ -47,16 +47,24 @@ def test_control_fd_can_start_yolo_when_config_default_is_disabled():
     assert "if (!a.yolov8_enabled && a.control_fd < 0)" in source
 
 
-def test_generic_stability_signature_ignores_detector_jitter():
-    """Confidence/one-pixel box noise must not reset a stable round forever."""
+def test_generic_stability_signature_uses_only_detected_categories():
+    """Confidence and all box geometry must be irrelevant to stability."""
     source = SOURCE.read_text(encoding="utf-8")
     start = source.index("static std::string detection_signature")
     end = source.index("// Ultralytics-style vivid palette", start)
     signature = source[start:end]
+    assert "d.class_id" in signature
     assert "d.confidence" not in signature
-    assert "d.x1" in signature and "d.y1" in signature
-    assert "d.x2" in signature and "d.y2" in signature
-    assert "quant" in signature.lower()
+    for coordinate in ("d.x1", "d.y1", "d.x2", "d.y2"):
+        assert coordinate not in signature
+    assert "quant" not in signature.lower()
+
+
+def test_runtime_emits_category_stability_progress():
+    source = SOURCE.read_text(encoding="utf-8")
+    assert '\\"event\\":\\"progress\\"' in source
+    assert '\\"stable_count\\":' in source
+    assert '\\"stable_frames\\":' in source
 
 
 def test_runtime_does_not_embed_legacy_dice_llm_verifier():

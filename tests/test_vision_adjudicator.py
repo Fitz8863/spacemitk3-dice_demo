@@ -190,6 +190,21 @@ def test_component_config_exposes_mediamtx_base_under_video():
     assert "mediamtx" not in config
 
 
+def test_provider_health_reports_active_llm_credentials(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        VisionYolov8Adjudicator,
+        "_llm_transport_config",
+        staticmethod(lambda _profile: {"endpoint": "https://llm.test/v1", "api_key": "test-only-key", "model": "vision-test"}),
+    )
+    assert VisionYolov8Adjudicator().health()["llm_configured"] is True
+    monkeypatch.setattr(
+        VisionYolov8Adjudicator,
+        "_llm_transport_config",
+        staticmethod(lambda _profile: {"endpoint": "https://llm.test/v1", "api_key": None, "model": "vision-test"}),
+    )
+    assert VisionYolov8Adjudicator().health()["llm_configured"] is False
+
+
 def test_rtsp_args_emit_one_profile_owned_path():
     args = build_rtsp_args(
         {"rtsp": {"enabled": True, "host": "127.0.0.1", "port": 8554, "path": "/default"}},
@@ -259,9 +274,12 @@ def test_llm_timeout_falls_back_to_yolo():
     assert result["decision_source"] == "yolo_timeout_fallback"
 
 
-def test_llm_other_failure_is_an_error():
-    with pytest.raises(RuleError, match="LLM"):
-        finalize_outcome(yolo_outcome="LEFT", llm_outcome=None, llm_status="failure")
+def test_llm_failure_falls_back_to_yolo():
+    result = finalize_outcome(yolo_outcome="LEFT", llm_outcome=None, llm_status="failure")
+    assert result["outcome"]["value"] == "LEFT"
+    assert result["decision_source"] == "yolo_failure_fallback"
+    assert result["verification"]["status"] == "failure_fallback"
+    assert result["verification"]["llm_called"] is True
 
 
 def test_project_result_adds_generic_and_dice_compatibility_fields():
@@ -352,6 +370,7 @@ def test_provider_runs_one_round_and_holds_result(tmp_path: Path):
         def start(self, profile, view_id, prewarm=True): self.events_data = iter([
             {"event":"started","phase":"starting"}, {"event":"ready","phase":"idle"},
             {"event":"video","url":"http://x/dice/"},
+            {"event":"progress","phase":"detecting","stable_count":1,"stable_frames":2},
             {"event":"observation","stable":True,"yolo_outcome":"LEFT","snapshot":{"path":str(image)},"participants":{"LEFT":[6],"RIGHT":[1]}},
         ])
         def send(self, command): self.commands.append(command)
@@ -371,6 +390,8 @@ def test_provider_runs_one_round_and_holds_result(tmp_path: Path):
     assert any(r.commands and r.commands[0]["command"] == "START_ADJUDICATION" for r in runtimes)
     video_events = [event for event in events if event.get("event") == "video"]
     assert video_events == [{"event": "video", "url": "http://100.118.229.28:8889/dice/", "view_id": "default"}]
+    progress_events = [event for event in events if event.get("event") == "progress"]
+    assert progress_events == [{"event":"progress","phase":"detecting","stable_count":1,"stable_frames":2,"view_id":"default"}]
 
 
 def test_provider_multiview_sends_single_llm_request(tmp_path: Path):

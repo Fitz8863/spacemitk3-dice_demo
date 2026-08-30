@@ -673,27 +673,21 @@ static void emit_observation(const Args& args, const InferenceResult& item,
 }
 
 static std::string detection_signature(const std::vector<Detection>& detections) {
-    // Detector confidence and box coordinates naturally move by a few pixels
-    // between adjacent frames.  Stability is about the observed object
-    // layout, not bit-identical floating point output, so quantize geometry
-    // and compare detections independent of the NMS output order.
-    const auto quantize = [](float value) {
-        constexpr float kGridPixels = 8.0f;
-        return std::llround(value / kGridPixels);
-    };
-    std::vector<std::string> tokens;
-    tokens.reserve(detections.size());
+    // Adjudication stability is semantic: the same multiset of detected
+    // categories must persist. Confidence and box geometry are deliberately
+    // excluded because normal detector jitter must never reset a stable
+    // result. The current boxes remain available in the final observation
+    // for overlay and participant grouping only.
+    std::vector<int> categories;
+    categories.reserve(detections.size());
     for (const auto& d : detections) {
-        std::ostringstream token;
-        token << d.class_id << ':' << quantize(d.x1) << ',' << quantize(d.y1)
-              << ',' << quantize(d.x2) << ',' << quantize(d.y2);
-        tokens.push_back(token.str());
+        categories.push_back(d.class_id);
     }
-    std::sort(tokens.begin(), tokens.end());
+    std::sort(categories.begin(), categories.end());
     std::ostringstream out;
-    out << tokens.size();
-    for (const auto& token : tokens) {
-        out << '|' << token;
+    out << categories.size();
+    for (const int class_id : categories) {
+        out << '|' << class_id;
     }
     return out.str();
 }
@@ -1012,6 +1006,7 @@ int main(int argc, char** argv) {
     std::atomic<bool> adjudication_active{!a.prewarm && a.control_fd < 0};
     std::atomic<bool> generic_observation_sent{false};
     std::atomic<int> generic_stable_count{0};
+    std::atomic<int> generic_last_reported_count{0};
     std::string generic_last_signature;
     std::mutex generic_mutex;
     std::thread control_thread;
@@ -1030,6 +1025,7 @@ int main(int argc, char** argv) {
                     adjudication_active.store(true);
                     generic_observation_sent.store(false);
                     generic_stable_count.store(0);
+                    generic_last_reported_count.store(0);
                     std::lock_guard<std::mutex> lock(generic_mutex);
                     generic_last_signature.clear();
                     emit_event("{\"event\":\"phase\",\"phase\":\"detecting\"}");
@@ -1209,6 +1205,11 @@ int main(int argc, char** argv) {
                         std::lock_guard<std::mutex> lock(generic_mutex);
                         if (signature == generic_last_signature) stable_count = generic_stable_count.fetch_add(1) + 1;
                         else { generic_last_signature = signature; generic_stable_count.store(1); stable_count = 1; }
+                    }
+                    if (generic_last_reported_count.exchange(stable_count) != stable_count) {
+                        emit_event("{\"event\":\"progress\",\"phase\":\"detecting\",\"stable_count\":" +
+                                   std::to_string(stable_count) +
+                                   ",\"stable_frames\":" + std::to_string(a.stable_frames) + "}");
                     }
                     // Generic provider mode uses the detector's stable
                     // observation contract. An empty detection frame is not

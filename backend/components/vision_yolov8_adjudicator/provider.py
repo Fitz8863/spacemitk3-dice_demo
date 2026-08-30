@@ -178,6 +178,17 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         self._runtime_snapshot_dirs: dict[str, Path] = {}
         self._runtime_signatures: dict[str, str] = {}
 
+    def health(self) -> dict[str, Any]:
+        """Report deployment readiness without exposing transport secrets."""
+        transport = self._llm_transport_config({})
+        return {
+            "id": self.id,
+            "type": self.type,
+            "role": self.role,
+            "ok": True,
+            "llm_configured": bool(transport["endpoint"] and transport["api_key"]),
+        }
+
     def shutdown(self) -> None:
         """Stop all resident runtimes owned by this provider instance.
 
@@ -401,6 +412,8 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                         if video_event is not None and vid not in emitted_video_views:
                             on_event(video_event)
                             emitted_video_views.add(vid)
+                    elif event.get("event") == "progress":
+                        on_event({**event, "view_id": vid})
                     elif event.get("event") == "runtime_exit":
                         returncode = event.get("returncode")
                         raise RuntimeError(

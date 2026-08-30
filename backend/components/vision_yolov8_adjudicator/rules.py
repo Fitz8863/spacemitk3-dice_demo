@@ -181,7 +181,11 @@ def finalize_outcome(
         source = "yolo_timeout_fallback"
         verification_status = "timeout_fallback"
     else:
-        raise RuleError("LLM verification failed")
+        if yolo_outcome is None:
+            raise RuleError("LLM failure cannot be used without a YOLO outcome")
+        value = yolo_outcome.strip()
+        source = "yolo_failure_fallback"
+        verification_status = "failure_fallback"
 
     return {
         "adjudicated": True,
