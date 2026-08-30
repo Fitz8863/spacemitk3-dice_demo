@@ -253,6 +253,7 @@ def test_provider_yolo_timeout_calls_diagnosis_and_returns_retry_result(tmp_path
     }
     events = []
     runtime = Runtime()
+    logs = []
     result = VisionYolov8Adjudicator(
         runtime_factory=lambda _view_id: runtime, verifier=Verifier()
     ).adjudicate(
@@ -1020,11 +1021,76 @@ def test_provider_ignores_stale_idle_event_before_current_round_detection(tmp_pa
         "runtime": {"mode": "resident", "prewarm_camera": True},
         "lifecycle": {"post_result_hold_seconds": 0},
     }
+    logs = []
     result = VisionYolov8Adjudicator(runtime_factory=lambda _view_id: Runtime(), verifier=Verifier()).adjudicate(
         VisionAdjudicationRequest("x", profile, "stale-idle", 2),
+        on_log=logs.append, on_event=lambda _: None, is_cancelled=lambda: False,
+    )
+    assert not logs, logs
+    assert result["outcome"]["value"] == "LEFT"
+
+
+def test_provider_drains_runtime_events_after_yolo_timeout_before_diagnosis(tmp_path: Path):
+    image = tmp_path / "diagnostic.jpg"
+    image.write_bytes(b"jpeg")
+
+    class Runtime:
+        def start(self, *args, **kwargs):
+            pass
+
+        def send(self, command):
+            self.commands = getattr(self, "commands", []) + [dict(command)]
+
+        def events(self):
+            # Simulate the real pipe reader being scheduled just after the
+            # provider's detection deadline expires.
+            time.sleep(0.08)
+            yield {
+                "event": "diagnostic_snapshot",
+                "stable": False,
+                "snapshot": {"path": str(image)},
+                "participants": {"LEFT": [1, 2, 3, 4], "RIGHT": [6, 6, 6, 6, 6]},
+            }
+            yield {"event": "phase", "phase": "detecting"}
+            time.sleep(0.08)
+            yield {"event": "phase", "phase": "idle"}
+
+        def stop(self):
+            pass
+
+    class Verifier:
+        def diagnose(self, **kwargs):
+            assert kwargs.get("image_paths") or kwargs.get("image_path")
+            return type("R", (), {
+                "status": "success",
+                "reason_code": "OVERLAPPING_OBJECTS",
+                "message": "目标可能叠放。",
+                "retry": True,
+            })()
+
+    profile = {
+        "game_id": "x",
+        "vision": {"expected_count": 5, "participants": ["LEFT", "RIGHT"]},
+        "llm": {
+            "enabled": True,
+            "system_prompt": "judge",
+            "user_prompt_template": "judge",
+            "diagnosis_system_prompt": "diagnose",
+            "diagnosis_user_prompt_template": "Detector summary: {detector_summary}",
+            "allowed_outcomes": ["LEFT", "RIGHT", "TIE"],
+            "diagnosis_allowed_reason_codes": ["OVERLAPPING_OBJECTS", "UNKNOWN"],
+        },
+        "timeouts": {"yolo_detection_seconds": 0.01, "adjudication_seconds": 2, "diagnosis_llm_seconds": 1},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    result = VisionYolov8Adjudicator(
+        runtime_factory=lambda _view_id: Runtime(), verifier=Verifier()
+    ).adjudicate(
+        VisionAdjudicationRequest("x", profile, "drain-timeout", 2),
         on_log=lambda _: None, on_event=lambda _: None, is_cancelled=lambda: False,
     )
-    assert result["outcome"]["value"] == "LEFT"
+    assert result["diagnosis"]["source"] == "llm"
+    assert result["diagnosis"]["reason_code"] == "OVERLAPPING_OBJECTS"
 
 
 def test_provider_cancel_keeps_resident_runtime_warm():

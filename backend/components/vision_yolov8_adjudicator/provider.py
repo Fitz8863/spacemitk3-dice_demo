@@ -647,11 +647,23 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             if not observations and not timed_out:
                 timed_out = True
             if timed_out:
+                # The last diagnostic_snapshot can be queued in the runtime
+                # pipe just after the deadline. Ask the runtime to stop
+                # inference, then give each collector a bounded drain window
+                # before taking its latest evidence.
                 for rt in runtimes:
                     try:
                         rt.send({"command": "STOP_ADJUDICATION", "request_id": request.request_id})
                     except Exception:
                         pass
+                done_after, pending = wait(pending, timeout=0.25)
+                for future in done_after:
+                    try:
+                        vid, found = future.result()
+                    except Exception:
+                        continue
+                    if found is not None:
+                        observations[vid] = found
                 with latest_lock:
                     diagnostic_observations = [dict(latest_by_view[key]) for key in sorted(latest_by_view)]
                 if not diagnostic_observations:
