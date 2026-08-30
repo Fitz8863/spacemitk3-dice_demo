@@ -10,7 +10,7 @@
 当前视觉能力分散在三个位置：
 
 1. `backend/components/vision_yolo/provider.py` 同时负责进程管理、摄像头启动、事件协议兼容、超时、取消和结果解析；
-2. `vision/yolov8_objdetect/src/` 的 C++ runtime 还直接包含骰子分区、5 + 5 数量校验、点数求和、胜负比较和骰子专属 LLM prompt；
+2. 旧版 `vision/yolov8_objdetect/src/` 的 C++ runtime 还直接包含骰子分区、5 + 5 数量校验、点数求和、胜负比较和骰子专属 LLM prompt；
 3. `backend/games/dice/pipeline.py` 只传递一组通用回调，没有把本局游戏 profile、模型和规则明确传给视觉模块。
 
 这种结构可以运行骰子，但新增猜拳或其他视觉游戏时，通常需要复制 provider、修改 C++ 业务逻辑或在后端增加硬编码。视觉模块也无法表达「结果已经得到，但实时视频还需要继续显示一段时间」这一生命周期。
@@ -23,7 +23,7 @@
 
 - 将组件重命名为 `vision_yolov8_adjudicator`，名称表达「YOLOv8 实现的视觉裁决职责」，而不是骰子业务。
 - 视觉组件只负责采集、推理、稳定帧、证据聚合、LLM 复核、生命周期和统一结果输出。
-- 游戏规则、类别映射、参与方、prompt 和结果允许值全部由 `backend/games/<game_id>/vision_profile.json` 声明。
+- 游戏规则、类别映射、参与方、prompt 和结果允许值全部由 `backend/games/<game_id>/manifest.json` 的 `vision_profile` 节点声明。
 - 新增一个使用本地模型、远程模型或云端 LLM 的游戏时，只增加游戏 profile 和资源，不修改视觉组件核心调度。
 - 所有游戏统一消费同一种 YOLO detection 输入，并输出同一种 adjudication result 外壳；不允许每个游戏自行定义一套 runtime 事件格式。
 - 默认按局启动、按局释放摄像头；通过配置支持常驻进程复用。
@@ -48,13 +48,13 @@
 | --- | --- | --- |
 | 组件 ID | `vision_yolov8_adjudicator` | 体现实现技术和职责，去掉 `dice` 业务耦合 |
 | 外部接口 | `VisionAdjudicationRequest` + 结构化事件回调 | 调用方不需要知道 YOLO 进程参数 |
-| 规则位置 | `backend/games/<game_id>/vision_profile.json` | 游戏变化不影响视觉组件 |
+| 规则位置 | `backend/games/<game_id>/manifest.json` 的 `vision_profile` | 游戏变化不影响视觉组件 |
 | 通用配置位置 | runtime 包自己的 `config.json` | 摄像头、推理、RTSP 和 WebRTC 基础地址只维护一份默认值；组件配置通过 `runtime.config` 引用 |
 | 默认生命周期 | `per_request` | 摄像头资源安全释放，按局边界清晰 |
 | 可选生命周期 | `resident` | 需要低延迟连续多局时复用进程 |
 | 结果后的画面 | `holding` 阶段 | 结果可立即展示，同时不提前释放视频 |
 | 事件协议 | `jsonl-events-v1` | stdout/stderr 只保留诊断用途，业务事件可测试 |
-| 视频播放地址 | 游戏 `vision_profile.json` | 每个游戏可绑定自己的 MediaMTX WebRTC 地址 |
+| 视频播放地址 | 游戏 manifest 的 `vision_profile.video.path` | 每个游戏可绑定自己的 MediaMTX WebRTC 路径 |
 | LLM 复核输入 | 单轮稳定帧图片 + profile prompt | 不携带历史对话、上一局结果或隐式上下文 |
 | 最终结果策略 | 共识、LLM 覆盖或超时回退 | LLM 成功时以 LLM 为准；超时才回退 YOLO |
 | 多摄像头 YOLO 融合 | 多数投票 | 多路观察同一对象，提高容错并控制延迟 |
@@ -83,14 +83,14 @@ backend/
 └── games/
     ├── dice/
     │   ├── manifest.json
-    │   └── vision_profile.json          # 骰子模型、类别、数量、求和和 prompt
+    │   └── manifest.json                # 游戏配置与 vision_profile
     └── rps/
-        └── vision_profile.json          # 将来启用猜拳时只需增加该文件和模型
+        └── manifest.json                # 将来启用猜拳时只需增加 profile 和模型
 
-vision/yolov8_objdetect/
+vision/yolov8_adjudicator/
 ├── src/                                 # 私有 YOLOv8 摄像头 runtime
 ├── models/                              # 模型资产
-├── config.json                          # 迁移期兼容配置；最终由组件配置生成/传入
+├── config.json                          # 硬件、推理、RTSP 与 WebRTC 基础地址默认值
 └── CMakeLists.txt                       # 板端构建和硬件自测
 ```
 
@@ -195,14 +195,14 @@ def adjudicate(
 
 ### 6.2 游戏视觉 profile
 
-`backend/games/<game_id>/vision_profile.json` 负责游戏差异。骰子 profile 的完整字段约定如下：
+`backend/games/<game_id>/manifest.json` 内的 `vision_profile` 负责游戏差异。骰子 profile 的完整字段约定如下：
 
 ```json
 {
   "schema_version": 1,
   "game_id": "dice",
   "vision": {
-    "model": "vision/yolov8_objdetect/models/best.q.onnx",
+    "model": "vision/yolov8_adjudicator/models/best.q.onnx",
     "class_map": {
       "0": "1",
       "1": "2",
@@ -276,7 +276,7 @@ MediaMTX 的职责是接收 YOLOv8 runtime 输出的本地 RTSP，再提供 WebR
 }
 ```
 
-新增游戏时只替换模型文件和 `vision_profile.json` 中的输入解释、规则及输出约束。已有声明式规则能够表达的游戏不得修改 `provider.py`、C++ runtime 或游戏 pipeline；若未来确实出现当前规则 schema 无法表达的玩法，应先扩展通用规则解释器及其 schema，而不是增加 `if game_id` 分支或复制整个 provider。
+新增游戏时只替换模型文件和 manifest 的 `vision_profile` 中的输入解释、规则及输出约束。已有声明式规则能够表达的游戏不得修改 `provider.py`、C++ runtime 或游戏 pipeline；若未来确实出现当前规则 schema 无法表达的玩法，应先扩展通用规则解释器及其 schema，而不是增加 `if game_id` 分支或复制整个 provider。
 
 ### 6.3 多摄像头 profile
 
@@ -317,7 +317,7 @@ MediaMTX 的职责是接收 YOLOv8 runtime 输出的本地 RTSP，再提供 WebR
 
 ```text
 受限环境变量覆盖
-  > 游戏 vision_profile.json
+  > 游戏 manifest.vision_profile
   > 视觉组件 config.json
   > 代码中的安全默认值
 ```
@@ -448,10 +448,10 @@ queued → starting → detecting → verifying → holding → complete
 
 当前前端硬编码 `http://100.118.229.28:8889/dice/`，这会把部署地址和骰子路径一起写进 UI。新设计把 MediaMTX 基础地址放在组件 / 部署配置，把游戏 path 放在游戏 profile，再由后端合成完整 URL 并通过事件下发：
 
-1. 组件配置声明部署级基础地址：
+1. runtime 配置声明部署级基础地址：
 
    ```json
-   "mediamtx": {
+   "video": {
      "webrtc_base_url": "http://100.118.229.28:8889"
    }
    ```
@@ -515,7 +515,7 @@ C++ 进程保留硬件敏感的高性能部分：
 
 C++ 不再计算游戏胜负，不再拼装骰子专属 prompt，也不再依赖 `DiceResultSnapshot`、`LlmDiceVerifier` 或 5 + 5 颗骰子的固定字段。
 
-现有 `vision/yolov8_objdetect/config.json` 中的 `yolov8_enabled` 只在进程启动时生效，目前只能选择「启动即推理」或「启动后仅采集画面」。重构后保留其兼容含义，但新增 `vision-control-v1` 运行时开关：预热模式启动时等价于 `yolov8_enabled=false`，收到 `START_ADJUDICATION` 后在同一进程内切换为推理状态。配置和控制通道都不能改变摄像头或 MediaMTX 的外部播放地址。
+现有 `vision/yolov8_adjudicator/config.json` 中的 `yolov8_enabled` 只在进程启动时生效，目前只能选择「启动即推理」或「启动后仅采集画面」。重构后保留其兼容含义，但新增 `vision-control-v1` 运行时开关：预热模式启动时等价于 `yolov8_enabled=false`，收到 `START_ADJUDICATION` 后在同一进程内切换为推理状态。配置和控制通道都不能改变摄像头或 MediaMTX 的外部播放地址。
 
 ### 10.2 通用观测事件
 
