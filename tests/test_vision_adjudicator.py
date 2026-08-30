@@ -20,6 +20,8 @@ from components.vision_yolov8_adjudicator.profile import (  # noqa: E402
     compose_video_url,
     load_component_config,
     load_profile,
+    load_runtime_config,
+    resolve_runtime_config_path,
 )
 from components.vision_yolov8_adjudicator.rules import (  # noqa: E402
     RuleError,
@@ -51,9 +53,23 @@ def test_profile_loads_dice_and_composes_mediamtx_url():
     assert profile["video"]["path"] == "/dice/"
     assert profile["vision"]["divider_detection"] is True
     component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
-    assert compose_video_url(component["video"]["webrtc_base_url"], profile["video"]["path"]) == (
+    runtime = load_runtime_config(resolve_runtime_config_path(component))
+    assert compose_video_url(runtime["video"]["webrtc_base_url"], profile["video"]["path"]) == (
         "http://100.118.229.28:8889/dice/"
     )
+
+
+def test_component_points_to_single_runtime_config_and_loads_hardware_defaults():
+    component_dir = ROOT / "backend" / "components" / "vision_yolov8_adjudicator"
+    component = load_component_config(component_dir)
+    runtime_path = resolve_runtime_config_path(component)
+    runtime = load_runtime_config(runtime_path)
+    assert runtime_path == ROOT / "vision" / "yolov8_adjudicator" / "config.json"
+    assert runtime["camera"] == "/dev/video1"
+    assert runtime["rtsp"]["port"] == 8554
+    assert runtime["video"]["webrtc_base_url"] == "http://100.118.229.28:8889"
+    assert "rtsp" not in component
+    assert "video" not in component
 
 
 def test_profile_allows_component_owned_webrtc_base_url_and_validates_timeout(tmp_path: Path):
@@ -184,10 +200,13 @@ def test_component_config_does_not_require_mediamtx(tmp_path: Path):
     assert load_component_config(tmp_path)["runtime"]["mode"] == "resident"
 
 
-def test_component_config_exposes_mediamtx_base_under_video():
-    config = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
-    assert config["video"]["webrtc_base_url"] == "http://100.118.229.28:8889"
-    assert "mediamtx" not in config
+def test_runtime_config_exposes_mediamtx_base_and_component_has_no_duplicate_video():
+    component_dir = ROOT / "backend" / "components" / "vision_yolov8_adjudicator"
+    config = load_component_config(component_dir)
+    runtime = load_runtime_config(resolve_runtime_config_path(config))
+    assert runtime["video"]["webrtc_base_url"] == "http://100.118.229.28:8889"
+    assert "video" not in config
+    assert "rtsp" not in config
 
 
 def test_provider_health_reports_active_llm_credentials(monkeypatch: pytest.MonkeyPatch):
@@ -550,7 +569,7 @@ def test_runtime_process_uses_dedicated_control_and_event_fds(tmp_path: Path):
     script.write_text(
         """#!/usr/bin/env python3
 import argparse, json, os, sys
-p=argparse.ArgumentParser(); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--snapshot-dir',default='/tmp'); p.add_argument('--view-id',default='default'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--no-display',action='store_true'); p.add_argument('--rtsp',action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path'); a=p.parse_args()
+p=argparse.ArgumentParser(); p.add_argument('--config'); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--snapshot-dir',default='/tmp'); p.add_argument('--view-id',default='default'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--no-display',action='store_true'); p.add_argument('--rtsp',action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path'); a=p.parse_args()
 def emit(e): os.write(a.event_fd, (json.dumps(e)+'\\n').encode())
 print('diagnostic line that is not JSON', flush=True)
 emit({'event':'started','phase':'starting'}); emit({'event':'ready','phase':'idle'}); emit({'event':'video','url':'rtsp://private/cam'})

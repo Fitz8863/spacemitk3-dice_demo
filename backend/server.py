@@ -46,7 +46,12 @@ from core.tts_protocol import (
     encode_end_frame,
     encode_error_frame,
 )
-from components.vision_yolov8_adjudicator.profile import compose_video_url, load_component_config
+from components.vision_yolov8_adjudicator.profile import (
+    compose_video_url,
+    load_component_config,
+    load_runtime_config,
+    resolve_runtime_config_path,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = ROOT / "web"
@@ -168,7 +173,13 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
         config = load_component_config(package_dir)
         video = profile.get("video", {}) if isinstance(profile.get("video"), dict) else {}
         component_video = config.get("video", {}) if isinstance(config.get("video"), dict) else {}
-        base_url = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or video.get("webrtc_base_url", "") or component_video.get("webrtc_base_url", "")
+        runtime_video = {}
+        try:
+            runtime_config = load_runtime_config(resolve_runtime_config_path(config))
+            runtime_video = runtime_config.get("video", {}) if isinstance(runtime_config.get("video"), dict) else {}
+        except Exception:
+            runtime_video = {}
+        base_url = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or video.get("webrtc_base_url", "") or runtime_video.get("webrtc_base_url", "") or component_video.get("webrtc_base_url", "")
         runtime = config.get("runtime", {})
         runtime = runtime if isinstance(runtime, dict) else {}
         metadata = _safe_profile_metadata(profile, base_url, runtime)
@@ -180,7 +191,7 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
             item_video = item_profile.get("video", {})
             item_base = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or (
                 item_video.get("webrtc_base_url", "") if isinstance(item_video, dict) else ""
-            ) or component_video.get("webrtc_base_url", "")
+            ) or runtime_video.get("webrtc_base_url", "") or component_video.get("webrtc_base_url", "")
             profile_metadata.append(_safe_profile_metadata(item_profile, item_base, runtime))
         metadata["profiles"] = profile_metadata
         return metadata

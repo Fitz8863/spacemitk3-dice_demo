@@ -177,7 +177,7 @@ cmake --build build -j4
 
 当前迁移的模型是 YOLOv8 raw 输出模型，预期输出 `[1, 10, 8400]`。程序会在 CPU 侧执行 YOLOv8 解码和 NMS，并以模型无关的 detection 列表和稳定帧快照交给游戏 profile 解释；不会在 C++ 中固化骰子数量、分区、求和或胜负规则。
 
-`vision/yolov8_adjudicator/config.json` 只保存摄像头、推理、RTSP 等硬件默认值，不再保存 LLM 参数。LLM endpoint、model 默认值位于 `backend/components/vision_yolov8_adjudicator/config.json`，真实 API key 仍只通过未纳入 Git 的 `.dice-arena.env` 或 `DICE_LLM_API_KEY` 提供。
+`vision/yolov8_adjudicator/config.json` 是 YOLO runtime 的硬件、推理、RTSP 和 WebRTC 基础地址唯一默认来源。`backend/components/vision_yolov8_adjudicator/config.json` 只保存 Provider 的 runtime 路径/生命周期与 LLM endpoint、model；其中 `runtime.config` 显式指向前述 runtime 配置，避免两份硬件配置分叉。真实 API key 仍只通过未纳入 Git 的 `.dice-arena.env` 或 `DICE_LLM_API_KEY` 提供。游戏 manifest 只声明自己的 `video.path`，部署环境可通过 `DICE_MEDIAMTX_WEBRTC_BASE_URL` 覆盖基础地址。
 
 
 ## 迁移的 Qwen3-TTS 服务

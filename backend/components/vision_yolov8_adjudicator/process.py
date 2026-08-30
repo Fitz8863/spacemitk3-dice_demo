@@ -13,6 +13,11 @@ import subprocess
 import threading
 
 from components.vision_yolov8_adjudicator.llm import OpenAICompatibleVisionVerifier, VerificationResult
+from components.vision_yolov8_adjudicator.profile import (
+    load_component_config,
+    load_runtime_config,
+    resolve_runtime_config_path,
+)
 
 
 class SnapshotError(ValueError):
@@ -35,6 +40,14 @@ def build_rtsp_args(config: Mapping[str, Any], selected_video: Mapping[str, Any]
     if video_path is not None:
         args.extend(["--rtsp-path", str(video_path).rstrip("/") or "/"])
     return args
+
+
+def load_runtime_defaults(component_dir: Path | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load component deployment settings and the single runtime config."""
+    directory = component_dir or Path(__file__).parent
+    component = load_component_config(directory)
+    runtime_path = resolve_runtime_config_path(component)
+    return component, load_runtime_config(runtime_path)
 
 
 class YoloRuntimeProcess:
@@ -78,6 +91,7 @@ class YoloRuntimeProcess:
         self.stop()
         self._on_log = on_log if callable(on_log) else (lambda _line: None)
         self._runtime_exit_emitted = False
+        injected_binary = self.binary != "yolov8_camera"
         runtime = profile.get("runtime", {}) if isinstance(profile, Mapping) else {}
         binary = runtime.get("binary") if isinstance(runtime, Mapping) else None
         if binary: self.binary = str(binary)
@@ -86,11 +100,10 @@ class YoloRuntimeProcess:
         # Component deployment defaults live next to this package.  A game
         # profile may override them for tests or a custom local runtime.
         component_config: Mapping[str, Any] = {}
+        runtime_config: Mapping[str, Any] = {}
         if not binary:
             try:
-                from components.vision_yolov8_adjudicator.profile import load_component_config
-
-                component = load_component_config(Path(__file__).parent)
+                component, runtime_config = load_runtime_defaults(Path(__file__).parent)
                 component_config = component
                 defaults = component.get("runtime", {})
                 if not self.binary or self.binary == "yolov8_camera":
@@ -107,10 +120,10 @@ class YoloRuntimeProcess:
                 pass
         if not component_config:
             try:
-                from components.vision_yolov8_adjudicator.profile import load_component_config
-                component_config = load_component_config(Path(__file__).parent)
+                component_config, runtime_config = load_runtime_defaults(Path(__file__).parent)
             except Exception:
                 component_config = {}
+                runtime_config = {}
 
         # Game profiles own the model and camera semantics.  Forward only
         # those validated, non-secret values as command-line overrides; the
@@ -161,9 +174,20 @@ class YoloRuntimeProcess:
 
         control_read, control_write = os.pipe()
         event_read, event_write = os.pipe()
-        cmd = [self.binary, "--no-display", "--control-fd", str(control_read),
+        runtime_config_path = None
+        if runtime_config and not injected_binary:
+            try:
+                runtime_config_path = resolve_runtime_config_path(component_config).resolve()
+            except Exception:
+                runtime_config_path = None
+        cmd = [self.binary]
+        if runtime_config_path is not None:
+            cmd.extend(["--config", str(runtime_config_path)])
+        cmd.extend(["--no-display", "--control-fd", str(control_read),
                "--event-fd", str(event_write), "--view-id", str(view_id), *runtime_overrides]
-        cmd.extend(build_rtsp_args(component_config, selected_video))
+        )
+        rtsp_source = runtime_config if runtime_config else component_config
+        cmd.extend(build_rtsp_args(rtsp_source, selected_video))
         if prewarm: cmd.append("--prewarm")
         if snapshot_dir is not None:
             Path(snapshot_dir).mkdir(parents=True, exist_ok=True)

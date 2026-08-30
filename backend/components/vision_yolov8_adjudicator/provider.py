@@ -18,7 +18,12 @@ from components.vision_yolov8_adjudicator.rules import (
     project_result,
     fuse_yolo_outcomes,
 )
-from components.vision_yolov8_adjudicator.profile import compose_video_url, load_component_config
+from components.vision_yolov8_adjudicator.profile import (
+    compose_video_url,
+    load_component_config,
+    load_runtime_config,
+    resolve_runtime_config_path,
+)
 
 
 def normalize_observation(
@@ -238,6 +243,37 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
 
     @staticmethod
+    def _video_base_url(profile: Mapping[str, Any]) -> str:
+        """Resolve the deployment WebRTC origin without exposing RTSP details."""
+        video = profile.get("video", {})
+        profile_base = video.get("webrtc_base_url") if isinstance(video, Mapping) else ""
+        component: Mapping[str, Any] = {}
+        try:
+            component = load_component_config(Path(__file__).parent)
+        except Exception:
+            component = {}
+        runtime_base = ""
+        configured_runtime = component.get("runtime", {})
+        has_explicit_runtime_config = isinstance(configured_runtime, Mapping) and configured_runtime.get("config")
+        if has_explicit_runtime_config:
+            try:
+                runtime = load_runtime_config(resolve_runtime_config_path(component))
+                runtime_video = runtime.get("video", {})
+                if isinstance(runtime_video, Mapping):
+                    runtime_base = runtime_video.get("webrtc_base_url", "")
+            except Exception:
+                pass
+        component_video = component.get("video", {})
+        component_base = component_video.get("webrtc_base_url", "") if isinstance(component_video, Mapping) else ""
+        return str(
+            os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "").strip()
+            or profile_base
+            or runtime_base
+            or component_base
+            or ""
+        )
+
+    @staticmethod
     def _video_event(profile: Mapping[str, Any], view_id: str, event: Mapping[str, Any]) -> dict[str, Any] | None:
         """Project runtime video notifications to the public WebRTC endpoint.
 
@@ -270,11 +306,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             video_enabled = bool(profile["video"].get("enabled", True))
         if not video_enabled:
             return None
-        video = profile.get("video", {})
-        profile_base = video.get("webrtc_base_url") if isinstance(video, Mapping) else ""
-        component_video = load_component_config(Path(__file__).parent).get("video", {})
-        component_base = component_video.get("webrtc_base_url") if isinstance(component_video, Mapping) else ""
-        base = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or profile_base or component_base
+        base = VisionYolov8Adjudicator._video_base_url(profile)
         if not isinstance(base, str) or not base.strip():
             return None
         return {"event": "video", "url": compose_video_url(base, path), "view_id": view_id}

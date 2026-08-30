@@ -49,7 +49,7 @@
 | 组件 ID | `vision_yolov8_adjudicator` | 体现实现技术和职责，去掉 `dice` 业务耦合 |
 | 外部接口 | `VisionAdjudicationRequest` + 结构化事件回调 | 调用方不需要知道 YOLO 进程参数 |
 | 规则位置 | `backend/games/<game_id>/vision_profile.json` | 游戏变化不影响视觉组件 |
-| 通用配置位置 | 组件包自己的 `config.json` | 摄像头、runtime 和生命周期只维护一份默认值 |
+| 通用配置位置 | runtime 包自己的 `config.json` | 摄像头、推理、RTSP 和 WebRTC 基础地址只维护一份默认值；组件配置通过 `runtime.config` 引用 |
 | 默认生命周期 | `per_request` | 摄像头资源安全释放，按局边界清晰 |
 | 可选生命周期 | `resident` | 需要低延迟连续多局时复用进程 |
 | 结果后的画面 | `holding` 阶段 | 结果可立即展示，同时不提前释放视频 |
@@ -170,14 +170,15 @@ def adjudicate(
 
 ### 6.1 组件通用配置
 
-`backend/components/vision_yolov8_adjudicator/config.json` 负责所有游戏共享的运行参数。示例：
+`vision/yolov8_adjudicator/config.json` 负责硬件 runtime 的共享默认参数；组件配置只负责 Provider 部署参数和 LLM transport。组件配置中的 `runtime.config` 指向 runtime JSON，避免硬件参数复制：
 
 ```json
 {
   "schema_version": 1,
   "runtime": {
-    "binary": "vision/yolov8_objdetect/build/yolov8_camera",
-    "working_dir": "vision/yolov8_objdetect",
+    "binary": "vision/yolov8_adjudicator/build/yolov8_camera",
+    "working_dir": "vision/yolov8_adjudicator",
+    "config": "vision/yolov8_adjudicator/config.json",
     "mode": "per_request",
     "prewarm_camera": true,
     "yolo_start_command": "START_ADJUDICATION",
@@ -186,22 +187,11 @@ def adjudicate(
     "terminate_grace_seconds": 5,
     "post_result_hold_seconds": 0
   },
-  "camera": {
-    "device": "/dev/video1",
-    "width": 1280,
-    "height": 720,
-    "fps": 25
-  },
-  "events": {
-    "protocol": "jsonl-events-v1"
-  },
-  "mediamtx": {
-    "webrtc_base_url": "http://100.118.229.28:8889"
-  }
+  "events": {"protocol": "jsonl-events-v1"}
 }
 ```
 
-`mode` 只允许 `per_request` 或 `resident`。`prewarm_camera=true` 时，组件启动 resident runtime，先打开摄像头和视频链路，再通过私有 Unix 控制通道发送 `START_ADJUDICATION` 开始 YOLO；`STOP_ADJUDICATION` 停止当前轮推理但不关闭摄像头，`CANCEL` 终止当前轮并回到 idle。模型路径、LLM endpoint、类别映射和游戏规则不放在这里。`mediamtx.webrtc_base_url` 是板端部署级基础地址，只配置协议、主机和端口，不包含游戏 stream path。
+`mode` 只允许 `per_request` 或 `resident`。`prewarm_camera=true` 时，组件启动 resident runtime，先打开摄像头和视频链路，再通过私有 Unix 控制通道发送 `START_ADJUDICATION` 开始 YOLO；`STOP_ADJUDICATION` 停止当前轮推理但不关闭摄像头，`CANCEL` 终止当前轮并回到 idle。模型路径、LLM endpoint、类别映射和游戏规则不放在 runtime 配置。runtime 的 `video.webrtc_base_url` 是板端部署级基础地址，只配置协议、主机和端口，不包含游戏 stream path。
 
 ### 6.2 游戏视觉 profile
 
@@ -267,7 +257,7 @@ def adjudicate(
 
 `video.path` 是该游戏对应的 MediaMTX WebRTC 播放 path；不同游戏使用不同路径，例如骰子使用 `/dice/`，猜拳使用 `/rps/`。它不用于配置或推导 RTSP 路径。`autoplay` 和 `muted` 只描述前端播放策略，不改变视觉裁决逻辑。
 
-后端使用标准 URL 拼接规则，把组件配置中的 `mediamtx.webrtc_base_url` 和游戏 profile 中的 `video.path` 合成为完整播放地址，例如 `http://100.118.229.28:8889` + `/dice/` 得到 `http://100.118.229.28:8889/dice/`。禁止直接进行字符串相加，必须规范化基础地址末尾和 path 开头的 `/`，并保留 path 的结尾 `/`。
+后端使用标准 URL 拼接规则，把 runtime 配置中的 `video.webrtc_base_url` 和游戏 profile 中的 `video.path` 合成为完整播放地址，例如 `http://100.118.229.28:8889` + `/dice/` 得到 `http://100.118.229.28:8889/dice/`。环境变量 `DICE_MEDIAMTX_WEBRTC_BASE_URL` 优先级最高；旧 profile/component 字段仅作为迁移期回退。禁止直接进行字符串相加，必须规范化基础地址末尾和 path 开头的 `/`，并保留 path 的结尾 `/`。
 
 MediaMTX 的职责是接收 YOLOv8 runtime 输出的本地 RTSP，再提供 WebRTC 播放端点。视觉 provider 不把 RTSP 地址当作前端地址，也不在每局重复启动 MediaMTX；它只在 profile 校验通过后把合成的播放 URL 作为事件发给前端。MediaMTX 必须由板端部署或系统服务预先运行，路径不可用时由前端显示视频不可用，但不能影响已经完成的结构化裁决结果。
 
@@ -500,7 +490,7 @@ MediaMTX 的运行链路在本设计中视为外部基础设施，视觉组件�
 ```text
 K3 摄像头 → YOLOv8 / MediaMTX（外部 RTSP 接管细节）
                               ↓
-组件 mediamtx.webrtc_base_url + 游戏 profile.video.path
+runtime video.webrtc_base_url + 游戏 profile.video.path
                               ↓
                          浏览器 iframe 播放
 ```

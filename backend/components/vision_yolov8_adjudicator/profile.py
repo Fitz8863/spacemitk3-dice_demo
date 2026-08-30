@@ -5,7 +5,7 @@ import json
 import math
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -14,6 +14,7 @@ class ProfileError(ValueError):
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_RUNTIME_CONFIG = PROJECT_ROOT / "vision" / "yolov8_adjudicator" / "config.json"
 
 
 def resolve_project_path(value: str, project_root: Path = PROJECT_ROOT) -> Path:
@@ -38,6 +39,46 @@ def _read_object(path: Path, label: str) -> dict[str, Any]:
         raise ProfileError(f"unable to read {label}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ProfileError(f"{label} must be a JSON object")
+    return payload
+
+
+def resolve_runtime_config_path(
+    component: Mapping[str, Any] | str | Path,
+    project_root: Path = PROJECT_ROOT,
+) -> Path:
+    """Resolve the C++ runtime configuration owned by the vision package.
+
+    New component manifests declare ``runtime.config``.  A missing value is
+    intentionally compatible with older deployments and falls back to the
+    standard package location; arbitrary absolute paths and traversal are
+    still rejected by :func:`resolve_project_path`.
+    """
+    if isinstance(component, Mapping):
+        runtime = component.get("runtime", {})
+        value = runtime.get("config") if isinstance(runtime, Mapping) else None
+    else:
+        value = component
+    if value is None:
+        candidate = DEFAULT_RUNTIME_CONFIG
+        root = project_root.resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ProfileError("default runtime config must stay inside the project") from exc
+        return candidate
+    return resolve_project_path(str(value), project_root)
+
+
+def load_runtime_config(path: Path) -> dict[str, Any]:
+    """Load and minimally validate the hardware runtime configuration."""
+    payload = _read_object(Path(path), "vision runtime config")
+    if "rtsp" in payload and not isinstance(payload["rtsp"], dict):
+        raise ProfileError("runtime config rtsp must be an object")
+    video = payload.get("video", {})
+    if not isinstance(video, dict):
+        raise ProfileError("runtime config video must be an object")
+    if "webrtc_base_url" in video:
+        _validate_base_url(video["webrtc_base_url"], "runtime video.webrtc_base_url")
     return payload
 
 
@@ -210,6 +251,7 @@ def load_component_config(package_dir: Path) -> dict[str, Any]:
         resolve_project_path(runtime["binary"])
     if "working_dir" in runtime:
         resolve_project_path(runtime["working_dir"])
+    resolve_runtime_config_path(payload)
     video = payload.get("video", {})
     if not isinstance(video, dict):
         raise ProfileError("component config video must be an object")

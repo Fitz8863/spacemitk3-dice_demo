@@ -18,7 +18,7 @@ K3 摄像头
   -> GStreamer H.264/VPU 编码 -> MediaMTX RTSP 发布 -> WebRTC
 ```
 
-MediaMTX 由部署管理。组件配置中的 `video.webrtc_base_url` 提供部署基础地址，浏览器使用后端根据游戏 manifest 中的
+MediaMTX 由部署管理。runtime 配置中的 `video.webrtc_base_url` 提供部署基础地址，浏览器使用后端根据游戏 manifest 中的
 profile path 合成的
 WebRTC URL；runtime 自身产生的 RTSP/内部地址不能直接作为浏览器地址。
 
@@ -49,7 +49,7 @@ build/yolov8_camera --config config.json --no-display --prewarm \
   --snapshot-dir <private-round-dir> --view-id <view-id>
 ```
 
-`config.json` 只保存 runtime 和硬件默认值；模型、参与方、稳定帧阈值、规则、提示词、
+`config.json` 只保存 runtime、硬件和部署视频基础地址默认值；模型、参与方、稳定帧阈值、规则、提示词、
 LLM 超时和每个游戏的视频 path 均由组件配置或游戏 profile 管理。
 
 ## vision-control-v1 协议
@@ -91,11 +91,11 @@ winner。多视角由 provider 并行启动多个 runtime，并以 `view_id` 区
 
 ```text
 backend/components/vision_yolov8_adjudicator/config.json
-  runtime.binary / runtime.working_dir / runtime.mode
+  runtime.binary / runtime.working_dir / runtime.config / runtime.mode
   runtime.prewarm_camera / runtime.terminate_grace_seconds
   llm.endpoint / llm.model / llm.api_key
-  video.webrtc_base_url
-  rtsp.* / events.protocol
+  （不再重复保存摄像头、推理、RTSP 或 WebRTC 参数）
+  events.protocol
 ```
 
 游戏级 profile：
@@ -112,7 +112,7 @@ backend/games/<game_id>/manifest.json -> vision_profile
 
 新增游戏不需要修改本 runtime：新增模型文件和 manifest 中的 `vision_profile` 即可。
 profile 中的 path 只能是 URL 路径（例如 `/dice/`），不能包含主机、查询串或 `..`；
-WebRTC 基础地址通过组件配置的 `video.webrtc_base_url` 配置，游戏只配置自己的 `video.path`。API key 通过板端环境变量注入，不写入仓库。
+WebRTC 基础地址通过 `vision/yolov8_adjudicator/config.json` 的 `video.webrtc_base_url` 配置，游戏只配置自己的 `video.path`。部署环境可用 `DICE_MEDIAMTX_WEBRTC_BASE_URL` 覆盖基础地址；API key 通过板端环境变量注入，不写入仓库。
 
 ## 诊断模式
 
