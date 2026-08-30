@@ -604,13 +604,39 @@ while True:
         runtime.stop()
 
 
+def test_runtime_process_passes_explicit_runtime_config_for_profile_binary(tmp_path: Path):
+    script = tmp_path / "config_runtime.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import argparse, json, os, sys
+p=argparse.ArgumentParser(); p.add_argument('--config', required=True); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--view-id',default='default'); p.add_argument('--no-display',action='store_true'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--rtsp',action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path'); a=p.parse_args()
+os.write(a.event_fd, (json.dumps({'event':'started','config':a.config})+'\\n').encode())
+os.close(a.control_fd)
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess
+    runtime = YoloRuntimeProcess()
+    runtime.start(
+        {"runtime": {"binary": str(script), "working_dir": str(tmp_path)}},
+        "default",
+        prewarm=True,
+    )
+    try:
+        event = next(runtime.events())
+        assert event["config"].endswith("vision/yolov8_adjudicator/config.json")
+    finally:
+        runtime.stop()
+
+
 def test_runtime_process_forwards_diagnostics_and_reports_exit(tmp_path: Path):
     """An early camera/model exit must be visible instead of becoming a vague timeout."""
     script = tmp_path / "exiting_runtime.py"
     script.write_text(
         """#!/usr/bin/env python3
 import argparse, json, os, sys
-p=argparse.ArgumentParser(); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--view-id',default='default'); p.add_argument('--no-display',action='store_true'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--rtsp',action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path'); a=p.parse_args()
+p=argparse.ArgumentParser(); p.add_argument('--config'); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--view-id',default='default'); p.add_argument('--no-display',action='store_true'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--rtsp',action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path'); a=p.parse_args()
 print('camera open failed: /dev/video1', flush=True)
 os.write(a.event_fd, (json.dumps({'event':'ready','view_id':a.view_id})+'\\n').encode())
 raise SystemExit(7)

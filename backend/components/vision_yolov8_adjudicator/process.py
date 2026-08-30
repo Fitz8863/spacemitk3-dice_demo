@@ -62,6 +62,7 @@ class YoloRuntimeProcess:
 
     def __init__(self, binary: str | Path | None = None, working_dir: str | Path | None = None) -> None:
         self.binary = str(binary or "yolov8_camera")
+        self._binary_injected = binary is not None
         self.working_dir = str(working_dir) if working_dir else None
         self._process: subprocess.Popen[str] | None = None
         self._control_write: int | None = None
@@ -91,7 +92,7 @@ class YoloRuntimeProcess:
         self.stop()
         self._on_log = on_log if callable(on_log) else (lambda _line: None)
         self._runtime_exit_emitted = False
-        injected_binary = self.binary != "yolov8_camera"
+        injected_binary = self._binary_injected
         runtime = profile.get("runtime", {}) if isinstance(profile, Mapping) else {}
         binary = runtime.get("binary") if isinstance(runtime, Mapping) else None
         if binary: self.binary = str(binary)
@@ -175,7 +176,7 @@ class YoloRuntimeProcess:
         control_read, control_write = os.pipe()
         event_read, event_write = os.pipe()
         runtime_config_path = None
-        if runtime_config and not injected_binary:
+        if runtime_config:
             try:
                 runtime_config_path = resolve_runtime_config_path(component_config).resolve()
             except Exception:
