@@ -25,6 +25,7 @@ from components.vision_yolov8_adjudicator.profile import (  # noqa: E402
 )
 from components.vision_yolov8_adjudicator.rules import (  # noqa: E402
     RuleError,
+    diagnose_detection_failure,
     evaluate_rule,
     finalize_outcome,
     fuse_yolo_outcomes,
@@ -145,6 +146,207 @@ def test_video_event_uses_component_webrtc_base_when_profile_has_only_path():
 def test_provider_prefers_game_adjudication_timeout_over_request_fallback():
     profile = {"timeouts": {"adjudication_seconds": 7}}
     assert VisionYolov8Adjudicator._adjudication_timeout(profile, 120) == 7
+
+
+def test_profile_accepts_yolo_detection_and_diagnosis_timeouts(tmp_path: Path):
+    profile = _minimal_profile()
+    profile["timeouts"] = {
+        "yolo_detection_seconds": 8,
+        "adjudication_seconds": 120,
+        "diagnosis_llm_seconds": 3,
+    }
+    profile["llm"]["diagnosis_system_prompt"] = "Diagnose only."
+    profile["llm"]["diagnosis_user_prompt_template"] = "Summary: {detector_summary}"
+    path = tmp_path / "vision_profile.json"
+    path.write_text(json.dumps(profile))
+    loaded = load_profile(path)
+    assert loaded["timeouts"]["yolo_detection_seconds"] == 8.0
+    assert loaded["timeouts"]["diagnosis_llm_seconds"] == 3.0
+
+
+def test_local_diagnosis_reports_incomplete_dice_from_yolo_evidence():
+    profile = {
+        "game_id": "dice",
+        "vision": {"expected_count": 5, "participants": ["LEFT", "RIGHT"]},
+    }
+    evidence = {"participants": {"LEFT": [1, 2, 3, 4], "RIGHT": [6, 6, 6, 6, 6]}}
+    diagnosis = diagnose_detection_failure(profile, evidence)
+    assert diagnosis["reason_code"] == "INCOMPLETE_OBJECTS"
+    assert "LEFT" in diagnosis["message"]
+    assert diagnosis["detected_counts"] == {"LEFT": 4, "RIGHT": 5}
+    assert diagnosis["retry"] is True
+
+
+def test_llm_diagnosis_parses_reason_code_and_message(tmp_path: Path):
+    image = tmp_path / "diagnostic.jpg"
+    image.write_bytes(b"jpeg-bytes")
+
+    def fake_post(url, payload, headers, timeout):
+        assert "detector summary" in payload["messages"][1]["content"][0]["text"].lower()
+        return {
+            "choices": [{"message": {"content":
+                '{"reason_code":"OVERLAPPING_OBJECTS","message":"骰子可能叠放。","retry":true}'
+            }}]
+        }
+
+    verifier = OpenAICompatibleVisionVerifier(post=fake_post)
+    result = verifier.diagnose(
+        image_path=image,
+        system_prompt="Diagnose only.",
+        user_prompt="Detector summary: LEFT=4; RIGHT=5",
+        allowed_reason_codes=["OVERLAPPING_OBJECTS", "UNKNOWN"],
+        timeout_seconds=1,
+    )
+    assert result.status == "success"
+    assert result.reason_code == "OVERLAPPING_OBJECTS"
+    assert result.message == "骰子可能叠放。"
+    assert result.retry is True
+
+
+def test_provider_yolo_timeout_calls_diagnosis_and_returns_retry_result(tmp_path: Path):
+    image = tmp_path / "diagnostic.jpg"
+    image.write_bytes(b"jpeg")
+
+    class Runtime:
+        def start(self, *args, **kwargs):
+            self.events_data = iter([{
+                "event": "diagnostic_snapshot",
+                "stable": False,
+                "snapshot": {"path": str(image)},
+                "participants": {"LEFT": [1, 2, 3, 4], "RIGHT": [6, 6, 6, 6, 6]},
+                "detections": [],
+            }])
+
+        def send(self, command):
+            self.commands = getattr(self, "commands", []) + [dict(command)]
+
+        def events(self):
+            return self.events_data
+
+        def stop(self):
+            self.stopped = True
+
+    class Verifier:
+        def diagnose(self, **kwargs):
+            return type("R", (), {
+                "status": "success",
+                "reason_code": "OVERLAPPING_OBJECTS",
+                "message": "左侧骰子可能叠放。",
+                "retry": True,
+                "error": None,
+            })()
+
+    profile = {
+        "game_id": "dice",
+        "vision": {"expected_count": 5, "participants": ["LEFT", "RIGHT"]},
+        "llm": {
+            "enabled": True,
+            "system_prompt": "judge",
+            "user_prompt_template": "judge",
+            "diagnosis_system_prompt": "diagnose",
+            "diagnosis_user_prompt_template": "Detector summary: {detector_summary}",
+            "allowed_outcomes": ["LEFT", "RIGHT", "TIE"],
+            "diagnosis_allowed_reason_codes": ["OVERLAPPING_OBJECTS", "UNKNOWN"],
+        },
+        "timeouts": {"yolo_detection_seconds": 0.01, "adjudication_seconds": 120, "diagnosis_llm_seconds": 1},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    events = []
+    runtime = Runtime()
+    result = VisionYolov8Adjudicator(
+        runtime_factory=lambda _view_id: runtime, verifier=Verifier()
+    ).adjudicate(
+        VisionAdjudicationRequest("dice", profile, "diagnose-round", 120),
+        on_log=lambda _: None,
+        on_event=events.append,
+        is_cancelled=lambda: False,
+    )
+    assert result["adjudicated"] is False
+    assert result["diagnosed"] is True
+    assert result["retry_required"] is True
+    assert result["diagnosis"]["source"] == "llm"
+    assert result["diagnosis"]["reason_code"] == "OVERLAPPING_OBJECTS"
+    assert any(event.get("event") == "diagnosis" for event in events)
+    assert any(command["command"] in {"STOP_ADJUDICATION", "CANCEL"} for command in runtime.commands)
+
+
+def test_provider_diagnosis_llm_timeout_uses_yolo_evidence_fallback(tmp_path: Path):
+    image = tmp_path / "diagnostic.jpg"
+    image.write_bytes(b"jpeg")
+
+    class Runtime:
+        def start(self, *args, **kwargs):
+            self.events_data = iter([{
+                "event": "diagnostic_snapshot",
+                "stable": False,
+                "snapshot": {"path": str(image)},
+                "participants": {"LEFT": [], "RIGHT": []},
+                "detections": [],
+            }])
+        def send(self, command):
+            self.commands = getattr(self, "commands", []) + [dict(command)]
+        def events(self): return self.events_data
+        def stop(self): pass
+
+    class Verifier:
+        def diagnose(self, **kwargs):
+            return type("R", (), {"status": "timeout", "reason_code": None, "message": None, "retry": True, "error": "timeout"})()
+
+    profile = {
+        "game_id": "dice",
+        "vision": {"expected_count": 5, "participants": ["LEFT", "RIGHT"]},
+        "llm": {
+            "enabled": True,
+            "system_prompt": "judge",
+            "user_prompt_template": "judge",
+            "diagnosis_system_prompt": "diagnose",
+            "diagnosis_user_prompt_template": "Detector summary: {detector_summary}",
+            "allowed_outcomes": ["LEFT", "RIGHT", "TIE"],
+            "diagnosis_allowed_reason_codes": ["NO_OBJECTS_DETECTED", "UNKNOWN"],
+        },
+        "timeouts": {"yolo_detection_seconds": 0.01, "adjudication_seconds": 120, "diagnosis_llm_seconds": 0.01},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    result = VisionYolov8Adjudicator(
+        runtime_factory=lambda _view_id: Runtime(), verifier=Verifier()
+    ).adjudicate(
+        VisionAdjudicationRequest("dice", profile, "fallback-round", 120),
+        on_log=lambda _: None,
+        on_event=lambda _: None,
+        is_cancelled=lambda: False,
+    )
+    assert result["diagnosis"]["source"] == "yolo_fallback"
+    assert result["diagnosis"]["llm_status"] == "timeout"
+    assert result["diagnosis"]["reason_code"] == "NO_OBJECTS_DETECTED"
+
+
+def test_dice_pipeline_preserves_diagnosis_without_projecting_winner():
+    class Components:
+        def require(self, *args, **kwargs):
+            class Adjudicator:
+                def adjudicate(self, request, **kwargs):
+                    return {
+                        "adjudicated": False,
+                        "diagnosed": True,
+                        "retry_required": True,
+                        "diagnosis": {"reason_code": "NO_OBJECTS_DETECTED", "message": "未检测到骰子。"},
+                    }
+            return Adjudicator()
+
+    manifest = {
+        "participants": {"player": "LEFT", "agent": "RIGHT"},
+        "providers": {"vision_adjudicator": "vision_yolov8_adjudicator"},
+        "vision_profile": {"game_id": "dice"},
+    }
+    result = dice_pipeline.run(
+        lambda _: None,
+        lambda: False,
+        1.0,
+        components=Components(),
+        manifest=manifest,
+        on_event=lambda _: None,
+    )
+    assert result["diagnosed"] is True
 
 
 def test_adjudication_request_is_immutable_and_contains_profile():

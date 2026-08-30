@@ -615,13 +615,29 @@ static std::string save_snapshot(const Args& args, const cv::Mat& bgr,
     return path.string();
 }
 
+static std::string save_diagnostic_snapshot(const Args& args, const cv::Mat& bgr) {
+    std::error_code error;
+    std::filesystem::create_directories(args.snapshot_dir, error);
+    if (error) return {};
+    const std::filesystem::path path = std::filesystem::path(args.snapshot_dir) /
+        ("latest-" + args.view_id + ".jpg");
+    try {
+        if (!cv::imwrite(path.string(), bgr, {cv::IMWRITE_JPEG_QUALITY, 85})) return {};
+    } catch (const cv::Exception&) {
+        return {};
+    }
+    return path.string();
+}
+
 static void emit_observation(const Args& args, const InferenceResult& item,
                              const std::string& snapshot_path,
-                             const DividerLine* divider_assist = nullptr) {
+                             const DividerLine* divider_assist = nullptr,
+                             const char* event_name = "observation",
+                             bool stable = true) {
     std::ostringstream event;
-    event << "{\"event\":\"observation\",\"view_id\":\""
+    event << "{\"event\":\"" << event_name << "\",\"view_id\":\""
           << json_escape(args.view_id) << "\",\"frame_id\":" << item.id
-          << ",\"stable\":true,\"width\":" << item.width
+          << ",\"stable\":" << (stable ? "true" : "false") << ",\"width\":" << item.width
           << ",\"height\":" << item.height;
     if (!snapshot_path.empty()) {
         event << ",\"snapshot\":{\"format\":\"image/jpeg\",\"path\":\""
@@ -1144,6 +1160,7 @@ int main(int argc, char** argv) {
     // because OpenCV HighGUI on this board must own the X11 event loop here.
     bool first_display = true;
     uint64_t shown = 0;
+    auto last_diagnostic_snapshot = start;
     auto last_report = start;
     while (true) {
         if (g_signal_stop) abort.store(true);
@@ -1174,8 +1191,16 @@ int main(int argc, char** argv) {
                 : (a.divider_detection_enabled
                     ? (divider_assist.valid ? "Divider detected" : "Searching divider")
                     : "YOLO observation");
-                if (a.control_fd >= 0 && adjudication_active.load() &&
+            if (a.control_fd >= 0 && adjudication_active.load() &&
                     !generic_observation_sent.load()) {
+                    const auto diagnostic_now = Clock::now();
+                    if (diagnostic_now - last_diagnostic_snapshot >= std::chrono::milliseconds(250)) {
+                        const std::string diagnostic_path = save_diagnostic_snapshot(a, bgr);
+                        emit_observation(a, *item, diagnostic_path,
+                                         a.divider_detection_enabled ? &divider_assist : nullptr,
+                                         "diagnostic_snapshot", false);
+                        last_diagnostic_snapshot = diagnostic_now;
+                    }
                     const std::string signature = detection_signature(item->detections);
                     int stable_count = 0;
                     {

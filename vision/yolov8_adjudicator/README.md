@@ -79,6 +79,7 @@ Runtime 向 `event-fd` 发送：
 {"event":"video","view_id":"front","url":"rtsp://127.0.0.1:8554/internal"}
 {"event":"phase","phase":"detecting"}
 {"event":"progress","stable_count":3,"stable_frames":5}
+{"event":"diagnostic_snapshot","stable":false,"detections":[],"divider":{"found":false},"snapshot":{"path":"/tmp/private/latest-front.jpg"}}
 {"event":"observation","stable":true,"detections":[],"divider":{"found":true},"snapshot":{"path":"/tmp/private/stable.jpg"}}
 {"event":"phase","phase":"idle"}
 ```
@@ -111,7 +112,7 @@ backend/games/<game_id>/manifest.json -> vision_profile
   llm.system_prompt / user_prompt_template / allowed_outcomes
   multi_view.views[].camera / multi_view.views[].video.path
   video.path / lifecycle.post_result_hold_seconds
-  timeouts.adjudication_seconds
+  timeouts.yolo_detection_seconds / diagnosis_llm_seconds / adjudication_seconds
 ```
 
 新增游戏不需要修改本 runtime：新增模型文件和 manifest 中的 `vision_profile` 即可。
@@ -150,6 +151,9 @@ curl -s http://127.0.0.1:9997/v3/paths/list | python3 -m json.tool
 ## 资源和生命周期约束
 
 - resident runtime 在空闲时保持摄像头和视频链路，不做稳定帧计数、不调用 LLM。
+- active runtime 以受控频率覆盖写入一张最新诊断帧；YOLO 稳定超时后 provider 使用该帧
+  请求诊断 LLM。诊断 LLM 超时或失败时，根据最近的类别数量、目标数量和场景分界信息
+  生成 `yolo_fallback` 原因，不伪造 LEFT/RIGHT/TIE 胜负。
 - 单个裁决对象的多路视角并行运行；provider 负责超时、取消和结果后的保持时长。
 - 稳定帧快照写入每局私有目录，LLM 消费后立即清理；禁止使用不受控的共享路径。
 - 队列深度保持有限，避免摄像头缓冲反向阻塞推理或占满 K3 内存。

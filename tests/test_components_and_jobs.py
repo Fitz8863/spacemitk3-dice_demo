@@ -397,6 +397,27 @@ class JobTests(unittest.TestCase):
         self.assertEqual(snapshot["phase"], "holding")
         self.assertIsNone(snapshot["finished_at"])
 
+    def test_diagnosed_adjudication_failure_is_terminal_error_with_result(self):
+        def run(_on_log, _cancelled, _on_event):
+            return {
+                "adjudicated": False,
+                "diagnosed": True,
+                "retry_required": True,
+                "diagnosis": {
+                    "reason_code": "INCOMPLETE_OBJECTS",
+                    "message": "左侧只检测到 4 个目标，请重新开始。",
+                },
+            }
+
+        job = ComponentJob(run)
+        job.start()
+        job.thread.join(timeout=1)
+        snapshot = job.snapshot()
+        self.assertEqual(snapshot["status"], "error")
+        self.assertEqual(snapshot["phase"], "error")
+        self.assertIn("左侧只检测到 4 个目标", snapshot["error"])
+        self.assertTrue(snapshot["result"]["diagnosed"])
+
     def test_cancel_during_holding_is_terminal_and_cannot_become_success(self):
         entered = threading.Event()
         release = threading.Event()

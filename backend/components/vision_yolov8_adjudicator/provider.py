@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, wait
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -13,6 +14,7 @@ from core.vision import VisionAdjudicationRequest, VisionAdjudicatorProvider
 from components.vision_yolov8_adjudicator.llm import OpenAICompatibleVisionVerifier
 from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess, _snapshot_path
 from components.vision_yolov8_adjudicator.rules import (
+    diagnose_detection_failure,
     evaluate_rule,
     finalize_outcome,
     project_result,
@@ -321,6 +323,23 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         return float(fallback)
 
     @staticmethod
+    def _yolo_detection_timeout(profile: Mapping[str, Any], fallback: float) -> float:
+        """Resolve the shorter wait for a stable YOLO observation."""
+        timeouts = profile.get("timeouts", {})
+        value = timeouts.get("yolo_detection_seconds") if isinstance(timeouts, Mapping) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return float(value)
+        return float(fallback)
+
+    @staticmethod
+    def _diagnosis_timeout(profile: Mapping[str, Any], fallback: float) -> float:
+        timeouts = profile.get("timeouts", {})
+        value = timeouts.get("diagnosis_llm_seconds") if isinstance(timeouts, Mapping) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            return float(value)
+        return float(fallback)
+
+    @staticmethod
     def _llm_transport_config(profile: Mapping[str, Any]) -> dict[str, Any]:
         """Resolve deployment LLM endpoint/key separately from game prompts.
 
@@ -366,6 +385,109 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             "prewarm_camera", configured.get("prewarm_camera", False)
         )
         return mode == "resident" and bool(prewarm)
+
+    def _diagnose_timeout(
+        self,
+        request: VisionAdjudicationRequest,
+        profile: Mapping[str, Any],
+        observations: list[Mapping[str, Any]],
+        strict_snapshot_roots: Mapping[str, Path],
+        cleanup_paths: set[Path],
+        on_event: Callable[[dict[str, Any]], None],
+        on_log: Callable[[str], None],
+        deadline: float,
+    ) -> dict[str, Any]:
+        """Diagnose a failed YOLO round without ever declaring a winner."""
+        from components.vision_yolov8_adjudicator.rules import diagnose_detection_failure
+
+        normalized_observations = [normalize_observation(profile, item) for item in observations]
+        evidence: dict[str, Any] = {"views": [dict(item) for item in normalized_observations]}
+        for item in normalized_observations:
+            for key in ("participants", "detections", "divider", "width", "height"):
+                if key in item and key not in evidence:
+                    evidence[key] = item[key]
+        local = diagnose_detection_failure(profile, evidence)
+        cfg = profile.get("llm", {}) if isinstance(profile.get("llm"), Mapping) else {}
+        llm_status = "disabled"
+        diagnosis = dict(local)
+        paths: list[Path] = []
+        for item in observations:
+            snapshot = item.get("snapshot")
+            raw = snapshot.get("path") if isinstance(snapshot, Mapping) else None
+            if not isinstance(raw, str) or not raw.strip() or not Path(raw).is_absolute():
+                continue
+            path = Path(raw).resolve()
+            view_id = str(item.get("view_id", "default"))
+            if view_id in strict_snapshot_roots:
+                try:
+                    path = _snapshot_path(item, strict_snapshot_roots[view_id])
+                except Exception:
+                    continue
+            if path.suffix.lower() in {".jpg", ".jpeg", ".png"} and path.is_file():
+                paths.append(path)
+                cleanup_paths.add(path)
+        if cfg.get("enabled", True) and paths and hasattr(self.verifier, "diagnose"):
+            summary = json.dumps(
+                {"detected_counts": local.get("detected_counts", {}), "reason_code": local.get("reason_code")},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            system_prompt = str(cfg.get("diagnosis_system_prompt") or "You are a visual inspection diagnostician. Do not declare a winner.")
+            template = str(cfg.get("diagnosis_user_prompt_template") or "Detector summary: {detector_summary}")
+            user_prompt = template.replace("{detector_summary}", summary)
+            allowed = cfg.get("diagnosis_allowed_reason_codes")
+            if not isinstance(allowed, list) or not allowed:
+                allowed = [
+                    "INCOMPLETE_OBJECTS", "OVERLAPPING_OBJECTS", "LOW_LIGHT", "OCCLUDED",
+                    "NO_OBJECTS_DETECTED", "UNSTABLE_DETECTION", "SCENE_GEOMETRY_UNCLEAR", "UNKNOWN",
+                ]
+            transport = self._llm_transport_config(profile)
+            llm_timeout = min(self._diagnosis_timeout(profile, 3.0), max(0.01, deadline - time.monotonic()))
+            verifier = self.verifier
+            try:
+                if isinstance(verifier, OpenAICompatibleVisionVerifier):
+                    endpoint = transport["endpoint"]
+                    if endpoint and not endpoint.rstrip("/").endswith("chat/completions"):
+                        endpoint = endpoint.rstrip("/") + "/chat/completions"
+                    verifier = OpenAICompatibleVisionVerifier(endpoint, model=transport["model"], api_key=transport["api_key"])
+                result = verifier.diagnose(
+                    image_paths=paths,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    allowed_reason_codes=allowed,
+                    timeout_seconds=llm_timeout,
+                    model=transport["model"],
+                )
+                llm_status = str(getattr(result, "status", "failure"))
+                if llm_status == "success" and getattr(result, "reason_code", None) and getattr(result, "message", None):
+                    diagnosis.update({
+                        "reason_code": result.reason_code,
+                        "message": result.message,
+                        "retry": bool(getattr(result, "retry", True)),
+                    })
+                    diagnosis["source"] = "llm"
+                else:
+                    diagnosis["source"] = "yolo_fallback"
+            except Exception as exc:
+                llm_status = "failure"
+                diagnosis["source"] = "yolo_fallback"
+                on_log(f"[vision] diagnosis LLM failed: {exc}")
+        else:
+            diagnosis["source"] = "yolo_fallback" if cfg.get("enabled", True) else "disabled"
+        diagnosis["llm_status"] = llm_status
+        diagnosis["retry"] = True
+        result = {
+            "adjudicated": False,
+            "verified": False,
+            "diagnosed": True,
+            "retry_required": True,
+            "diagnosis": diagnosis,
+            "profile_id": profile.get("game_id") or request.game_id,
+            "provider_id": self.id,
+            "evidence": evidence,
+        }
+        on_event({"event": "diagnosis", **result})
+        return result
 
     def adjudicate(self, request: VisionAdjudicationRequest, *, on_log: Callable[[str], None], on_event: Callable[[dict[str, Any]], None], is_cancelled: Callable[[], bool], timeout_seconds: float | None = None) -> dict[str, Any]:
         profile = request.profile; runtimes = []
@@ -436,6 +558,8 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 if video_event is not None:
                     on_event(video_event)
                     emitted_video_views.add(vid)
+            latest_by_view: dict[str, dict[str, Any]] = {}
+            latest_lock = threading.Lock()
             def collect(rt, view):
                 vid = str(view.get("id", "default")); found = None
                 for event in rt.events():
@@ -452,27 +576,42 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                             f"YOLO runtime exited before stable observation "
                             f"(returncode={returncode})"
                         )
-                    elif event.get("event") == "observation" and event.get("stable"):
-                        found = dict(event, view_id=vid); break
+                    elif event.get("event") in {"diagnostic_snapshot", "observation"}:
+                        candidate = dict(event, view_id=vid)
+                        with latest_lock:
+                            latest_by_view[vid] = candidate
+                        if event.get("event") == "observation" and event.get("stable"):
+                            found = candidate
+                            break
+                    elif event.get("event") == "cancelled" or (
+                        event.get("event") == "phase" and event.get("phase") == "idle"
+                    ):
+                        break
                 return vid, found
             fallback_timeout = float(timeout_seconds or request.timeout_seconds)
             deadline = time.monotonic() + self._adjudication_timeout(profile, fallback_timeout)
+            yolo_deadline = min(
+                deadline,
+                time.monotonic() + self._yolo_detection_timeout(profile, fallback_timeout),
+            )
             pool = ThreadPoolExecutor(max_workers=len(runtimes))
             futures = [pool.submit(collect, rt, view) for rt, view in zip(runtimes, views)]
             pending = set(futures)
+            timed_out = False
             try:
                 while pending:
                     if is_cancelled():
                         raise RuntimeError("cancelled")
-                    remaining = max(0.0, deadline - time.monotonic())
+                    remaining = max(0.0, yolo_deadline - time.monotonic())
                     if remaining <= 0:
-                        raise TimeoutError("YOLO adjudication timed out")
+                        timed_out = True
+                        break
                     done, pending = wait(pending, timeout=min(remaining, 0.1))
                     for future in done:
                         vid, found = future.result()
                         if found is not None:
                             observations[vid] = found
-            except (TimeoutError, RuntimeError):
+            except RuntimeError:
                 if not keep_warm:
                     for view, rt in zip(views, runtimes):
                         try:
@@ -501,7 +640,37 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                         on_event(video_event)
             if is_cancelled():
                 raise RuntimeError("cancelled")
-            if not observations: raise RuntimeError("no stable observation")
+            if not observations and not timed_out:
+                timed_out = True
+            if timed_out:
+                for rt in runtimes:
+                    try:
+                        rt.send({"command": "STOP_ADJUDICATION", "request_id": request.request_id})
+                    except Exception:
+                        pass
+                with latest_lock:
+                    diagnostic_observations = [dict(latest_by_view[key]) for key in sorted(latest_by_view)]
+                if not diagnostic_observations:
+                    diagnostic_observations = [{"view_id": str(view.get("id", "default"))} for view in views]
+                diagnosis_result = self._diagnose_timeout(
+                    request,
+                    profile,
+                    diagnostic_observations,
+                    strict_snapshot_roots,
+                    cleanup_paths,
+                    on_event,
+                    on_log,
+                    deadline,
+                )
+                on_event({"event": "complete", "phase": "complete"})
+                round_completed = True
+                if not keep_warm:
+                    for view, rt in zip(views, runtimes):
+                        try:
+                            rt.stop()
+                        except Exception:
+                            pass
+                return diagnosis_result
             min_views = int(multi.get("min_views", 1))
             if len(observations) < min_views: raise RuntimeError("minimum views not reached")
             ordered = [observations[k] for k in sorted(observations)]

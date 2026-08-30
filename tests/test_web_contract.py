@@ -39,6 +39,14 @@ def test_frontend_distinguishes_llm_override_from_consensus():
     assert "llm_override" in js
 
 
+def test_frontend_renders_structured_diagnosis_and_retry_prompt():
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    assert "showDiagnosis" in js
+    assert "retry_required" in js
+    assert "本次裁决未完成" in js
+    assert "diagnosis.message" in js
+
+
 def test_frontend_does_not_mark_yolo_complete_while_still_detecting():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     detecting = js.split("if (job.phase === 'detecting')", 1)[1].split(

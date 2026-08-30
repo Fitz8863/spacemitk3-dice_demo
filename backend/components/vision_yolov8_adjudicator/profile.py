@@ -161,6 +161,9 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         raise ProfileError("llm must be an object")
     _required_string(llm.get("system_prompt"), "llm.system_prompt")
     _required_string(llm.get("user_prompt_template"), "llm.user_prompt_template")
+    for prompt_field in ("diagnosis_system_prompt", "diagnosis_user_prompt_template"):
+        if prompt_field in llm:
+            _required_string(llm.get(prompt_field), f"llm.{prompt_field}")
     outcomes = llm.get("allowed_outcomes")
     if (
         not isinstance(outcomes, list)
@@ -192,7 +195,17 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         or adjudication_timeout <= 0
     ):
         raise ProfileError("timeouts.adjudication_seconds must be a positive number")
-    profile["timeouts"] = {"adjudication_seconds": float(adjudication_timeout)}
+    normalized_timeouts = {"adjudication_seconds": float(adjudication_timeout)}
+    for field, default in (("yolo_detection_seconds", adjudication_timeout), ("diagnosis_llm_seconds", 3)):
+        value = timeouts.get(field, default)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+            raise ProfileError(f"timeouts.{field} must be a positive number")
+        normalized_timeouts[field] = float(value)
+    profile["timeouts"] = normalized_timeouts
+    if "diagnosis_allowed_reason_codes" in llm:
+        reasons = llm["diagnosis_allowed_reason_codes"]
+        if not isinstance(reasons, list) or not reasons or not all(isinstance(item, str) and item.strip() for item in reasons):
+            raise ProfileError("llm.diagnosis_allowed_reason_codes must be a non-empty string array")
 
     lifecycle = profile.get("lifecycle", {})
     if not isinstance(lifecycle, dict):

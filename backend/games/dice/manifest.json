@@ -37,11 +37,14 @@
       "timeout_seconds": 3,
       "system_prompt": "You are a strict dice-sum judge. Use only the supplied image. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
       "user_prompt_template": "Inspect the supplied stable frame and compare the two sides. Return {\"winner\":\"LEFT|RIGHT|TIE\"}.",
-      "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]
+      "allowed_outcomes": ["LEFT", "RIGHT", "TIE"],
+      "diagnosis_system_prompt": "You are a strict visual inspection diagnostician. Do not declare a winner. Use only the supplied image and detector summary. Return exactly one JSON object with reason_code, message, and retry=true.",
+      "diagnosis_user_prompt_template": "The YOLO detector could not obtain a valid stable dice result. Detector summary: {detector_summary}. Explain the most likely reason, such as incomplete dice count, overlapping dice, occlusion, poor lighting, or unclear divider. Return {\"reason_code\":\"INCOMPLETE_OBJECTS|OVERLAPPING_OBJECTS|LOW_LIGHT|OCCLUDED|NO_OBJECTS_DETECTED|UNSTABLE_DETECTION|SCENE_GEOMETRY_UNCLEAR|UNKNOWN\",\"message\":\"...\",\"retry\":true}.",
+      "diagnosis_allowed_reason_codes": ["INCOMPLETE_OBJECTS", "OVERLAPPING_OBJECTS", "LOW_LIGHT", "OCCLUDED", "NO_OBJECTS_DETECTED", "UNSTABLE_DETECTION", "SCENE_GEOMETRY_UNCLEAR", "UNKNOWN"]
     },
     "video": {"enabled": true, "protocol": "webrtc", "path": "/dice/", "autoplay": true, "muted": true},
     "lifecycle": {"post_result_hold_seconds": 3},
-    "timeouts": {"adjudication_seconds": 120}
+    "timeouts": {"yolo_detection_seconds": 8, "adjudication_seconds": 120, "diagnosis_llm_seconds": 3}
   },
   "voice": "default",
   "speed": 1.0,

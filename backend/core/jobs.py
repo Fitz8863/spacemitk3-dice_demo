@@ -139,6 +139,20 @@ class ComponentJob:
                     # structured job protocol so clients never need to parse
                     # stdout logs.
                     self._append_event_locked({"event": "result", **result})
+            if isinstance(result, dict) and result.get("diagnosed") and result.get("retry_required"):
+                diagnosis = result.get("diagnosis")
+                message = diagnosis.get("message") if isinstance(diagnosis, dict) else None
+                self.result = result
+                self.error = str(message or "视觉裁决未完成，请重新开始")
+                self.status = "error"
+                self.phase = "error"
+                self.finished_at = now_ms()
+                self._terminal = True
+                self.logs.append(self.error[-500:])
+                self.logs = self.logs[-40:]
+                self.revision += 1
+                self.condition.notify_all()
+                return
             adjudicated = bool(isinstance(result, dict) and result.get("adjudicated"))
             # ``adjudicated`` is a business result, not a lifecycle signal.
             # A new provider may return it before the holding phase has

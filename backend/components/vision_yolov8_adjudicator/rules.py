@@ -17,6 +17,84 @@ class RuleError(ValueError):
     """Raised when an observation, rule, or adjudication decision is invalid."""
 
 
+_DIAGNOSIS_REASON_CODES = {
+    "INCOMPLETE_OBJECTS",
+    "OVERLAPPING_OBJECTS",
+    "LOW_LIGHT",
+    "OCCLUDED",
+    "NO_OBJECTS_DETECTED",
+    "UNSTABLE_DETECTION",
+    "SCENE_GEOMETRY_UNCLEAR",
+    "UNKNOWN",
+}
+
+
+def _participant_counts(evidence: Mapping[str, Any]) -> dict[str, int]:
+    participants = evidence.get("participants") if isinstance(evidence, Mapping) else None
+    if not isinstance(participants, Mapping):
+        return {}
+    counts: dict[str, int] = {}
+    for name, values in participants.items():
+        if isinstance(values, (list, tuple)):
+            counts[str(name)] = len(values)
+        elif values is None:
+            counts[str(name)] = 0
+        else:
+            counts[str(name)] = 1
+    return counts
+
+
+def diagnose_detection_failure(
+    profile: Mapping[str, Any], evidence: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Explain why a detector could not produce a stable adjudication.
+
+    This is deliberately evidence-only and game-agnostic.  A game may provide
+    ``vision.expected_count`` (dice uses five per side), while other games can
+    rely on the generic no-object/unstable/geometry classifications.
+    """
+    evidence = evidence if isinstance(evidence, Mapping) else {}
+    vision = profile.get("vision", {}) if isinstance(profile, Mapping) else {}
+    vision = vision if isinstance(vision, Mapping) else {}
+    counts = _participant_counts(evidence)
+    expected = vision.get("expected_count")
+    detections = evidence.get("detections")
+    detection_count = len(detections) if isinstance(detections, list) else sum(counts.values())
+    divider = evidence.get("divider")
+    if expected is not None and isinstance(expected, int) and expected > 0 and counts:
+        if detection_count == 0 or all(value == 0 for value in counts.values()):
+            reason = "NO_OBJECTS_DETECTED"
+            message = "当前画面未检测到目标，可能是光线不足、镜头遮挡或摄像头画面异常，请检查环境后重新开始。"
+        elif any(value != expected for value in counts.values()):
+            reason = "INCOMPLETE_OBJECTS"
+            details = "、".join(f"{name}={count}" for name, count in counts.items())
+            message = (
+                f"当前目标数量不完整（{details}，每侧应为 {expected} 个），"
+                "可能存在目标叠放、遮挡或漏检，请重新摆放后再试。"
+            )
+        elif isinstance(evidence.get("divider"), Mapping) and evidence["divider"].get("found") is False:
+            reason = "SCENE_GEOMETRY_UNCLEAR"
+            message = "目标数量完整，但左右区域的场景分界线不清晰，无法可靠完成裁决，请调整光线或摆放位置后再试。"
+        else:
+            reason = "UNSTABLE_DETECTION"
+            message = "目标数量虽然完整，但连续画面中的检测结果不稳定，可能存在画面抖动或遮挡，请重新摆放后再试。"
+    elif detection_count == 0:
+        reason = "NO_OBJECTS_DETECTED"
+        message = "当前画面未检测到目标，可能是光线不足、镜头遮挡或摄像头画面异常，请检查环境后重新开始。"
+    elif isinstance(divider, Mapping) and divider.get("found") is False:
+        reason = "SCENE_GEOMETRY_UNCLEAR"
+        message = "检测到目标，但场景分界线不清晰，无法可靠区分左右区域，请调整光线或摆放位置后再试。"
+    else:
+        reason = "UNSTABLE_DETECTION"
+        message = "检测结果在连续画面中不稳定，可能存在遮挡、叠放或画面抖动，请重新摆放后再试。"
+    return {
+        "reason_code": reason if reason in _DIAGNOSIS_REASON_CODES else "UNKNOWN",
+        "message": message,
+        "retry": True,
+        "detected_counts": counts,
+    }
+
+
 def fuse_yolo_outcomes(outcomes: Sequence[str]) -> str | None:
     """Return the strict-majority outcome, or ``None`` for a tie/no votes.
 

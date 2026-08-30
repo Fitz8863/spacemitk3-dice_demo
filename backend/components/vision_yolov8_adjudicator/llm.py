@@ -26,6 +26,17 @@ class VerificationResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class DiagnosisResult:
+    """Outcome of one bounded LLM failure-diagnosis request."""
+
+    status: str
+    reason_code: str | None = None
+    message: str | None = None
+    retry: bool = True
+    error: str | None = None
+
+
 Post = Callable[[str, Mapping[str, Any], Mapping[str, str], float], Any]
 
 
@@ -109,6 +120,63 @@ class OpenAICompatibleVisionVerifier:
             return VerificationResult("failure", error=str(exc))
         except (OSError, ValueError, TypeError, KeyError, IndexError, json.JSONDecodeError) as exc:
             return VerificationResult("failure", error=str(exc) or "LLM request failed")
+
+    def diagnose(
+        self,
+        *,
+        image_path: str | Path | None = None,
+        image_paths: Sequence[str | Path] | None = None,
+        system_prompt: str,
+        user_prompt: str,
+        allowed_reason_codes: Sequence[str],
+        timeout_seconds: float,
+        model: str | None = None,
+    ) -> DiagnosisResult:
+        try:
+            paths = [Path(p) for p in (image_paths or ([image_path] if image_path is not None else []))]
+            if not paths:
+                return DiagnosisResult("failure", error="image_path is required")
+            image_parts = []
+            for path in paths:
+                data = path.read_bytes()
+                mime = mimetypes.guess_type(path.name)[0]
+                if mime not in {"image/jpeg", "image/png"}:
+                    return DiagnosisResult("failure", error="unsupported image format")
+                encoded = base64.b64encode(data).decode("ascii")
+                image_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}})
+            payload = {
+                "model": model or self.model or "",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": [{"type": "text", "text": user_prompt}, *image_parts]},
+                ],
+            }
+            headers = {"Content-Type": "application/json"}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            response = self._post(self.endpoint, payload, headers, timeout_seconds)
+            parsed = json.loads(self._extract_content(response))
+            if not isinstance(parsed, Mapping):
+                return DiagnosisResult("failure", error="LLM diagnosis must be a JSON object")
+            reason = parsed.get("reason_code")
+            message = parsed.get("message")
+            retry = parsed.get("retry", True)
+            allowed = set(allowed_reason_codes)
+            if not isinstance(reason, str) or reason not in allowed:
+                return DiagnosisResult("failure", error="LLM diagnosis returned unknown reason_code")
+            if not isinstance(message, str) or not message.strip():
+                return DiagnosisResult("failure", error="LLM diagnosis has no message")
+            if not isinstance(retry, bool):
+                return DiagnosisResult("failure", error="LLM diagnosis retry must be boolean")
+            return DiagnosisResult("success", reason_code=reason, message=message.strip(), retry=retry)
+        except (TimeoutError, socket.timeout) as exc:
+            return DiagnosisResult("timeout", error=str(exc) or "LLM diagnosis request timed out")
+        except urlerror.URLError as exc:
+            if isinstance(exc.reason, (TimeoutError, socket.timeout)) or "timed out" in str(exc.reason).lower():
+                return DiagnosisResult("timeout", error=str(exc.reason) or "LLM diagnosis request timed out")
+            return DiagnosisResult("failure", error=str(exc))
+        except (OSError, ValueError, TypeError, KeyError, IndexError, json.JSONDecodeError) as exc:
+            return DiagnosisResult("failure", error=str(exc) or "LLM diagnosis failed")
 
     @staticmethod
     def _extract_content(response: Any) -> str:

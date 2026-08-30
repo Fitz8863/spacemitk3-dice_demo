@@ -59,4 +59,9 @@ def run(
             is_cancelled=is_cancelled,
             timeout_seconds=timeout_seconds,
         )
+    # A failed YOLO round can still return an explainable diagnosis.  It is a
+    # terminal retry result, not a physical winner, so do not force it through
+    # the winner/score projection layer.
+    if isinstance(physical_result, dict) and physical_result.get("diagnosed"):
+        return physical_result
     return project_participant_result(physical_result, manifest["participants"])

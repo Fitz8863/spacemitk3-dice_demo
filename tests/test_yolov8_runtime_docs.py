@@ -17,6 +17,9 @@ def test_runtime_readme_describes_private_profile_driven_protocol():
         "video.webrtc_base_url",
         "MediaMTX",
         "post_result_hold_seconds",
+        "diagnostic_snapshot",
+        "yolo_detection_seconds",
+        "yolo_fallback",
     ):
         assert phrase in text
 

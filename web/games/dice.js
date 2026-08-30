@@ -202,6 +202,10 @@ export function register(engine) {
       pendingAnalysisResult = event.result && typeof event.result === 'object'
         ? event.result
         : event;
+    } else if (event.event === 'diagnosis' || event.diagnosed) {
+      pendingAnalysisResult = event.result && typeof event.result === 'object'
+        ? event.result
+        : event;
     } else if (event.event === 'phase' || event.event === 'progress') {
       updateAnalysisProgress(event);
     }
@@ -224,6 +228,10 @@ export function register(engine) {
     // switching to the result view.
     const terminal = snapshot.status === 'success'
       || (snapshot.phase === 'complete' && snapshot.result);
+    if (snapshot.status === 'error' && snapshot.result && snapshot.result.diagnosed) {
+      pendingAnalysisResult = snapshot.result;
+      return true;
+    }
     if (terminal && (snapshot.result || pendingAnalysisResult)) {
       $('stepDetect').classList.add('active');
       $('stepDetect').querySelector('span').textContent = '✓';
@@ -302,7 +310,9 @@ export function register(engine) {
       await pollAnalysisFallback(jobId);
     }
     const job = await requestJson(`/api/adjudicate/${jobId}`);
-    if ((job.status === 'success' || job.phase === 'complete') && (job.result || pendingAnalysisResult)) {
+    if (job.status === 'error' && job.result && job.result.diagnosed) {
+      showDiagnosis(job.result);
+    } else if ((job.status === 'success' || job.phase === 'complete') && (job.result || pendingAnalysisResult)) {
       showResult(job.result || pendingAnalysisResult);
     }
   }
@@ -321,6 +331,20 @@ export function register(engine) {
       $('analysisRetry').classList.remove('hidden');
       toast(`K3 视觉裁决失败：${error.message}`);
     }
+  }
+
+  function showDiagnosis(result) {
+    stopVisionStream();
+    if (!result || result.retry_required !== true) {
+      throw new Error('诊断结果缺少 retry_required 标记');
+    }
+    const diagnosis = result && result.diagnosis && typeof result.diagnosis === 'object'
+      ? result.diagnosis : {};
+    $('analysisTitle').textContent = '本次裁决未完成';
+    $('analysisStatus').textContent = diagnosis.message
+      || '当前画面无法形成稳定检测结果，请检查摆放和光线后重新开始。';
+    $('analysisRetry').classList.remove('hidden');
+    toast('视觉裁决未完成，请重新开始一局');
   }
 
   function showResult(result) {
