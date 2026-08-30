@@ -292,6 +292,18 @@ static bool load_config(const std::string& path, Args& a) {
 
         const cv::FileNode root = file.root();
         read_config_value(root, "model", a.model);
+        // Hardware config paths are commonly launched from the repository
+        // root by the provider or a diagnostic script. Resolve the model
+        // relative to the JSON file, while still allowing --model to
+        // override it later during command-line parsing.
+        if (!a.model.empty()) {
+            const std::filesystem::path model_path(a.model);
+            if (!model_path.is_absolute()) {
+                const std::filesystem::path config_path =
+                    std::filesystem::absolute(std::filesystem::path(path));
+                a.model = (config_path.parent_path() / model_path).lexically_normal().string();
+            }
+        }
         const cv::FileNode camera = root["camera"];
         if (!camera.empty()) {
             if (camera.isString()) {

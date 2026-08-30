@@ -85,3 +85,9 @@ def test_runtime_config_owns_hardware_only_settings():
     assert "rejudge_on_change" not in config
     assert config["yolov8_enabled"] is False
     assert config["divider_detection"] is False
+
+
+def test_runtime_resolves_config_relative_model_path():
+    source = SOURCE.read_text(encoding="utf-8")
+    assert "config_path.parent_path() / model_path" in source
+    assert "std::filesystem::absolute(std::filesystem::path(path))" in source
