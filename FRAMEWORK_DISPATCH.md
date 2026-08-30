@@ -132,7 +132,7 @@ main/
 │   └── games/dice/
 │       ├── manifest.json        # 游戏文案、provider、视觉裁决 profile、音视频参数
 │       └── pipeline.py          # 将 dice 游戏请求交给 adjudicator
-├── vision/yolov8_objdetect/     # K3 YOLOv8 C++ 工程和模型配置
+├── vision/yolov8_adjudicator/     # K3 YOLOv8 C++ 工程和模型配置
 ├── tts/qwen3-tts/               # Qwen3 runtime、模型配置、启动脚本
 ├── tts/moss-tts-nano/           # MOSS runtime 源码和板端交付目录
 ├── scripts/                     # Web/TTS 启停脚本
@@ -373,7 +373,7 @@ POST /api/adjudicate/<job_id>/cancel
 
 `backend/components/vision_yolov8_adjudicator/provider.py` 是通用 Python 适配器，负责：
 
-- 定位 `vision/yolov8_objdetect/build/yolov8_camera`；
+- 定位 `vision/yolov8_adjudicator/build/yolov8_camera`；
 - 检查可执行文件和 LLM 配置；
 - 探测二进制是否支持 `--event-fd`；
 - 启动 C++ 子进程；
@@ -391,14 +391,13 @@ POST /api/adjudicate/<job_id>/cancel
 典型命令等价于：
 
 ```bash
-vision/yolov8_objdetect/build/yolov8_camera \
+vision/yolov8_adjudicator/build/yolov8_camera \
   --config config.json \
   --no-display \
-  --rejudge-on-change \
   --event-fd <pipe-fd>
 ```
 
-工作目录是 `vision/yolov8_objdetect/`。如果旧版二进制不支持 `--event-fd`，provider 会退回兼容模式，只识别明确标记的 `[RESULT] {...}` 行；普通 stdout/stderr 仍然只作为日志。
+工作目录是 `vision/yolov8_adjudicator/`。如果旧版二进制不支持 `--event-fd`，provider 会退回兼容模式，只识别明确标记的 `[RESULT] {...}` 行；普通 stdout/stderr 仍然只作为日志。
 
 ### 9.3 事件和日志通道
 
@@ -586,7 +585,7 @@ N 字节 WAV 数据
 
 ### 13.3 密钥边界
 
-LLM key 应通过 `.dice-arena.env` 或环境变量提供，不写入网页、不返回 API、不提交 Git。`vision/yolov8_objdetect/config.json` 中的本地密钥修改属于板端本地配置，操作时不能覆盖或提交。
+LLM key 应通过 `.dice-arena.env` 或环境变量提供，不写入网页、不返回 API、不提交 Git。`vision/yolov8_adjudicator/config.json` 中的本地密钥修改属于板端本地配置，操作时不能覆盖或提交。
 
 ---
 
@@ -606,7 +605,7 @@ LLM key 应通过 `.dice-arena.env` 或环境变量提供，不写入网页、�
 
 - [Qwen3 配置](/home/fitz/spacemit-k3-dev/projects/dice-game/main/backend/components/tts_qwen3/config.json)：runtime 路径、端口、speaker 文件、生成参数；
 - [MOSS 配置](/home/fitz/spacemit-k3-dev/projects/dice-game/main/backend/components/tts_moss_nano/config.json)：runtime 路径、模型目录、音色模式、端口和 SpaceMIT EP 参数；
-- [YOLO 配置](/home/fitz/spacemit-k3-dev/projects/dice-game/main/vision/yolov8_objdetect/config.json)：摄像头、模型、稳定帧、LLM 和 EP 配置。
+- [YOLO runtime 配置](/home/fitz/spacemit-k3-dev/projects/dice-game/main/vision/yolov8_adjudicator/config.json)：摄像头、OpenCL/EP、稳定帧和 RTSP 硬件默认值；LLM transport 位于组件配置，游戏 prompt 位于 manifest 的 `vision_profile.llm`。
 
 修改 manifest 或组件配置后，通常需要重启后端或对应 runtime，才能重新扫描或重新加载配置。
 

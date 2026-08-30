@@ -4,7 +4,7 @@
 
 - `web/`：大屏 Web 前端，完成游戏列表、规则确认、同步倒计时、双方摇骰、同时开盖、视觉分析动画、胜负播报和再来一局；各游戏的 `manifest.json` 集中维护 TTS 文案与默认音色/语速。
 - `backend/server.py`：K3 板端轻量 HTTP bridge；通过视觉裁决功能包调度 YOLOv8 runtime，并使用独立结构化事件通道和 SSE 将进度/结果推送给网页。
-- `vision/yolov8_objdetect/`：迁移的 YOLOv8 K3 摄像头推理工程，保留 OpenCL 前处理、SpaceMIT ONNX Runtime EP、GStreamer 摄像头、骰子分区求和和 LLM 复核逻辑。
+- `vision/yolov8_adjudicator/`：通用 YOLOv8 K3 摄像头 runtime，负责 OpenCL 前处理、SpaceMIT ONNX Runtime EP、GStreamer 摄像头、稳定检测、场景几何辅助和快照；游戏规则与 LLM 复核由 Python provider 调度。
 - `tts/qwen3-tts/`：迁移的 Qwen3-TTS 0.6B + SpaceMIT `llama-server` 服务；网页通过后端代理获取 24 kHz 单声道 WAV。
 - `tts/moss-tts-nano/`：迁移的 MOSS-TTS-Nano SpaceMIT EP runtime 源码与板端交付目录，布局与 `tts/qwen3-tts/` 一致；模型、riscv64 Python 包和 native 库按该目录 `.gitignore` 保留为板端运行时文件。
 - `backend/components/tts_moss_nano/`：MOSS-TTS-Nano 组件适配器；调用仓库内 runtime，按文本 chunk 流式返回 WAV。
@@ -74,7 +74,7 @@ systemctl status dice-arena-web.service
 
 ```
 
-`web/` 前端和 `backend/server.py` 都只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。网页请求 `/api/adjudicate` 后，bridge 会在板端直接启动 `vision/yolov8_objdetect/build/yolov8_camera`，所以裁决阶段应该能看到 YOLOv8 进程、OpenCL GPU、SpaceMIT EP 和 LLM 请求日志。浏览器在板端通过 `127.0.0.1` 访问时，可以正常申请摄像头权限；如果从其他设备通过 HTTP IP 访问，浏览器可能因非安全上下文限制摄像头权限，但实际识别仍使用 K3 板端摄像头。
+`web/` 前端和 `backend/server.py` 都只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。网页请求 `/api/adjudicate` 后，bridge 会通过 `vision_yolov8_adjudicator` 启动或复用 `vision/yolov8_adjudicator/build/yolov8_camera`；YOLO runtime 只输出稳定检测证据，LLM 请求由 Python provider 发起。浏览器在板端通过 `127.0.0.1` 访问时，可以正常申请摄像头权限；如果从其他设备通过 HTTP IP 访问，浏览器可能因非安全上下文限制摄像头权限，但实际识别仍使用 K3 板端摄像头。
 
 首次接入大模型时，在 K3 项目根目录创建不纳入 Git 的凭据文件（不要把 key 写进网页或提交到仓库）：
 
@@ -152,7 +152,7 @@ LLM 覆盖结果，LLM 超时则受控回退到 YOLO；其他失败、数量不�
 源码、模型和 K3 配置位于：
 
 ```text
-vision/yolov8_objdetect/
+vision/yolov8_adjudicator/
 ├── src/
 ├── models/best.q.onnx
 ├── config.json
@@ -162,7 +162,7 @@ vision/yolov8_objdetect/
 在 SpaceMIT K3 板端编译：
 
 ```bash
-cd <repo-root>/vision/yolov8_objdetect
+cd <repo-root>/vision/yolov8_adjudicator
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4
@@ -175,9 +175,9 @@ cmake --build build -j4
   --no-display --max-frames 30
 ```
 
-当前迁移的模型是 YOLOv8 raw 输出模型，预期输出 `[1, 10, 8400]`，类别 ID `0..5` 对应骰子面 `1..6`。程序会在 CPU 侧执行 YOLOv8 解码、分区和 NMS，并要求左右两侧各识别到 5 颗骰子后才判定总和。
+当前迁移的模型是 YOLOv8 raw 输出模型，预期输出 `[1, 10, 8400]`。程序会在 CPU 侧执行 YOLOv8 解码和 NMS，并以模型无关的 detection 列表和稳定帧快照交给游戏 profile 解释；不会在 C++ 中固化骰子数量、分区、求和或胜负规则。
 
-仓库提交版本的 `vision/yolov8_objdetect/config.json` 必须保持 `llm.api_key` 为空；运行时优先通过未纳入 Git 的 `.dice-arena.env` 或 `DICE_LLM_API_KEY` 提供密钥。如果板端工作副本的 `config.json` 已含本地密钥，应把它视为本地配置：不要打印、覆盖或直接提交；提交相关配置变更时先清空密钥，提交后再恢复本地值。`--no-llm` 只可用于独立诊断，不能作为网页游戏判胜路径。
+`vision/yolov8_adjudicator/config.json` 只保存摄像头、推理、RTSP 等硬件默认值，不再保存 LLM 参数。LLM endpoint、model 默认值位于 `backend/components/vision_yolov8_adjudicator/config.json`，真实 API key 仍只通过未纳入 Git 的 `.dice-arena.env` 或 `DICE_LLM_API_KEY` 提供。
 
 
 ## 迁移的 Qwen3-TTS 服务

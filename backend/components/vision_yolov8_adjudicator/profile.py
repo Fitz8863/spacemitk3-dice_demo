@@ -134,7 +134,8 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
     video = profile.get("video")
     if not isinstance(video, dict):
         raise ProfileError("video must be an object")
-    _validate_base_url(video.get("webrtc_base_url"), "video.webrtc_base_url")
+    if "webrtc_base_url" in video:
+        _validate_base_url(video["webrtc_base_url"], "video.webrtc_base_url")
     _validate_video_path(video.get("path"))
     if video.get("enabled", True) not in {True, False}:
         raise ProfileError("video.enabled must be boolean")
@@ -209,4 +210,9 @@ def load_component_config(package_dir: Path) -> dict[str, Any]:
         resolve_project_path(runtime["binary"])
     if "working_dir" in runtime:
         resolve_project_path(runtime["working_dir"])
+    video = payload.get("video", {})
+    if not isinstance(video, dict):
+        raise ProfileError("component config video must be an object")
+    if "webrtc_base_url" in video:
+        _validate_base_url(video["webrtc_base_url"], "video.webrtc_base_url")
     return payload

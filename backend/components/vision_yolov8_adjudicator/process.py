@@ -133,6 +133,11 @@ class YoloRuntimeProcess:
             confidence = vision.get("confidence", vision.get("conf"))
             if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
                 runtime_overrides.extend(["--conf", str(confidence)])
+            divider_detection = vision.get("divider_detection")
+            if isinstance(divider_detection, bool):
+                runtime_overrides.append(
+                    "--divider-detection" if divider_detection else "--no-divider-detection"
+                )
 
         # A multi-view profile selects the camera per view.  Single-view
         # profiles intentionally inherit the component/C++ camera default.

@@ -167,7 +167,8 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
         package_dir = ROOT / "backend" / "components" / provider_id
         config = load_component_config(package_dir)
         video = profile.get("video", {}) if isinstance(profile.get("video"), dict) else {}
-        base_url = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or video.get("webrtc_base_url", "")
+        component_video = config.get("video", {}) if isinstance(config.get("video"), dict) else {}
+        base_url = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or video.get("webrtc_base_url", "") or component_video.get("webrtc_base_url", "")
         runtime = config.get("runtime", {})
         runtime = runtime if isinstance(runtime, dict) else {}
         metadata = _safe_profile_metadata(profile, base_url, runtime)
@@ -179,7 +180,7 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
             item_video = item_profile.get("video", {})
             item_base = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or (
                 item_video.get("webrtc_base_url", "") if isinstance(item_video, dict) else ""
-            )
+            ) or component_video.get("webrtc_base_url", "")
             profile_metadata.append(_safe_profile_metadata(item_profile, item_base, runtime))
         metadata["profiles"] = profile_metadata
         return metadata

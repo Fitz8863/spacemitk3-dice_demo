@@ -54,7 +54,7 @@ main
 创建本文件时，`main` 与 `origin/main` 指向同一提交，但工作区存在一个用户本地修改：
 
 ```text
-vision/yolov8_objdetect/config.json
+vision/yolov8_adjudicator/config.json
 ```
 
 该修改涉及 LLM 模型配置。**不要擅自回滚、覆盖或把密钥写入 Git。** 后续操作前必须重新执行 `git status`，因为以上状态可能已经变化。
@@ -88,10 +88,10 @@ main/
 │   ├── app.js                       # 游戏交互、状态切换、后端调用
 │   └── styles.css                   # 页面样式
 ├── vision/
-│   └── yolov8_objdetect/
+│   └── yolov8_adjudicator/
 │       ├── src/                     # YOLOv8 C++ 源码
 │       ├── models/best.q.onnx       # K3 使用的量化 ONNX 模型
-│       ├── config.json              # 摄像头、推理、稳定帧、LLM 等配置
+│       ├── config.json              # 摄像头、推理、稳定帧、RTSP 等硬件默认配置
 │       ├── CMakeLists.txt
 │       └── build/yolov8_camera      # K3 编译产物，不纳入 Git
 ├── scripts/
@@ -116,7 +116,7 @@ main/
 web/dice-arena-web.log
 backend/__pycache__/
 .dice-arena.env
-vision/yolov8_objdetect/build/
+vision/yolov8_adjudicator/build/
 ```
 
 ---
@@ -133,14 +133,14 @@ flowchart TD
     Camera["K3 板端摄像头"]
     Preprocess["OpenCL 图像预处理"]
     Infer["SpaceMIT ONNX Runtime EP\nYOLOv8 推理"]
-    Stable["左右 5+5 骰子\n稳定帧判断"]
-    LLM["大模型胜负复核"]
-    Result["verified JSON 结果"]
+    Stable["模型无关\n稳定 detection"]
+    Assist["可选场景几何辅助"]
+    Result["observation JSONL"]
 
     Browser -->|"同源 HTTP /api/*"| Gateway
     Gateway -->|"subprocess 按局启动"| Vision
     Camera --> Vision
-    Vision --> Preprocess --> Infer --> Stable --> LLM --> Result
+    Vision --> Preprocess --> Infer --> Stable --> Assist --> Result
     Result --> Gateway --> Browser
 ```
 
@@ -311,7 +311,7 @@ TTS 资产策略：模型文件约 2 GiB，`*.onnx`、`*.gguf`、speaker `.bin` 
 提前打开，点击“双方已开盖”后仅发送本局开始控制命令：
 
 ```text
-vision/yolov8_objdetect/build/yolov8_camera
+vision/yolov8_adjudicator/build/yolov8_camera
 ```
 
 主要参数包括：
@@ -319,35 +319,27 @@ vision/yolov8_objdetect/build/yolov8_camera
 ```text
 --config config.json
 --no-display
---rejudge-on-change
 --event-fd FD
+--control-fd FD
+--prewarm
 ```
 
 含义：
 
-- 使用配置文件里的板端摄像头、稳定帧和 LLM 设置；
+- 使用配置文件里的板端摄像头、推理和 RTSP 硬件默认值；
 - 不打开本地图形显示窗口；
-- 检测结果变化时重新判断；
-- 通过继承的独立文件描述符输出 JSONL 业务事件；
+- 通过继承的独立文件描述符接收控制命令并输出 JSONL 业务事件；
 - stdout/stderr 只保留诊断日志；
-- 后端收到 `verified:true` 的结构化 `result` 事件后终止本轮子进程并返回结果。
+- 后端收到稳定 `observation` 后，由 Python provider 负责 profile 规则、LLM 复核和最终结果。
 
 **YOLOv8 默认使用常驻预热模式。** 空闲时 runtime 保持摄像头和视频链路，处于
 `idle`，不计稳定帧也不调用 LLM；开始裁决时通过控制通道进入检测，结果后的
 `post_result_hold_seconds` 期间继续发布视频，随后回到 idle。异常或取消时才释放
 runtime 资源。旧版按局启动的二进制仅作为迁移兼容路径。
 
-当前有效结果要求：
+当前 runtime 的有效输出是模型无关的稳定 `observation`：检测框、可选 `divider` 场景几何辅助和私有快照路径。骰子 5+5、石头剪刀布类别关系、多视角多数投票、LLM 成功/超时/失败策略都由 Python provider 按游戏 manifest 决定。
 
-1. 左右双方各识别到 5 颗骰子；
-2. 检测达到配置要求的稳定帧数；
-3. YOLOv8 算出双方点数和胜负；
-4. LLM 根据双方整数和复核胜负；
-5. LLM 成功且与 YOLOv8 不一致时，以 LLM 结果为最终结果；
-6. LLM 超时则受控回退到 YOLOv8 结果；其他 LLM 失败进入错误；
-7. 最终 JSON 中 `verified` 为 `true`。
-
-结果结构示例：
+provider 产生的游戏结果示例：
 
 ```json
 {
@@ -365,14 +357,14 @@ runtime 资源。旧版按局启动的二进制仅作为迁移兼容路径。
 }
 ```
 
-如果 YOLOv8 超时、数量不为 5+5、LLM 未配置或 LLM 调用失败（超时回退除外），前端应显示错误，不能使用随机骰子兜底；LLM 与 YOLO 不一致时按约定使用 LLM 结果。
+如果 runtime 超时、快照无效、规则不满足或 LLM 调用失败（profile 明确允许超时回退除外），前端应显示错误，不能使用随机结果兜底。
 
 ### 4.7 摄像头边界
 
 网页中的摄像头预览和 YOLOv8 使用的摄像头链路不是同一个数据流：
 
 - 浏览器预览：浏览器的 `getUserMedia()`；
-- YOLOv8 识别：K3 C++ 程序读取 `vision/yolov8_objdetect/config.json` 中指定的板端摄像头。
+- YOLOv8 识别：K3 C++ 程序读取 `vision/yolov8_adjudicator/config.json` 中指定的板端摄像头。
 
 因此：
 
@@ -430,7 +422,7 @@ pgrep -af yolov8_camera
 tail -f /home/spacemit/projects/dice-game/main/web/dice-arena-web.log
 ```
 
-只有网页发起分析后才预期看到 `yolov8_camera`。
+resident 模式下网页启动后即可看到 `yolov8_camera`；只有收到 `START_ADJUDICATION` 后才进入 YOLO 推理，停止裁决后回到 idle。
 
 ---
 
@@ -462,7 +454,7 @@ DICE_LLM_API_KEY=<secret>
 chmod 600 .dice-arena.env
 ```
 
-仓库提交版本的 `vision/yolov8_objdetect/config.json` 必须保持 `llm.api_key` 为空，真实密钥优先由环境变量提供。如果板端工作副本已含本地密钥，不要打印或覆盖；提交配置变更时只提交清空密钥后的版本，完成后恢复用户本地值。
+`vision/yolov8_adjudicator/config.json` 只保存硬件 runtime 默认值；LLM endpoint/model 位于组件配置，真实 API key 优先由环境变量提供，不进入 Git。
 
 ---
 
@@ -602,8 +594,8 @@ ros2_ws/
 ```
 
 现有 C++ YOLOv8 不需要立即重写为 ROS2 节点。第一阶段继续由
-`vision_yolov8_adjudicator` 通过控制通道调度已验证的 `yolov8_camera`；新游戏只需在
-自己的 `manifest.json` 的 `vision_profile` 节点中声明模型、规则、提示词和视频 path。
+`vision_yolov8_adjudicator` 通过控制通道调度 resident `yolov8_camera`；新游戏只需在
+自己的 `manifest.json` 的 `vision_profile` 节点中声明模型、规则、提示词和视频 path，MediaMTX 基础地址统一由组件 `video.webrtc_base_url` 提供。
 
 ---
 
@@ -896,4 +888,4 @@ git log -5 --oneline --decorate
 
 ## 18. 一句话交接结论
 
-当前项目是一个运行在 K3 上的同源 Web + 轻量 HTTP bridge，已经通过子进程真正调用板端 YOLOv8、SpaceMIT EP 和 LLM 复核来判断骰子胜负；当前人工动作应先抽象为 `ManualRobotAdapter`，未来保留 Web/HTTP/SSE 层，并按需增加 WebSocket，同时增加 `GameOrchestrator + Ros2RobotAdapter`，让 ROS2 负责机器人内部协同，而不是推翻现有前后端或让浏览器直接控制机械臂。
+当前项目是一个运行在 K3 上的同源 Web + 轻量 HTTP bridge，通过 `vision_yolov8_adjudicator` 调度通用 YOLOv8 runtime，再由 Python profile/provider 完成不同游戏的规则和 LLM 复核；当前人工动作应先抽象为 `ManualRobotAdapter`，未来保留 Web/HTTP/SSE 层，并按需增加 WebSocket，同时增加 `GameOrchestrator + Ros2RobotAdapter`，让 ROS2 负责机器人内部协同，而不是推翻现有前后端或让浏览器直接控制机械臂。

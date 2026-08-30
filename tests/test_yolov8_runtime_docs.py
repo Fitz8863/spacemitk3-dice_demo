@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-README = Path(__file__).resolve().parents[1] / "vision/yolov8_objdetect/README.md"
+README = Path(__file__).resolve().parents[1] / "vision/yolov8_adjudicator/README.md"
 
 
 def test_runtime_readme_describes_private_profile_driven_protocol():

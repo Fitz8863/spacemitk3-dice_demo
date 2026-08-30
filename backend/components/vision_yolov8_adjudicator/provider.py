@@ -260,9 +260,10 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         if not video_enabled:
             return None
         video = profile.get("video", {})
-        base = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or (
-            video.get("webrtc_base_url") if isinstance(video, Mapping) else ""
-        )
+        profile_base = video.get("webrtc_base_url") if isinstance(video, Mapping) else ""
+        component_video = load_component_config(Path(__file__).parent).get("video", {})
+        component_base = component_video.get("webrtc_base_url") if isinstance(component_video, Mapping) else ""
+        base = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or profile_base or component_base
         if not isinstance(base, str) or not base.strip():
             return None
         return {"event": "video", "url": compose_video_url(base, path), "view_id": view_id}

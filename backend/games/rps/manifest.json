@@ -23,11 +23,12 @@
     "schema_version": 1,
     "game_id": "rps",
     "vision": {
-      "model": "vision/yolov8_objdetect/models/best.q.onnx",
+      "model": "vision/yolov8_adjudicator/models/best.q.onnx",
       "class_map": {"0": "rock", "1": "scissors", "2": "paper"},
       "participants": ["LEFT", "RIGHT"],
       "participant_assignment": "x_midpoint",
-      "stable_frames": 15
+      "stable_frames": 15,
+      "divider_detection": false
     },
     "multi_view": {"enabled": false, "min_views": 1, "yolo_fusion": "majority_vote", "llm_images": "all_stable_views"},
     "rule": {
@@ -46,7 +47,7 @@
       "user_prompt_template": "Inspect the supplied stable frame, identify both players' gestures, and return {\"winner\":\"LEFT|RIGHT|TIE\"}.",
       "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]
     },
-    "video": {"enabled": true, "protocol": "webrtc", "webrtc_base_url": "http://100.118.229.28:8889", "path": "/rps/", "autoplay": true, "muted": true},
+    "video": {"enabled": true, "protocol": "webrtc", "path": "/rps/", "autoplay": true, "muted": true},
     "lifecycle": {"post_result_hold_seconds": 3},
     "timeouts": {"adjudication_seconds": 120}
   }

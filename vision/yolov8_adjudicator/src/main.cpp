@@ -1,31 +1,4 @@
 #include "gstreamer_camera.h"
-#ifdef VISION_GENERIC_ONLY
-// Generic builds keep the historical display code source-compatible without
-// linking the retired dice-specific verifier.  The control-fd provider never
-// enters that branch; Python owns all LLM verification.
-enum class LlmWinner { Left, Right, Tie, Unknown };
-enum class LlmVerificationResult { Failure, Timeout, Success };
-struct LlmDiceConfig {
-    std::string url;
-    std::string api_key;
-    std::string model;
-    int timeout_seconds = 0;
-    std::string system_prompt;
-    std::string user_prompt_template;
-};
-class LlmDiceVerifier {
-public:
-    explicit LlmDiceVerifier(LlmDiceConfig = {}) {}
-    bool configured() const { return false; }
-    LlmVerificationResult verify_once(const std::string&, const std::string&, int, int,
-                                      LlmWinner& winner, std::string& error) const {
-        winner = LlmWinner::Unknown; error = "legacy dice verifier disabled";
-        return LlmVerificationResult::Failure;
-    }
-};
-#else
-#include "llm_dice_verifier.h"
-#endif
 #include "rtsp_streamer.h"
 #include "opencl_preprocess.h"
 #include "yolov8_detector.h"
@@ -201,24 +174,6 @@ struct DividerLine {
     cv::Point2f normal;
 };
 
-struct DiceJudgment {
-    bool divider_found = false;
-    bool valid = false;
-    bool horizontal_divider = false;
-    int first_count = 0;
-    int second_count = 0;
-    int first_sum = 0;
-    int second_sum = 0;
-    std::string first_name = "LEFT";
-    std::string second_name = "RIGHT";
-    std::vector<int> first_values;
-    std::vector<int> second_values;
-    std::string message;
-    std::string overlay;
-    DividerLine divider;
-    std::vector<int> sides;
-};
-
 struct Args {
     std::string config_path = "config.json";
     std::string model = "models/best.q.onnx";
@@ -231,20 +186,12 @@ struct Args {
     float conf = 0.50f;
     size_t queue_depth = 2;
     int stable_frames = 20;
-    bool rejudge_on_change = false;
     bool no_display = false;
     int max_frames = 0;
     bool self_test = false;
     std::string dump_input;
-    bool yolov8_enabled = true;
-    bool llm_enabled = true;
-    std::string llm_url = "https://api.rvcompute.com:60000/v1";
-    std::string llm_model = "gpt-5.4-mini";
-    int llm_timeout_seconds = 20;
-    std::string llm_system_prompt;
-    std::string llm_user_prompt_template;
-    std::string llm_api_key;
-    bool no_llm = false;
+    bool yolov8_enabled = false;
+    bool divider_detection_enabled = false;
     bool rtsp_enabled = false;
     int event_fd = -1;
     int control_fd = -1;
@@ -370,7 +317,6 @@ static bool load_config(const std::string& path, Args& a) {
         read_config_value(root, "ep_affinity", a.ep_affinity);
         read_config_value(root, "conf", a.conf);
         read_config_value(root, "stable_frames", a.stable_frames);
-        if (!read_config_bool(root, "rejudge_on_change", a.rejudge_on_change)) return false;
         read_config_value(root, "focus", a.focus);
         read_config_value(root, "zoom", a.zoom);
         read_config_value(root, "max_frames", a.max_frames);
@@ -386,6 +332,7 @@ static bool load_config(const std::string& path, Args& a) {
             a.no_display = !display_enabled;
         }
         if (!read_config_bool(root, "yolov8_enabled", a.yolov8_enabled)) return false;
+        if (!read_config_bool(root, "divider_detection", a.divider_detection_enabled)) return false;
 
         int queue_depth = static_cast<int>(a.queue_depth);
         read_config_value(root, "queue_depth", queue_depth);
@@ -394,21 +341,6 @@ static bool load_config(const std::string& path, Args& a) {
             return false;
         }
         a.queue_depth = static_cast<std::size_t>(queue_depth);
-
-        const cv::FileNode llm = root["llm"];
-        if (!llm.empty()) {
-            if (!llm.isMap()) {
-                std::cerr << "config llm must be a JSON object\n";
-                return false;
-            }
-            if (!read_config_bool(llm, "enabled", a.llm_enabled)) return false;
-            read_config_value(llm, "url", a.llm_url);
-            read_config_value(llm, "model", a.llm_model);
-            read_config_value(llm, "timeout_seconds", a.llm_timeout_seconds);
-            read_config_value(llm, "api_key", a.llm_api_key);
-            read_config_value(llm, "system_prompt", a.llm_system_prompt);
-            read_config_value(llm, "user_prompt_template", a.llm_user_prompt_template);
-        }
 
         const cv::FileNode rtsp = root["rtsp"];
         if (!rtsp.empty()) {
@@ -438,9 +370,9 @@ static void usage(const char* exe) {
               << "  --width N --height N --fps N\n"
               << "  --conf FLOAT       confidence threshold\n"
               << "  --queue-depth N    keep up to N frames per pipeline queue\n"
-              << "  --stable-frames N  valid YOLO frames required before LLM\n"
-              << "  --rejudge-on-change restart stable check and LLM after dice change\n"
-              << "  --no-rejudge-on-change keep one-shot-per-process behavior\n"
+              << "  --stable-frames N  matching YOLO observations required for stability\n"
+              << "  --divider-detection enable reusable scene divider assistance\n"
+              << "  --no-divider-detection disable scene divider assistance\n"
               << "  --focus N          fixed manual focus (-1 unchanged)\n"
               << "  --zoom N           zoom absolute value (-1 unchanged)\n"
               << "  --intra-threads N  SpaceMIT EP threads\n"
@@ -448,12 +380,9 @@ static void usage(const char* exe) {
               << "  --no-display       run pipeline without window (config: display_enabled=false)\n"
               << "  --max-frames N     stop after N frames enter preprocess (0=unlimited)\n"
               << "  --dump-input PATH  dump first preprocessed tensor as float32\n"
+              << "  --yolov8           enable YOLO preprocessing/inference\n"
               << "  --no-yolov8        bypass preprocessing/inference and display camera frames only\n"
               << "  --self-test        initialize OpenCL GPU and model, run one inference\n"
-              << "  --llm-url URL      override the config LLM base URL\n"
-              << "  --llm-model NAME   override the config LLM model\n"
-              << "  --llm-timeout N    LLM request timeout in seconds\n"
-              << "  --no-llm           disable LLM verification and use stable YOLO result\n"
               << "  --rtsp             publish H.264 to RTSP server with SpaceMIT VPU\n"
               << "  --event-fd FD      write structured JSONL events to an inherited FD\n"
               << "  --control-fd FD    read vision-control-v1 JSONL commands from an inherited FD\n"
@@ -482,10 +411,6 @@ static bool validate_args(Args& a) {
     }
     if (a.stable_frames < 1) {
         std::cerr << "--stable-frames must be >= 1\n";
-        return false;
-    }
-    if (a.llm_timeout_seconds < 1) {
-        std::cerr << "--llm-timeout must be >= 1\n";
         return false;
     }
     if (a.rtsp_port < 1 || a.rtsp_port > 65535) {
@@ -533,21 +458,6 @@ static bool validate_args(Args& a) {
             return false;
         }
     }
-    if (a.llm_enabled && !a.no_llm && a.control_fd < 0 && !a.prewarm) {
-        if (a.llm_system_prompt.empty() || a.llm_user_prompt_template.empty()) {
-            std::cerr << "config llm.system_prompt and llm.user_prompt_template "
-                         "must not be empty\n";
-            return false;
-        }
-        for (const char* token : {"{left_name}", "{right_name}",
-                                  "{left_sum}", "{right_sum}"}) {
-            if (a.llm_user_prompt_template.find(token) == std::string::npos) {
-                std::cerr << "config llm.user_prompt_template is missing placeholder "
-                          << token << "\n";
-                return false;
-            }
-        }
-    }
     return true;
 }
 
@@ -584,8 +494,8 @@ static bool parse(int argc, char** argv, Args& a) {
                 a.queue_depth = static_cast<std::size_t>(std::stoul(v));
             } else if (k == "--stable-frames" && (v = need(i))) {
                 a.stable_frames = std::stoi(v);
-            } else if (k == "--rejudge-on-change") a.rejudge_on_change = true;
-            else if (k == "--no-rejudge-on-change") a.rejudge_on_change = false;
+            } else if (k == "--divider-detection") a.divider_detection_enabled = true;
+            else if (k == "--no-divider-detection") a.divider_detection_enabled = false;
             else if (k == "--focus" && (v = need(i))) a.focus = std::stoi(v);
             else if (k == "--zoom" && (v = need(i))) a.zoom = std::stoi(v);
             else if (k == "--intra-threads" && (v = need(i))) a.intra_threads = std::stoi(v);
@@ -593,13 +503,9 @@ static bool parse(int argc, char** argv, Args& a) {
             else if (k == "--max-frames" && (v = need(i))) a.max_frames = std::stoi(v);
             else if (k == "--no-display") a.no_display = true;
             else if (k == "--dump-input" && (v = need(i))) a.dump_input = v;
+            else if (k == "--yolov8") a.yolov8_enabled = true;
             else if (k == "--no-yolov8") a.yolov8_enabled = false;
             else if (k == "--self-test") a.self_test = true;
-            else if (k == "--llm-url" && (v = need(i))) a.llm_url = v;
-            else if (k == "--llm-model" && (v = need(i))) a.llm_model = v;
-            else if (k == "--llm-timeout" && (v = need(i))) {
-                a.llm_timeout_seconds = std::stoi(v);
-            } else if (k == "--no-llm") a.no_llm = true;
             else if (k == "--rtsp") a.rtsp_enabled = true;
             else if (k == "--event-fd" && (v = need(i))) a.event_fd = std::stoi(v);
             else if (k == "--control-fd" && (v = need(i))) a.control_fd = std::stoi(v);
@@ -706,8 +612,6 @@ static std::string json_escape(const std::string& text) {
     return out;
 }
 
-static const char* winner_label(LlmWinner winner);
-
 static std::string save_snapshot(const Args& args, const cv::Mat& bgr,
                                  uint64_t frame_id) {
     std::error_code error;
@@ -725,32 +629,22 @@ static std::string save_snapshot(const Args& args, const cv::Mat& bgr,
 
 static void emit_observation(const Args& args, const InferenceResult& item,
                              const std::string& snapshot_path,
-                             const std::string& outcome,
-                             const DiceJudgment* judgment = nullptr) {
+                             const DividerLine* divider_assist = nullptr) {
     std::ostringstream event;
     event << "{\"event\":\"observation\",\"view_id\":\""
           << json_escape(args.view_id) << "\",\"frame_id\":" << item.id
           << ",\"stable\":true,\"width\":" << item.width
           << ",\"height\":" << item.height;
-    if (!outcome.empty()) {
-        event << ",\"yolo_outcome\":\"" << json_escape(outcome) << "\"";
-    }
     if (!snapshot_path.empty()) {
         event << ",\"snapshot\":{\"format\":\"image/jpeg\",\"path\":\""
               << json_escape(snapshot_path) << "\"}";
     }
-    if (judgment && judgment->valid) {
-        event << ",\"participants\":{\"" << json_escape(judgment->first_name) << "\":[";
-        for (size_t i = 0; i < judgment->first_values.size(); ++i) {
-            if (i) event << ',';
-            event << judgment->first_values[i];
-        }
-        event << "],\"" << json_escape(judgment->second_name) << "\":[";
-        for (size_t i = 0; i < judgment->second_values.size(); ++i) {
-            if (i) event << ',';
-            event << judgment->second_values[i];
-        }
-        event << "]}";
+    if (divider_assist) {
+        event << ",\"divider\":{\"found\":" << (divider_assist->valid ? "true" : "false")
+              << ",\"horizontal\":" << (divider_assist->horizontal ? "true" : "false")
+              << ",\"point\":[" << divider_assist->point.x << "," << divider_assist->point.y << "]"
+              << ",\"direction\":[" << divider_assist->direction.x << "," << divider_assist->direction.y << "]"
+              << ",\"normal\":[" << divider_assist->normal.x << "," << divider_assist->normal.y << "]}";
     }
     event << ",\"detections\":[";
     for (size_t i = 0; i < item.detections.size(); ++i) {
@@ -945,277 +839,25 @@ static bool detect_black_divider(const cv::Mat& bgr, DividerLine& divider) {
     return true;
 }
 
-static DiceJudgment judge_dice(const cv::Mat& bgr, const std::vector<Detection>& detections) {
-    DiceJudgment result;
-    result.sides.assign(detections.size(), -1);
-    result.divider_found = detect_black_divider(bgr, result.divider);
-    if (!result.divider_found) {
-        result.message = "未检测到中间黑色分界线，未执行骰子点数求和判断";
-        result.overlay = "INVALID: black divider not found";
-        return result;
-    }
-
-    result.horizontal_divider = result.divider.horizontal;
-    if (result.horizontal_divider) {
-        result.first_name = "UPPER";
-        result.second_name = "LOWER";
-    }
-    const float tolerance = std::max(4.0f, 0.005f * std::min(bgr.cols, bgr.rows));
-    for (size_t i = 0; i < detections.size(); ++i) {
-        const Detection& d = detections[i];
-        if (d.class_id < 0 || d.class_id >= 6) continue;
-        const cv::Point2f center((d.x1 + d.x2) * 0.5f, (d.y1 + d.y2) * 0.5f);
-        const cv::Point2f delta = center - result.divider.point;
-        const float signed_distance = delta.dot(result.divider.normal);
-        if (std::abs(signed_distance) <= tolerance) continue;
-        const int side = signed_distance < 0.0f ? 0 : 1;
-        result.sides[i] = side;
-        const int value = d.class_id + 1;
-        if (side == 0) {
-            ++result.first_count;
-            result.first_sum += value;
-            result.first_values.push_back(value);
-        } else {
-            ++result.second_count;
-            result.second_sum += value;
-            result.second_values.push_back(value);
-        }
-    }
-    std::sort(result.first_values.begin(), result.first_values.end());
-    std::sort(result.second_values.begin(), result.second_values.end());
-
-    if (result.first_count != 5 || result.second_count != 5) {
-        std::ostringstream message;
-        message << "两侧骰子数量必须都达到5个，当前 " << result.first_name << "="
-                << result.first_count << ", " << result.second_name << "="
-                << result.second_count << "，未执行求和判断";
-        result.message = message.str();
-        result.overlay = "INVALID: " + result.first_name + "/" + result.second_name +
-                         " must both contain 5 dice (" + std::to_string(result.first_count) +
-                         "/" + std::to_string(result.second_count) + ")";
-        return result;
-    }
-
-    result.valid = true;
-    std::string winner = "TIE";
-    if (result.first_sum > result.second_sum) winner = result.first_name + " WINS";
-    if (result.second_sum > result.first_sum) winner = result.second_name + " WINS";
-    std::ostringstream message;
-    message << result.first_name << "总和=" << result.first_sum << "，"
-            << result.second_name << "总和=" << result.second_sum << "，结果：";
-    if (winner == "TIE") message << "平局";
-    else message << (result.first_sum > result.second_sum ? result.first_name : result.second_name)
-                 << "获胜";
-    result.message = message.str();
-    result.overlay = result.first_name + "=" + std::to_string(result.first_sum) +
-                     "  " + result.second_name + "=" + std::to_string(result.second_sum) +
-                     "  " + winner;
-    return result;
-}
-
-static void draw_divider_and_judgment(cv::Mat& bgr, const DiceJudgment& judgment) {
-    if (judgment.divider_found) {
-        const cv::Point2f p = judgment.divider.point;
-        const cv::Point2f v = judgment.divider.direction * 2000.0f;
+static void draw_scene_assist(cv::Mat& bgr, const DividerLine& divider,
+                              const std::string& status) {
+    if (divider.valid) {
+        const cv::Point2f p = divider.point;
+        const cv::Point2f v = divider.direction * 2000.0f;
         const cv::Point p1(static_cast<int>(p.x - v.x), static_cast<int>(p.y - v.y));
         const cv::Point p2(static_cast<int>(p.x + v.x), static_cast<int>(p.y + v.y));
         cv::line(bgr, p1, p2, cv::Scalar(0, 165, 255), 3, cv::LINE_AA);
     }
-    const cv::Scalar color = judgment.valid ? cv::Scalar(0, 220, 0) : cv::Scalar(0, 0, 255);
+    const cv::Scalar color = divider.valid ? cv::Scalar(0, 220, 0) : cv::Scalar(0, 0, 255);
     // Keep the judgment text directly on the image instead of drawing a solid
     // black panel in the top-left corner. A thin shadow preserves readability
     // without leaving the unwanted black background/bottom edge.
     const cv::Point text_origin(18, 48);
-    cv::putText(bgr, judgment.overlay, text_origin, cv::FONT_HERSHEY_SIMPLEX,
+    cv::putText(bgr, status, text_origin, cv::FONT_HERSHEY_SIMPLEX,
                 .7, cv::Scalar(0, 0, 0), 4, cv::LINE_AA);
-    cv::putText(bgr, judgment.overlay, text_origin, cv::FONT_HERSHEY_SIMPLEX,
+    cv::putText(bgr, status, text_origin, cv::FONT_HERSHEY_SIMPLEX,
                 .7, color, 2, cv::LINE_AA);
 }
-
-static LlmWinner yolo_winner(const DiceJudgment& judgment) {
-    if (judgment.first_sum > judgment.second_sum) return LlmWinner::Left;
-    if (judgment.second_sum > judgment.first_sum) return LlmWinner::Right;
-    return LlmWinner::Tie;
-}
-
-struct DiceResultSnapshot {
-    int first_count = 0;
-    int second_count = 0;
-    int first_sum = 0;
-    int second_sum = 0;
-    std::vector<int> first_values;
-    std::vector<int> second_values;
-    std::string first_name;
-    std::string second_name;
-    bool horizontal_divider = false;
-    LlmWinner winner = LlmWinner::Unknown;
-};
-
-static DiceResultSnapshot make_dice_snapshot(const DiceJudgment& judgment) {
-    DiceResultSnapshot snapshot;
-    snapshot.first_count = judgment.first_count;
-    snapshot.second_count = judgment.second_count;
-    snapshot.first_sum = judgment.first_sum;
-    snapshot.second_sum = judgment.second_sum;
-    snapshot.first_values = judgment.first_values;
-    snapshot.second_values = judgment.second_values;
-    snapshot.first_name = judgment.first_name;
-    snapshot.second_name = judgment.second_name;
-    snapshot.horizontal_divider = judgment.horizontal_divider;
-    snapshot.winner = yolo_winner(judgment);
-    return snapshot;
-}
-
-static bool same_dice_snapshot(const DiceResultSnapshot& lhs,
-                               const DiceResultSnapshot& rhs) {
-    return lhs.first_count == rhs.first_count &&
-           lhs.second_count == rhs.second_count &&
-           lhs.first_sum == rhs.first_sum &&
-           lhs.second_sum == rhs.second_sum &&
-           lhs.first_values == rhs.first_values &&
-           lhs.second_values == rhs.second_values &&
-           lhs.first_name == rhs.first_name &&
-           lhs.second_name == rhs.second_name &&
-           lhs.horizontal_divider == rhs.horizontal_divider &&
-           lhs.winner == rhs.winner;
-}
-
-static const char* winner_label(LlmWinner winner) {
-    switch (winner) {
-    case LlmWinner::Left: return "LEFT";
-    case LlmWinner::Right: return "RIGHT";
-    case LlmWinner::Tie: return "TIE";
-    default: return "UNKNOWN";
-    }
-}
-
-static std::string build_verified_result_event(const DiceResultSnapshot& snapshot,
-                                               LlmWinner llm_winner,
-                                               const char* source) {
-    std::ostringstream event;
-    event << "{\"event\":\"result\",\"verified\":true"
-          << ",\"first_dice\":[";
-    for (size_t i = 0; i < snapshot.first_values.size(); ++i) {
-        if (i > 0) event << ",";
-        event << snapshot.first_values[i];
-    }
-    event << "],\"second_dice\":[";
-    for (size_t i = 0; i < snapshot.second_values.size(); ++i) {
-        if (i > 0) event << ",";
-        event << snapshot.second_values[i];
-    }
-    event << "],\"first_sum\":" << snapshot.first_sum
-          << ",\"second_sum\":" << snapshot.second_sum
-          << ",\"winner\":\"" << winner_label(snapshot.winner) << "\""
-          << ",\"llm_winner\":\"" << winner_label(llm_winner) << "\""
-          << ",\"source\":\"" << source << "\"}";
-    return event.str();
-}
-
-static void emit_verified_result(const DiceResultSnapshot& snapshot,
-                                 LlmWinner llm_winner,
-                                 const char* source) {
-    const std::string event = build_verified_result_event(snapshot, llm_winner, source);
-    emit_event(event);
-    // Preserve the standalone CLI result protocol when no event FD was
-    // supplied. The backend prefers the dedicated event channel and never
-    // parses this compatibility line on rebuilt binaries.
-    if (g_event_fd < 0) {
-        std::cout << "[RESULT] " << event << "\n";
-        std::cout.flush();
-    }
-}
-
-struct LlmRequest {
-    uint64_t generation = 0;
-    DiceResultSnapshot snapshot;
-    std::string first_name;
-    std::string second_name;
-    int first_sum = 0;
-    int second_sum = 0;
-};
-
-struct LlmResponse {
-    uint64_t generation = 0;
-    LlmVerificationResult result = LlmVerificationResult::Failure;
-    LlmWinner winner = LlmWinner::Unknown;
-    std::string error;
-};
-
-// Runs the potentially slow network request away from the HighGUI/display
-// thread. There is one active request and at most one queued request; when a
-// new stable scene is found while a request is running, only the latest scene
-// is retained for the next request.
-class AsyncLlmVerifier {
-public:
-    explicit AsyncLlmVerifier(const LlmDiceVerifier& verifier) : verifier_(verifier) {}
-    ~AsyncLlmVerifier() { stop(); }
-
-    void start() {
-        worker_ = std::thread(&AsyncLlmVerifier::run, this);
-    }
-
-    bool submit(LlmRequest request) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (stopping_) return false;
-            queued_request_ = std::move(request);
-        }
-        cv_.notify_one();
-        return true;
-    }
-
-    bool tryPop(LlmResponse& response) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (responses_.empty()) return false;
-        response = std::move(responses_.front());
-        responses_.pop_front();
-        return true;
-    }
-
-    void stop() {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stopping_ = true;
-            queued_request_.reset();
-        }
-        cv_.notify_all();
-        if (worker_.joinable()) worker_.join();
-    }
-
-private:
-    void run() {
-        while (true) {
-            LlmRequest request;
-            {
-                std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait(lock, [&] { return stopping_ || queued_request_.has_value(); });
-                if (stopping_ && !queued_request_) return;
-                request = std::move(*queued_request_);
-                queued_request_.reset();
-            }
-
-            LlmResponse response;
-            response.generation = request.generation;
-            response.result = verifier_.verify_once(
-                request.first_name, request.second_name,
-                request.first_sum, request.second_sum,
-                response.winner, response.error);
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                responses_.push_back(std::move(response));
-            }
-        }
-    }
-
-    const LlmDiceVerifier& verifier_;
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    std::optional<LlmRequest> queued_request_;
-    std::deque<LlmResponse> responses_;
-    std::thread worker_;
-    bool stopping_ = false;
-};
 
 
 } // namespace
@@ -1238,28 +880,18 @@ int main(int argc, char** argv) {
     // supervisors that pass one.  This keeps resident mode usable without
     // requiring every caller to know Unix fd conventions.
     if (a.prewarm && a.control_fd < 0) a.control_fd = STDIN_FILENO;
-    if (const char* env_url = std::getenv("DICE_LLM_URL")) {
-        if (a.llm_url == "https://api.rvcompute.com:60000/v1") a.llm_url = env_url;
-    }
-    if (const char* env_model = std::getenv("DICE_LLM_MODEL")) {
-        if (a.llm_model == "gpt-5.4-mini") a.llm_model = env_model;
-    }
-    if (const char* env_key = std::getenv("DICE_LLM_API_KEY")) {
-        a.llm_api_key = env_key;
-        // The verifier passes the secret to curl through a private pipe. Do
-        // not leave it in the environment inherited by later child processes.
-        ::unsetenv("DICE_LLM_API_KEY");
-    }
     g_event_fd = a.event_fd;
     emit_event("{\"event\":\"started\",\"component\":\"vision_yolov8_adjudicator\",\"protocol\":\"jsonl-events-v1\"}");
-    if (a.yolov8_enabled && !std::filesystem::exists(a.model)) {
+    const bool runtime_has_control = a.control_fd >= 0;
+    const bool yolo_runtime_enabled = a.yolov8_enabled || runtime_has_control;
+    if (yolo_runtime_enabled && !std::filesystem::exists(a.model)) {
         std::cerr << "Model not found: " << a.model << "\n";
         return 2;
     }
 
     std::unique_ptr<OpenClPreprocessor> pre;
     std::unique_ptr<Yolov8Detector> detector;
-    if (a.yolov8_enabled) {
+    if (yolo_runtime_enabled) {
         pre = std::make_unique<OpenClPreprocessor>();
         if (!pre->init()) return 4;
         detector = std::make_unique<Yolov8Detector>();
@@ -1267,22 +899,6 @@ int main(int argc, char** argv) {
     } else {
         // Camera-only mode intentionally avoids all YOLOv8/OpenCL/ORT setup.
         std::cerr << "[YOLOv8] disabled; displaying camera frames without preprocessing or inference.\n";
-    }
-    LlmDiceVerifier llm_verifier({a.llm_url, a.llm_api_key, a.llm_model,
-                                  a.llm_timeout_seconds,
-                                  a.llm_system_prompt, a.llm_user_prompt_template});
-    // Resident/provider mode performs verification in Python. Keep the old
-    // dice verifier available for the legacy one-shot CLI, but never start it
-    // while a control channel is active.
-    const bool llm_enabled = a.yolov8_enabled && a.llm_enabled && !a.no_llm &&
-                             !a.prewarm && a.control_fd < 0;
-    if (!a.yolov8_enabled && a.llm_enabled) {
-        std::cerr << "[LLM] disabled because YOLOv8 is disabled.\n";
-    } else if (!llm_enabled) {
-        std::cerr << "[LLM] disabled; a stable YOLO result will directly determine the winner.\n";
-    } else if (!llm_verifier.configured()) {
-        std::cerr << "[LLM] verification disabled: set llm.api_key in config.json "
-                     "or DICE_LLM_API_KEY.\n";
     }
     if (a.self_test) {
         if (!a.yolov8_enabled) {
@@ -1351,7 +967,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!a.yolov8_enabled) {
+    if (!a.yolov8_enabled && a.control_fd < 0) {
         const auto direct_start = Clock::now();
         int frame_count = 0;
         while (!g_signal_stop && (a.max_frames <= 0 || frame_count < a.max_frames)) {
@@ -1539,109 +1155,36 @@ int main(int argc, char** argv) {
         result_queue.close();
     });
 
-    // Thread 3 is the display stage logically; it runs on the main/UI thread
+    // Thread 3 is the display/stability stage. It runs on the main/UI thread
     // because OpenCV HighGUI on this board must own the X11 event loop here.
-    struct LlmVerificationState {
-        // Each initial or changed result must remain identical for the
-        // configured number of consecutive valid 5+5 frames.
-        int stable_count = 0;
-        bool have_stable_candidate = false;
-        DiceResultSnapshot stable_candidate;
-        std::string last_stability_message;
-
-        bool attempted = false;
-        bool succeeded = false;
-        bool agreement = false;
-        bool timeout_fallback = false;
-        bool printed = false;
-        DiceResultSnapshot attempted_snapshot;
-        LlmWinner llm_winner = LlmWinner::Unknown;
-        uint64_t next_generation = 0;
-        uint64_t attempted_generation = 0;
-        uint64_t active_generation = 0;
-        bool request_in_flight = false;
-        bool request_completed = false;
-        bool fallback_verdict_available = false;
-        std::optional<LlmRequest> deferred_request;
-    } llm_state;
-
-    std::unique_ptr<AsyncLlmVerifier> async_llm;
-    if (llm_enabled) {
-        async_llm = std::make_unique<AsyncLlmVerifier>(llm_verifier);
-        async_llm->start();
-    }
-
     bool first_display = true;
     uint64_t shown = 0;
     auto last_report = start;
-    auto drain_llm_responses = [&] {
-        if (!async_llm) return;
-        LlmResponse response;
-        while (async_llm->tryPop(response)) {
-            if (response.generation == llm_state.active_generation) {
-                llm_state.request_in_flight = false;
-            }
-            if (response.generation == llm_state.attempted_generation) {
-                llm_state.request_completed = true;
-                if (response.result == LlmVerificationResult::Success) {
-                    llm_state.succeeded = true;
-                    llm_state.agreement =
-                        response.winner == llm_state.attempted_snapshot.winner;
-                    llm_state.llm_winner = response.winner;
-                    std::cout << "[LLM] one-shot result="
-                              << winner_label(response.winner) << "\n";
-                } else if (response.result == LlmVerificationResult::Timeout) {
-                    llm_state.timeout_fallback = true;
-                    llm_state.succeeded = true;
-                    llm_state.agreement = true;
-                    llm_state.llm_winner = llm_state.attempted_snapshot.winner;
-                    llm_state.fallback_verdict_available = true;
-                    std::cerr << "[LLM] one-shot verification timed out: "
-                              << response.error << "; using the stable YOLO result\n";
-                } else {
-                    std::cerr << "[LLM] one-shot verification failed: "
-                              << response.error << "\n";
-                }
-            }
-        }
-        if (!llm_state.request_in_flight && llm_state.deferred_request) {
-            const uint64_t generation = llm_state.deferred_request->generation;
-            if (async_llm->submit(std::move(*llm_state.deferred_request))) {
-                llm_state.deferred_request.reset();
-                llm_state.request_in_flight = true;
-                llm_state.active_generation = generation;
-                std::cout << "[LLM] queued latest stable result for verification\n";
-            }
-        }
-    };
-
     while (true) {
         if (g_signal_stop) abort.store(true);
         std::shared_ptr<InferenceResult> item;
         if (!result_queue.popLatest(item, abort, first_display, a.queue_depth)) {
-            drain_llm_responses();
             if (g_signal_stop) abort.store(true);
             if (inference_done.load()) break;
             if (abort.load()) break;
             continue;
         }
         first_display = false;
-        drain_llm_responses();
         if (!item) continue;
 
         const auto t0 = Clock::now();
-            cv::Mat bgr;
-            DiceJudgment judgment;
-            if (item->nv12 && !item->nv12->empty()) {
-                cv::cvtColor(*item->nv12, bgr, cv::COLOR_YUV2BGR_NV12);
-                // A control-fd run is the game-agnostic provider mode.  Do
-                // not run the legacy divider/five-dice judge on every frame;
-                // it is both wasted work and an accidental coupling that can
-                // reject non-dice profiles.  The Python provider consumes the
-                // generic detections/snapshot and applies the game profile.
-                if (a.control_fd < 0) {
-                    judgment = judge_dice(bgr, item->detections);
-                }
+        cv::Mat bgr;
+        DividerLine divider_assist;
+        if (item->nv12 && !item->nv12->empty()) {
+            cv::cvtColor(*item->nv12, bgr, cv::COLOR_YUV2BGR_NV12);
+            if (a.divider_detection_enabled) {
+                divider_assist.valid = detect_black_divider(bgr, divider_assist);
+            }
+            std::string scene_status = !adjudication_active.load()
+                ? "Ready"
+                : (a.divider_detection_enabled
+                    ? (divider_assist.valid ? "Divider detected" : "Searching divider")
+                    : "YOLO observation");
                 if (a.control_fd >= 0 && adjudication_active.load() &&
                     !generic_observation_sent.load()) {
                     const std::string signature = detection_signature(item->detections);
@@ -1652,215 +1195,21 @@ int main(int argc, char** argv) {
                         else { generic_last_signature = signature; generic_stable_count.store(1); stable_count = 1; }
                     }
                     // Generic provider mode uses the detector's stable
-                    // observation contract, not the legacy dice divider/
-                    // five-plus-five judge.  An empty detection frame is not
+                    // observation contract. An empty detection frame is not
                     // useful evidence, but every non-empty object layout is a
                     // valid candidate for a game profile to interpret.
-                    if (!item->detections.empty() &&
+                    const bool divider_ready = !a.divider_detection_enabled || divider_assist.valid;
+                    if (!item->detections.empty() && divider_ready &&
                         stable_count >= a.stable_frames &&
                         !generic_observation_sent.exchange(true)) {
                         const std::string snapshot_path = save_snapshot(a, bgr, item->id);
-                        // Keep dice fields only when the legacy judge can
-                        // produce them; generic games consume detections and
-                        // the stable snapshot without any C++ business rule.
-                        if (judgment.valid) {
-                            const DiceResultSnapshot snapshot = make_dice_snapshot(judgment);
-                            emit_observation(a, *item, snapshot_path,
-                                             winner_label(snapshot.winner), &judgment);
-                        } else {
-                            emit_observation(a, *item, snapshot_path, "", nullptr);
-                        }
+                        emit_observation(a, *item, snapshot_path,
+                                         a.divider_detection_enabled ? &divider_assist : nullptr);
                     }
                 }
-                DiceJudgment display_judgment = judgment;
-            // In resident/prewarm mode frames are continuously published, but
-            // no detections/stability accounting occur until START arrives.
-            if (!adjudication_active.load()) {
-                display_judgment.valid = false;
-                display_judgment.overlay = "Ready";
-            }
-            static std::string last_judgment;
-            if (!adjudication_active.load()) {
-                // Keep the live camera/RTSP path warm without running the
-                // game-specific judge or LLM.
-            } else if (a.control_fd >= 0) {
-                // Generic provider mode deliberately bypasses the legacy
-                // dice-specific stability/LLM state machine. The provider
-                // consumes the observation above and returns FINAL_RESULT.
-                display_judgment.valid = false;
-                display_judgment.overlay = "YOLO observation";
-            } else if (!judgment.valid) {
-                llm_state.stable_count = 0;
-                llm_state.have_stable_candidate = false;
-                if (judgment.message != last_judgment) {
-                    std::cout << "Dice judgment: " << judgment.message << "\n";
-                    last_judgment = judgment.message;
-                }
-            } else {
-                const DiceResultSnapshot current_snapshot = make_dice_snapshot(judgment);
-                const bool matches_attempted =
-                    llm_state.attempted &&
-                    same_dice_snapshot(current_snapshot, llm_state.attempted_snapshot);
-                const bool needs_stability =
-                    !llm_state.attempted ||
-                    (a.rejudge_on_change && !matches_attempted);
-                bool waiting_for_stability = false;
-
-                if (llm_state.attempted && a.rejudge_on_change && matches_attempted) {
-                    // A transient changed frame must not trigger another LLM
-                    // call if the scene returns to the already judged result.
-                    llm_state.stable_count = 0;
-                    llm_state.have_stable_candidate = false;
-                    llm_state.last_stability_message.clear();
-                } else if (needs_stability) {
-                    const bool same_candidate =
-                        llm_state.have_stable_candidate &&
-                        same_dice_snapshot(current_snapshot, llm_state.stable_candidate);
-                    if (same_candidate) {
-                        ++llm_state.stable_count;
-                    } else {
-                        llm_state.have_stable_candidate = true;
-                        llm_state.stable_count = 1;
-                        llm_state.stable_candidate = current_snapshot;
-                        llm_state.last_stability_message.clear();
-                        if (llm_state.attempted && a.rejudge_on_change) {
-                            std::cout << "[YOLO] dice result changed; restarting stable check\n";
-                        }
-                    }
-
-                    if (llm_state.stable_count < a.stable_frames) {
-                        waiting_for_stability = true;
-                        display_judgment.valid = false;
-                        display_judgment.overlay =
-                            std::string(llm_state.attempted ? "Changed result stable check "
-                                                            : "YOLO stable check ") +
-                            std::to_string(llm_state.stable_count) + "/" +
-                            std::to_string(a.stable_frames);
-                        const std::string stability_message =
-                            std::string(llm_state.attempted ? "[YOLO] changed 5+5 result "
-                                                            : "[YOLO] stable 5+5 result ") +
-                            std::to_string(llm_state.stable_count) + "/" +
-                            std::to_string(a.stable_frames) + ": " + judgment.message;
-                        if (stability_message != llm_state.last_stability_message) {
-                            emit_event("{\"event\":\"progress\",\"phase\":\"detecting\",\"stable_count\":" +
-                                       std::to_string(llm_state.stable_count) +
-                                       ",\"stable_frames\":" + std::to_string(a.stable_frames) + "}");
-                            std::cout << stability_message << "\n";
-                            llm_state.last_stability_message = stability_message;
-                        }
-                    } else {
-                        // A stable changed snapshot starts a new one-shot LLM
-                        // cycle. The previous response is never reused.
-                        const bool is_rejudgment = llm_state.attempted;
-                        llm_state.attempted = true;
-                        llm_state.succeeded = false;
-                        llm_state.agreement = false;
-                        llm_state.timeout_fallback = false;
-                        llm_state.request_completed = false;
-                        llm_state.fallback_verdict_available = false;
-                        llm_state.printed = false;
-                        llm_state.attempted_snapshot = current_snapshot;
-                        llm_state.llm_winner = LlmWinner::Unknown;
-
-                        const std::string snapshot_path = save_snapshot(a, bgr, item->id);
-                        emit_observation(a, *item, snapshot_path, winner_label(current_snapshot.winner));
-
-                        emit_event("{\"event\":\"phase\",\"phase\":\"verifying\",\"stable_frames\":" +
-                                   std::to_string(a.stable_frames) + "}");
-                        if (!llm_enabled) {
-                            llm_state.succeeded = true;
-                            llm_state.agreement = true;
-                            llm_state.llm_winner = llm_state.attempted_snapshot.winner;
-                            std::cout << "[YOLO] "
-                                      << (is_rejudgment ? "changed result" : "stable result")
-                                      << " reached " << a.stable_frames
-                                      << " consecutive frames; using YOLO result directly: "
-                                      << winner_label(llm_state.llm_winner) << "\n";
-                        } else {
-                            LlmRequest request;
-                            request.generation = ++llm_state.next_generation;
-                            request.snapshot = current_snapshot;
-                            request.first_name = judgment.first_name;
-                            request.second_name = judgment.second_name;
-                            request.first_sum = judgment.first_sum;
-                            request.second_sum = judgment.second_sum;
-                            llm_state.attempted_generation = request.generation;
-                            std::cout << "[YOLO] "
-                                      << (is_rejudgment ? "changed result" : "stable result")
-                                      << " reached " << a.stable_frames
-                                      << " consecutive frames; scheduling LLM verification\n";
-                            if (!llm_state.request_in_flight &&
-                                async_llm->submit(std::move(request))) {
-                                llm_state.request_in_flight = true;
-                                llm_state.active_generation = llm_state.attempted_generation;
-                            } else {
-                                llm_state.deferred_request = std::move(request);
-                                std::cout << "[LLM] verification already running; keeping latest result\n";
-                            }
-                        }
-
-                        llm_state.stable_count = 0;
-                        llm_state.have_stable_candidate = false;
-                        llm_state.last_stability_message.clear();
-                    }
-                }
-
-                if (!waiting_for_stability) {
-                    const bool same_snapshot =
-                        llm_state.attempted &&
-                        same_dice_snapshot(current_snapshot, llm_state.attempted_snapshot);
-                    if (llm_enabled && !llm_state.request_completed &&
-                        llm_state.request_in_flight && same_snapshot) {
-                        display_judgment.valid = false;
-                        display_judgment.overlay = "LLM verification pending";
-                    } else if (llm_enabled && llm_state.fallback_verdict_available &&
-                               llm_state.timeout_fallback && same_snapshot) {
-                        // OpenCV Hershey fonts cannot render UTF-8 Chinese text.
-                        // Keep the image overlay ASCII-only; the terminal log below
-                        // retains the Chinese judgment.message for operators.
-                        display_judgment.overlay =
-                            "YOLO fallback (LLM timeout): " + judgment.overlay;
-                        if (!llm_state.printed) {
-                            std::cout << "Dice judgment by YOLO fallback (LLM timeout): "
-                                      << judgment.message << "\n";
-                            emit_verified_result(llm_state.attempted_snapshot,
-                                                 LlmWinner::Unknown,
-                                                 "yolo_timeout_fallback");
-                            llm_state.printed = true;
-                        }
-                    } else if (llm_state.succeeded && llm_state.agreement && same_snapshot) {
-                        if (!llm_state.printed) {
-                            if (llm_enabled) {
-                                std::cout << "Dice judgment verified by YOLO + LLM: "
-                                          << judgment.message << "\n";
-                            } else {
-                                std::cout << "Dice judgment by YOLO: "
-                                          << judgment.message << "\n";
-                            }
-                            emit_verified_result(llm_state.attempted_snapshot,
-                                                 llm_state.llm_winner,
-                                                 "llm_verified");
-                            llm_state.printed = true;
-                        }
-                    } else {
-                        display_judgment.valid = false;
-                        if (!llm_state.attempted ||
-                            (!llm_state.succeeded && !llm_state.timeout_fallback)) {
-                            display_judgment.overlay =
-                                "LLM verification unavailable; winner suppressed";
-                        } else if (llm_state.succeeded && !llm_state.agreement) {
-                            display_judgment.overlay =
-                                "LLM/YOLO mismatch; winner suppressed";
-                        } else {
-                            display_judgment.overlay =
-                                "Frame differs from verified snapshot; winner suppressed";
-                        }
-                    }
-                }
-            }
             if (!a.no_display || rtsp_streamer.running()) {
                 draw_detections(bgr, item->detections);
-                draw_divider_and_judgment(bgr, display_judgment);
+                draw_scene_assist(bgr, divider_assist, scene_status);
                 const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
                 const double fps = elapsed > 0.0 ? shown / elapsed : 0.0;
                 cv::putText(bgr, "DISPLAY " + std::to_string(static_cast<int>(fps)) +
@@ -1913,7 +1262,6 @@ int main(int argc, char** argv) {
     if (control_thread.joinable()) control_thread.join();
     prepared_queue.clear();
     result_queue.clear();
-    if (async_llm) async_llm->stop();
     rtsp_streamer.stop();
     camera.close();
     if (!a.no_display) cv::destroyAllWindows();

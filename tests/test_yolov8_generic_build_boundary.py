@@ -1,25 +1,45 @@
 from pathlib import Path
+import json
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "vision" / "yolov8_objdetect" / "src" / "main.cpp"
-CMAKE = ROOT / "vision" / "yolov8_objdetect" / "CMakeLists.txt"
+SOURCE = ROOT / "vision" / "yolov8_adjudicator" / "src" / "main.cpp"
+CMAKE = ROOT / "vision" / "yolov8_adjudicator" / "CMakeLists.txt"
+RUNTIME_CONFIG = ROOT / "vision" / "yolov8_adjudicator" / "config.json"
+
+
+def test_runtime_has_adjudicator_directory_and_no_objdetect_directory():
+    assert SOURCE.parent.parent.name == "yolov8_adjudicator"
+    assert not (ROOT / "vision" / "yolov8_objdetect").exists()
 
 
 def test_generic_build_does_not_link_or_include_dice_verifier_directly():
     source = SOURCE.read_text(encoding="utf-8")
     cmake = CMAKE.read_text(encoding="utf-8")
-    assert 'option(VISION_GENERIC_ONLY' in cmake
-    assert 'src/llm_dice_verifier.cpp' not in cmake.split('if(NOT VISION_GENERIC_ONLY)', 1)[0]
-    assert '#include "llm_dice_verifier.h"' in source
-    assert '#ifdef VISION_GENERIC_ONLY' in source
+    assert 'llm_dice_verifier' not in cmake
+    assert '#include "llm_dice_verifier.h"' not in source
+    assert '#ifdef VISION_GENERIC_ONLY' not in source
 
 
 def test_generic_control_path_is_not_gated_by_dice_judgment():
     source = SOURCE.read_text(encoding="utf-8")
-    marker = 'if (a.control_fd < 0) {\n                    judgment = judge_dice'
-    assert marker in source
+    assert "judge_dice" not in source
+    assert "DiceJudgment" not in source
     assert 'if (!item->detections.empty()' in source
+
+
+def test_generic_control_path_runs_configured_divider_assist():
+    source = SOURCE.read_text(encoding="utf-8")
+    assert "divider_detection_enabled" in source
+    assert "detect_black_divider" in source
+    assert '\\"divider\\"' in source
+    assert "draw_scene_assist" in source
+
+
+def test_control_fd_can_start_yolo_when_config_default_is_disabled():
+    source = SOURCE.read_text(encoding="utf-8")
+    assert "const bool yolo_runtime_enabled = a.yolov8_enabled || runtime_has_control" in source
+    assert "if (!a.yolov8_enabled && a.control_fd < 0)" in source
 
 
 def test_generic_stability_signature_ignores_detector_jitter():
@@ -34,14 +54,34 @@ def test_generic_stability_signature_ignores_detector_jitter():
     assert "quant" in signature.lower()
 
 
-def test_generic_stub_accepts_legacy_config_shape_without_linking_verifier():
+def test_runtime_does_not_embed_legacy_dice_llm_verifier():
     source = SOURCE.read_text(encoding="utf-8")
-    stub = source.split("#ifdef VISION_GENERIC_ONLY", 1)[1].split(
-        "#else", 1
-    )[0]
-    assert "std::string url" in stub
-    assert "std::string api_key" in stub
-    assert "std::string model" in stub
-    assert "int timeout_seconds" in stub
-    assert "std::string system_prompt" in stub
-    assert "std::string user_prompt_template" in stub
+    assert not (SOURCE.parent / "llm_dice_verifier.cpp").exists()
+    assert not (SOURCE.parent / "llm_dice_verifier.h").exists()
+    assert "llm_dice_verifier" not in source
+
+
+def test_runtime_has_no_cpp_llm_or_legacy_dice_state_machine():
+    source = SOURCE.read_text(encoding="utf-8")
+    for symbol in (
+        "LlmDiceVerifier",
+        "AsyncLlmVerifier",
+        "LlmRequest",
+        "LlmResponse",
+        "LlmVerificationState",
+        "DiceResultSnapshot",
+        "--llm-url",
+        "--llm-model",
+        "--llm-timeout",
+        "--no-llm",
+        "rejudge_on_change",
+    ):
+        assert symbol not in source
+
+
+def test_runtime_config_owns_hardware_only_settings():
+    config = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    assert "llm" not in config
+    assert "rejudge_on_change" not in config
+    assert config["yolov8_enabled"] is False
+    assert config["divider_detection"] is False

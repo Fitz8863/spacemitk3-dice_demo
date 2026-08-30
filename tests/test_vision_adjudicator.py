@@ -49,19 +49,22 @@ def test_profile_loads_dice_and_composes_mediamtx_url():
     assert profile["game_id"] == "dice"
     assert profile["llm"]["context_mode"] == "single_turn_no_history"
     assert profile["video"]["path"] == "/dice/"
-    assert compose_video_url(profile["video"]["webrtc_base_url"], profile["video"]["path"]) == (
+    assert profile["vision"]["divider_detection"] is True
+    component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
+    assert compose_video_url(component["video"]["webrtc_base_url"], profile["video"]["path"]) == (
         "http://100.118.229.28:8889/dice/"
     )
 
 
-def test_profile_requires_webrtc_base_url_and_adjudication_timeout(tmp_path: Path):
+def test_profile_allows_component_owned_webrtc_base_url_and_validates_timeout(tmp_path: Path):
     profile = _minimal_profile()
-    profile["video"]["webrtc_base_url"] = "http://localhost:8889"
+    profile["video"].pop("webrtc_base_url")
     profile["timeouts"] = {"adjudication_seconds": 15}
     path = tmp_path / "vision_profile.json"
     path.write_text(json.dumps(profile))
     assert load_profile(path)["timeouts"]["adjudication_seconds"] == 15
 
+    profile["video"]["webrtc_base_url"] = "http://localhost:8889"
     profile["video"]["webrtc_base_url"] = "http://localhost:8889/dice"
     path.write_text(json.dumps(profile))
     with pytest.raises(ProfileError, match="webrtc_base_url"):
@@ -110,6 +113,17 @@ def test_video_event_uses_profile_webrtc_base_url():
     profile = {"video": {"enabled": True, "path": "/rps/", "webrtc_base_url": "http://example.test:8889"}}
     event = VisionYolov8Adjudicator._video_event(profile, "default", {"event": "video"})
     assert event == {"event": "video", "url": "http://example.test:8889/rps/", "view_id": "default"}
+
+
+def test_video_event_uses_component_webrtc_base_when_profile_has_only_path():
+    profile = {"video": {"enabled": True, "path": "/rps/"}}
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            "components.vision_yolov8_adjudicator.provider.load_component_config",
+            lambda _path: {"video": {"webrtc_base_url": "http://component.test:8889"}},
+        )
+        event = VisionYolov8Adjudicator._video_event(profile, "default", {"event": "video"})
+    assert event == {"event": "video", "url": "http://component.test:8889/rps/", "view_id": "default"}
 
 
 def test_provider_prefers_game_adjudication_timeout_over_request_fallback():
@@ -168,6 +182,12 @@ def test_component_config_does_not_require_mediamtx(tmp_path: Path):
         "runtime": {"mode": "resident", "prewarm_camera": True},
     }))
     assert load_component_config(tmp_path)["runtime"]["mode"] == "resident"
+
+
+def test_component_config_exposes_mediamtx_base_under_video():
+    config = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
+    assert config["video"]["webrtc_base_url"] == "http://100.118.229.28:8889"
+    assert "mediamtx" not in config
 
 
 def test_rtsp_args_emit_one_profile_owned_path():

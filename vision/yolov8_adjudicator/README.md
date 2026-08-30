@@ -18,14 +18,14 @@ K3 摄像头
   -> GStreamer H.264/VPU 编码 -> MediaMTX RTSP 发布 -> WebRTC
 ```
 
-MediaMTX 由部署管理。浏览器使用后端根据游戏 manifest 中 `video.webrtc_base_url` 和
+MediaMTX 由部署管理。组件配置中的 `video.webrtc_base_url` 提供部署基础地址，浏览器使用后端根据游戏 manifest 中的
 profile path 合成的
 WebRTC URL；runtime 自身产生的 RTSP/内部地址不能直接作为浏览器地址。
 
 ## 编译（在 K3 板端）
 
 ```bash
-cd ~/projects/dice-game/main/vision/yolov8_objdetect
+cd ~/projects/dice-game/main/vision/yolov8_adjudicator
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4
@@ -75,7 +75,7 @@ Runtime 向 `event-fd` 发送：
 {"event":"video","view_id":"front","url":"rtsp://127.0.0.1:8554/internal"}
 {"event":"phase","phase":"detecting"}
 {"event":"progress","stable_count":3,"stable_frames":5}
-{"event":"observation","stable":true,"detections":[],"snapshot":{"path":"/tmp/private/stable.jpg"}}
+{"event":"observation","stable":true,"detections":[],"divider":{"found":true},"snapshot":{"path":"/tmp/private/stable.jpg"}}
 {"event":"phase","phase":"idle"}
 ```
 
@@ -94,6 +94,7 @@ backend/components/vision_yolov8_adjudicator/config.json
   runtime.binary / runtime.working_dir / runtime.mode
   runtime.prewarm_camera / runtime.terminate_grace_seconds
   llm.endpoint / llm.model / llm.api_key
+  video.webrtc_base_url
   rtsp.* / events.protocol
 ```
 
@@ -105,13 +106,13 @@ backend/games/<game_id>/manifest.json -> vision_profile
   rule（numeric_compare 或 categorical_relation）
   llm.system_prompt / user_prompt_template / allowed_outcomes
   multi_view.views[].camera / multi_view.views[].video.path
-  video.webrtc_base_url / video.path / lifecycle.post_result_hold_seconds
+  video.path / lifecycle.post_result_hold_seconds
   timeouts.adjudication_seconds
 ```
 
 新增游戏不需要修改本 runtime：新增模型文件和 manifest 中的 `vision_profile` 即可。
 profile 中的 path 只能是 URL 路径（例如 `/dice/`），不能包含主机、查询串或 `..`；
-WebRTC 基础地址通过 `video.webrtc_base_url` 配置。API key 通过板端环境变量注入，不写入仓库。
+WebRTC 基础地址通过组件配置的 `video.webrtc_base_url` 配置，游戏只配置自己的 `video.path`。API key 通过板端环境变量注入，不写入仓库。
 
 ## 诊断模式
 

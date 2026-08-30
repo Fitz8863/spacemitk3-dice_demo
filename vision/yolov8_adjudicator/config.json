@@ -1,0 +1,24 @@
+{
+  "model": "models/best.q.onnx",
+  "camera": "/dev/video1",
+  "device": "",
+  "width": 1280,
+  "height": 720,
+  "fps": 25,
+  "intra_threads": 2,
+  "ep_affinity": "14;15",
+  "queue_depth": 2,
+  "conf": 0.5,
+  "focus": 0,
+  "zoom": 160,
+  "display_enabled": false,
+  "yolov8_enabled": false,
+  "divider_detection": false,
+  "stable_frames": 30,
+  "rtsp": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8554,
+    "path": "/dice"
+  }
+}

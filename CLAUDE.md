@@ -9,7 +9,7 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
 **关键文档**（接手先读，本文不重复其全部内容）：
 - `README.md` — 运行与接口说明。
 - `AI_PROJECT_CONTEXT.md` — 最完整的技术上下文（架构、状态机、安全约束、未来机械臂演进）。
-- `vision/yolov8_objdetect/AGENTS.md` — YOLOv8 C++ 子工程的构建/测试/编码规范。
+- `vision/yolov8_adjudicator/AGENTS.md` — YOLOv8 C++ 子工程的构建/测试/编码规范。
 - `tts/qwen3-tts/AGENTS.md` — Qwen3-TTS 子工程的运行/验证/核心亲和性约束。
 
 ## 环境与路径（重要）
@@ -57,7 +57,7 @@ curl http://127.0.0.1:8080/api/tts/health
 
 ### YOLOv8 C++（板端，riscv64 工具链）
 ```bash
-cd /home/spacemit/projects/dice-game/main/vision/yolov8_objdetect
+cd /home/spacemit/projects/dice-game/main/vision/yolov8_adjudicator
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4
@@ -83,14 +83,14 @@ file /tmp/dice-tts.wav   # 期望 RIFF/WAVE, 24 kHz, 16-bit, mono
 代码职责分离，但 Web 与后端部署在同一 Python 服务里（同源，无 CORS；分析进度使用 SSE，不是 WebSocket）：
 
 1. **`backend/server.py`** — 轻量 `ThreadingHTTPServer`，同时提供 `web/` 静态文件和 `/api/*`；负责路由、provider 选择和 `ComponentJob` 生命周期，不包含具体 YOLO/TTS 实现。
-2. **`vision/.../build/yolov8_camera`** — **非常驻裁决器子进程**，只在 `/api/adjudicate` 触发后按局启动，得到 `verified:true` 结果即退出。空闲时 `pgrep yolov8_camera` 无结果属正常。
+2. **`vision/yolov8_adjudicator/build/yolov8_camera`** — resident 通用 YOLO runtime，摄像头和视频链路常驻，control-fd 收到开始命令后执行推理；Python provider 负责游戏规则和云端 LLM。
 3. **`tts/qwen3-tts/runtime/bin/llama-server`** — 独立常驻进程，监听 `127.0.0.1:18080`，后端通过 `/v1/audio/speech` 代理。
 
 数据流（详见 `AI_PROJECT_CONTEXT.md` 的 mermaid 图）：
 
 ```text
 浏览器 <-> backend/server.py (HTTP/SSE，轮询仅作兼容回退)
-             └─ subprocess -> yolov8_camera (摄像头 -> OpenCL 预处理 -> SpaceMIT EP 推理 -> 5+5 稳定帧 -> LLM 复核 -> JSON)
+             └─ resident subprocess -> yolov8_camera (摄像头 -> OpenCL 预处理 -> SpaceMIT EP 推理 -> 稳定 detection/snapshot -> JSONL)
              └─ HTTP -> llama-server (Qwen3-TTS 24kHz mono WAV)
 ```
 
@@ -151,9 +151,9 @@ select → rules → ready → countdown → shaking → open → analysis → r
 
 ## 必须遵守的约束（非可选）
 
-- **胜负只能由 K3 YOLOv8 + LLM 复核产生**，禁止网页随机骰子兜底。有效结果要求：左右各 5 颗、稳定帧达标、LLM 与 YOLO 结论一致、`verified:true`。
-- **LLM key 不进仓库**：优先从 `.dice-arena.env`（`DICE_LLM_API_KEY=...`，chmod 600）或环境变量提供。若板端工作副本的 `vision/yolov8_objdetect/config.json` 已含本地 key，不要打印、覆盖或直接提交；提交时使用清空 key 的版本，完成后恢复用户本地值。不要把 key 写进 `web/`、API 响应或日志。
-- **不要回滚/覆盖用户本地修改**：`git status` 里 `vision/yolov8_objdetect/config.json` 常处于未提交的本地修改状态（涉及 LLM 配置），操作前重新确认，提交时只提交本次任务相关文件。
+- **胜负只能由 K3 YOLOv8 detection + Python profile/provider 产生**，禁止网页随机结果兜底。具体稳定帧、规则、LLM 一致/覆盖/超时回退策略由游戏 manifest 的 `vision_profile` 声明。
+- **LLM key 不进仓库**：优先从 `.dice-arena.env`（`DICE_LLM_API_KEY=...`，chmod 600）或环境变量提供。若板端工作副本的 `vision/yolov8_adjudicator/config.json` 已含本地 key，不要打印、覆盖或直接提交；提交时使用清空 key 的版本，完成后恢复用户本地值。不要把 key 写进 `web/`、API 响应或日志。
+- **不要回滚/覆盖用户本地修改**：`git status` 里 `vision/yolov8_adjudicator/config.json` 常处于未提交的本地修改状态（涉及 LLM 配置），操作前重新确认，提交时只提交本次任务相关文件。
 - **CPU/EP 亲和性不要混用**：TTS 用 preferred cores `8,9,10,11,12,13`；YOLO EP affinity 是 `14;15`（`config.json` 的 `ep_affinity`）。`taskset`/环境变量只证明配置意图，不证明 AI Core 实际利用率。
 - **不要声称未实现的功能**：当前没有机械臂、没有 ROS2、没有 WebSocket、TTS 不是逐 PCM 流式、底层模型支持 voice cloning 但接口未开放参考音频上传。
 - **一次只允许一个 YOLOv8 分析任务**（`create_job()` 里 `active_job_id` 单任务锁），避免争用摄像头/算力。

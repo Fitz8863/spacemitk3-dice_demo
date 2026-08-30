@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "runtime": {
-    "binary": "vision/yolov8_objdetect/build/yolov8_camera",
-    "working_dir": "vision/yolov8_objdetect",
+    "binary": "vision/yolov8_adjudicator/build/yolov8_camera",
+    "working_dir": "vision/yolov8_adjudicator",
     "mode": "resident",
     "prewarm_camera": true,
     "terminate_grace_seconds": 5
@@ -17,6 +17,9 @@
     "host": "127.0.0.1",
     "port": 8554,
     "path": "/dice"
+  },
+  "video": {
+    "webrtc_base_url": "http://100.118.229.28:8889"
   },
   "events": {"protocol": "jsonl-events-v1"}
 }
