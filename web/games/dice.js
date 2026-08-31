@@ -21,17 +21,17 @@ export function register(engine) {
 
   const phases = ['select', 'rules', 'ready', 'countdown', 'shaking', 'open', 'analysis', 'result'];
   const SHAKE_DURATION_SECONDS = 10;
-  const shakeCountdownMeta = ['SYNC COUNTDOWN', '同步倒计时', '与 Agent 保持同步，倒计时结束后开始摇骰。', '倒计时进行中'];
-  const visionCountdownMeta = ['VISION COUNTDOWN', '准备视觉裁决', '请保持骰子和骰盅位置不动，倒计时结束后开始视觉裁决。', '等待视觉裁决'];
+  const shakeCountdownMeta = ['同步倒计时', '与 Agent 保持同步，倒计时结束后开始摇骰。'];
+  const visionCountdownMeta = ['准备视觉裁决', '请保持骰子和骰盅位置不动，倒计时结束后开始视觉裁决。'];
   const phaseMeta = {
-    select: ['GAME SELECT', '选择一场游戏', '欢迎来到 Dice Arena，选择游戏后按 OK 开始。', '选择游戏开始体验'],
-    rules: ['GAME RULES', '游戏规则', '听完规则后按 Enter 确认，按 ↓ 可以再听一次。', 'Enter 确认 · ↓ 重听规则'],
-    ready: ['READY CHECK', '准备好了吗？', '人手操作模式已开启，拿起骰盅后点击开始。', '等待玩家开始'],
+    select: ['选择一场游戏', '欢迎来到 Dice Arena，选择游戏后按 OK 开始。'],
+    rules: ['游戏规则', '听完规则后按 Enter 确认，按 ↓ 可以再听一次。'],
+    ready: ['准备好了吗？', '人手操作模式已开启，拿起骰盅后点击开始。'],
     countdown: shakeCountdownMeta,
-    shaking: ['SHAKE PHASE', '摇骰进行中', '双方同时摇骰，准备好后可提前停止。', '双方摇骰中'],
-    open: ['REVEAL', '同时开盖', '请同时打开骰盅，开盖过场结束后自动进入倒计时。', '开盖过场中'],
-    analysis: ['VISION ADJUDICATION', '正在判定胜负', '视觉裁决器正在识别骰子点数，随后由大模型复核。', '视觉裁决中'],
-    result: ['ROUND RESULT', '本局结果', '点数已经锁定，看看谁赢下了这一局。', '结果已播报'],
+    shaking: ['摇骰进行中', '双方同时摇骰，准备好后可提前停止。'],
+    open: ['同时开盖', '请同时打开骰盅，开盖过场结束后自动进入倒计时。'],
+    analysis: ['正在判定胜负', '视觉裁决器正在识别骰子点数，随后由大模型复核。'],
+    result: ['本局结果', '点数已经锁定，看看谁赢下了这一局。'],
   };
 
   function sum(dice) { return dice.reduce((a, b) => a + b, 0); }
@@ -183,7 +183,6 @@ export function register(engine) {
   function countdown(next, label, hint, meta = shakeCountdownMeta) {
     clearInterval(countdownTimer);
     let seconds = 3;
-    $('countdownLabel').textContent = label;
     $('countdownHint').textContent = hint;
     $('countdownNumber').textContent = seconds;
     phaseMeta.countdown = meta;
@@ -581,23 +580,26 @@ export function register(engine) {
   }
 
   function onKey(event) {
-    if (state.phase === 'rules') {
-      if (event.key === 'Escape') {
-        backFromRules();
-        return;
+    if (event.key === 'Escape') {
+      if (state.phase === 'rules') backFromRules();
+      else if (state.phase === 'ready' || state.phase === 'result') returnToSelect();
+      else if (state.phase === 'analysis' && !$('analysisFailureActions').classList.contains('hidden')) {
+        returnToSelect();
       }
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        if (!event.repeat) confirmRules();
-        return;
-      }
-      if (event.key === 'ArrowDown') {
-        event.preventDefault();
-        if (!event.repeat) repeatRules();
-        return;
-      }
+      return;
     }
-    if (event.key.toLowerCase() === 'q' && state.phase === 'shaking') stopShake();
+    if (event.key === 'Enter') {
+      if (state.phase === 'rules') confirmRules();
+      else if (state.phase === 'ready') handlers.startShake();
+      return;
+    }
+    if (state.phase === 'rules' && event.key === 'ArrowDown') {
+      repeatRules();
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      return;
+    }
   }
 
   return {

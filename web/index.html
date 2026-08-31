@@ -19,7 +19,6 @@
 
     <main class="stage">
       <header class="stage-head">
-        <p class="kicker" id="phaseKicker">GAME SELECT</p>
         <h1 class="stage-title" id="phaseTitle">选择一场游戏</h1>
         <p class="stage-copy" id="phaseCopy">欢迎来到 Dice Arena，选择游戏后开始。</p>
       </header>
@@ -30,7 +29,6 @@
         <section class="view" data-view="select">
           <div class="game-list" id="gameList" role="listbox" aria-label="游戏列表"></div>
           <button class="primary-button" id="startGame" type="button">进入游戏 <span>→</span></button>
-          <p class="hint"><span class="keycap">↑</span><span class="keycap">↓</span> 选择 · <span class="keycap">Enter</span> 确认</p>
         </section>
 
         <!-- 游戏规则 -->
@@ -45,7 +43,6 @@
             <button class="secondary-button" id="repeatRules" type="button" aria-keyshortcuts="ArrowDown">↻ 再听一次</button>
             <button class="primary-button" id="confirmRules" type="button" aria-keyshortcuts="Enter">我明白了 <span>→</span></button>
           </div>
-          <p class="hint"><span class="keycap">Enter</span> 我明白了 · <span class="keycap">↓</span> 再听一次 · <span class="keycap">Esc</span> 返回</p>
         </section>
 
         <!-- 准备 -->
@@ -57,7 +54,6 @@
 
         <!-- 倒计时 -->
         <section class="view hidden" data-view="countdown">
-          <p class="kicker" id="countdownLabel">GET READY</p>
           <div class="countdown-number" id="countdownNumber">3</div>
           <p class="countdown-hint" id="countdownHint">和 Agent 同步</p>
         </section>
@@ -115,7 +111,6 @@
           <div class="result-banner" id="resultBanner">
             <span class="result-emoji" id="resultEmoji">🏆</span>
             <div>
-              <p class="kicker">FINAL RESULT</p>
               <h2 class="view-title" id="resultTitle">玩家获胜</h2>
               <p class="result-subtitle" id="resultSubtitle">点数总和更高！</p>
             </div>
@@ -141,13 +136,8 @@
 
       </div>
 
-      <footer class="stage-foot">
-        <div class="progress" id="progressDots"></div>
-        <span class="stage-foot-text" id="stageFooterText">选择游戏开始体验</span>
-      </footer>
     </main>
 
-    <footer class="app-footer">SPACEMIT K3 · DICE CHALLENGE DEMO</footer>
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

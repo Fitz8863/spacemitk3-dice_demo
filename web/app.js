@@ -19,7 +19,7 @@ const state = {
 const $ = (id) => document.getElementById(id);
 const views = [...document.querySelectorAll('[data-view]')];
 
-const SELECT_META = ['GAME SELECT', '选择一场游戏', '欢迎来到 Dice Arena，选择游戏后按 OK 开始。', '选择游戏开始体验'];
+const SELECT_META = ['选择一场游戏', '欢迎来到 Dice Arena，选择游戏后按 OK 开始。'];
 
 const gameModules = {};
 let activeGame = null; // 当前挂载的游戏模块（有 enter/teardown/onKey/phaseMeta）
@@ -30,22 +30,8 @@ function setPhase(phase) {
   state.phase = phase;
   views.forEach((view) => view.classList.toggle('hidden', view.dataset.view !== phase));
   const meta = (activeGame && activeGame.phaseMeta && activeGame.phaseMeta[phase]) || SELECT_META;
-  $('phaseKicker').textContent = meta[0];
-  $('phaseTitle').textContent = meta[1];
-  $('phaseCopy').textContent = meta[2];
-  $('stageFooterText').textContent = meta[3];
-
-  const phases = activeGame ? activeGame.phases : ['select'];
-  const count = activeGame ? activeGame.progressCount : 1;
-  const progressEl = $('progressDots');
-  if (progressEl.children.length !== count) {
-    progressEl.innerHTML = Array.from({ length: count }, () => '<span></span>').join('');
-  }
-  const index = phases.indexOf(phase);
-  const activeUpTo = Math.max(0, Math.min(count - 1, index));
-  Array.from(progressEl.children).forEach((dot, i) => {
-    dot.classList.toggle('active', i <= activeUpTo);
-  });
+  $('phaseTitle').textContent = meta[0];
+  $('phaseCopy').textContent = meta[1];
 }
 
 // ---- 提示 ----
@@ -491,6 +477,10 @@ $('soundToggle').addEventListener('click', () => {
 });
 
 document.addEventListener('keydown', (event) => {
+  const controllerKey = ['Enter', 'Escape', 'ArrowDown', 'ArrowUp'].includes(event.key);
+  if (controllerKey) event.preventDefault();
+  if (event.repeat) return;
+
   if (state.phase === 'select') {
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       const enabled = games.filter((game) => game.enabled);
@@ -499,8 +489,11 @@ document.addEventListener('keydown', (event) => {
       const index = ids.indexOf(state.selectedGame);
       const next = ids[(index + (event.key === 'ArrowDown' ? 1 : -1) + ids.length) % ids.length];
       selectGame(next);
+    } else if (event.key === 'Enter') {
+      enterSelectedGame();
+    } else if (event.key === 'Escape') {
+      stopSpeech();
     }
-    if (event.key === 'Enter') enterSelectedGame();
     return;
   }
   if (activeGame && activeGame.onKey) activeGame.onKey(event);

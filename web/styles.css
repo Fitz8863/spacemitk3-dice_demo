@@ -35,7 +35,6 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 /* 主舞台 */
 .stage { flex: 1; display: flex; flex-direction: column; align-items: center; text-align: center; }
 .stage-head { margin: 28px 0 40px; }
-.kicker { margin: 0; color: var(--muted); font-size: 15px; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; }
 .stage-title { margin: 12px 0 10px; font-size: 52px; line-height: 1.1; letter-spacing: -.02em; }
 .stage-copy { margin: 0; color: var(--muted-2); font-size: 20px; }
 
@@ -68,8 +67,6 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .stop-button { background: #fef3f2; color: #b42318; border: 2px solid #fecdca; box-shadow: 0 8px 18px rgba(220, 38, 38, .1); }
 .stop-button:hover { background: #fee4e2; }
 
-.hint { margin: 24px 0 0; color: var(--muted); font-size: 16px; }
-.keycap { display: inline-block; min-width: 26px; padding: 2px 8px; margin: 0 3px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted-2); font-size: 15px; }
 
 /* 规则 */
 .rules-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 40px; text-align: left; }
@@ -129,13 +126,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .agent-side .die span { background: #733d22; }
 
 /* 底部 */
-.stage-foot { display: flex; flex-direction: column; align-items: center; gap: 12px; padding-top: 8px; }
-.progress { display: flex; gap: 8px; }
-.progress span { width: 26px; height: 5px; border-radius: 5px; background: var(--line); transition: .3s; }
-.progress span.active { background: var(--accent); width: 44px; }
-.stage-foot-text { color: var(--muted); font-size: 15px; }
 
-.app-footer { margin-top: 24px; text-align: center; color: var(--muted); font-size: 14px; letter-spacing: .1em; }
 
 /* 提示 */
 .toast { position: fixed; left: 50%; bottom: 34px; transform: translate(-50%, 20px); padding: 16px 24px; border: 1px solid rgba(5, 150, 105, .35); border-radius: 12px; background: var(--surface); color: #067647; box-shadow: var(--shadow); font-size: 18px; opacity: 0; pointer-events: none; transition: .25s; }

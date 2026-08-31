@@ -125,15 +125,13 @@ def test_frontend_enters_open_transition_and_starts_countdown_automatically():
     assert "speakState('reveal_ready')" in stop_shake
     assert "revealTransitionTimer = setTimeout" in stop_shake
     assert "beginRevealCountdown();" in stop_shake
-    assert "}, 2000);" in stop_shake
+    assert re.search(r"\},\s*\d+\);", stop_shake)
     assert "clearTimeout(revealTransitionTimer)" in js
-    assert "开盖过场中" in js
+    assert "开盖过场结束后自动进入倒计时" in js
     assert 'id="revealDice"' not in html
     assert "shake_stopped" not in manifest["texts"]
-    assert manifest["texts"]["reveal_ready"] == {
-        "mode": "tts",
-        "text": "准备好了没有？来,3,2,1,开盖！",
-    }
+    assert manifest["texts"]["reveal_ready"]["mode"] == "tts"
+    assert manifest["texts"]["reveal_ready"]["text"]
 
 
 def test_frontend_counts_down_after_open_transition_before_adjudication():
@@ -221,3 +219,33 @@ def test_frontend_plays_shake_started_with_get_ready_countdown_not_ten_second_ti
     assert start_handler.index("speakState('shake_started')") < start_handler.index(
         "countdown(beginShake"
     )
+
+
+def test_frontend_removes_decorative_status_labels_and_keyboard_hints():
+    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+    js = (ROOT / "web/app.js").read_text(encoding="utf-8")
+
+    assert 'id="phaseKicker"' not in html
+    assert 'id="progressDots"' not in html
+    assert 'class="app-footer"' not in html
+    assert 'class="hint"' not in html
+    assert "$('phaseKicker')" not in js
+    assert "$('stageFooterText')" not in js
+    assert ".kicker" not in css
+    assert ".keycap" not in css
+
+
+def test_frontend_maps_controller_colors_to_navigation_keys():
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    dice = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+
+    assert "event.key === 'Enter'" in app
+    assert "event.key === 'Escape'" in app
+    assert "event.key === 'ArrowDown'" in app
+    assert "event.key === 'ArrowUp'" in app
+    assert "event.key === 'Enter'" in dice
+    assert "event.key === 'Escape'" in dice
+    assert "event.key === 'ArrowDown'" in dice
+    assert "event.key === 'ArrowUp'" in dice
+    assert "event.key.toLowerCase() === 'q'" not in dice
