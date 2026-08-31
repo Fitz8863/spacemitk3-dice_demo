@@ -151,3 +151,38 @@ def test_frontend_uses_vision_specific_copy_during_post_open_countdown():
         "function resetAnalysisSteps", 1
     )[0]
     assert "visionCountdownMeta" in confirm_open
+
+
+def test_frontend_uses_ten_second_shake_and_urgent_last_three_seconds():
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+
+    assert "const SHAKE_DURATION_SECONDS = 10;" in js
+    assert 'id="shakeSeconds">10<' in html
+    assert "const urgent = seconds <= 3 && seconds > 0;" in js
+    assert "shakeSeconds.classList.toggle('is-urgent', urgent)" in js
+    assert "if (urgent) playCountdownCue(seconds);" in js
+
+
+def test_frontend_uses_user_gesture_audio_for_countdown_cues():
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+
+    assert "window.AudioContext || window.webkitAudioContext" in js
+    assert "prepareCountdownAudio()" in js
+    assert "countdownAudioContext.resume()" in js
+    assert "oscillator.connect(gain)" in js
+    assert "frequency.setValueAtTime" in js
+    assert "seconds === 1" in js
+    assert "if (!state.sound" in js
+
+
+def test_frontend_uses_light_theme_and_high_contrast_urgent_styles():
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+
+    assert "--bg: #f7f9fc" in css
+    assert "--surface: #ffffff" in css
+    assert ".shake-timer strong.is-urgent" in css
+    assert "color: var(--loss)" in css
+    assert "@keyframes urgentPulse" in css
+    assert 'content="#f7f9fc"' in html

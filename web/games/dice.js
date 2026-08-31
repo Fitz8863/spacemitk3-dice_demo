@@ -13,11 +13,13 @@ export function register(engine) {
   let agentDice = [];
   let shakeTimer = null;
   let countdownTimer = null;
+  let countdownAudioContext = null;
   let visionStreamToken = 0;
   let pendingAnalysisResult = null;
   let participantSides = null;
 
   const phases = ['select', 'rules', 'ready', 'countdown', 'shaking', 'open', 'analysis', 'result'];
+  const SHAKE_DURATION_SECONDS = 10;
   const shakeCountdownMeta = ['SYNC COUNTDOWN', '同步倒计时', '与 Agent 保持同步，倒计时结束后开始摇骰。', '倒计时进行中'];
   const visionCountdownMeta = ['VISION COUNTDOWN', '准备视觉裁决', '请保持骰子和骰盅位置不动，倒计时结束后开始视觉裁决。', '等待视觉裁决'];
   const phaseMeta = {
@@ -117,6 +119,52 @@ export function register(engine) {
     $('agentDice').innerHTML = diceMarkup(agentDice, 'agent-die');
   }
 
+  function prepareCountdownAudio() {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    if (!countdownAudioContext) {
+      try {
+        countdownAudioContext = new AudioContext();
+      } catch (_) {
+        return;
+      }
+    }
+    if (countdownAudioContext.state === 'suspended') {
+      countdownAudioContext.resume().catch(() => {});
+    }
+  }
+
+  function playCountdownCue(seconds) {
+    if (!state.sound || !countdownAudioContext || countdownAudioContext.state === 'closed') return;
+    const context = countdownAudioContext;
+    const now = context.currentTime;
+    try {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const frequency = seconds === 1 ? 880 : seconds === 2 ? 660 : 520;
+      const volume = seconds === 1 ? 0.16 : 0.1;
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(frequency, now);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(volume, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(now);
+      oscillator.stop(now + 0.2);
+    } catch (_) {
+      // Audio feedback is optional; a browser audio limitation must not stop the game.
+    }
+  }
+
+  function updateShakeCountdown(seconds) {
+    const shakeSeconds = $('shakeSeconds');
+    const urgent = seconds <= 3 && seconds > 0;
+    shakeSeconds.textContent = String(seconds).padStart(2, '0');
+    shakeSeconds.classList.toggle('is-urgent', urgent);
+    if (urgent) playCountdownCue(seconds);
+  }
+
   function countdown(next, label, hint, meta = shakeCountdownMeta) {
     clearInterval(countdownTimer);
     let seconds = 3;
@@ -137,13 +185,13 @@ export function register(engine) {
 
   function beginShake() {
     setPhase('shaking');
-    let seconds = 8;
-    $('shakeSeconds').textContent = String(seconds).padStart(2, '0');
+    let seconds = SHAKE_DURATION_SECONDS;
+    updateShakeCountdown(seconds);
     speakState('shake_started');
     clearInterval(shakeTimer);
     shakeTimer = setInterval(() => {
       seconds -= 1;
-      $('shakeSeconds').textContent = String(Math.max(0, seconds)).padStart(2, '0');
+      updateShakeCountdown(Math.max(0, seconds));
       if (seconds <= 0) stopShake();
     }, 1000);
   }
@@ -468,7 +516,10 @@ export function register(engine) {
   }
 
   const handlers = {
-    startShake: () => countdown(beginShake, 'GET READY', '和 Agent 同步'),
+    startShake: () => {
+      prepareCountdownAudio();
+      countdown(beginShake, 'GET READY', '和 Agent 同步');
+    },
     stopShake: () => stopShake(),
     revealDice: () => confirmDiceOpened(),
     analysisNewRound: () => resetRound(),
