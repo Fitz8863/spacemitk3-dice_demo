@@ -249,3 +249,14 @@ def test_frontend_maps_controller_colors_to_navigation_keys():
     assert "event.key === 'ArrowDown'" in dice
     assert "event.key === 'ArrowUp'" in dice
     assert "event.key.toLowerCase() === 'q'" not in dice
+
+
+def test_frontend_hides_unused_round_indicator():
+    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+    dice = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+
+    assert 'class="round-badge"' not in html
+    assert 'id="roundNumber"' not in html
+    assert '.round-badge' not in css
+    assert 'roundNumber' not in dice

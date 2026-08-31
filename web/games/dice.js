@@ -509,8 +509,6 @@ export function register(engine) {
     stopVisionStream();
     clearTimeout(revealTransitionTimer);
     revealTransitionTimer = null;
-    round += 1;
-    $('roundNumber').textContent = String(round).padStart(2, '0');
     playerDice = [];
     agentDice = [];
     $('analysisFailureActions').classList.add('hidden');

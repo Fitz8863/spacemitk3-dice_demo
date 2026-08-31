@@ -28,8 +28,6 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .brand { display: flex; align-items: center; gap: 12px; font-size: 22px; font-weight: 800; letter-spacing: .08em; }
 .brand-dot { width: 14px; height: 14px; border-radius: 4px; background: var(--accent); }
 .topbar-right { display: flex; align-items: center; gap: 18px; }
-.round-badge { color: var(--muted-2); font-size: 18px; }
-.round-badge strong { color: var(--text); font-size: 26px; font-weight: 800; }
 .icon-button { width: 48px; height: 48px; border: 1px solid var(--line); background: var(--surface); color: var(--muted-2); border-radius: 12px; box-shadow: var(--shadow); cursor: pointer; font-size: 24px; }
 
 /* 主舞台 */
