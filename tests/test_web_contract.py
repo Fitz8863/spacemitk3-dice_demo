@@ -130,8 +130,10 @@ def test_frontend_enters_open_transition_and_starts_countdown_automatically():
     assert "开盖过场中" in js
     assert 'id="revealDice"' not in html
     assert "shake_stopped" not in manifest["texts"]
-    assert manifest["texts"]["reveal_ready"]["mode"] == "tts"
-    assert manifest["texts"]["reveal_ready"]["text"].strip()
+    assert manifest["texts"]["reveal_ready"] == {
+        "mode": "tts",
+        "text": "准备好了没有？来,3,2,1,开盖！",
+    }
 
 
 def test_frontend_counts_down_after_open_transition_before_adjudication():
