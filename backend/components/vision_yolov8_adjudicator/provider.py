@@ -582,21 +582,38 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                         strict_snapshot_roots[vid] = root.resolve()
                 return rt
             with ThreadPoolExecutor(max_workers=len(views)) as pool: runtimes.extend(pool.map(start, views))
-            for rt in runtimes:
-                rt.send({"command":"START_ADJUDICATION", "request_id":request.request_id, "profile_id":profile.get("game_id")})
-            round_started = True
-            on_event({"event":"phase", "phase":"detecting"}); observations = {}
             emitted_video_views: set[str] = set()
             # A resident runtime's startup event is one-shot and may have
             # already been consumed by an earlier round.  Publish the
             # profile-owned WebRTC URL synchronously for every new round so
-            # clients can attach to the live stream while detection runs.
+            # clients can attach to the live stream before detection runs.
             for view in views:
                 vid = str(view.get("id", "default"))
                 video_event = self._video_event(profile, vid, {"event": "video"})
                 if video_event is not None:
                     on_event(video_event)
                     emitted_video_views.add(vid)
+            pre_wait = float(profile.get("lifecycle", {}).get("pre_adjudication_wait_seconds", 0))
+            if pre_wait > 0:
+                # Game-owned settling window before detection.  Like the
+                # post-result hold, it must not consume the adjudication
+                # budget, which only starts after START_ADJUDICATION below.
+                end = time.monotonic() + pre_wait
+                while time.monotonic() < end:
+                    if is_cancelled():
+                        if not keep_warm:
+                            for rt in runtimes:
+                                try:
+                                    rt.stop()
+                                except Exception:
+                                    pass
+                        raise RuntimeError("cancelled")
+                    remaining = max(0, end-time.monotonic()); on_event({"event":"phase", "phase":"pre_wait", "remaining_ms":int(remaining*1000)})
+                    time.sleep(min(0.25, remaining))
+            for rt in runtimes:
+                rt.send({"command":"START_ADJUDICATION", "request_id":request.request_id, "profile_id":profile.get("game_id")})
+            round_started = True
+            on_event({"event":"phase", "phase":"detecting"}); observations = {}
             latest_by_view: dict[str, dict[str, Any]] = {}
             latest_lock = threading.Lock()
             def collect(rt, view):

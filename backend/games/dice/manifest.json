@@ -43,7 +43,7 @@
       "diagnosis_allowed_reason_codes": ["INCOMPLETE_OBJECTS", "OVERLAPPING_OBJECTS", "LOW_LIGHT", "OCCLUDED", "NO_OBJECTS_DETECTED", "UNSTABLE_DETECTION", "SCENE_GEOMETRY_UNCLEAR", "UNKNOWN"]
     },
     "video": {"enabled": true, "protocol": "webrtc", "path": "/dice/", "autoplay": true, "muted": true},
-    "lifecycle": {"post_result_hold_seconds": 3},
+    "lifecycle": {"pre_adjudication_wait_seconds": 4, "post_result_hold_seconds": 3},
     "timeouts": {"yolo_detection_seconds": 4, "adjudication_seconds": 120}
   },
   "voice": "default",
@@ -55,7 +55,7 @@
     },
     "rules_confirmed": {
       "mode": "tts",
-      "text": " 准备好了没有，按下绿色按钮马上开始。"
+      "text": "准备好了吗，按下绿色按钮马上开始。"
     },
     "shake_started": {
       "mode": "audio",

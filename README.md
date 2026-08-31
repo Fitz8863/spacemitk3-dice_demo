@@ -260,7 +260,8 @@ tts_moss_nano -> tts provider，代理仓库内 `tts/moss-tts-nano` 的 MOSS-TTS
 
 当前骰子游戏默认选择 `tts_moss_nano`；`tts_qwen3` 仍是可选的本地 provider，可通过游戏
 manifest 或 `DICE_TTS_PROVIDER` 切换。视觉裁决器的模型、类别映射、规则、LLM prompt、视频
-path、超时和结果保持时间统一放在游戏 `manifest.json` 的 `vision_profile` 中；不要再创建
+path、超时、裁决前置等待（`lifecycle.pre_adjudication_wait_seconds`，检测开始前的静默等待，
+不占用裁决超时预算）和结果保持时间统一放在游戏 `manifest.json` 的 `vision_profile` 中；不要再创建
 同目录的外置 `vision_profile.json`。视觉 runtime 的摄像头、推理、RTSP 和 MediaMTX
 WebRTC 基础地址只在 `vision/yolov8_adjudicator/config.json` 保存部署默认值。
 

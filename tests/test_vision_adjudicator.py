@@ -445,6 +445,24 @@ def test_profile_rejects_absolute_model_path(tmp_path: Path):
         load_profile(path)
 
 
+def test_profile_validates_pre_adjudication_wait_seconds(tmp_path: Path):
+    profile = _minimal_profile()
+    path = tmp_path / "vision_profile.json"
+    for bad_value in (-1, 301, "3", True):
+        profile["lifecycle"] = {"pre_adjudication_wait_seconds": bad_value}
+        path.write_text(json.dumps(profile))
+        with pytest.raises(ProfileError, match="pre_adjudication_wait_seconds"):
+            load_profile(path)
+
+    profile["lifecycle"] = {"pre_adjudication_wait_seconds": 3}
+    path.write_text(json.dumps(profile))
+    assert load_profile(path)["lifecycle"]["pre_adjudication_wait_seconds"] == 3
+
+    profile["lifecycle"] = {}
+    path.write_text(json.dumps(profile))
+    assert load_profile(path)["lifecycle"] == {}
+
+
 def test_profile_rejects_non_string_allowed_outcomes(tmp_path: Path):
     profile = _minimal_profile()
     profile["llm"]["allowed_outcomes"] = ["A", 1]
@@ -731,6 +749,122 @@ def test_post_result_hold_is_not_consumed_by_adjudication_deadline(tmp_path: Pat
     assert complete_at - result_at >= 0.10
     assert any(event.get("phase") == "holding" for event in events)
     assert events[-1] == {"event": "complete", "phase": "complete"}
+
+
+def test_pre_adjudication_wait_delays_start_and_preserves_deadline(tmp_path: Path):
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"jpeg")
+
+    class Runtime:
+        def __init__(self):
+            self.commands = []
+            self.command_times = []
+
+        def start(self, *args, **kwargs):
+            self.events_data = iter([{
+                "event": "observation",
+                "stable": True,
+                "yolo_outcome": "LEFT",
+                "snapshot": {"path": str(image)},
+            }])
+
+        def send(self, command):
+            self.commands.append(dict(command))
+            self.command_times.append(time.monotonic())
+
+        def events(self):
+            return self.events_data
+
+        def stop(self):
+            pass
+
+    profile = {
+        "game_id": "x",
+        "vision": {"stable_frames": 1},
+        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
+        "lifecycle": {"pre_adjudication_wait_seconds": 0.12, "post_result_hold_seconds": 0},
+        "timeouts": {"adjudication_seconds": 0.01},
+    }
+    events = []
+    runtime = Runtime()
+    started_at = time.monotonic()
+
+    result = VisionYolov8Adjudicator(runtime_factory=lambda _view_id: runtime).adjudicate(
+        VisionAdjudicationRequest("x", profile, "r", 1),
+        on_log=lambda _line: None,
+        on_event=events.append,
+        is_cancelled=lambda: False,
+    )
+
+    # The settling window publishes pre_wait phase events before detecting.
+    pre_wait_indexes = [
+        index for index, event in enumerate(events) if event.get("phase") == "pre_wait"
+    ]
+    detecting_index = next(
+        index for index, event in enumerate(events) if event.get("phase") == "detecting"
+    )
+    assert pre_wait_indexes
+    assert max(pre_wait_indexes) < detecting_index
+    # START_ADJUDICATION is only sent after the wait has elapsed.
+    assert runtime.commands[0]["command"] == "START_ADJUDICATION"
+    assert runtime.command_times[0] - started_at >= 0.10
+    # A 0.01s adjudication budget still completes successfully: the pre-wait
+    # must not consume the deadline, which starts after START_ADJUDICATION.
+    assert result["adjudicated"] is True
+    assert result["outcome"]["value"] == "LEFT"
+    assert events[-1] == {"event": "complete", "phase": "complete"}
+
+
+def test_pre_adjudication_wait_cancellation_sends_no_commands():
+    class Runtime:
+        def __init__(self):
+            self.commands = []
+            self.stop_calls = 0
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def send(self, command):
+            self.commands.append(dict(command))
+
+        def events(self):
+            return iter([])
+
+        def stop(self):
+            self.stop_calls += 1
+
+    base = {
+        "game_id": "x",
+        "vision": {"stable_frames": 1},
+        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
+        "lifecycle": {"pre_adjudication_wait_seconds": 30},
+    }
+
+    resident = dict(base, runtime={"mode": "resident", "prewarm_camera": True})
+    resident_runtime = Runtime()
+    with pytest.raises(RuntimeError, match="cancelled"):
+        VisionYolov8Adjudicator(runtime_factory=lambda _vid: resident_runtime).adjudicate(
+            VisionAdjudicationRequest("x", resident, "cancelled", 1),
+            on_log=lambda _line: None,
+            on_event=lambda _event: None,
+            is_cancelled=lambda: True,
+        )
+    # The runtime never entered detecting: a resident process stays warm and
+    # needs neither a control command nor a stop.
+    assert resident_runtime.commands == []
+    assert resident_runtime.stop_calls == 0
+
+    per_request = dict(base, runtime={"mode": "per_request"})
+    per_request_runtime = Runtime()
+    with pytest.raises(RuntimeError, match="cancelled"):
+        VisionYolov8Adjudicator(runtime_factory=lambda _vid: per_request_runtime).adjudicate(
+            VisionAdjudicationRequest("x", per_request, "cancelled", 1),
+            on_log=lambda _line: None,
+            on_event=lambda _event: None,
+            is_cancelled=lambda: True,
+        )
+    assert per_request_runtime.commands == []
+    assert per_request_runtime.stop_calls == 1
 
 
 def test_provider_multiview_sends_single_llm_request(tmp_path: Path):
@@ -1392,7 +1526,7 @@ def test_resident_round_emits_video_before_waiting_for_observation(
     worker.start()
     assert detecting.wait(1)
     assert video_ready.wait(0.5)
-    assert [event["event"] for event in events[:2]] == ["phase", "video"]
+    assert [event["event"] for event in events[:2]] == ["video", "phase"]
     worker.join(2)
     assert not worker.is_alive()
 

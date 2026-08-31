@@ -345,7 +345,9 @@ vision/yolov8_adjudicator/build/yolov8_camera
 - 后端收到稳定 `observation` 后，由 Python provider 负责 profile 规则、LLM 复核和最终结果。
 
 **YOLOv8 默认使用常驻预热模式。** 空闲时 runtime 保持摄像头和视频链路，处于
-`idle`，不计稳定帧也不调用 LLM；开始裁决时通过控制通道进入检测，结果后的
+`idle`，不计稳定帧也不调用 LLM；开始裁决时先经过 `lifecycle.pre_adjudication_wait_seconds`
+前置等待（缺省 0 秒，骰子配置为 3 秒，期间发布 `pre_wait` 阶段事件、实时画面已可挂上，
+且不占用裁决超时预算），再通过控制通道进入检测，结果后的
 `post_result_hold_seconds` 期间继续发布视频，随后回到 idle。异常或取消时才释放
 runtime 资源。旧版按局启动的二进制仅作为迁移兼容路径。
 

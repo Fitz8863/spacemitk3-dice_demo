@@ -226,6 +226,15 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
     hold = lifecycle.get("post_result_hold_seconds", 0)
     if not isinstance(hold, (int, float)) or isinstance(hold, bool) or not math.isfinite(hold) or hold < 0 or hold > 300:
         raise ProfileError("lifecycle.post_result_hold_seconds must be between 0 and 300 seconds")
+    pre_wait = lifecycle.get("pre_adjudication_wait_seconds", 0)
+    if (
+        not isinstance(pre_wait, (int, float))
+        or isinstance(pre_wait, bool)
+        or not math.isfinite(pre_wait)
+        or pre_wait < 0
+        or pre_wait > 300
+    ):
+        raise ProfileError("lifecycle.pre_adjudication_wait_seconds must be between 0 and 300 seconds")
 
     multi = profile.get("multi_view", {"enabled": False, "min_views": 1})
     if not isinstance(multi, dict) or not isinstance(multi.get("enabled", False), bool):
