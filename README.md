@@ -127,7 +127,7 @@ chmod 600 .dice-arena.env
 
 `mode=tts` 使用当前游戏选中的 TTS provider；`mode=audio` 从该游戏目录读取 WAV，例如上述文件应放在 `backend/games/dice/audio/rules_intro.wav`。第一版只接受 WAV，并拒绝绝对路径和 `..` 越界路径。`text` 在 audio 模式下是可选说明。旧的纯字符串条目仍兼容并视为 TTS。
 
-当前状态键包括：`rules_intro`、`rules_confirmed`、`shake_started`、`shake_stopped`、`analysis_started`、`result_tie`、`result_player_win` 和 `result_agent_win`。TTS 胜负文案支持 `{player_score}`、`{agent_score}` 占位符；`voice` 和 `speed` 是游戏级 TTS 默认参数。修改 manifest 或添加 WAV 后需要重启后端，使 manifest 重新加载。
+当前状态键包括：`rules_intro`、`rules_confirmed`、`shake_started`、`reveal_ready`、`analysis_started`、`result_tie`、`result_player_win` 和 `result_agent_win`。`reveal_ready` 会在摇骰结束、等待双方开盖时播报；用户确认双方已开盖后，网页执行 3 秒视觉倒计时，再启动视觉裁决。TTS 胜负文案支持 `{player_score}`、`{agent_score}` 占位符；`voice` 和 `speed` 是游戏级 TTS 默认参数。修改 manifest 或添加 WAV 后需要重启后端，使 manifest 重新加载。
 
 ## K3 后端接口
 

@@ -18,11 +18,13 @@ export function register(engine) {
   let participantSides = null;
 
   const phases = ['select', 'rules', 'ready', 'countdown', 'shaking', 'open', 'analysis', 'result'];
+  const shakeCountdownMeta = ['SYNC COUNTDOWN', '同步倒计时', '与 Agent 保持同步，倒计时结束后开始摇骰。', '倒计时进行中'];
+  const visionCountdownMeta = ['VISION COUNTDOWN', '准备视觉裁决', '请保持骰子和骰盅位置不动，倒计时结束后开始视觉裁决。', '等待视觉裁决'];
   const phaseMeta = {
     select: ['GAME SELECT', '选择一场游戏', '欢迎来到 Dice Arena，选择游戏后按 OK 开始。', '选择游戏开始体验'],
     rules: ['GAME RULES', '游戏规则', '听完规则后按 Enter 确认，按 ↓ 可以再听一次。', 'Enter 确认 · ↓ 重听规则'],
     ready: ['READY CHECK', '准备好了吗？', '人手操作模式已开启，拿起骰盅后点击开始。', '等待玩家开始'],
-    countdown: ['SYNC COUNTDOWN', '同步倒计时', '与 Agent 保持同步，倒计时结束后开始摇骰。', '倒计时进行中'],
+    countdown: shakeCountdownMeta,
     shaking: ['SHAKE PHASE', '摇骰进行中', '双方同时摇骰，准备好后可提前停止。', '双方摇骰中'],
     open: ['REVEAL', '同时开盖', '把骰盅放回区域，确认双方都已开盖。', '等待双方开盖'],
     analysis: ['VISION ADJUDICATION', '正在判定胜负', '视觉裁决器正在识别骰子点数，随后由大模型复核。', '视觉裁决中'],
@@ -115,12 +117,13 @@ export function register(engine) {
     $('agentDice').innerHTML = diceMarkup(agentDice, 'agent-die');
   }
 
-  function countdown(next, label, hint) {
+  function countdown(next, label, hint, meta = shakeCountdownMeta) {
     clearInterval(countdownTimer);
     let seconds = 3;
     $('countdownLabel').textContent = label;
     $('countdownHint').textContent = hint;
     $('countdownNumber').textContent = seconds;
+    phaseMeta.countdown = meta;
     setPhase('countdown');
     countdownTimer = setInterval(() => {
       seconds -= 1;
@@ -147,8 +150,17 @@ export function register(engine) {
 
   function stopShake() {
     clearInterval(shakeTimer);
-    countdown(() => setPhase('open'), 'STOP COUNTDOWN', '倒计时结束后，请同时开盖。');
-    speakState('shake_stopped');
+    setPhase('open');
+    speakState('reveal_ready');
+  }
+
+  function confirmDiceOpened() {
+    countdown(
+      reveal,
+      'VISION COUNTDOWN',
+      '请保持骰子和骰盅位置不动。',
+      visionCountdownMeta,
+    );
   }
 
   function resetAnalysisSteps() {
@@ -458,7 +470,7 @@ export function register(engine) {
   const handlers = {
     startShake: () => countdown(beginShake, 'GET READY', '和 Agent 同步'),
     stopShake: () => stopShake(),
-    revealDice: () => reveal(),
+    revealDice: () => confirmDiceOpened(),
     analysisNewRound: () => resetRound(),
     analysisBackToGames: () => returnToSelect(),
     newRound: () => resetRound(),

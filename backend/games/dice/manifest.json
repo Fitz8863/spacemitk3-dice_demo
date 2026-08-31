@@ -62,9 +62,9 @@
       "audio": "audio/fll.wav",
       "text": "Optional transcript for operators"
     },
-    "shake_stopped": {
+    "reveal_ready": {
       "mode": "tts",
-      "text": "停止摇骰。"
+      "text": "请同时打开骰盅。你准备好了吗？准备好后，请点击双方已开盖。"
     },
     "analysis_started": {
       "mode": "tts",
