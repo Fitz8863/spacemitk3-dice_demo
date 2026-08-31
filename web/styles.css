@@ -47,8 +47,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .view { width: 100%; animation: fadeIn .35s ease both; }
 .hidden { display: none !important; }
 
-.view-title { margin: 0 0 14px; font-size: 44px; line-height: 1.15; letter-spacing: -.02em; }
-.view-desc { margin: 0 0 34px; color: var(--muted-2); font-size: 22px; line-height: 1.6; }
+.view-title { margin: 0 0 28px; font-size: 44px; line-height: 1.15; letter-spacing: -.02em; }
 
 /* 游戏列表 */
 .game-list { display: flex; flex-direction: column; gap: 20px; margin-bottom: 40px; }
