@@ -465,7 +465,14 @@ export function register(engine) {
       ...details,
     ].join(' ');
     $('analysisFailureActions').classList.remove('hidden');
-    toast('视觉裁决未完成，请重新开始一局');
+    toast('视觉裁决未完成，可按蓝色按钮重新识别');
+    speakState('analysis_retry_hint');
+  }
+
+  function retryAdjudication() {
+    if (state.phase !== 'analysis' || $('analysisFailureActions').classList.contains('hidden')) return;
+    stopSpeech();
+    reveal();
   }
 
   function showResult(result) {
@@ -539,6 +546,7 @@ export function register(engine) {
       countdown(beginShake, 'GET READY', '和 Agent 同步');
     },
     stopShake: () => stopShake(),
+    analysisRetry: () => retryAdjudication(),
     analysisNewRound: () => resetRound(),
     analysisBackToGames: () => returnToSelect(),
     newRound: () => resetRound(),
@@ -590,6 +598,10 @@ export function register(engine) {
     }
     if (state.phase === 'rules' && event.key === 'ArrowDown') {
       repeatRules();
+      return;
+    }
+    if (state.phase === 'analysis' && event.key === 'ArrowDown') {
+      retryAdjudication();
       return;
     }
     if (event.key === 'ArrowUp') {

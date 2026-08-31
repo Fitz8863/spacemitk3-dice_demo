@@ -70,6 +70,10 @@
       "mode": "tts",
       "text": "正在调用视觉判断结果"
     },
+    "analysis_retry_hint": {
+      "mode": "tts",
+      "text": "本次识别未完成，请整理好骰子后，按蓝色按钮重新识别。"
+    },
     "result_tie": {
       "mode": "tts",
       "text": "当前玩家点数{player_score}。Agent点数{agent_score}。本局平局，要不再来一局？"
