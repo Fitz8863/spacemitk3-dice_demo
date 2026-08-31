@@ -270,9 +270,21 @@ def test_frontend_uses_color_controller_hints_for_navigation_copy():
     assert 'controller-key-blue' in app
     assert 'controller-key-red' in app
     assert 'controller-key-yellow' in app
+    assert 'controller-hint' in app
+    assert 'aria-label="黄色按钮"' in app
+    assert 'aria-label="蓝色按钮"' in app
+    assert 'aria-label="绿色按钮"' in app
+    assert 'aria-label="红色按钮"' in app
+    assert '>↑<' not in app
+    assert '>↓<' not in app
+    assert '>✓<' not in app
+    assert '>↻<' not in app
+    assert '>↩<' not in app
     assert 'renderPhaseCopy(phase, meta[1])' in app
     assert '.controller-key-green' in css
     assert '.controller-key-blue' in css
     assert '.controller-key-red' in css
     assert '.controller-key-yellow' in css
+    assert 'border-radius: 50%' in css
+    assert '.controller-hint' in css
     assert '听完规则后按 Enter 确认' not in app

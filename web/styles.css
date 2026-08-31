@@ -35,11 +35,13 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .stage-head { margin: 28px 0 40px; }
 .stage-title { margin: 12px 0 10px; font-size: 52px; line-height: 1.1; letter-spacing: -.02em; }
 .stage-copy { margin: 0; color: var(--muted-2); font-size: 20px; }
-.controller-key { display: inline-grid; place-items: center; width: 32px; height: 32px; margin: 0 3px; border: 2px solid currentColor; border-radius: 9px; color: #fff; font-size: 20px; font-weight: 900; line-height: 1; vertical-align: -.18em; box-shadow: 0 3px 8px rgba(16, 24, 40, .16); }
+.controller-hint { display: inline-flex; align-items: center; gap: 7px; margin: 0 5px; white-space: nowrap; vertical-align: middle; }
+.controller-key { display: inline-block; width: 20px; height: 20px; border: 3px solid #fff; border-radius: 50%; box-shadow: 0 2px 7px rgba(16, 24, 40, .22); }
+.controller-hint > span:last-child { color: var(--muted-2); font-size: .9em; font-weight: 650; }
 .controller-key-green { background: #16a34a; }
 .controller-key-red { background: #dc2626; }
 .controller-key-blue { background: #2563eb; }
-.controller-key-yellow { background: #eab308; color: #3f2f00; }
+.controller-key-yellow { background: #eab308; }
 
 .stage-body { width: 100%; max-width: 860px; display: flex; flex: 1; align-items: center; justify-content: center; padding: 12px 0 40px; }
 .view { width: 100%; animation: fadeIn .35s ease both; }

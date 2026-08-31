@@ -26,9 +26,9 @@ let activeGame = null; // 当前挂载的游戏模块（有 enter/teardown/onKey
 let games = []; // GET /api/games 返回的列表
 
 const CONTROLLER_COPY = {
-  select: `使用 <span class="controller-key controller-key-yellow" aria-label="黄色向上按钮">↑</span> 和 <span class="controller-key controller-key-blue" aria-label="蓝色向下按钮">↓</span> 选择游戏，选中后按 <span class="controller-key controller-key-green" aria-label="绿色确认按钮">✓</span> 确认。`,
-  rules: `听完规则后按 <span class="controller-key controller-key-green" aria-label="绿色确认按钮">✓</span> 确认，按 <span class="controller-key controller-key-blue" aria-label="蓝色重听按钮">↻</span> 重听，按 <span class="controller-key controller-key-red" aria-label="红色返回按钮">↩</span> 返回。`,
-  ready: `按 <span class="controller-key controller-key-green" aria-label="绿色开始按钮">✓</span> 开始摇骰，按 <span class="controller-key controller-key-red" aria-label="红色返回按钮">↩</span> 返回。`,
+  select: `使用 <span class="controller-hint"><span class="controller-key controller-key-yellow" aria-label="黄色按钮"></span><span>黄色 · 向上选择</span></span> 和 <span class="controller-hint"><span class="controller-key controller-key-blue" aria-label="蓝色按钮"></span><span>蓝色 · 向下选择</span></span> 选择游戏，选中后按 <span class="controller-hint"><span class="controller-key controller-key-green" aria-label="绿色按钮"></span><span>绿色 · 确认</span></span>。`,
+  rules: `听完规则后按 <span class="controller-hint"><span class="controller-key controller-key-green" aria-label="绿色按钮"></span><span>绿色 · 确认</span></span>，按 <span class="controller-hint"><span class="controller-key controller-key-blue" aria-label="蓝色按钮"></span><span>蓝色 · 重听</span></span>，按 <span class="controller-hint"><span class="controller-key controller-key-red" aria-label="红色按钮"></span><span>红色 · 返回</span></span>。`,
+  ready: `按 <span class="controller-hint"><span class="controller-key controller-key-green" aria-label="绿色按钮"></span><span>绿色 · 开始摇骰</span></span>，按 <span class="controller-hint"><span class="controller-key controller-key-red" aria-label="红色按钮"></span><span>红色 · 返回</span></span>。`,
 };
 
 function renderPhaseCopy(phase, fallback) {
