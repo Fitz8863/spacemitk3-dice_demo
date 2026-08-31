@@ -112,8 +112,15 @@ backend/games/<game_id>/manifest.json -> vision_profile
   llm.system_prompt / user_prompt_template / allowed_outcomes
   multi_view.views[].camera / multi_view.views[].video.path
   video.path / lifecycle.post_result_hold_seconds
-  timeouts.yolo_detection_seconds / diagnosis_llm_seconds / adjudication_seconds
+  llm.timeout_seconds
+  timeouts.yolo_detection_seconds / adjudication_seconds
 ```
+
+时间参数只保留四种语义：`yolo_detection_seconds` 限制等待稳定 YOLO 结果的时间，
+`llm.timeout_seconds` 限制每次大模型请求（包括正常复核和失败原因诊断），
+`adjudication_seconds` 限制从开始检测到产生最终裁决的总处理预算，
+`post_result_hold_seconds` 控制裁决成功后继续播放实时画面的时间。最后一个保持时间
+在已经产生结果后独立执行，不占用前面的裁决处理预算。
 
 新增游戏不需要修改本 runtime：新增模型文件和 manifest 中的 `vision_profile` 即可。
 profile 中的 path 只能是 URL 路径（例如 `/dice/`），不能包含主机、查询串或 `..`；

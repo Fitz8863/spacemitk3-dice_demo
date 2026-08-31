@@ -174,6 +174,15 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         raise ProfileError("llm.allowed_outcomes must be a non-empty unique array")
     if llm.get("context_mode") != "single_turn_no_history":
         raise ProfileError("llm.context_mode must be single_turn_no_history")
+    llm_timeout = llm.get("timeout_seconds", 3)
+    if (
+        not isinstance(llm_timeout, (int, float))
+        or isinstance(llm_timeout, bool)
+        or not math.isfinite(llm_timeout)
+        or llm_timeout <= 0
+    ):
+        raise ProfileError("llm.timeout_seconds must be a positive number")
+    llm["timeout_seconds"] = float(llm_timeout)
 
     video = profile.get("video")
     if not isinstance(video, dict):
@@ -195,8 +204,12 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         or adjudication_timeout <= 0
     ):
         raise ProfileError("timeouts.adjudication_seconds must be a positive number")
+    if "diagnosis_llm_seconds" in timeouts:
+        raise ProfileError(
+            "timeouts.diagnosis_llm_seconds was removed; use llm.timeout_seconds"
+        )
     normalized_timeouts = {"adjudication_seconds": float(adjudication_timeout)}
-    for field, default in (("yolo_detection_seconds", adjudication_timeout), ("diagnosis_llm_seconds", 3)):
+    for field, default in (("yolo_detection_seconds", adjudication_timeout),):
         value = timeouts.get(field, default)
         if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value <= 0:
             raise ProfileError(f"timeouts.{field} must be a positive number")

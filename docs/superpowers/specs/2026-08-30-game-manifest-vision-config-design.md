@@ -15,10 +15,12 @@
 - `vision_profile.vision`：模型路径、类别映射、参与方、稳定帧；
 - `vision_profile.multi_view`：视角、摄像头和多数投票；
 - `vision_profile.rule`：游戏裁决规则；
-- `vision_profile.llm`：无状态 prompt、允许结果和单次 LLM 超时；
+- `vision_profile.llm`：无状态 prompt、允许结果和统一的单次 LLM 超时；
 - `vision_profile.video`：WebRTC 基础地址、MediaMTX path 和前端播放策略；
 - `vision_profile.lifecycle`：最终结果后的画面保持时间；
-- `vision_profile.timeouts.adjudication_seconds`：从开始裁决到 complete 的整轮总预算。
+- `vision_profile.timeouts.yolo_detection_seconds`：等待稳定 YOLO 结果的最长时间；
+- `vision_profile.timeouts.adjudication_seconds`：从开始检测到产生最终裁决的总处理预算，
+  不包含裁决成功后的画面保持时间。
 
 视觉组件 `backend/components/vision_yolov8_adjudicator/config.json` 保留：
 
@@ -34,7 +36,7 @@ MediaMTX 的基础地址不再从组件 config 读取。`DICE_MEDIAMTX_WEBRTC_BA
 
 游戏加载器优先校验并使用 manifest 内嵌的 `vision_profile`。迁移期仍支持同目录 `vision_profile.json`，仅当 manifest 没有内嵌 profile 时读取；内嵌和外部 profile 同时存在时以内嵌为准。所有 profile 都必须匹配外层游戏 `id`。
 
-provider 解析游戏 profile 的 `timeouts.adjudication_seconds`，没有该字段时回退到 `DICE_JOB_TIMEOUT_SECONDS`（默认 120 秒）。LLM 请求仍由 `llm.timeout_seconds` 单独限制；结果保持时间由 `lifecycle.post_result_hold_seconds` 限制，但不得突破整轮总预算。
+provider 解析游戏 profile 的 `timeouts.adjudication_seconds`，没有该字段时回退到 `DICE_JOB_TIMEOUT_SECONDS`（默认 120 秒）；`timeouts.yolo_detection_seconds` 没有配置时回退到总处理预算。正常裁决复核和失败原因诊断都由同一个 `llm.timeout_seconds` 限制。结果产生后，`lifecycle.post_result_hold_seconds` 独立控制实时画面保持时间，不占用前面的裁决处理预算。
 
 `video.webrtc_base_url` 必须是无路径、无 query、无 fragment、无凭据的 HTTP(S) 地址；`video.path` 仍只允许安全的 URL path。多视角只覆盖各自 path，默认继承 profile 级基础地址。
 
@@ -43,7 +45,7 @@ provider 解析游戏 profile 的 `timeouts.adjudication_seconds`，没有该字
 - profile 校验失败时跳过该游戏，并记录明确的配置错误；
 - 缺少稳定帧在整轮预算耗尽后返回 YOLO timeout；
 - LLM 在自己的预算内超时，按既有策略回退 YOLO；
-- 已获得结果但整轮预算不足以完成保持时间时，缩短保持时间并发送 complete，不阻塞后端关闭；
+- 已获得结果后按 `lifecycle.post_result_hold_seconds` 执行保持时间，保持期间不重新检测或重复调用 LLM；
 - 浏览器公开的 games/health 数据只返回视频地址和能力元数据，不返回 prompt、模型绝对路径、摄像头设备路径或 API key。
 
 ## 测试要求

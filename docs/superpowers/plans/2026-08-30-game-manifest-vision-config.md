@@ -74,7 +74,7 @@ python3 -m pytest tests/test_vision_adjudicator.py tests/test_components_and_job
 
 - [ ] **步骤 2：实现游戏级总超时**
 
-在 provider 开始裁决时读取 `profile["timeouts"]["adjudication_seconds"]`，没有该值时回退到传入的 `timeout_seconds`。用一个整轮 deadline 约束稳定帧等待、LLM 请求剩余时间和 holding；LLM 仍不能超过 `llm.timeout_seconds`。
+在 provider 开始裁决时读取 `profile["timeouts"]["adjudication_seconds"]`，没有该值时回退到传入的 `timeout_seconds`。用一个整轮 deadline 约束稳定帧等待和 LLM 请求剩余时间；裁决成功后的 `lifecycle.post_result_hold_seconds` 独立执行，不占用该处理预算。所有 LLM 请求仍不能超过统一的 `llm.timeout_seconds`。
 
 - [ ] **步骤 3：清理组件 MediaMTX 配置**
 

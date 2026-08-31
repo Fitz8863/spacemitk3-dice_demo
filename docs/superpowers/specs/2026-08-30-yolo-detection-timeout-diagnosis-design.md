@@ -31,10 +31,10 @@
 {
   "timeouts": {
     "yolo_detection_seconds": 8,
-    "adjudication_seconds": 120,
-    "diagnosis_llm_seconds": 3
+    "adjudication_seconds": 120
   },
   "llm": {
+    "timeout_seconds": 3,
     "diagnosis_system_prompt": "Do not declare a winner. Diagnose only.",
     "diagnosis_user_prompt_template": "Detector summary: {detector_summary}",
     "diagnosis_allowed_reason_codes": [
@@ -45,8 +45,11 @@
 }
 ```
 
-`adjudication_seconds` 仍是整局上限；`yolo_detection_seconds` 默认回退到该总预算，
-`diagnosis_llm_seconds` 默认 3 秒。每个游戏可以独立调整这些值。
+`adjudication_seconds` 是从开始检测到产生最终裁决的总处理预算，不包含裁决成功后的
+画面保持时间；`yolo_detection_seconds` 默认回退到该总预算。正常裁决复核和失败原因
+诊断统一使用 `llm.timeout_seconds` 作为单次大模型请求上限，不再设置独立的诊断超时。
+`lifecycle.post_result_hold_seconds` 在结果产生后单独控制实时画面保持时长。每个游戏
+可以独立调整这些值。
 
 ## 4. 调度流程
 

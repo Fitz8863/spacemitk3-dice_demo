@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import time
@@ -356,10 +357,16 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         return float(fallback)
 
     @staticmethod
-    def _diagnosis_timeout(profile: Mapping[str, Any], fallback: float) -> float:
-        timeouts = profile.get("timeouts", {})
-        value = timeouts.get("diagnosis_llm_seconds") if isinstance(timeouts, Mapping) else None
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+    def _llm_timeout(profile: Mapping[str, Any], fallback: float) -> float:
+        """Resolve the single per-request timeout shared by all LLM calls."""
+        llm = profile.get("llm", {})
+        value = llm.get("timeout_seconds") if isinstance(llm, Mapping) else None
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value > 0
+        ):
             return float(value)
         return float(fallback)
 
@@ -450,7 +457,9 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             if path.suffix.lower() in {".jpg", ".jpeg", ".png"} and path.is_file():
                 paths.append(path)
                 cleanup_paths.add(path)
-        if cfg.get("enabled", True) and paths and hasattr(self.verifier, "diagnose"):
+        remaining = max(0.0, deadline - time.monotonic())
+        diagnosis_available = paths and hasattr(self.verifier, "diagnose")
+        if cfg.get("enabled", True) and diagnosis_available and remaining > 0:
             summary = json.dumps(
                 {"detected_counts": local.get("detected_counts", {}), "reason_code": local.get("reason_code")},
                 ensure_ascii=False,
@@ -466,7 +475,10 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     "NO_OBJECTS_DETECTED", "UNSTABLE_DETECTION", "SCENE_GEOMETRY_UNCLEAR", "UNKNOWN",
                 ]
             transport = self._llm_transport_config(profile)
-            llm_timeout = min(self._diagnosis_timeout(profile, 3.0), max(0.01, deadline - time.monotonic()))
+            llm_timeout = min(
+                self._llm_timeout(profile, 3.0),
+                remaining,
+            )
             verifier = self.verifier
             try:
                 if isinstance(verifier, OpenAICompatibleVisionVerifier):
@@ -496,6 +508,9 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 llm_status = "failure"
                 diagnosis["source"] = "yolo_fallback"
                 on_log(f"[vision] diagnosis LLM failed: {exc}")
+        elif cfg.get("enabled", True) and diagnosis_available:
+            llm_status = "timeout"
+            diagnosis["source"] = "yolo_fallback"
         else:
             diagnosis["source"] = "yolo_fallback" if cfg.get("enabled", True) else "disabled"
         diagnosis["llm_status"] = llm_status
@@ -802,8 +817,9 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 transport = self._llm_transport_config(profile)
                 remaining = max(0.0, deadline - time.monotonic())
                 if remaining > 0:
-                    llm_timeout = float(cfg.get("timeout_seconds", fallback_timeout))
-                    llm_timeout = min(llm_timeout, remaining)
+                    llm_timeout = min(
+                        self._llm_timeout(profile, fallback_timeout), remaining
+                    )
                     if not isinstance(verifier, OpenAICompatibleVisionVerifier):
                         vr = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=llm_timeout, model=transport["model"])
                     else:

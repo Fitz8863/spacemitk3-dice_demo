@@ -148,12 +148,12 @@ def test_provider_prefers_game_adjudication_timeout_over_request_fallback():
     assert VisionYolov8Adjudicator._adjudication_timeout(profile, 120) == 7
 
 
-def test_profile_accepts_yolo_detection_and_diagnosis_timeouts(tmp_path: Path):
+def test_profile_accepts_yolo_and_unified_llm_timeouts(tmp_path: Path):
     profile = _minimal_profile()
+    profile["llm"]["timeout_seconds"] = 3
     profile["timeouts"] = {
         "yolo_detection_seconds": 8,
         "adjudication_seconds": 120,
-        "diagnosis_llm_seconds": 3,
     }
     profile["llm"]["diagnosis_system_prompt"] = "Diagnose only."
     profile["llm"]["diagnosis_user_prompt_template"] = "Summary: {detector_summary}"
@@ -161,7 +161,26 @@ def test_profile_accepts_yolo_detection_and_diagnosis_timeouts(tmp_path: Path):
     path.write_text(json.dumps(profile))
     loaded = load_profile(path)
     assert loaded["timeouts"]["yolo_detection_seconds"] == 8.0
-    assert loaded["timeouts"]["diagnosis_llm_seconds"] == 3.0
+    assert loaded["timeouts"] == {"yolo_detection_seconds": 8.0, "adjudication_seconds": 120.0}
+    assert loaded["llm"]["timeout_seconds"] == 3
+
+
+def test_profile_rejects_invalid_llm_timeout(tmp_path: Path):
+    profile = _minimal_profile()
+    profile["llm"]["timeout_seconds"] = 0
+    path = tmp_path / "vision_profile.json"
+    path.write_text(json.dumps(profile))
+    with pytest.raises(ProfileError, match=r"llm\.timeout_seconds"):
+        load_profile(path)
+
+
+def test_profile_rejects_removed_diagnosis_timeout(tmp_path: Path):
+    profile = _minimal_profile()
+    profile["timeouts"]["diagnosis_llm_seconds"] = 3
+    path = tmp_path / "vision_profile.json"
+    path.write_text(json.dumps(profile))
+    with pytest.raises(ProfileError, match="use llm.timeout_seconds"):
+        load_profile(path)
 
 
 def test_local_diagnosis_reports_incomplete_dice_from_yolo_evidence():
@@ -226,8 +245,11 @@ def test_provider_yolo_timeout_calls_diagnosis_and_returns_retry_result(tmp_path
         def stop(self):
             self.stopped = True
 
+    captured = {}
+
     class Verifier:
         def diagnose(self, **kwargs):
+            captured.update(kwargs)
             return type("R", (), {
                 "status": "success",
                 "reason_code": "OVERLAPPING_OBJECTS",
@@ -241,6 +263,7 @@ def test_provider_yolo_timeout_calls_diagnosis_and_returns_retry_result(tmp_path
         "vision": {"expected_count": 5, "participants": ["LEFT", "RIGHT"]},
         "llm": {
             "enabled": True,
+            "timeout_seconds": 0.37,
             "system_prompt": "judge",
             "user_prompt_template": "judge",
             "diagnosis_system_prompt": "diagnose",
@@ -248,7 +271,7 @@ def test_provider_yolo_timeout_calls_diagnosis_and_returns_retry_result(tmp_path
             "allowed_outcomes": ["LEFT", "RIGHT", "TIE"],
             "diagnosis_allowed_reason_codes": ["OVERLAPPING_OBJECTS", "UNKNOWN"],
         },
-        "timeouts": {"yolo_detection_seconds": 0.01, "adjudication_seconds": 120, "diagnosis_llm_seconds": 1},
+        "timeouts": {"yolo_detection_seconds": 0.01, "adjudication_seconds": 120},
         "lifecycle": {"post_result_hold_seconds": 0},
     }
     events = []
@@ -267,6 +290,7 @@ def test_provider_yolo_timeout_calls_diagnosis_and_returns_retry_result(tmp_path
     assert result["retry_required"] is True
     assert result["diagnosis"]["source"] == "llm"
     assert result["diagnosis"]["reason_code"] == "OVERLAPPING_OBJECTS"
+    assert captured["timeout_seconds"] == pytest.approx(0.37)
     assert any(event.get("event") == "diagnosis" for event in events)
     assert any(command["command"] in {"STOP_ADJUDICATION", "CANCEL"} for command in runtime.commands)
 
@@ -298,6 +322,7 @@ def test_provider_diagnosis_llm_timeout_uses_yolo_evidence_fallback(tmp_path: Pa
         "vision": {"expected_count": 5, "participants": ["LEFT", "RIGHT"]},
         "llm": {
             "enabled": True,
+            "timeout_seconds": 0.41,
             "system_prompt": "judge",
             "user_prompt_template": "judge",
             "diagnosis_system_prompt": "diagnose",
@@ -305,7 +330,7 @@ def test_provider_diagnosis_llm_timeout_uses_yolo_evidence_fallback(tmp_path: Pa
             "allowed_outcomes": ["LEFT", "RIGHT", "TIE"],
             "diagnosis_allowed_reason_codes": ["NO_OBJECTS_DETECTED", "UNKNOWN"],
         },
-        "timeouts": {"yolo_detection_seconds": 0.01, "adjudication_seconds": 120, "diagnosis_llm_seconds": 0.01},
+        "timeouts": {"yolo_detection_seconds": 0.01, "adjudication_seconds": 120},
         "lifecycle": {"post_result_hold_seconds": 0},
     }
     result = VisionYolov8Adjudicator(
@@ -319,6 +344,46 @@ def test_provider_diagnosis_llm_timeout_uses_yolo_evidence_fallback(tmp_path: Pa
     assert result["diagnosis"]["source"] == "yolo_fallback"
     assert result["diagnosis"]["llm_status"] == "timeout"
     assert result["diagnosis"]["reason_code"] == "NO_OBJECTS_DETECTED"
+
+
+def test_provider_skips_diagnosis_llm_after_total_budget_expires(tmp_path: Path):
+    image = tmp_path / "diagnostic.jpg"
+    image.write_bytes(b"jpeg")
+
+    class Verifier:
+        calls = 0
+
+        def diagnose(self, **kwargs):
+            self.calls += 1
+            raise AssertionError("diagnosis LLM must not start after the total deadline")
+
+    verifier = Verifier()
+    profile = {
+        "game_id": "dice",
+        "vision": {"expected_count": 5, "participants": ["LEFT", "RIGHT"]},
+        "llm": {
+            "enabled": True,
+            "timeout_seconds": 3,
+            "diagnosis_allowed_reason_codes": ["NO_OBJECTS_DETECTED", "UNKNOWN"],
+        },
+    }
+    result = VisionYolov8Adjudicator(verifier=verifier)._diagnose_failure(
+        VisionAdjudicationRequest("dice", profile, "expired-diagnosis", 1),
+        profile,
+        [{
+            "view_id": "default",
+            "snapshot": {"path": str(image)},
+            "participants": {"LEFT": [], "RIGHT": []},
+        }],
+        {},
+        set(),
+        lambda _: None,
+        lambda _: None,
+        time.monotonic() - 1,
+    )
+    assert verifier.calls == 0
+    assert result["diagnosis"]["source"] == "yolo_fallback"
+    assert result["diagnosis"]["llm_status"] == "timeout"
 
 
 def test_dice_pipeline_preserves_diagnosis_without_projecting_winner():
@@ -602,13 +667,15 @@ def test_provider_runs_one_round_and_holds_result(tmp_path: Path):
     def factory(view_id="default"):
         r=Runtime(view_id); runtimes.append(r); return r
     class Verifier:
-        def __init__(self): self.calls=0
+        def __init__(self): self.calls=0; self.timeout_seconds=None
         def verify(self, **kwargs):
-            self.calls += 1; return type("R", (), {"status":"success","outcome":"LEFT","error":None})()
-    profile={"game_id":"dice","vision":{"stable_frames":1},"llm":{"enabled":True,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT","TIE"]},"video":{"path":"/dice/","webrtc_base_url":"http://100.118.229.28:8889"},"multi_view":{"enabled":False,"min_views":1},"lifecycle":{"post_result_hold_seconds":0},"timeouts":{"adjudication_seconds":15}}
+            self.calls += 1; self.timeout_seconds = kwargs["timeout_seconds"]
+            return type("R", (), {"status":"success","outcome":"LEFT","error":None})()
+    profile={"game_id":"dice","vision":{"stable_frames":1},"llm":{"enabled":True,"timeout_seconds":0.29,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT","TIE"]},"video":{"path":"/dice/","webrtc_base_url":"http://100.118.229.28:8889"},"multi_view":{"enabled":False,"min_views":1},"lifecycle":{"post_result_hold_seconds":0},"timeouts":{"adjudication_seconds":15}}
     events=[]; verifier=Verifier()
     result=VisionYolov8Adjudicator(runtime_factory=factory, verifier=verifier).adjudicate(VisionAdjudicationRequest("dice",profile,"r1",2),on_log=lambda x:None,on_event=events.append,is_cancelled=lambda:False)
     assert result["decision_source"] == "consensus"; assert verifier.calls == 1
+    assert verifier.timeout_seconds == pytest.approx(0.29)
     assert any(r.commands and r.commands[0]["command"] == "START_ADJUDICATION" for r in runtimes)
     video_events = [event for event in events if event.get("event") == "video"]
     assert video_events == [{"event": "video", "url": "http://100.118.229.28:8889/dice/", "view_id": "default"}]
@@ -1213,7 +1280,7 @@ def test_provider_drains_runtime_events_after_yolo_timeout_before_diagnosis(tmp_
             "allowed_outcomes": ["LEFT", "RIGHT", "TIE"],
             "diagnosis_allowed_reason_codes": ["OVERLAPPING_OBJECTS", "UNKNOWN"],
         },
-        "timeouts": {"yolo_detection_seconds": 0.01, "adjudication_seconds": 2, "diagnosis_llm_seconds": 1},
+        "timeouts": {"yolo_detection_seconds": 0.01, "adjudication_seconds": 2},
         "lifecycle": {"post_result_hold_seconds": 0},
     }
     result = VisionYolov8Adjudicator(
