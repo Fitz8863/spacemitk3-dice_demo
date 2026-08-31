@@ -47,6 +47,19 @@ def test_frontend_renders_structured_diagnosis_and_retry_prompt():
     assert "diagnosis.message" in js
 
 
+def test_frontend_diagnosis_marks_detection_failed_and_shows_evidence():
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+    diagnosis = js.split("function showDiagnosis", 1)[1].split("function showResult", 1)[0]
+
+    assert "markAnalysisFailure()" in diagnosis
+    assert "diagnosisDetails(diagnosis)" in diagnosis
+    assert "reason_code" in js
+    assert "detected_counts" in js
+    assert "textContent = '✕'" in js
+    assert ".analysis-step.failed" in css
+
+
 def test_frontend_failure_state_offers_new_round_or_game_list():
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")

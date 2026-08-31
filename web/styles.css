@@ -96,6 +96,8 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .analysis-step.active { opacity: 1; border-color: var(--accent); }
 .analysis-step span { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; border: 2px solid #4a4a4a; color: var(--muted-2); font-size: 16px; font-weight: 700; }
 .analysis-step.active span { color: #04121f; background: var(--win); border-color: var(--win); }
+.analysis-step.failed { opacity: 1; border-color: var(--loss); }
+.analysis-step.failed span { color: #fff; background: var(--loss); border-color: var(--loss); }
 .analysis-step strong { font-size: 20px; }
 .analysis-status { margin: 0 0 28px; color: var(--muted-2); font-size: 20px; line-height: 1.6; }
 .analysis-failure-actions { flex-wrap: wrap; }

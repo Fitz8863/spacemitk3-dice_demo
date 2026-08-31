@@ -134,6 +134,30 @@ def normalize_observation(
     return result
 
 
+def _has_incomplete_expected_counts(
+    profile: Mapping[str, Any], observations: list[Mapping[str, Any]]
+) -> bool:
+    """Return whether stable detector evidence has an incomplete object count."""
+    vision = profile.get("vision", {}) if isinstance(profile, Mapping) else {}
+    vision = vision if isinstance(vision, Mapping) else {}
+    expected = vision.get("expected_count")
+    if not isinstance(expected, int) or isinstance(expected, bool) or expected <= 0:
+        return False
+    participant_names = vision.get("participants")
+    names = [str(name) for name in participant_names] if isinstance(participant_names, list) else []
+    for observation in observations:
+        participants = observation.get("participants")
+        if not isinstance(participants, Mapping):
+            continue
+        keys = names or [str(key) for key in participants]
+        for name in keys:
+            values = participants.get(name)
+            count = len(values) if isinstance(values, (list, tuple)) else (0 if values is None else 1)
+            if count != expected:
+                return True
+    return False
+
+
 def _parse_result_line(line: str) -> dict[str, Any] | None:
     raw = line.strip()
     if raw.startswith("[RESULT] "):
@@ -386,7 +410,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         )
         return mode == "resident" and bool(prewarm)
 
-    def _diagnose_timeout(
+    def _diagnose_failure(
         self,
         request: VisionAdjudicationRequest,
         profile: Mapping[str, Any],
@@ -587,8 +611,18 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                             break
                     elif event.get("event") == "phase" and event.get("phase") == "detecting":
                         active_seen = True
-                    elif event.get("event") == "cancelled" or (
-                        event.get("event") == "phase" and event.get("phase") == "idle" and active_seen
+                    elif event.get("event") == "cancelled":
+                        # A resident runtime can leave the previous round's
+                        # CANCEL acknowledgement queued in the event pipe.
+                        # It is only a cancellation for this collector after
+                        # the current round has visibly entered detecting.
+                        if active_seen:
+                            break
+                        continue
+                    elif (
+                        event.get("event") == "phase"
+                        and event.get("phase") == "idle"
+                        and active_seen
                     ):
                         break
                 return vid, found
@@ -668,7 +702,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     diagnostic_observations = [dict(latest_by_view[key]) for key in sorted(latest_by_view)]
                 if not diagnostic_observations:
                     diagnostic_observations = [{"view_id": str(view.get("id", "default"))} for view in views]
-                diagnosis_result = self._diagnose_timeout(
+                diagnosis_result = self._diagnose_failure(
                     request,
                     profile,
                     diagnostic_observations,
@@ -699,6 +733,34 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             normalized = []
             for observation in ordered:
                 normalized.append(normalize_observation(profile, observation))
+            # A runtime-provided verdict must not bypass the profile's
+            # expected object count.  A stable but incomplete frame is a
+            # diagnosable retry condition, not a winner.
+            if _has_incomplete_expected_counts(profile, normalized):
+                for rt in runtimes:
+                    try:
+                        rt.send({"command": "STOP_ADJUDICATION", "request_id": request.request_id})
+                    except Exception:
+                        pass
+                diagnosis_result = self._diagnose_failure(
+                    request,
+                    profile,
+                    ordered,
+                    strict_snapshot_roots,
+                    cleanup_paths,
+                    on_event,
+                    on_log,
+                    deadline,
+                )
+                on_event({"event": "complete", "phase": "complete"})
+                round_completed = True
+                if not keep_warm:
+                    for view, rt in zip(views, runtimes):
+                        try:
+                            rt.stop()
+                        except Exception:
+                            pass
+                return diagnosis_result
             # If every view supplies a runtime verdict, fuse those votes.
             # Otherwise evaluate the declared profile rule for each view so a
             # missing/legacy yolo_outcome cannot discard a camera's evidence.

@@ -702,14 +702,44 @@ def test_provider_cleans_runtime_snapshots_after_llm(tmp_path: Path):
 
 def test_provider_applies_vision_expected_count_to_rule():
     class Runtime:
+        def __init__(self):
+            self.commands = []
+
         def start(self, *args, **kwargs):
-            self.events_data = iter([{"event":"observation", "stable":True, "snapshot":{"path":"/tmp/no.jpg"}, "participants":{"LEFT":[1],"RIGHT":[2,3]}}])
-        def send(self, command): pass
-        def events(self): return self.events_data
-        def stop(self): pass
-    profile={"game_id":"x","vision":{"stable_frames":1,"expected_count":2},"rule":{"kind":"numeric_compare","aggregation":"sum","higher_wins":True,"tie_value":"TIE"},"llm":{"enabled":False,"allowed_outcomes":["LEFT","RIGHT","TIE"]},"lifecycle":{"post_result_hold_seconds":0}}
-    with pytest.raises(RuleError, match="expected_count"):
-        VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime()).adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
+            self.events_data = iter([
+                {"event": "observation", "stable": True,
+                 "snapshot": {"path": "/tmp/no.jpg"},
+                 "participants": {"LEFT": [1], "RIGHT": [2, 3]}},
+            ])
+
+        def send(self, command):
+            self.commands.append(dict(command))
+
+        def events(self):
+            return self.events_data
+
+        def stop(self):
+            pass
+
+    runtime = Runtime()
+    profile = {
+        "game_id": "x",
+        "vision": {"stable_frames": 1, "expected_count": 2},
+        "rule": {"kind": "numeric_compare", "aggregation": "sum", "higher_wins": True, "tie_value": "TIE"},
+        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    result = VisionYolov8Adjudicator(runtime_factory=lambda vid: runtime).adjudicate(
+        VisionAdjudicationRequest("x", profile, "r", 2),
+        on_log=lambda _: None, on_event=lambda _: None, is_cancelled=lambda: False,
+    )
+
+    assert result["diagnosed"] is True
+    assert result["diagnosis"]["reason_code"] == "INCOMPLETE_OBJECTS"
+    assert result["diagnosis"]["detected_counts"] == {"LEFT": 1, "RIGHT": 2}
+    assert [command["command"] for command in runtime.commands] == [
+        "START_ADJUDICATION", "STOP_ADJUDICATION",
+    ]
 
 
 @pytest.mark.parametrize("content", ["not-json", '{"winner":"UNKNOWN"}', '{"winner":1}'])
@@ -1028,6 +1058,109 @@ def test_provider_ignores_stale_idle_event_before_current_round_detection(tmp_pa
     )
     assert not logs, logs
     assert result["outcome"]["value"] == "LEFT"
+
+
+def test_provider_ignores_stale_cancelled_event_before_current_round_detection(tmp_path: Path):
+    """A stale resident CANCEL event must not abort the next round."""
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"jpeg")
+
+    class Runtime:
+        def __init__(self):
+            self.commands = []
+            self.starts = 0
+
+        def start(self, *args, **kwargs):
+            self.starts += 1
+
+        def send(self, command):
+            self.commands.append(dict(command))
+
+        def events(self):
+            # The previous round's CANCEL can remain queued before the next
+            # round's START phase reaches the provider-side reader.
+            return iter([
+                {"event": "cancelled"},
+                {"event": "phase", "phase": "detecting"},
+                {"event": "progress", "phase": "detecting", "stable_count": 1, "stable_frames": 1},
+                {"event": "observation", "stable": True, "yolo_outcome": "LEFT",
+                 "snapshot": {"path": str(image)}},
+            ])
+
+        def stop(self):
+            pass
+
+    class Verifier:
+        def verify(self, **kwargs):
+            return type("R", (), {"status": "success", "outcome": "LEFT"})()
+
+    profile = {
+        "game_id": "x",
+        "vision": {"stable_frames": 1},
+        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
+        "runtime": {"mode": "resident", "prewarm_camera": True},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    runtime = Runtime()
+    events = []
+    result = VisionYolov8Adjudicator(runtime_factory=lambda _view_id: runtime, verifier=Verifier()).adjudicate(
+        VisionAdjudicationRequest("x", profile, "stale-cancelled", 2),
+        on_log=lambda _: None, on_event=events.append, is_cancelled=lambda: False,
+    )
+
+    assert result["outcome"]["value"] == "LEFT"
+    assert runtime.starts == 1
+    assert any(event.get("stable_count") == 1 for event in events)
+
+
+def test_provider_reports_incomplete_stable_observation_without_cancelling_resident_runtime(tmp_path: Path):
+    """A stable but incomplete dice frame is a retry diagnosis, not a CANCEL error."""
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"jpeg")
+
+    class Runtime:
+        def __init__(self):
+            self.commands = []
+
+        def start(self, *args, **kwargs):
+            pass
+
+        def send(self, command):
+            self.commands.append(dict(command))
+
+        def events(self):
+            return iter([
+                {"event": "phase", "phase": "detecting"},
+                {"event": "observation", "stable": True, "yolo_outcome": "LEFT",
+                 "snapshot": {"path": str(image)},
+                 "participants": {"LEFT": [1, 2, 3, 4], "RIGHT": [6, 6, 6, 6, 6]},
+                 "detections": [1] * 9},
+            ])
+
+        def stop(self):
+            pass
+
+    profile = {
+        "game_id": "dice",
+        "vision": {"stable_frames": 1, "expected_count": 5, "participants": ["LEFT", "RIGHT"]},
+        "rule": {"kind": "numeric_compare", "aggregation": "sum", "higher_wins": True, "tie_value": "TIE"},
+        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]},
+        "runtime": {"mode": "resident", "prewarm_camera": True},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    runtime = Runtime()
+    result = VisionYolov8Adjudicator(runtime_factory=lambda _view_id: runtime).adjudicate(
+        VisionAdjudicationRequest("dice", profile, "incomplete-stable", 2),
+        on_log=lambda _: None, on_event=lambda _: None, is_cancelled=lambda: False,
+    )
+
+    assert result["adjudicated"] is False
+    assert result["diagnosed"] is True
+    assert result["diagnosis"]["reason_code"] == "INCOMPLETE_OBJECTS"
+    assert result["diagnosis"]["detected_counts"] == {"LEFT": 4, "RIGHT": 5}
+    assert [command["command"] for command in runtime.commands] == [
+        "START_ADJUDICATION", "STOP_ADJUDICATION",
+    ]
 
 
 def test_provider_drains_runtime_events_after_yolo_timeout_before_diagnosis(tmp_path: Path):

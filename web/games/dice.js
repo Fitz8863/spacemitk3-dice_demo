@@ -155,15 +155,50 @@ export function register(engine) {
     stopVisionStream();
     pendingAnalysisResult = null;
     $('stepCapture').classList.add('active');
+    $('stepCapture').classList.remove('failed');
     $('stepCapture').querySelector('span').textContent = '✓';
-    $('stepDetect').classList.remove('active');
+    $('stepDetect').classList.remove('active', 'failed');
     $('stepDetect').querySelector('span').textContent = '2';
-    $('stepJudge').classList.remove('active');
+    $('stepJudge').classList.remove('active', 'failed');
     $('stepJudge').querySelector('span').textContent = '3';
     $('analysisTitle').textContent = '正在识别骰子';
     $('analysisFailureActions').classList.add('hidden');
     document.querySelector('.analysis-spinner')?.classList.remove('hidden');
     $('analysisStatus').textContent = '正在请求 K3 YOLOv8 推理进程…';
+  }
+
+  function markAnalysisFailure() {
+    $('stepDetect').classList.add('active', 'failed');
+    $('stepDetect').querySelector('span').textContent = '✕';
+    $('stepJudge').classList.remove('active');
+    $('stepJudge').classList.remove('failed');
+    $('stepJudge').querySelector('span').textContent = '3';
+  }
+
+  function diagnosisDetails(diagnosis) {
+    const reasonCode = typeof diagnosis.reason_code === 'string'
+      ? diagnosis.reason_code.trim() : '';
+    const reasonLabels = {
+      INCOMPLETE_OBJECTS: '检测数量不完整',
+      OVERLAPPING_OBJECTS: '疑似骰子叠放',
+      LOW_LIGHT: '光线可能不足',
+      OCCLUDED: '目标可能被遮挡',
+      NO_OBJECTS_DETECTED: '未检测到目标',
+      UNSTABLE_DETECTION: '检测结果不稳定',
+      SCENE_GEOMETRY_UNCLEAR: '左右区域不清晰',
+      UNKNOWN: '无法确定具体原因',
+    };
+    const reason = reasonCode
+      ? `原因：${reasonLabels[reasonCode] || reasonCode}（${reasonCode}）`
+      : '';
+    const counts = diagnosis.detected_counts;
+    const countText = counts && typeof counts === 'object'
+      ? Object.entries(counts)
+        .filter(([, value]) => Number.isFinite(Number(value)))
+        .map(([name, value]) => `${name}=${Number(value)}`)
+        .join('、')
+      : '';
+    return [reason, countText ? `检测数量：${countText}` : ''].filter(Boolean);
   }
 
   function updateAnalysisProgress(job) {
@@ -327,6 +362,7 @@ export function register(engine) {
       await pollAnalysis(job.job_id);
     } catch (error) {
       stopVisionStream();
+      markAnalysisFailure();
       document.querySelector('.analysis-spinner')?.classList.add('hidden');
       $('analysisTitle').textContent = '识别未完成';
       $('analysisStatus').textContent = error.message;
@@ -342,10 +378,15 @@ export function register(engine) {
     }
     const diagnosis = result && result.diagnosis && typeof result.diagnosis === 'object'
       ? result.diagnosis : {};
+    markAnalysisFailure();
     document.querySelector('.analysis-spinner')?.classList.add('hidden');
     $('analysisTitle').textContent = '本次裁决未完成';
-    $('analysisStatus').textContent = diagnosis.message
-      || '当前画面无法形成稳定检测结果，请检查摆放和光线后重新开始。';
+    const details = diagnosisDetails(diagnosis);
+    $('analysisStatus').textContent = [
+      diagnosis.message
+        || '当前画面无法形成稳定检测结果，请检查摆放和光线后重新开始。',
+      ...details,
+    ].join(' ');
     $('analysisFailureActions').classList.remove('hidden');
     toast('视觉裁决未完成，请重新开始一局');
   }
@@ -393,6 +434,8 @@ export function register(engine) {
     playerDice = [];
     agentDice = [];
     $('analysisFailureActions').classList.add('hidden');
+    $('stepDetect').classList.remove('failed');
+    $('stepJudge').classList.remove('failed');
     updateScores();
     setPhase('ready');
   }
