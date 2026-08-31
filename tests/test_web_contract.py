@@ -186,3 +186,14 @@ def test_frontend_uses_light_theme_and_high_contrast_urgent_styles():
     assert "color: var(--loss)" in css
     assert "@keyframes urgentPulse" in css
     assert 'content="#f7f9fc"' in html
+
+
+def test_frontend_uses_louder_tense_warning_tone_for_urgent_countdown():
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+
+    assert "oscillator.type = 'triangle';" in js
+    assert "const secondaryOscillator = context.createOscillator();" in js
+    assert "const volume = seconds === 1 ? 0.28 : 0.22;" in js
+    assert "secondaryOscillator.frequency.setValueAtTime" in js
+    assert "secondaryOscillator.start(secondaryStart)" in js
+    assert "oscillator.stop(now + 0.28)" in js

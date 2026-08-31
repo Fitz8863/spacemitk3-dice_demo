@@ -141,17 +141,31 @@ export function register(engine) {
     try {
       const oscillator = context.createOscillator();
       const gain = context.createGain();
-      const frequency = seconds === 1 ? 880 : seconds === 2 ? 660 : 520;
-      const volume = seconds === 1 ? 0.16 : 0.1;
-      oscillator.type = 'sine';
+      const secondaryOscillator = context.createOscillator();
+      const secondaryGain = context.createGain();
+      const frequency = seconds === 1 ? 880 : seconds === 2 ? 740 : 620;
+      const secondaryFrequency = seconds === 1 ? 1320 : seconds === 2 ? 1110 : 930;
+      const volume = seconds === 1 ? 0.28 : 0.22;
+      const secondaryStart = now + 0.12;
+      oscillator.type = 'triangle';
       oscillator.frequency.setValueAtTime(frequency, now);
       gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(volume, now + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+      gain.gain.exponentialRampToValueAtTime(volume, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
       oscillator.connect(gain);
       gain.connect(context.destination);
       oscillator.start(now);
-      oscillator.stop(now + 0.2);
+      oscillator.stop(now + 0.28);
+
+      secondaryOscillator.type = 'triangle';
+      secondaryOscillator.frequency.setValueAtTime(secondaryFrequency, secondaryStart);
+      secondaryGain.gain.setValueAtTime(0.0001, secondaryStart);
+      secondaryGain.gain.exponentialRampToValueAtTime(volume * 0.85, secondaryStart + 0.015);
+      secondaryGain.gain.exponentialRampToValueAtTime(0.0001, secondaryStart + 0.24);
+      secondaryOscillator.connect(secondaryGain);
+      secondaryGain.connect(context.destination);
+      secondaryOscillator.start(secondaryStart);
+      secondaryOscillator.stop(secondaryStart + 0.28);
     } catch (_) {
       // Audio feedback is optional; a browser audio limitation must not stop the game.
     }
