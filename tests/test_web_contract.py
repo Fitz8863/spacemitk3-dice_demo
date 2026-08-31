@@ -288,3 +288,12 @@ def test_frontend_uses_color_controller_hints_for_navigation_copy():
     assert 'border-radius: 50%' in css
     assert '.controller-hint' in css
     assert '听完规则后按 Enter 确认' not in app
+
+
+def test_frontend_hides_result_phase_copy_when_empty():
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    dice = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+
+    assert "node.classList.add('hidden')" in app
+    assert "result: ['本局结果', '']" in dice
+    assert '点数已经锁定，看看谁赢下了这一局。' not in dice

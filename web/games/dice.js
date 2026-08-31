@@ -30,7 +30,7 @@ export function register(engine) {
     shaking: ['摇骰进行中', '双方同时摇骰，准备好后可提前停止。'],
     open: ['同时开盖', '请同时打开骰盅，开盖过场结束后自动进入倒计时。'],
     analysis: ['正在判定胜负', '视觉裁决器正在识别骰子点数，随后由大模型复核。'],
-    result: ['本局结果', '点数已经锁定，看看谁赢下了这一局。'],
+    result: ['本局结果', ''],
   };
 
   function sum(dice) { return dice.reduce((a, b) => a + b, 0); }

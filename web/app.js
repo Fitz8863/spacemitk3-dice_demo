@@ -32,9 +32,18 @@ const CONTROLLER_COPY = {
 };
 
 function renderPhaseCopy(phase, fallback) {
+  const node = $('phaseCopy');
   const copy = CONTROLLER_COPY[phase];
-  if (copy) $('phaseCopy').innerHTML = copy;
-  else $('phaseCopy').textContent = fallback;
+  if (copy) {
+    node.innerHTML = copy;
+    node.classList.remove('hidden');
+  } else if (fallback) {
+    node.textContent = fallback;
+    node.classList.remove('hidden');
+  } else {
+    node.textContent = '';
+    node.classList.add('hidden');
+  }
 }
 
 // ---- 视图切换 ----
