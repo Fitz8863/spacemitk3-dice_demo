@@ -260,3 +260,19 @@ def test_frontend_hides_unused_round_indicator():
     assert 'id="roundNumber"' not in html
     assert '.round-badge' not in css
     assert 'roundNumber' not in dice
+
+
+def test_frontend_uses_color_controller_hints_for_navigation_copy():
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+
+    assert 'controller-key-green' in app
+    assert 'controller-key-blue' in app
+    assert 'controller-key-red' in app
+    assert 'controller-key-yellow' in app
+    assert 'renderPhaseCopy(phase, meta[1])' in app
+    assert '.controller-key-green' in css
+    assert '.controller-key-blue' in css
+    assert '.controller-key-red' in css
+    assert '.controller-key-yellow' in css
+    assert '听完规则后按 Enter 确认' not in app

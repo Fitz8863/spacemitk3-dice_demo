@@ -25,13 +25,25 @@ const gameModules = {};
 let activeGame = null; // 当前挂载的游戏模块（有 enter/teardown/onKey/phaseMeta）
 let games = []; // GET /api/games 返回的列表
 
+const CONTROLLER_COPY = {
+  select: `使用 <span class="controller-key controller-key-yellow" aria-label="黄色向上按钮">↑</span> 和 <span class="controller-key controller-key-blue" aria-label="蓝色向下按钮">↓</span> 选择游戏，选中后按 <span class="controller-key controller-key-green" aria-label="绿色确认按钮">✓</span> 确认。`,
+  rules: `听完规则后按 <span class="controller-key controller-key-green" aria-label="绿色确认按钮">✓</span> 确认，按 <span class="controller-key controller-key-blue" aria-label="蓝色重听按钮">↻</span> 重听，按 <span class="controller-key controller-key-red" aria-label="红色返回按钮">↩</span> 返回。`,
+  ready: `按 <span class="controller-key controller-key-green" aria-label="绿色开始按钮">✓</span> 开始摇骰，按 <span class="controller-key controller-key-red" aria-label="红色返回按钮">↩</span> 返回。`,
+};
+
+function renderPhaseCopy(phase, fallback) {
+  const copy = CONTROLLER_COPY[phase];
+  if (copy) $('phaseCopy').innerHTML = copy;
+  else $('phaseCopy').textContent = fallback;
+}
+
 // ---- 视图切换 ----
 function setPhase(phase) {
   state.phase = phase;
   views.forEach((view) => view.classList.toggle('hidden', view.dataset.view !== phase));
   const meta = (activeGame && activeGame.phaseMeta && activeGame.phaseMeta[phase]) || SELECT_META;
   $('phaseTitle').textContent = meta[0];
-  $('phaseCopy').textContent = meta[1];
+  renderPhaseCopy(phase, meta[1]);
 }
 
 // ---- 提示 ----
