@@ -110,36 +110,41 @@ def test_frontend_uses_manifest_participant_layout_and_role_result():
     assert re.search(r"result\.winner(?!_role)", dice) is None
 
 
-def test_frontend_enters_open_phase_and_prompts_before_confirmation():
+def test_frontend_enters_open_transition_and_starts_countdown_automatically():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
     manifest = json.loads(
         (ROOT / "backend/games/dice/manifest.json").read_text(encoding="utf-8")
     )
     stop_shake = js.split("function stopShake", 1)[1].split(
-        "function confirmDiceOpened", 1
+        "function beginRevealCountdown", 1
     )[0]
 
     assert "setPhase('open')" in stop_shake
     assert "countdown(" not in stop_shake
     assert "speakState('reveal_ready')" in stop_shake
+    assert "revealTransitionTimer = setTimeout" in stop_shake
+    assert "beginRevealCountdown();" in stop_shake
+    assert "}, 2000);" in stop_shake
+    assert "clearTimeout(revealTransitionTimer)" in js
+    assert "开盖过场中" in js
+    assert 'id="revealDice"' not in html
     assert "shake_stopped" not in manifest["texts"]
-    assert manifest["texts"]["reveal_ready"] == {
-        "mode": "tts",
-        "text": "请同时打开骰盅。你准备好了吗？准备好后，请点击双方已开盖。",
-    }
+    assert manifest["texts"]["reveal_ready"]["mode"] == "tts"
+    assert manifest["texts"]["reveal_ready"]["text"].strip()
 
 
-def test_frontend_counts_down_after_open_confirmation_before_adjudication():
+def test_frontend_counts_down_after_open_transition_before_adjudication():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
 
-    assert "function confirmDiceOpened" in js
-    confirm_open = js.split("function confirmDiceOpened", 1)[1].split(
+    assert "function beginRevealCountdown" in js
+    confirm_open = js.split("function beginRevealCountdown", 1)[1].split(
         "function resetAnalysisSteps", 1
     )[0]
     assert re.search(r"countdown\(\s*reveal,", confirm_open)
     assert "VISION COUNTDOWN" in confirm_open
     assert "请保持骰子和骰盅位置不动" in confirm_open
-    assert "revealDice: () => confirmDiceOpened()" in js
+    assert "revealDice" not in js
 
 
 def test_frontend_uses_vision_specific_copy_during_post_open_countdown():
@@ -147,7 +152,7 @@ def test_frontend_uses_vision_specific_copy_during_post_open_countdown():
 
     assert "visionCountdownMeta" in js
     assert "倒计时结束后开始视觉裁决" in js
-    confirm_open = js.split("function confirmDiceOpened", 1)[1].split(
+    confirm_open = js.split("function beginRevealCountdown", 1)[1].split(
         "function resetAnalysisSteps", 1
     )[0]
     assert "visionCountdownMeta" in confirm_open

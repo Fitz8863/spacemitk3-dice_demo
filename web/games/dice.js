@@ -13,6 +13,7 @@ export function register(engine) {
   let agentDice = [];
   let shakeTimer = null;
   let countdownTimer = null;
+  let revealTransitionTimer = null;
   let countdownAudioContext = null;
   let visionStreamToken = 0;
   let pendingAnalysisResult = null;
@@ -28,7 +29,7 @@ export function register(engine) {
     ready: ['READY CHECK', '准备好了吗？', '人手操作模式已开启，拿起骰盅后点击开始。', '等待玩家开始'],
     countdown: shakeCountdownMeta,
     shaking: ['SHAKE PHASE', '摇骰进行中', '双方同时摇骰，准备好后可提前停止。', '双方摇骰中'],
-    open: ['REVEAL', '同时开盖', '把骰盅放回区域，确认双方都已开盖。', '等待双方开盖'],
+    open: ['REVEAL', '同时开盖', '请同时打开骰盅，开盖过场结束后自动进入倒计时。', '开盖过场中'],
     analysis: ['VISION ADJUDICATION', '正在判定胜负', '视觉裁决器正在识别骰子点数，随后由大模型复核。', '视觉裁决中'],
     result: ['ROUND RESULT', '本局结果', '点数已经锁定，看看谁赢下了这一局。', '结果已播报'],
   };
@@ -212,11 +213,16 @@ export function register(engine) {
 
   function stopShake() {
     clearInterval(shakeTimer);
+    clearTimeout(revealTransitionTimer);
     setPhase('open');
     speakState('reveal_ready');
+    revealTransitionTimer = setTimeout(() => {
+      revealTransitionTimer = null;
+      beginRevealCountdown();
+    }, 2000);
   }
 
-  function confirmDiceOpened() {
+  function beginRevealCountdown() {
     countdown(
       reveal,
       'VISION COUNTDOWN',
@@ -503,6 +509,8 @@ export function register(engine) {
 
   function resetRound() {
     stopVisionStream();
+    clearTimeout(revealTransitionTimer);
+    revealTransitionTimer = null;
     round += 1;
     $('roundNumber').textContent = String(round).padStart(2, '0');
     playerDice = [];
@@ -535,7 +543,6 @@ export function register(engine) {
       countdown(beginShake, 'GET READY', '和 Agent 同步');
     },
     stopShake: () => stopShake(),
-    revealDice: () => confirmDiceOpened(),
     analysisNewRound: () => resetRound(),
     analysisBackToGames: () => returnToSelect(),
     newRound: () => resetRound(),
@@ -564,8 +571,10 @@ export function register(engine) {
     stopVisionStream();
     clearInterval(shakeTimer);
     clearInterval(countdownTimer);
+    clearTimeout(revealTransitionTimer);
     shakeTimer = null;
     countdownTimer = null;
+    revealTransitionTimer = null;
     participantSides = null;
     Object.entries(handlers).forEach(([id, fn]) => $(id).removeEventListener('click', fn));
     stopSpeech();

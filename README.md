@@ -88,7 +88,7 @@ printf 'DICE_LLM_API_KEY=%s\n' '你的大模型API_KEY' > .dice-arena.env
 chmod 600 .dice-arena.env
 ```
 
-也可以在启动 `scripts/start_web.sh` 前直接导出 `DICE_LLM_API_KEY`。如果没有配置 key，`/api/health` 会显示 `llm_configured:false`，点击“双方已开盖”会明确提示未配置，而不是使用随机骰子或直接判定胜负。
+也可以在启动 `scripts/start_web.sh` 前直接导出 `DICE_LLM_API_KEY`。如果没有配置 key，`/api/health` 会显示 `llm_configured:false`，进入开盖后的视觉裁决阶段会明确提示未配置，而不是使用随机骰子或直接判定胜负。
 
 页面交互流程：
 
@@ -96,8 +96,8 @@ chmod 600 .dice-arena.env
 2. 点击「我明白了」进入准备状态；
 3. 点击「开始摇骰」，网页执行 3、2、1 倒计时；
 4. 当前由人手实际摇动骰盅，摇骰阶段持续 10 秒；剩余 3、2、1 秒时倒计时数字变红并播放提示音，完成后也可以提前点击「停止摇骰」；
-5. 人手打开双方骰盅，点击「双方已开盖」；
-6. 页面展示 YOLOv8 + 大模型复核后的真实识别结果；
+5. 人手打开双方骰盅，开盖过场页面停留 2 秒后自动播放 `3、2、1` 倒计时；
+6. 倒计时结束后页面自动进入 YOLOv8 + 大模型复核的真实识别流程；
 7. 点击「再来一局」回到准备状态。
 
 键盘操作：游戏列表用 `↑/↓` 选择、`Enter` 确认；规则页按 `Enter` 表示“我明白了”、按 `↓` 再听一次；摇骰阶段按 `Q` 停止。
@@ -127,7 +127,7 @@ chmod 600 .dice-arena.env
 
 `mode=tts` 使用当前游戏选中的 TTS provider；`mode=audio` 从该游戏目录读取 WAV，例如上述文件应放在 `backend/games/dice/audio/rules_intro.wav`。第一版只接受 WAV，并拒绝绝对路径和 `..` 越界路径。`text` 在 audio 模式下是可选说明。旧的纯字符串条目仍兼容并视为 TTS。
 
-当前状态键包括：`rules_intro`、`rules_confirmed`、`shake_started`、`reveal_ready`、`analysis_started`、`result_tie`、`result_player_win` 和 `result_agent_win`。`reveal_ready` 会在摇骰结束、等待双方开盖时播报；用户确认双方已开盖后，网页执行 3 秒视觉倒计时，再启动视觉裁决。TTS 胜负文案支持 `{player_score}`、`{agent_score}` 占位符；`voice` 和 `speed` 是游戏级 TTS 默认参数。修改 manifest 或添加 WAV 后需要重启后端，使 manifest 重新加载。
+当前状态键包括：`rules_intro`、`rules_confirmed`、`shake_started`、`reveal_ready`、`analysis_started`、`result_tie`、`result_player_win` 和 `result_agent_win`。`reveal_ready` 会在摇骰结束、进入开盖过场时播报；过场页面保持 2 秒后，网页自动执行 3 秒视觉倒计时，再启动视觉裁决。TTS 胜负文案支持 `{player_score}`、`{agent_score}` 占位符；`voice` 和 `speed` 是游戏级 TTS 默认参数。修改 manifest 或添加 WAV 后需要重启后端，使 manifest 重新加载。
 
 ## K3 后端接口
 
@@ -229,11 +229,11 @@ SELECT -> RULES -> READY -> COUNTDOWN -> SHAKING -> OPEN
        -> ANALYSIS -> RESULT -> READY / SELECT
 ```
 
-后续接入时，可以把前端的三个“人手按钮”替换成 ROS2 / Agent 事件：
+后续接入时，可以把前端的两个“人手按钮”替换成 ROS2 / Agent 事件：
 
 - `startShake`：下发摇骰语义指令；
 - `stopShake`：下发停骰语义指令；
-- `revealDice`：收到开盖完成事件后开始采集与识别；
+- 开盖过场：摇骰结束后自动等待 2 秒，再开始视觉倒计时与采集识别；
 - `ANALYSIS`：接收 K3 YOLOv8 输出的 10 颗骰子、置信度、两侧总和和判定结果。
 
 当前 HTTP bridge 已通过 SSE 推送分析进度和结果。下一阶段接入机械臂时，应继续让后端作为权威状态源；只有需要双向机器人事件或高频画面时，再增加 WebSocket/视频通道，不让 ROS2、视觉和网页 UI 互相耦合。
