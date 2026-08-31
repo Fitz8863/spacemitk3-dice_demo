@@ -10,7 +10,7 @@
   "voice": {
     "mode": "clone",
     "name": "Junhao",
-    "reference_audio": "voice/zanni1.wav"
+    "reference_audio": "voice/warm.wav"
   },
   "generation": {
     "max_new_frames": 120,

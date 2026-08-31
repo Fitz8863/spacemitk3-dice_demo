@@ -8,7 +8,6 @@ export function register(engine) {
     5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8],
   };
 
-  let round = 1;
   let playerDice = [];
   let agentDice = [];
   let shakeTimer = null;
@@ -217,7 +216,7 @@ export function register(engine) {
     revealTransitionTimer = setTimeout(() => {
       revealTransitionTimer = null;
       beginRevealCountdown();
-    }, 2000);
+    }, 4000);
   }
 
   function beginRevealCountdown() {
@@ -552,10 +551,8 @@ export function register(engine) {
   function enter(manifest) {
     configureParticipants(manifest);
     stopVisionStream();
-    round = 1;
     playerDice = [];
     agentDice = [];
-    $('roundNumber').textContent = '01';
     $('analysisFailureActions').classList.add('hidden');
     document.querySelector('.analysis-spinner')?.classList.remove('hidden');
     updateScores();
