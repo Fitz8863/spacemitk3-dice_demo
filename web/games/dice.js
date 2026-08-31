@@ -202,7 +202,6 @@ export function register(engine) {
     setPhase('shaking');
     let seconds = SHAKE_DURATION_SECONDS;
     updateShakeCountdown(seconds);
-    speakState('shake_started');
     clearInterval(shakeTimer);
     shakeTimer = setInterval(() => {
       seconds -= 1;
@@ -540,6 +539,7 @@ export function register(engine) {
   const handlers = {
     startShake: () => {
       prepareCountdownAudio();
+      speakState('shake_started');
       countdown(beginShake, 'GET READY', '和 Agent 同步');
     },
     stopShake: () => stopShake(),

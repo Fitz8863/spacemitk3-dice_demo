@@ -204,3 +204,20 @@ def test_frontend_uses_louder_tense_warning_tone_for_urgent_countdown():
     assert "secondaryOscillator.frequency.setValueAtTime" in js
     assert "secondaryOscillator.start(secondaryStart)" in js
     assert "oscillator.stop(now + 0.28)" in js
+
+
+def test_frontend_plays_shake_started_with_get_ready_countdown_not_ten_second_timer():
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    begin_shake = js.split("function beginShake", 1)[1].split(
+        "function stopShake", 1
+    )[0]
+    start_handler = js.split("startShake: () => {", 1)[1].split(
+        "stopShake: () => stopShake()", 1
+    )[0]
+
+    assert "speakState('shake_started')" not in begin_shake
+    assert "countdown(beginShake, 'GET READY', '和 Agent 同步');" in start_handler
+    assert "speakState('shake_started');" in start_handler
+    assert start_handler.index("speakState('shake_started')") < start_handler.index(
+        "countdown(beginShake"
+    )
