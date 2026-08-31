@@ -44,7 +44,7 @@
     },
     "video": {"enabled": true, "protocol": "webrtc", "path": "/dice/", "autoplay": true, "muted": true},
     "lifecycle": {"post_result_hold_seconds": 3},
-    "timeouts": {"yolo_detection_seconds": 8, "adjudication_seconds": 120, "diagnosis_llm_seconds": 3}
+    "timeouts": {"yolo_detection_seconds": 4, "adjudication_seconds": 120, "diagnosis_llm_seconds": 3}
   },
   "voice": "default",
   "speed": 1.0,

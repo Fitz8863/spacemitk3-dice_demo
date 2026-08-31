@@ -105,7 +105,10 @@
             <div class="analysis-step" id="stepJudge"><span>3</span><div><strong>计算胜负</strong></div></div>
           </div>
           <p class="analysis-status" id="analysisStatus">正在请求 K3 YOLOv8 推理进程…</p>
-          <button class="secondary-button hidden" id="analysisRetry" type="button">重新分析</button>
+          <div class="view-actions analysis-failure-actions hidden" id="analysisFailureActions">
+            <button class="secondary-button" id="analysisNewRound" type="button">再来一局</button>
+            <button class="primary-button" id="analysisBackToGames" type="button">退出游戏，返回列表</button>
+          </div>
         </section>
 
         <!-- 结果 -->

@@ -47,6 +47,23 @@ def test_frontend_renders_structured_diagnosis_and_retry_prompt():
     assert "diagnosis.message" in js
 
 
+def test_frontend_failure_state_offers_new_round_or_game_list():
+    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+
+    assert 'id="analysisNewRound"' in html
+    assert 'id="analysisBackToGames"' in html
+    assert "再来一局" in html
+    assert "退出游戏，返回列表" in html
+    assert 'id="analysisRetry"' not in html
+    assert "analysisNewRound" in js
+    assert "analysisBackToGames" in js
+    assert "analysisNewRound: () => resetRound()" in js
+    assert "analysisBackToGames: () => returnToSelect()" in js
+    assert "analysisRetry" not in js
+    assert "reveal()" not in js.split("function showDiagnosis", 1)[1].split("function showResult", 1)[0]
+
+
 def test_frontend_does_not_mark_yolo_complete_while_still_detecting():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     detecting = js.split("if (job.phase === 'detecting')", 1)[1].split(

@@ -161,7 +161,8 @@ export function register(engine) {
     $('stepJudge').classList.remove('active');
     $('stepJudge').querySelector('span').textContent = '3';
     $('analysisTitle').textContent = '正在识别骰子';
-    $('analysisRetry').classList.add('hidden');
+    $('analysisFailureActions').classList.add('hidden');
+    document.querySelector('.analysis-spinner')?.classList.remove('hidden');
     $('analysisStatus').textContent = '正在请求 K3 YOLOv8 推理进程…';
   }
 
@@ -326,9 +327,10 @@ export function register(engine) {
       await pollAnalysis(job.job_id);
     } catch (error) {
       stopVisionStream();
+      document.querySelector('.analysis-spinner')?.classList.add('hidden');
       $('analysisTitle').textContent = '识别未完成';
       $('analysisStatus').textContent = error.message;
-      $('analysisRetry').classList.remove('hidden');
+      $('analysisFailureActions').classList.remove('hidden');
       toast(`K3 视觉裁决失败：${error.message}`);
     }
   }
@@ -340,10 +342,11 @@ export function register(engine) {
     }
     const diagnosis = result && result.diagnosis && typeof result.diagnosis === 'object'
       ? result.diagnosis : {};
+    document.querySelector('.analysis-spinner')?.classList.add('hidden');
     $('analysisTitle').textContent = '本次裁决未完成';
     $('analysisStatus').textContent = diagnosis.message
       || '当前画面无法形成稳定检测结果，请检查摆放和光线后重新开始。';
-    $('analysisRetry').classList.remove('hidden');
+    $('analysisFailureActions').classList.remove('hidden');
     toast('视觉裁决未完成，请重新开始一局');
   }
 
@@ -389,7 +392,7 @@ export function register(engine) {
     $('roundNumber').textContent = String(round).padStart(2, '0');
     playerDice = [];
     agentDice = [];
-    $('analysisRetry').classList.add('hidden');
+    $('analysisFailureActions').classList.add('hidden');
     updateScores();
     setPhase('ready');
   }
@@ -413,7 +416,8 @@ export function register(engine) {
     startShake: () => countdown(beginShake, 'GET READY', '和 Agent 同步'),
     stopShake: () => stopShake(),
     revealDice: () => reveal(),
-    analysisRetry: () => reveal(),
+    analysisNewRound: () => resetRound(),
+    analysisBackToGames: () => returnToSelect(),
     newRound: () => resetRound(),
     backToGames: () => returnToSelect(),
     repeatRules,
@@ -428,7 +432,8 @@ export function register(engine) {
     playerDice = [];
     agentDice = [];
     $('roundNumber').textContent = '01';
-    $('analysisRetry').classList.add('hidden');
+    $('analysisFailureActions').classList.add('hidden');
+    document.querySelector('.analysis-spinner')?.classList.remove('hidden');
     updateScores();
     Object.entries(handlers).forEach(([id, fn]) => $(id).addEventListener('click', fn));
     setPhase('rules');
