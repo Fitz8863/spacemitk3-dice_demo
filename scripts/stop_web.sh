@@ -8,7 +8,15 @@ PID_FILE="${PID_FILE:-${RUNTIME_DIR}/web-${PORT}.pid}"
 TTS_PROVIDER_FILE="${TTS_PROVIDER_FILE:-${RUNTIME_DIR}/web-${PORT}.tts-provider}"
 PYTHON_BIN="${DICE_PYTHON:-python3}"
 
-resolve_tts_provider() {
+resolve_tts_providers() {
+    # Prefer the manifest-derived list (local + remote slots + per-line
+    # overrides); fall back to the recorded/running provider ids.
+    local providers
+    providers="$("$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" referenced tts --game "${DICE_GAME:-dice}" 2>/dev/null || true)"
+    if [[ -n "$providers" ]]; then
+        printf '%s\n' "$providers"
+        return 0
+    fi
     local provider=""
     if [[ -f "$TTS_PROVIDER_FILE" ]]; then
         provider="$(head -n 1 "$TTS_PROVIDER_FILE" 2>/dev/null || true)"
@@ -17,24 +25,30 @@ resolve_tts_provider() {
         provider="$(curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null \
             | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("tts_provider", ""))' 2>/dev/null || true)"
     fi
-    if [[ -z "$provider" ]]; then
-        provider="$("$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" selected tts --game "${DICE_GAME:-dice}" 2>/dev/null || true)"
-    fi
     printf '%s\n' "$provider"
 }
 
 stop_selected_tts() {
-    local provider="${1:-}"
-    if [[ -z "$provider" ]]; then
-        provider="$(resolve_tts_provider)"
+    local providers="${1:-}"
+    if [[ -z "$providers" ]]; then
+        providers="$(resolve_tts_providers)"
     fi
-    if [[ -z "$provider" ]]; then
+    local id
+    local -a stopped=()
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        for stopped_id in "${stopped[@]:-}"; do
+            [[ "$stopped_id" == "$id" ]] && id="" && break
+        done
+        [[ -n "$id" ]] || continue
+        stopped+=("$id")
+        "$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" stop "$id" || {
+            echo "Warning: failed to stop TTS provider $id" >&2
+        }
+    done <<< "$providers"
+    if [[ "${#stopped[@]}" -eq 0 ]]; then
         echo "Unable to resolve selected TTS provider; skipping TTS stop" >&2
-        return 0
     fi
-    "$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" stop "$provider" || {
-        echo "Warning: failed to stop TTS provider $provider" >&2
-    }
 }
 
 is_expected_web() {
@@ -116,5 +130,8 @@ if kill -0 "$pid" 2>/dev/null; then
 fi
 rm -f "$PID_FILE"
 echo "Dice Arena web stopped: pid=$pid"
-stop_selected_tts "$running_tts_provider"
+# Stop both the provider reported by the running backend and everything the
+# current manifest references, so a manifest edit between start and stop
+# cannot leak a warmed local runtime.
+stop_selected_tts "$(printf '%s\n%s\n' "$running_tts_provider" "$(resolve_tts_providers)")"
 rm -f "$TTS_PROVIDER_FILE"

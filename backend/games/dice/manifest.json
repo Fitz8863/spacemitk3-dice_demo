@@ -10,7 +10,8 @@
   },
   "providers": {
     "vision_adjudicator": "vision_yolov8_adjudicator",
-    "tts": "tts_moss_nano"
+    "tts_local": "tts_moss_nano",
+    "tts_remote": "tts_gptsovits"
   },
   "vision_profile": {
     "schema_version": 1,
@@ -44,17 +45,17 @@
     },
     "video": {"enabled": true, "protocol": "webrtc", "path": "/dice/", "autoplay": true, "muted": true},
     "lifecycle": {"pre_adjudication_wait_seconds": 4, "post_result_hold_seconds": 3},
-    "timeouts": {"yolo_detection_seconds": 4, "adjudication_seconds": 120}
+    "timeouts": {"yolo_detection_seconds": 4, "adjudication_seconds": 30}
   },
   "voice": "default",
   "speed": 1.0,
   "texts": {
     "rules_intro": {
-      "mode": "tts",
+      "mode": "tts_local",
       "text": " 欢迎来到摇骰子游戏。下面由我去宣读规则，当前双方各有五颗骰子，听语音提示开始摇骰子。屏幕的倒计时结束后就停止摇骰并且摆放到桌子上白色圆圈的区域，然后同时开盖，点数总和更大的一方获胜，如果明白了，请按绿色按钮开始游戏；如果需要再听一次，请按蓝色的按钮。"
     },
     "rules_confirmed": {
-      "mode": "tts",
+      "mode": "tts_local",
       "text": "准备好了吗，按下绿色按钮马上开始。"
     },
     "shake_started": {
@@ -63,28 +64,29 @@
       "text": "三，二，一，开始"
     },
     "reveal_ready": {
-      "mode": "tts",
+      "mode": "tts_local",
       "text": "准备好了没有？三，二，一,开盖！"
     },
     "analysis_started": {
-      "mode": "tts",
+      "mode": "tts_local",
       "text": "正在调用视觉判断结果"
     },
     "analysis_retry_hint": {
-      "mode": "tts",
+      "mode": "tts_local",
       "text": "本次识别未完成，请整理好骰子后，可选择按蓝色按钮重新识别。"
     },
     "result_tie": {
-      "mode": "tts",
+      "mode": "tts_local",
       "text": "当前玩家点数{player_score}。Agent点数{agent_score}。本局平局，要不再来一局？"
     },
     "result_player_win": {
-      "mode": "tts",
-      "text": "当前玩家点数 {player_score}，Agent 点数 {agent_score}。恭喜你，你赢了，你真的太棒了，快去找工作人员领取奖励吧。"
+      "mode": "tts_local",
+      "text": "当前玩家点数是{player_score}，Agent点数是{agent_score}。恭喜你，你赢了，你真的太棒了，快去找工作人员领取奖励吧。"
     },
     "result_agent_win": {
-      "mode": "tts",
-      "text": "当前玩家点数 {player_score}，Agent 点数 {agent_score}。很遗憾，你输了哦，要不再来一局？"
+      "mode": "tts_local",
+      "text": "当前玩家点数是{player_score}，Agent点数是{agent_score}。很遗憾，你输了哦，要不再来一局？"
     }
   }
 }
+

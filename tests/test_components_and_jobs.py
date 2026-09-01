@@ -141,7 +141,10 @@ class ComponentTests(unittest.TestCase):
             ["vision_yolov8_adjudicator"],
         )
         self.assertEqual(registry.provider_ids("vision", "localizer"), [])
-        self.assertEqual(registry.provider_ids("tts"), ["tts_moss_nano", "tts_qwen3"])
+        self.assertEqual(
+            registry.provider_ids("tts"),
+            ["tts_gptsovits", "tts_moss_nano", "tts_qwen3"],
+        )
         self.assertEqual(registry.get_manifest("tts_qwen3")["entry"], "provider.py:TtsQwen3")
         self.assertEqual(registry.get_manifest("tts_moss_nano")["entry"], "provider.py:TtsMossNano")
         self.assertEqual(

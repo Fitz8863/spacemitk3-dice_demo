@@ -14,6 +14,7 @@ const state = {
   ttsRequestId: 0,
   ttsFallbackNotified: false,
   ttsConfigErrorNotified: false,
+  speechAudioContext: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -49,6 +50,9 @@ function renderPhaseCopy(phase, fallback) {
 // ---- 视图切换 ----
 function setPhase(phase) {
   state.phase = phase;
+  // Phases style themselves via body[data-phase] (e.g. the open phase lowers
+  // the stage header into mid-screen).
+  document.body.dataset.phase = phase;
   views.forEach((view) => view.classList.toggle('hidden', view.dataset.view !== phase));
   const meta = (activeGame && activeGame.phaseMeta && activeGame.phaseMeta[phase]) || SELECT_META;
   $('phaseTitle').textContent = meta[0];
@@ -82,16 +86,16 @@ function getTtsConfig() {
 
 function normalizeSpeechEntry(entry) {
   if (typeof entry === 'string') {
-    return { mode: 'tts', text: entry };
+    return { mode: 'tts_local', text: entry };
   }
   if (!entry || typeof entry !== 'object') {
     throw new Error('台词配置必须是字符串或对象');
   }
-  const mode = entry.mode || 'tts';
-  if (mode !== 'tts' && mode !== 'audio') {
+  const mode = entry.mode || 'tts_local';
+  if (mode !== 'tts_local' && mode !== 'tts_remote' && mode !== 'audio') {
     throw new Error(`不支持的台词播放模式：${mode}`);
   }
-  if (mode === 'tts' && (typeof entry.text !== 'string' || !entry.text.trim())) {
+  if (mode !== 'audio' && (typeof entry.text !== 'string' || !entry.text.trim())) {
     throw new Error('TTS 台词缺少 text');
   }
   if (mode === 'audio' && (typeof entry.audio !== 'string' || !entry.audio.trim())) {
@@ -223,7 +227,7 @@ async function requestSpeechStream(message, requestId, options, queue) {
   state.ttsAbortController = controller;
   let reader = null;
   try {
-    const source = options.source || { mode: 'tts' };
+    const source = options.source || { mode: 'tts_local' };
     const isManifestSpeech = typeof source.key === 'string' && source.key;
     const response = await fetch(isManifestSpeech ? '/api/speech/stream' : '/api/tts/stream', {
       method: 'POST',
@@ -315,28 +319,113 @@ async function playSpeechBlob(blob, requestId) {
   }
 }
 
+// 无缝播报播放器：流式 TTS 的每个 WAV 帧解码成 AudioBuffer 后，在同一个
+// WebAudio 时间线上背靠背排片，消除逐帧新建 Audio 元素带来的切换间隙。
+// 生成速度远快于实时播放，排片进度本身构成抗抖动缓冲。 speak() 在存在
+// AudioContext 时使用它，否则回退到上面的 Audio 元素逐帧路径。
+function getSpeechAudioContext() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  if (!state.speechAudioContext) {
+    try {
+      state.speechAudioContext = new Ctx();
+    } catch (_) {
+      return null;
+    }
+  }
+  if (state.speechAudioContext.state === 'suspended') {
+    state.speechAudioContext.resume().catch(() => {});
+  }
+  return state.speechAudioContext;
+}
+
+function createSpeechScheduler(requestId) {
+  const context = getSpeechAudioContext();
+  if (!context) return null;
+  const player = {
+    context,
+    nextAt: 0,
+    sources: [],
+    cancelled: false,
+    resolveDrained: null,
+  };
+  const cancelSource = (source) => {
+    try { source.stop(); } catch (_) { /* already ended */ }
+    source.disconnect();
+  };
+  player.schedule = async (blob) => {
+    if (player.cancelled || requestId !== state.ttsRequestId || !state.sound) {
+      throw new DOMException('Speech playback was cancelled', 'AbortError');
+    }
+    const buffer = await context.decodeAudioData(await blob.arrayBuffer());
+    if (player.cancelled || requestId !== state.ttsRequestId || !state.sound) {
+      throw new DOMException('Speech playback was cancelled', 'AbortError');
+    }
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    // 第一帧留一点起播水位，后续帧紧贴前一帧结尾，形成连续时间线。
+    const startAt = Math.max(player.nextAt, context.currentTime + 0.06);
+    source.start(startAt);
+    player.nextAt = startAt + buffer.duration;
+    player.sources.push(source);
+    source.onended = () => {
+      const index = player.sources.indexOf(source);
+      if (index >= 0) player.sources.splice(index, 1);
+      if (!player.sources.length && player.resolveDrained) {
+        player.resolveDrained();
+        player.resolveDrained = null;
+      }
+    };
+  };
+  player.cancel = () => {
+    player.cancelled = true;
+    for (const source of player.sources.splice(0)) cancelSource(source);
+    player.nextAt = 0;
+    if (player.resolveDrained) {
+      player.resolveDrained();
+      player.resolveDrained = null;
+    }
+  };
+  player.waitDrained = () => {
+    if (player.cancelled || !player.sources.length) return Promise.resolve();
+    return new Promise((resolve) => { player.resolveDrained = resolve; });
+  };
+  return player;
+}
+
 async function speak(message, options = { voice: 'default', speed: 1.0 }) {
   if (!state.sound || (!message && !options.source?.key)) return;
   stopSpeech();
   const requestId = state.ttsRequestId;
   const queue = createTtsFrameQueue();
   const producer = requestSpeechStream(message, requestId, options, queue);
+  const scheduler = createSpeechScheduler(requestId);
+  if (scheduler) state.ttsPlaybackCancel = scheduler.cancel;
   let playedFrames = 0;
   try {
     // One HTTP request is made for the complete announcement. The producer
-    // keeps reading later WAV frames while the consumer plays the first one.
+    // keeps reading later WAV frames while the consumer plays the first one;
+    // the scheduler lines frames up back-to-back so streaming TTS never
+    // gaps between frames.
     while (true) {
       const blob = await queue.next();
       if (blob === null) break;
-      await playSpeechBlob(blob, requestId);
+      if (scheduler) await scheduler.schedule(blob);
+      else await playSpeechBlob(blob, requestId);
       playedFrames += 1;
     }
+    if (scheduler) await scheduler.waitDrained();
     await producer;
   } catch (error) {
     await producer.catch(() => {});
     if (error.name === 'AbortError' || requestId !== state.ttsRequestId || !state.sound) return;
     console.error(`Speech stream failed after ${playedFrames} frame(s):`, error);
     toast('语音播放失败，请检查台词配置或语音组件');
+  } finally {
+    if (scheduler && state.ttsPlaybackCancel === scheduler.cancel) {
+      state.ttsPlaybackCancel = null;
+    }
   }
 }
 
@@ -349,7 +438,7 @@ function speakState(key, values = {}) {
       speak('', { ...config, source: { mode: 'audio', key, values } });
       return;
     }
-    speak('', { ...config, source: { mode: 'tts', key, values } });
+    speak('', { ...config, source: { mode: entry.mode, key, values } });
   } catch (error) {
     console.error(`Failed to load TTS state ${key}:`, error);
     if (!state.ttsConfigErrorNotified) {

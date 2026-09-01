@@ -7,6 +7,7 @@
 | 文档 | 用途 |
 | --- | --- |
 | [`../README.md`](../README.md) | 使用者和部署者入口：启动、配置、API 和常用验证命令。 |
+| [`../TTS配置与切换指南.md`](../TTS配置与切换指南.md) | TTS provider 切换步骤与三层参数（游戏/组件/请求）详解。 |
 | [`../AI_PROJECT_CONTEXT.md`](../AI_PROJECT_CONTEXT.md) | AI 或新开发者接手时的上下文、目录职责、安全约束和当前状态。 |
 | [`../CLAUDE.md`](../CLAUDE.md) | 编程代理修改本仓库时必须遵守的工程约束。 |
 | [`../FRAMEWORK_DISPATCH.md`](../FRAMEWORK_DISPATCH.md) | 从浏览器请求到视觉/TTS provider 的端到端调度说明。 |

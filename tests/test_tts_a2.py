@@ -12,13 +12,14 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from core.components import ComponentRegistry, _validate_manifest  # noqa: E402
+from core.errors import DiceArenaError  # noqa: E402
 from core.tts import TtsProvider  # noqa: E402
 from core.tts_config import TtsConfigError, validate_tts_component_config  # noqa: E402
 from core.games import normalize_speech_entry  # noqa: E402
 from core.tts_dispatch import TtsDispatcher  # noqa: E402
 from components.tts_qwen3.settings import load_settings as load_qwen_settings  # noqa: E402
 from components.tts_moss_nano.settings import load_settings as load_moss_settings  # noqa: E402
-from componentctl import _command_for  # noqa: E402
+from componentctl import _command_for, _referenced_tts_providers  # noqa: E402
 
 
 WAV = b"RIFF" + b"\0" * 4 + b"WAVE" + b"\0" * 40
@@ -56,12 +57,70 @@ class DispatcherTests(unittest.TestCase):
             "type": "tts",
             "entry": "provider.py:DummyTts",
         })
-        self.games = {"dice": {"enabled": True, "providers": {"tts": "tts_dummy"}}}
+        self.games = {"dice": {"enabled": True, "providers": {"tts_local": "tts_dummy"}}}
 
     def test_dispatcher_uses_backend_selection_not_request_override(self):
         dispatcher = TtsDispatcher(self.registry, self.games)
         selected = dispatcher.provider({"game": "dice", "provider": "some_other"})
         self.assertIs(selected, self.provider)
+
+    def test_speech_entry_resolves_local_remote_and_explicit_ids(self):
+        remote = DummyCloudTts()
+        self.registry.register(remote, {
+            "id": "tts_dummy_cloud",
+            "type": "tts",
+            "entry": "provider.py:DummyCloudTts",
+            "config": "config.json",
+        })
+        self.games["dice"] = {
+            "enabled": True,
+            "providers": {"tts_local": "tts_dummy", "tts_remote": "tts_dummy_cloud"},
+        }
+        dispatcher = TtsDispatcher(self.registry, self.games)
+        resolve = dispatcher.provider_id_for_speech_entry
+        with self.assertRaises(DiceArenaError):
+            resolve({"mode": "tts"}, "dice")  # legacy alias removed
+        self.assertEqual(resolve({"mode": "tts_local"}, "dice"), "tts_dummy")
+        self.assertEqual(resolve({"mode": "tts_remote"}, "dice"), "tts_dummy_cloud")
+        # A per-line provider pins one explicit id regardless of mode.
+        self.assertEqual(
+            resolve({"mode": "tts_remote", "provider": "tts_dummy"}, "dice"),
+            "tts_dummy",
+        )
+
+    def test_legacy_tts_slot_is_no_longer_honored(self):
+        # providers.tts was renamed to providers.tts_local; a manifest still
+        # carrying only the old key must not resolve it - the local slot
+        # falls back to the dispatcher default, which is not registered here,
+        # so the eventual require() fails loudly instead.
+        legacy_games = {"dice": {"enabled": True, "providers": {"tts": "tts_dummy"}}}
+        dispatcher = TtsDispatcher(self.registry, legacy_games)
+        self.assertEqual(
+            dispatcher.provider_id_for_speech_entry({"mode": "tts_local"}, "dice"),
+            dispatcher.default_provider,
+        )
+        with self.assertRaises(DiceArenaError):
+            dispatcher.provider({"game": "dice"})
+
+    def test_speech_remote_mode_without_slot_is_a_clear_error(self):
+        self.games["dice"] = {"enabled": True, "providers": {"tts_local": "tts_dummy"}}
+        dispatcher = TtsDispatcher(self.registry, self.games)
+        with self.assertRaisesRegex(DiceArenaError, "tts_remote"):
+            dispatcher.provider_id_for_speech_entry({"mode": "tts_remote"}, "dice")
+
+    def test_explicit_provider_override_bypasses_slot_resolution(self):
+        other = DummyCloudTts()
+        self.registry.register(other, {
+            "id": "tts_dummy_cloud",
+            "type": "tts",
+            "entry": "provider.py:DummyCloudTts",
+            "config": "config.json",
+        })
+        dispatcher = TtsDispatcher(self.registry, self.games)
+        selected = dispatcher.provider(
+            {"game": "dice"}, provider_id="tts_dummy_cloud"
+        )
+        self.assertIs(selected, other)
 
     def test_dispatcher_delegates_synthesis_and_stream(self):
         dispatcher = TtsDispatcher(self.registry, self.games)
@@ -81,7 +140,7 @@ class DispatcherTests(unittest.TestCase):
             "entry": "provider.py:DummyCloudTts",
             "config": "config.json",
         })
-        games = {"dice": {"enabled": True, "providers": {"tts": provider.id}}}
+        games = {"dice": {"enabled": True, "providers": {"tts_local": provider.id}}}
         dispatcher = TtsDispatcher(registry, games)
         audio, headers = dispatcher.synthesize({"game": "dice", "text": "cloud"})
         self.assertEqual(audio, WAV)
@@ -93,7 +152,7 @@ class TtsContractTests(unittest.TestCase):
     def test_speech_manifest_entries_normalize_legacy_text_and_audio_modes(self):
         self.assertEqual(
             normalize_speech_entry("欢迎"),
-            {"mode": "tts", "text": "欢迎"},
+            {"mode": "tts_local", "text": "欢迎"},
         )
         self.assertEqual(
             normalize_speech_entry({"mode": "audio", "audio": "audio/rules.wav"}),
@@ -103,6 +162,52 @@ class TtsContractTests(unittest.TestCase):
             normalize_speech_entry({"mode": "audio", "audio": "../secret.wav"})
         with self.assertRaises(ValueError):
             normalize_speech_entry({"mode": "unknown", "text": "bad"})
+
+    def test_speech_entries_support_remote_mode_and_provider_override(self):
+        self.assertEqual(
+            normalize_speech_entry({"mode": "tts_remote", "text": "远端"}),
+            {"mode": "tts_remote", "text": "远端"},
+        )
+        self.assertEqual(
+            normalize_speech_entry({"mode": "tts_local", "text": "本地"}),
+            {"mode": "tts_local", "text": "本地"},
+        )
+        self.assertEqual(
+            normalize_speech_entry({
+                "mode": "tts_remote", "text": "远端", "provider": "tts_gptsovits",
+            }),
+            {"mode": "tts_remote", "text": "远端", "provider": "tts_gptsovits"},
+        )
+        # Legacy string entries keep mapping to the local slot.
+        self.assertEqual(
+            normalize_speech_entry("欢迎"), {"mode": "tts_local", "text": "欢迎"}
+        )
+        with self.assertRaises(ValueError):
+            normalize_speech_entry({"mode": "tts", "text": "旧写法已移除"})
+        with self.assertRaises(ValueError):
+            normalize_speech_entry({"mode": "tts_remote", "text": "x", "provider": " "})
+        with self.assertRaises(ValueError):
+            normalize_speech_entry({"mode": "audio", "audio": "a.wav", "provider": "tts_x"})
+
+    def test_referenced_tts_providers_collects_slots_and_overrides(self):
+        manifest = {
+            "providers": {"tts_local": "tts_a", "tts_remote": "tts_b"},
+            "texts": {
+                "override": {"mode": "tts_remote", "text": "1", "provider": "tts_c"},
+                "local": {"mode": "tts_local", "text": "2"},
+                "clip": {"mode": "audio", "audio": "audio/a.wav"},
+            },
+        }
+        self.assertEqual(
+            _referenced_tts_providers(manifest, local_fallback="tts_fallback"),
+            ["tts_a", "tts_b", "tts_c"],
+        )
+        # An empty manifest still yields the local fallback so scripts can
+        # always start at least the primary voice.
+        self.assertEqual(
+            _referenced_tts_providers({"providers": {}}, local_fallback="tts_fallback"),
+            ["tts_fallback"],
+        )
 
     def test_tts_provider_is_a_real_abstract_base_class(self):
         with self.assertRaises(TypeError):
@@ -130,6 +235,9 @@ class TtsContractTests(unittest.TestCase):
         # Cloud and externally managed providers may use remote origins.
         validate_tts_component_config({
             "runtime": {"kind": "cloud", "base_url": "https://tts.example.com"},
+        })
+        validate_tts_component_config({
+            "runtime": {"kind": "external", "base_url": "http://100.95.19.17:9873"},
         })
 
     def test_tts_manifest_requires_component_config(self):

@@ -21,7 +21,7 @@
     "result_agent_win": "本局 Agent 获胜。"
   },
   "providers": {
-    "tts": "tts_qwen3"
+    "tts_local": "tts_qwen3"
   },
   "vision_profile": {
     "schema_version": 1,

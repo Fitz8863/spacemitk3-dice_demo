@@ -9,7 +9,9 @@ PID_FILE="${PID_FILE:-${RUNTIME_DIR}/web-${PORT}.pid}"
 TTS_PROVIDER_FILE="${TTS_PROVIDER_FILE:-${RUNTIME_DIR}/web-${PORT}.tts-provider}"
 PYTHON_BIN="${DICE_PYTHON:-python3}"
 LOG_FILE="${LOG_FILE:-${RUNTIME_DIR}/web-${PORT}.log}"
-SELECTED_TTS_PROVIDER="$("$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" selected tts --game dice)"
+REFERENCED_TTS_PROVIDERS="$("$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" referenced tts --game dice)"
+# The first referenced id is the game's primary (local-slot) voice.
+SELECTED_TTS_PROVIDER="$(printf '%s\n' "$REFERENCED_TTS_PROVIDERS" | head -n1)"
 TTS_AUTOSTART_ENABLED="${TTS_AUTOSTART:-1}"
 
 mkdir -p "$(dirname "$PID_FILE")"
@@ -63,13 +65,20 @@ find_expected_pid() {
 
 start_selected_tts() {
     [[ "$TTS_AUTOSTART_ENABLED" != "0" ]] || return 0
-    if ! "$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" start "$SELECTED_TTS_PROVIDER"; then
-        if [[ "${TTS_REQUIRED:-0}" == "1" ]]; then
-            echo "TTS provider $SELECTED_TTS_PROVIDER is required but could not be started" >&2
-            exit 1
+    local id
+    # Every referenced local provider gets started so a manifest may mix
+    # board-local and remote engines per speech line; remote-only providers
+    # have no lifecycle and their start is a no-op.
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        if ! "$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" start "$id"; then
+            if [[ "${TTS_REQUIRED:-0}" == "1" ]]; then
+                echo "TTS provider $id is required but could not be started" >&2
+                exit 1
+            fi
+            echo "Warning: TTS provider $id is unavailable" >&2
         fi
-        echo "Warning: TTS provider $SELECTED_TTS_PROVIDER is unavailable" >&2
-    fi
+    done <<< "$REFERENCED_TTS_PROVIDERS"
 }
 
 pid=""
@@ -95,7 +104,7 @@ if [[ -n "$pid" ]]; then
     running_tts_provider="${running_tts_provider:-unknown}"
     if [[ "$running_tts_provider" != "$SELECTED_TTS_PROVIDER" ]]; then
         echo "Dice Arena web is already running with TTS provider $running_tts_provider." >&2
-        echo "To switch providers, edit the game manifest providers.tts, then run scripts/stop_web.sh and scripts/start_web.sh." >&2
+        echo "To switch providers, edit the game manifest providers.tts_local / providers.tts_remote, then run scripts/stop_web.sh and scripts/start_web.sh." >&2
         exit 1
     fi
     start_selected_tts

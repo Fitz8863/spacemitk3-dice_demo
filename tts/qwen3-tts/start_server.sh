@@ -82,8 +82,8 @@ fi
 # Keep TTS on the six requested SpaceMIT preferred cores while YOLO owns 14-15.
 # The stable runtime reads SPACEMIT_PERFER_CORE_ID. The two QWEN3_TTS_* tuning
 # variables are only consumed by an explicitly selected realtime test runtime.
-export SPACEMIT_PERFER_CORE_ID="${SPACEMIT_PERFER_CORE_ID:-8,9,10,11,12,13}"
-export QWEN3_TTS_GEMV_CPU_MASK="${QWEN3_TTS_GEMV_CPU_MASK:-4-7}"
+export SPACEMIT_PERFER_CORE_ID="${SPACEMIT_PERFER_CORE_ID:-8,9,10,11}"
+export QWEN3_TTS_GEMV_CPU_MASK="${QWEN3_TTS_GEMV_CPU_MASK:-0-7}"
 export QWEN3_TTS_THREADPOOL_POLL="${QWEN3_TTS_THREADPOOL_POLL:-50}"
 export LD_LIBRARY_PATH="$ORT_LIB_DIR:$RUNTIME_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 : > "$LOG_FILE"

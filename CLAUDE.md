@@ -25,12 +25,13 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
 
 ## 当前组件调度实现（2026-09-01）
 
-- **JSON 配置文件是唯一配置来源（2026-09-01 起）**：环境变量覆盖层（`.dice-arena.env` 与全部 `DICE_*` 输入端变量）已移除。改游戏 manifest、组件 `config.json` 或 vision runtime `config.json` 后重启即生效；不要建议用户用环境变量调参。
+- **JSON 配置文件是唯一配置来源（2026-09-01 起）**：环境变量覆盖层（`.dice-arena.env` 与全部 `DICE_*` 输入端变量）已移除。游戏 manifest 支持热加载（mtime 检测，保存+刷新页面即生效；坏配置保留最后可用版本，删除游戏或换槽位指向的新引擎需重启）；组件 `config.json` 与 vision runtime `config.json` 改后重启生效。不要建议用户用环境变量调参。
 
 - `backend/components/<id>/manifest.json` + `provider.py` 是可插拔功能包；`backend/core/components.py` 动态扫描并注册 provider，并校验视觉/TTS 的正式接口。
 - 游戏通过语义插槽选择 provider；当前骰子配置为
-  `providers.vision_adjudicator=vision_yolov8_adjudicator` 与
-  `providers.tts=tts_moss_nano`。`tts_qwen3` 是可选 provider。
+  `providers.vision_adjudicator=vision_yolov8_adjudicator`、`providers.tts_local=tts_moss_nano`
+  与 `providers.tts_remote=tts_gptsovits`。台词 mode 只有三种：`audio`（预录 WAV）/`tts_local`/`tts_remote`，可在 manifest 里按句混用本地与远程引擎；任意合成
+  台词可用 `provider` 字段显式钉死单个 provider。`tts_qwen3` 是本地可选 provider。
 - 新 TTS 复制一个功能包并继承 `TtsProvider`，最小实现 `health()`、`synthesize()` 即可接入；需要分段低延迟时再覆盖 `stream()`；切换默认 provider 只需修改游戏 manifest 的 `providers.tts`（改后重启），前端请求保持不变。Provider 可用 `manifest.lifecycle.start/stop` 声明本地模型进程管理命令，`componentctl.py`/`start_web.sh` 会按所选 provider 调度。
 - 当前 YOLO 包是 `type=vision, role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于目标坐标的 YOLO 包应使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得混入裁决器插槽。算法名不是职责接口。
 - 游戏视觉配置必须内嵌在 `backend/games/<game_id>/manifest.json` 的

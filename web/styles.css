@@ -33,6 +33,9 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 /* 主舞台 */
 .stage { flex: 1; display: flex; flex-direction: column; align-items: center; text-align: center; }
 .stage-head { margin: 28px 0 40px; }
+/* 开盖过场：页面标题区下沉并垂直居中，替代原先的底部大字提示 */
+body[data-phase="open"] .stage-head { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; margin: 0; }
+body[data-phase="open"] .stage-body { flex: 0; padding: 0; }
 .stage-title { margin: 12px 0 10px; font-size: 52px; line-height: 1.1; letter-spacing: -.02em; }
 .stage-copy { margin: 0; color: var(--muted-2); font-size: 20px; }
 .controller-hint { display: inline-flex; align-items: center; gap: 7px; margin: 0 5px; white-space: nowrap; vertical-align: middle; }

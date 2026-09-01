@@ -52,6 +52,7 @@ main/
 │   │   └── tts_protocol.py               # WAV 长度前缀流协议
 │   ├── components/                       # 可插拔功能包，不按模型名称硬编码
 │   │   ├── vision_yolov8_adjudicator/    # YOLOv8 视觉裁决 provider
+│   │   ├── tts_gptsovits/                # GPT-SoVITS 远程流式 provider（外部 GPU 主机）
 │   │   ├── tts_moss_nano/                # MOSS-TTS-Nano provider
 │   │   └── tts_qwen3/                    # Qwen3-TTS provider
 │   └── games/
@@ -78,7 +79,8 @@ main/
   "participants": {"player": "LEFT", "agent": "RIGHT"},
   "providers": {
     "vision_adjudicator": "vision_yolov8_adjudicator",
-    "tts": "tts_moss_nano"
+    "tts_local": "tts_moss_nano",
+    "tts_remote": "tts_gptsovits"
   },
   "vision_profile": {
     "vision": {"model": "...", "class_map": {}, "stable_frames": 30},
@@ -121,7 +123,7 @@ main/
 
 ## 4. 服务启动时发生什么
 
-1. `scripts/start_web.sh` 通过 `backend/componentctl.py selected tts` 读取当前游戏 manifest 的 `providers.tts`，骰子当前为 `tts_moss_nano`。
+1. `scripts/start_web.sh` 通过 `backend/componentctl.py referenced tts` 收集当前游戏 manifest 引用到的全部 TTS provider（本地槽 `providers.tts_local`、远程槽 `providers.tts_remote` 与台词级 `provider` 覆盖），骰子当前为 `tts_moss_nano` + `tts_gptsovits`，逐个启动。
 2. 脚本调用 `backend/componentctl.py start <provider>`。本地 TTS provider 启动自己的 runtime；云端 provider 可以没有 lifecycle 脚本。
 3. 脚本启动 `backend/server.py --host 0.0.0.0 --port 8080`，并写入被忽略的 PID/日志文件。
 4. `server.py` 扫描 `backend/components/*/manifest.json`，动态加载 provider。
@@ -217,6 +219,7 @@ TTS 与视觉一样使用职责接口和目录功能包：
 | --- | --- | --- | --- |
 | `tts_moss_nano` | 仓库内 Python bridge | `tts/moss-tts-nano`，默认端口 `18082` | 文本 chunk 完成后的完整 WAV 帧 |
 | `tts_qwen3` | `llama-server` | `tts/qwen3-tts`，默认端口 `18080` | 自然标点切分后的完整 WAV 帧 |
+| `tts_gptsovits` | 外部 GPT-SoVITS 服务（Tailscale） | `config.json` 的 `runtime.base_url` 单点配置，无本地 lifecycle | 流式 PCM 块实时包装为完整 WAV 帧 |
 
 两者都不是逐 PCM 帧真流式。普通新 TTS 只需继承 `core.tts.TtsProvider` 并实现 `health()`、`synthesize()`；需要更低延迟时再覆盖 `stream()`。本地包可以在组件 manifest 声明 lifecycle start/stop，云端包省略生命周期并在 `health()` 中检查远端。
 

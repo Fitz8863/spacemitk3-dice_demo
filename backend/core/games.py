@@ -18,24 +18,44 @@ _PROVIDER_SLOT_ALIASES = {
     "vision_adjudicator": ("vision",),
 }
 
+# Speech-entry synthesizing modes.  The legacy ``tts`` spelling was removed:
+# manifests must use ``tts_local`` or ``tts_remote``.
+_TTS_SPEECH_MODES = {"tts_local", "tts_remote"}
+
 
 def normalize_speech_entry(entry: Any) -> dict[str, str]:
-    """Normalize one manifest speech entry while keeping legacy strings valid."""
+    """Normalize one manifest speech entry while keeping legacy strings valid.
+
+    Synthesizing modes map to provider slots: ``tts_local`` uses the local
+    slot, ``tts_remote`` the remote slot; an optional ``provider`` field pins
+    one explicit provider id for that single line.  Legacy bare-string
+    entries normalize to ``tts_local``.
+    """
     if isinstance(entry, str):
         if not entry.strip():
             raise ValueError("speech text must not be empty")
-        return {"mode": "tts", "text": entry}
+        return {"mode": "tts_local", "text": entry}
     if not isinstance(entry, dict):
         raise ValueError("speech entry must be a string or object")
 
-    mode = entry.get("mode", "tts")
-    if mode not in {"tts", "audio"}:
-        raise ValueError("speech mode must be tts or audio")
-    if mode == "tts":
+    mode = entry.get("mode", "tts_local")
+    if mode not in {"tts_local", "tts_remote", "audio"}:
+        raise ValueError("speech mode must be tts_local, tts_remote, or audio")
+    normalized: dict[str, str] = {}
+    provider = entry.get("provider")
+    if provider is not None:
+        if not isinstance(provider, str) or not provider.strip():
+            raise ValueError("speech entry provider must be a non-empty provider id")
+        if mode == "audio":
+            raise ValueError("audio speech entries never synthesize; drop the provider field")
+        normalized["provider"] = provider.strip()
+    if mode in _TTS_SPEECH_MODES:
         text = entry.get("text")
         if not isinstance(text, str) or not text.strip():
             raise ValueError("tts speech entry requires non-empty text")
-        return {"mode": "tts", "text": text}
+        normalized["mode"] = mode
+        normalized["text"] = text
+        return normalized
 
     audio = entry.get("audio")
     if not isinstance(audio, str) or not audio.strip():
@@ -148,11 +168,12 @@ def public_game_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     return public
 
 
-def load_games() -> GameRegistry:
+def load_games(root: Path | None = None) -> GameRegistry:
     registry = GameRegistry()
-    if not GAMES_ROOT.is_dir():
+    games_root = root if root is not None else GAMES_ROOT
+    if not games_root.is_dir():
         return registry
-    for manifest_path in sorted(GAMES_ROOT.glob("*/manifest.json")):
+    for manifest_path in sorted(games_root.glob("*/manifest.json")):
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             game_id = manifest.get("id")
@@ -187,8 +208,8 @@ def load_games() -> GameRegistry:
             ):
                 raise ValueError("providers must map semantic slots to provider ids")
             # Keep the old flat tts_provider spelling as a migration alias.
-            if "tts" not in providers and isinstance(manifest.get("tts_provider"), str):
-                providers["tts"] = manifest["tts_provider"]
+            if "tts_local" not in providers and isinstance(manifest.get("tts_provider"), str):
+                providers["tts_local"] = manifest["tts_provider"]
             manifest["providers"] = providers
             profile = manifest.get("vision_profile")
             profile_path = manifest_path.parent / "vision_profile.json"

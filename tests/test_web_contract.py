@@ -35,6 +35,65 @@ def test_frontend_preserves_holding_countdown_from_structured_event():
     assert "updateAnalysisProgress(snapshot);" not in apply_snapshot
 
 
+def test_frontend_accepts_the_three_speech_modes():
+    """The browser must gate exactly the manifest's three modes.
+
+    A backend-only mode rename once left the browser rejecting ``tts_local``
+    locally, so speech requests never reached the server at all.
+    """
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    normalize = app.split("function normalizeSpeechEntry", 1)[1].split(
+        "function renderTtsText", 1
+    )[0]
+
+    assert "mode !== 'tts_local' && mode !== 'tts_remote' && mode !== 'audio'" in normalize
+    assert "entry.mode || 'tts_local'" in normalize
+    assert "mode: 'tts_local', text: entry" in normalize
+    # The legacy 'tts' spelling must not gate requests in the browser.
+    assert "mode !== 'tts'" not in normalize
+
+
+def test_frontend_open_phase_prompts_readiness_without_duplicate_banner():
+    """The open phase shows one lowered prompt; the old bottom banner is gone."""
+    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+
+    open_section = html.split('data-view="open"', 1)[1].split("</section>", 1)[0]
+    assert "请同时开盖" not in open_section
+    assert "请同时开盖" not in html
+    assert "你准备好了吗？听语音倒计时同时开盖" in js
+    assert "document.body.dataset.phase = phase" in app
+    assert 'body[data-phase="open"] .stage-head' in css
+
+
+def test_frontend_schedules_streamed_tts_frames_back_to_back():
+    """Streamed TTS frames play on one WebAudio timeline, not per-frame Audio.
+
+    Per-frame ``Audio`` elements left an audible gap between every ~1s frame
+    of remote streaming TTS; the scheduler decodes each frame and lines the
+    buffers up back-to-back instead. The Audio-element path stays as the
+    no-WebAudio fallback.
+    """
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+
+    assert "function createSpeechScheduler" in app
+    assert "decodeAudioData" in app
+    assert "createBufferSource" in app
+    assert "player.waitDrained" in app
+    assert "await scheduler.schedule(blob)" in app
+    assert "await playSpeechBlob(blob, requestId)" in app  # fallback kept
+
+
+def test_frontend_result_copy_has_no_doubled_llm_prefix():
+    """The result subtitle must not render 大模型 twice for the yolo_only case."""
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+
+    assert "当前未启用大模型" in js
+    assert "大模型未启用大模型" not in js
+
+
 def test_frontend_distinguishes_llm_override_from_consensus():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     assert "llm_override" in js
@@ -61,7 +120,7 @@ def test_frontend_blue_button_retries_adjudication_after_diagnosis():
     # Announcing the diagnosis tells the player the blue button retries.
     diagnosis = js.split("function showDiagnosis", 1)[1].split("function retryAdjudication", 1)[0]
     assert "analysis_retry_hint" in diagnosis
-    assert manifest["texts"]["analysis_retry_hint"]["mode"] == "tts"
+    assert manifest["texts"]["analysis_retry_hint"]["mode"] == "tts_local"
 
 
 def test_frontend_diagnosis_marks_detection_failed_and_shows_evidence():
@@ -148,7 +207,7 @@ def test_frontend_enters_open_transition_and_starts_countdown_automatically():
     assert "开盖过场结束后自动进入倒计时" in js
     assert 'id="revealDice"' not in html
     assert "shake_stopped" not in manifest["texts"]
-    assert manifest["texts"]["reveal_ready"]["mode"] == "tts"
+    assert manifest["texts"]["reveal_ready"]["mode"] == "tts_local"
     assert manifest["texts"]["reveal_ready"]["text"]
 
 

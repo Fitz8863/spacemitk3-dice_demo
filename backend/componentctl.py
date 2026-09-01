@@ -61,7 +61,7 @@ def _health(provider: Any) -> dict[str, Any]:
 
 def _selected_provider_id(provider_slot: str, game_id: str) -> str:
     manifest = require_game(load_games(), game_id)
-    fallbacks = {"tts": "tts_qwen3", "vision_adjudicator": "vision_yolov8_adjudicator"}
+    fallbacks = {"tts_local": "tts_qwen3", "vision_adjudicator": "vision_yolov8_adjudicator"}
     return resolve_provider_id(
         manifest,
         provider_slot,
@@ -69,12 +69,36 @@ def _selected_provider_id(provider_slot: str, game_id: str) -> str:
     )
 
 
+def _referenced_tts_providers(manifest: dict[str, Any], *, local_fallback: str) -> list[str]:
+    """Collect every TTS provider id this manifest can synthesize through.
+
+    Covers both semantic slots (local/remote) plus any per-line ``provider``
+    override in ``texts``; the default (local slot) provider comes first so
+    start scripts keep a stable notion of the game's primary voice.
+    """
+    ids: list[str] = []
+
+    def add(provider_id: str) -> None:
+        provider_id = provider_id.strip()
+        if provider_id and provider_id not in ids:
+            ids.append(provider_id)
+
+    add(resolve_provider_id(manifest, "tts_local", local_fallback))
+    add(resolve_provider_id(manifest, "tts_remote", ""))
+    for entry in (manifest.get("texts") or {}).values():
+        if isinstance(entry, dict):
+            provider = entry.get("provider")
+            if isinstance(provider, str):
+                add(provider)
+    return ids
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Dice Arena provider runtime control")
     parser.add_argument(
         "action",
         choices=(
-            "list", "selected", "health", "start", "stop",
+            "list", "selected", "referenced", "health", "start", "stop",
             "start-selected", "stop-selected",
         ),
     )
@@ -82,10 +106,16 @@ def main() -> int:
     parser.add_argument("--game", default="dice")
     args = parser.parse_args()
 
-    if args.action in {"selected", "start-selected", "stop-selected"}:
+    if args.action in {"selected", "referenced", "start-selected", "stop-selected"}:
         if not args.provider:
             parser.error("provider slot is required for selected actions")
         try:
+            if args.action == "referenced":
+                for referenced_id in _referenced_tts_providers(
+                    require_game(load_games(), args.game), local_fallback="tts_qwen3"
+                ):
+                    print(referenced_id)
+                return 0
             selected_id = _selected_provider_id(args.provider, args.game)
         except DiceArenaError as exc:
             print(exc.message, file=sys.stderr)

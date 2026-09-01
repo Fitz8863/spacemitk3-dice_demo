@@ -96,7 +96,9 @@ systemctl status dice-arena-web.service
 
 ## 配置游戏语音
 
-每个游戏的页面状态语音集中在 `backend/games/<game_id>/manifest.json`。每条台词可选择实时 TTS 或已有 WAV；网页只提交状态键，具体播放策略由后端读取 manifest 决定：
+> 切换 TTS provider、调整音色/语速/流式参数的完整步骤见 [`TTS配置与切换指南.md`](TTS配置与切换指南.md)。
+
+每个游戏的页面状态语音集中在 `backend/games/<game_id>/manifest.json`（保存后刷新网页即生效，无需重启）。每条台词可选择实时 TTS（本地/远程槽位）或已有 WAV；网页只提交状态键，具体播放策略由后端读取 manifest 决定：
 
 ```json
 {
@@ -110,14 +112,14 @@ systemctl status dice-arena-web.service
       "text": "双方各摇五颗骰子，停止后同时开盖。"
     },
     "result_player_win": {
-      "mode": "tts",
+      "mode": "tts_local",
       "text": "恭喜你，玩家获胜。玩家点数 {player_score}，Agent 点数 {agent_score}。"
     }
   }
 }
 ```
 
-`mode=tts` 使用当前游戏选中的 TTS provider；`mode=audio` 从该游戏目录读取 WAV，例如上述文件应放在 `backend/games/dice/audio/rules_intro.wav`。第一版只接受 WAV，并拒绝绝对路径和 `..` 越界路径。`text` 在 audio 模式下是可选说明。旧的纯字符串条目仍兼容并视为 TTS。
+`mode=tts_local` 使用本地槽位的 TTS provider（`mode=tts_remote` 走远程槽位）；`mode=audio` 从该游戏目录读取 WAV，例如上述文件应放在 `backend/games/dice/audio/rules_intro.wav`。第一版只接受 WAV，并拒绝绝对路径和 `..` 越界路径。`text` 在 audio 模式下是可选说明。旧的纯字符串条目仍兼容并视为 `tts_local`；`mode` 只接受 `tts_local`/`tts_remote`/`audio` 三种值。
 
 当前状态键包括：`rules_intro`、`rules_confirmed`、`shake_started`、`reveal_ready`、`analysis_started`、`result_tie`、`result_player_win` 和 `result_agent_win`。`reveal_ready` 会在摇骰结束、进入开盖过场时播报；过场页面保持 2 秒后，网页自动执行 3 秒视觉倒计时，再启动视觉裁决。TTS 胜负文案支持 `{player_score}`、`{agent_score}` 占位符；`voice` 和 `speed` 是游戏级 TTS 默认参数。修改 manifest 或添加 WAV 后需要重启后端，使 manifest 重新加载。
 
@@ -248,7 +250,14 @@ provider.py         # Component 子类，实现统一接口
 vision_yolov8_adjudicator -> vision/adjudicator，按游戏 profile 执行稳定帧、多视角投票、胜负规则和 LLM 复核
 tts_qwen3     -> tts provider，代理 Qwen3-TTS
 tts_moss_nano -> tts provider，代理仓库内 `tts/moss-tts-nano` 的 MOSS-TTS-Nano SpaceMIT EP runtime，支持 chunk 级 WAV 流式
+tts_gptsovits -> tts provider，HTTP 客户端调用 Tailscale 内另一台 GPU 主机上的 GPT-SoVITS v2ProPlus（9873 按音色名调用），真流式 PCM 实时包装为 WAV 帧
 ```
+
+GPT-SoVITS 组件没有本地 lifecycle（服务由其所在主机的 `start.sh`/`stop.sh` 管理），
+`backend/components/tts_gptsovits/config.json` 的 `runtime.base_url` 是服务地址的唯一配置点，
+IP 变化只需改这一行；`voice.name` 是默认音色（需先在 9873 管理界面注册）。切换方法同上：
+把游戏 manifest 的 `providers.tts` 改为 `tts_gptsovits` 后重启。健康检查：
+`curl "http://127.0.0.1:8080/api/tts/health?provider=tts_gptsovits"`。
 
 当前骰子游戏默认选择 `tts_moss_nano`；`tts_qwen3` 仍是可选的本地 provider，可通过游戏
 manifest 的 `providers.tts` 切换。视觉裁决器的模型、类别映射、规则、LLM prompt、视频

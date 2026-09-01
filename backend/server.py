@@ -29,6 +29,8 @@ from core.errors import (
     JobNotFoundError,
 )
 from core.games import (
+    GAMES_ROOT,
+    GameRegistry,
     load_games,
     normalize_speech_entry,
     render_speech_text,
@@ -61,9 +63,54 @@ JOB_TIMEOUT_SECONDS = 120
 COMPONENTS = build_registry()
 GAMES = load_games()
 
+# Manifest hot reload: game manifests are small and reread whenever their
+# mtime changes, so line edits, wav swaps, and speech-mode changes take
+# effect on the next page load or request without a service restart.
+# Engine processes keep their boot-time set: slot ids are expected to keep
+# pointing at the providers that were started (per-line changes between
+# local/remote/audio need no new process).
+_GAMES_ROOT = GAMES_ROOT
+_GAMES_LOCK = threading.Lock()
+
+
+def _manifest_mtimes() -> dict[str, float]:
+    return {
+        str(path): path.stat().st_mtime
+        for path in sorted(_GAMES_ROOT.glob("*/manifest.json"))
+    }
+
+
+def get_games() -> GameRegistry:
+    """Return the game registry, reloading manifests when their mtime changes.
+
+    A reload that would drop a previously loaded game means a broken manifest
+    edit; keep serving the last good registry in that case so a typo cannot
+    make games vanish from the UI.  Removing a game on purpose needs a
+    service restart.
+    """
+    global GAMES, _GAMES_MTIMES
+    with _GAMES_LOCK:
+        mtimes = _manifest_mtimes()
+        if mtimes != _GAMES_MTIMES:
+            candidate = load_games(_GAMES_ROOT)
+            missing = {m["id"] for m in GAMES.all()} - {m["id"] for m in candidate.all()}
+            if missing:
+                print(
+                    f"[games] reload skipped; broken manifest removed {sorted(missing)}, "
+                    "keeping last good config",
+                    flush=True,
+                )
+            else:
+                GAMES = candidate
+                _GAMES_MTIMES = mtimes
+        return GAMES
+
+
+_GAMES_MTIMES: dict[str, float] = _manifest_mtimes()
+
 
 def _game_provider_id(game_id: str, provider_slot: str, fallback: str) -> str:
-    manifest = require_game(GAMES, game_id)
+    manifest = require_game(get_games(), game_id)
     return resolve_provider_id(manifest, provider_slot, fallback)
 
 
@@ -118,7 +165,7 @@ def _selected_provider_id(game_id: str, provider_slot: str, fallback: str) -> st
 
 def _selected_tts_id(game_id: str = "dice") -> str:
     try:
-        return TtsDispatcher(COMPONENTS, GAMES).provider_id(game_id)
+        return TtsDispatcher(COMPONENTS, get_games()).provider_id(game_id)
     except DiceArenaError:
         return "tts_qwen3"
 
@@ -164,7 +211,7 @@ def _safe_profile_metadata(profile: dict[str, Any], base_url: str, runtime: dict
 def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
     """Expose safe, deployment-facing vision metadata without prompts/secrets."""
     try:
-        manifest = require_game(GAMES, game_id)
+        manifest = require_game(get_games(), game_id)
         profile = manifest.get("vision_profile")
         if not isinstance(profile, dict):
             return {}
@@ -183,7 +230,7 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
         runtime = runtime if isinstance(runtime, dict) else {}
         metadata = _safe_profile_metadata(profile, base_url, runtime)
         profile_metadata = []
-        for item in GAMES.all():
+        for item in get_games().all():
             item_profile = item.get("vision_profile")
             if not isinstance(item_profile, dict):
                 continue
@@ -202,13 +249,13 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
 
 def _tts_provider(payload: dict[str, Any], game_id: str | None = None):
     """Compatibility wrapper for callers that still import this helper."""
-    return TtsDispatcher(COMPONENTS, GAMES).provider(payload, game_id)
+    return TtsDispatcher(COMPONENTS, get_games()).provider(payload, game_id)
 
 
 def _tts_dispatcher() -> TtsDispatcher:
     # Resolve on demand so tests and board operators can replace the registry
     # or environment without restarting this module object.
-    return TtsDispatcher(COMPONENTS, GAMES)
+    return TtsDispatcher(COMPONENTS, get_games())
 
 
 jobs: dict[str, ComponentJob] = {}
@@ -248,7 +295,7 @@ def _adjudication_job_remainder(path: str) -> str | None:
 
 def create_adjudication_job(game_id: str) -> ComponentJob:
     global active_job_id
-    require_game(GAMES, game_id)  # raises GameNotFoundError / GameDisabledError
+    require_game(get_games(), game_id)  # raises GameNotFoundError / GameDisabledError
     with jobs_lock:
         if active_job_id:
             active = jobs.get(active_job_id)
@@ -257,8 +304,8 @@ def create_adjudication_job(game_id: str) -> ComponentJob:
 
         def run_fn(on_log, is_cancelled, on_event):
             return run_game(
-                GAMES, game_id, on_log, is_cancelled, on_event,
-                resolve_adjudication_timeout(require_game(GAMES, game_id), JOB_TIMEOUT_SECONDS), COMPONENTS,
+                get_games(), game_id, on_log, is_cancelled, on_event,
+                resolve_adjudication_timeout(require_game(get_games(), game_id), JOB_TIMEOUT_SECONDS), COMPONENTS,
             )
 
         job = ComponentJob(run_fn=run_fn, name=f"{game_id}-job")
@@ -371,6 +418,13 @@ class Handler(BaseHTTPRequestHandler):
             component_items = COMPONENTS.all(include_health=True)
             tts_id = _selected_tts_id()
             tts_health = _provider_health(tts_id, "tts")
+            remote_id = _selected_provider_id("dice", "tts_remote", "")
+            remote_health = (
+                _provider_health(remote_id, "tts") if remote_id else {
+                    "id": "", "type": "tts", "role": "", "ok": False,
+                    "configured": False,
+                }
+            )
             adjudicator_id = _selected_provider_id(
                 "dice", "vision_adjudicator", "vision_yolov8_adjudicator"
             )
@@ -398,6 +452,8 @@ class Handler(BaseHTTPRequestHandler):
                 "tts_ready": bool(tts_health.get("ok", False)),
                 "tts_engine": tts_health.get("engine", ""),
                 "tts_speaker": tts_health.get("speaker", ""),
+                "tts_remote_provider": remote_id,
+                "tts_remote": {**remote_health, "configured": bool(remote_id)},
                 "camera": "config.json",
             })
             return
@@ -411,7 +467,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"components": COMPONENTS.all(include_health=True)})
             return
         if path == "/api/games":
-            self.send_json({"games": GAMES.public_all()})
+            self.send_json({"games": get_games().public_all()})
             return
         remainder = _adjudication_job_remainder(path)
         if remainder is not None:
@@ -490,7 +546,7 @@ class Handler(BaseHTTPRequestHandler):
                 key = str(payload.get("key") or "").strip()
                 if not key:
                     raise InvalidRequestError("speech key is required")
-                manifest = require_game(GAMES, game_id)
+                manifest = require_game(get_games(), game_id)
                 texts = manifest.get("texts", {})
                 if not isinstance(texts, dict) or key not in texts:
                     raise DiceArenaError(
@@ -500,6 +556,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 entry = normalize_speech_entry(texts[key])
                 mode = entry["mode"]
+                speech_provider_id = None
                 if mode == "audio":
                     audio_path = resolve_game_audio_path(game_id, entry["audio"])
                     frame = encode_audio_frame(audio_path.read_bytes())
@@ -513,7 +570,10 @@ class Handler(BaseHTTPRequestHandler):
                         "speed": manifest.get("speed", 1.0),
                     }
                     dispatcher = _tts_dispatcher()
-                    provider = dispatcher.provider(speech_payload, game_id=game_id)
+                    speech_provider_id = dispatcher.provider_id_for_speech_entry(entry, game_id)
+                    provider = dispatcher.provider(
+                        speech_payload, game_id=game_id, provider_id=speech_provider_id
+                    )
                     if not callable(getattr(provider, "stream", None)):
                         raise InvalidRequestError(
                             f"TTS provider {provider.id} does not implement stream()"
@@ -548,7 +608,12 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(encode_audio_frame(audio))
                         self.wfile.flush()
 
-                    dispatcher.stream(speech_payload, write_frame, game_id=game_id)
+                    dispatcher.stream(
+                        speech_payload,
+                        write_frame,
+                        game_id=game_id,
+                        provider_id=speech_provider_id,
+                    )
                 else:
                     self.wfile.write(frame)
                 self.wfile.write(encode_end_frame())

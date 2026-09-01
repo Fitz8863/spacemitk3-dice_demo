@@ -28,7 +28,7 @@ export function register(engine) {
     ready: ['准备好了吗？', '人手操作模式已开启，拿起骰盅后点击开始。'],
     countdown: shakeCountdownMeta,
     shaking: ['摇骰进行中', '双方同时摇骰，准备好后可提前停止。'],
-    open: ['同时开盖', '请同时打开骰盅，开盖过场结束后自动进入倒计时。'],
+    open: ['你准备好了吗？听语音倒计时同时开盖', '请同时打开骰盅，开盖过场结束后自动进入倒计时。'],
     analysis: ['正在判定胜负', '视觉裁决器正在识别骰子点数，随后由大模型复核。'],
     result: ['本局结果', ''],
   };
@@ -497,15 +497,15 @@ export function register(engine) {
     $('resultEmoji').textContent = tie ? '🤝' : playerWins ? '🏆' : '✨';
     $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : 'Agent 获胜';
     const verificationText = result.source === 'yolo_timeout_fallback'
-      ? '超时，采用 YOLOv8'
+      ? '大模型超时，采用 YOLOv8'
       : result.source === 'yolo_failure_fallback'
-        ? '请求失败，采用 YOLOv8'
+        ? '大模型请求失败，采用 YOLOv8'
       : result.source === 'llm_override'
-        ? '结果不一致，以大模型结果为准'
+        ? '大模型结果不一致，以大模型结果为准'
         : result.source === 'yolo_only'
-          ? '未启用大模型，采用 YOLOv8'
-          : '复核一致';
-    $('resultSubtitle').textContent = `YOLOv8：玩家 ${player} : Agent ${agent}；大模型${verificationText}`;
+          ? '当前未启用大模型'
+          : '大模型复核一致';
+    $('resultSubtitle').textContent = `YOLOv8：玩家 ${player} : Agent ${agent}；${verificationText}`;
     banner.classList.toggle('loss', !playerWins && !tie);
     const resultTtsKey = tie ? 'result_tie' : playerWins ? 'result_player_win' : 'result_agent_win';
     speakState(resultTtsKey, { player_score: player, agent_score: agent });
