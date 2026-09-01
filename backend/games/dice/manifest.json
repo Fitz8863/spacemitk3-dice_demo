@@ -72,7 +72,7 @@
     },
     "analysis_retry_hint": {
       "mode": "tts",
-      "text": "本次识别未完成，请整理好骰子后，按蓝色按钮重新识别。"
+      "text": "本次识别未完成，请整理好骰子后，可选择按蓝色按钮重新识别。"
     },
     "result_tie": {
       "mode": "tts",
