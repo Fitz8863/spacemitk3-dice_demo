@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import tempfile
 import time
 import threading
@@ -292,13 +291,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 pass
         component_video = component.get("video", {})
         component_base = component_video.get("webrtc_base_url", "") if isinstance(component_video, Mapping) else ""
-        return str(
-            os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "").strip()
-            or profile_base
-            or runtime_base
-            or component_base
-            or ""
-        )
+        return str(profile_base or runtime_base or component_base or "")
 
     @staticmethod
     def _video_event(profile: Mapping[str, Any], view_id: str, event: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -372,26 +365,19 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
 
     @staticmethod
     def _llm_transport_config(profile: Mapping[str, Any]) -> dict[str, Any]:
-        """Resolve deployment LLM endpoint/key separately from game prompts.
+        """Resolve the deployment LLM endpoint/key separately from game prompts.
 
         Profiles carry only game-level prompt and output rules.  Endpoint and
-        credentials are deployment concerns and come from component config or
-        environment variables; environment values take precedence and are
-        never included in a result or health payload.
+        credentials are deployment concerns and come from the component
+        ``config.json``; they are never included in a result or health payload.
         """
         component = load_component_config(Path(__file__).parent)
         configured = component.get("llm", {})
         configured = configured if isinstance(configured, Mapping) else {}
         game_llm = profile.get("llm", {})
         game_llm = game_llm if isinstance(game_llm, Mapping) else {}
-        endpoint = (
-            os.environ.get("DICE_LLM_ENDPOINT", "").strip()
-            or os.environ.get("DICE_LLM_URL", "").strip()
-            or str(configured.get("endpoint", configured.get("url", "")) or "").strip()
-        )
-        key = os.environ.get("DICE_LLM_API_KEY", "").strip() or str(
-            configured.get("api_key", "") or ""
-        ).strip()
+        endpoint = str(configured.get("endpoint", configured.get("url", "")) or "").strip()
+        key = str(configured.get("api_key", "") or "").strip()
         # ``model`` is harmless metadata, and allowing a profile value keeps
         # existing game profiles source-compatible while deployments can set a
         # common default in component config.

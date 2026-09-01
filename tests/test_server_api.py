@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 import threading
 import tempfile
@@ -101,9 +100,7 @@ class ServerApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.original_components = server.COMPONENTS
-        cls.original_tts_provider = os.environ.get("DICE_TTS_PROVIDER")
-        cls.original_adjudicator_provider = os.environ.get("DICE_VISION_ADJUDICATOR_PROVIDER")
-        cls.original_vision_provider = os.environ.get("DICE_VISION_PROVIDER")
+        cls.original_games = server.GAMES
         registry = ComponentRegistry()
         registry.register(DummyVisionAdjudicator(), {
             "id": "vision_dummy", "type": "vision", "role": "adjudicator",
@@ -115,9 +112,17 @@ class ServerApiTests(unittest.TestCase):
             "version": "1", "enabled": True, "entry": "provider.py:DummyTts",
         })
         server.COMPONENTS = registry
-        os.environ["DICE_TTS_PROVIDER"] = "tts_dummy"
-        os.environ["DICE_VISION_ADJUDICATOR_PROVIDER"] = "vision_dummy"
-        os.environ.pop("DICE_VISION_PROVIDER", None)
+        # Provider selection now has a single configuration source: swap in a
+        # game registry whose dice manifest routes the semantic slots to the
+        # dummy providers, exactly like a deployment manifest would.
+        games = GameRegistry()
+        dice_manifest = dict(server.GAMES.get("dice"))
+        dice_manifest["providers"] = {
+            "tts": "tts_dummy",
+            "vision_adjudicator": "vision_dummy",
+        }
+        games.register(dice_manifest)
+        server.GAMES = games
         cls.httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.thread.start()
@@ -129,18 +134,7 @@ class ServerApiTests(unittest.TestCase):
         cls.httpd.server_close()
         cls.thread.join(timeout=2)
         server.COMPONENTS = cls.original_components
-        if cls.original_tts_provider is None:
-            os.environ.pop("DICE_TTS_PROVIDER", None)
-        else:
-            os.environ["DICE_TTS_PROVIDER"] = cls.original_tts_provider
-        if cls.original_adjudicator_provider is None:
-            os.environ.pop("DICE_VISION_ADJUDICATOR_PROVIDER", None)
-        else:
-            os.environ["DICE_VISION_ADJUDICATOR_PROVIDER"] = cls.original_adjudicator_provider
-        if cls.original_vision_provider is None:
-            os.environ.pop("DICE_VISION_PROVIDER", None)
-        else:
-            os.environ["DICE_VISION_PROVIDER"] = cls.original_vision_provider
+        server.GAMES = cls.original_games
 
     def request(self, method, path, payload=None):
         connection = HTTPConnection("127.0.0.1", self.port, timeout=3)

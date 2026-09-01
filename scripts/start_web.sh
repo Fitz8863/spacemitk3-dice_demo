@@ -9,10 +9,7 @@ PID_FILE="${PID_FILE:-${RUNTIME_DIR}/web-${PORT}.pid}"
 TTS_PROVIDER_FILE="${TTS_PROVIDER_FILE:-${RUNTIME_DIR}/web-${PORT}.tts-provider}"
 PYTHON_BIN="${DICE_PYTHON:-python3}"
 LOG_FILE="${LOG_FILE:-${RUNTIME_DIR}/web-${PORT}.log}"
-SELECTED_TTS_PROVIDER="${DICE_TTS_PROVIDER:-}"
-if [[ -z "$SELECTED_TTS_PROVIDER" ]]; then
-    SELECTED_TTS_PROVIDER="$("$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" selected tts --game dice)"
-fi
+SELECTED_TTS_PROVIDER="$("$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" selected tts --game dice)"
 TTS_AUTOSTART_ENABLED="${TTS_AUTOSTART:-1}"
 
 mkdir -p "$(dirname "$PID_FILE")"
@@ -98,7 +95,7 @@ if [[ -n "$pid" ]]; then
     running_tts_provider="${running_tts_provider:-unknown}"
     if [[ "$running_tts_provider" != "$SELECTED_TTS_PROVIDER" ]]; then
         echo "Dice Arena web is already running with TTS provider $running_tts_provider." >&2
-        echo "Run scripts/stop_web.sh, then start again with DICE_TTS_PROVIDER=$SELECTED_TTS_PROVIDER." >&2
+        echo "To switch providers, edit the game manifest providers.tts, then run scripts/stop_web.sh and scripts/start_web.sh." >&2
         exit 1
     fi
     start_selected_tts

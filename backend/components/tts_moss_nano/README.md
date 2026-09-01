@@ -10,8 +10,8 @@ The complete runtime source is kept alongside `tts/qwen3-tts`. The adapter
 imports the packaged `OnnxTtsRuntime` directly through a small local HTTP
 bridge. Large board artifacts (models, bundled Python packages, native
 libraries, reference audio, and generated output) stay ignored in that
-directory, so a checkout can either provision them there or override the
-location with `DICE_MOSS_TTS_ROOT` during development.
+directory, so a checkout can either provision them there or point the
+component config's `runtime.root` at another delivery during development.
 
 ## Streaming behavior
 
@@ -34,23 +34,10 @@ SpaceMIT runtime is single-session.
 
 ## Configuration
 
-The defaults are derived from the repository root, so the checkout can be moved without changing code:
-
-```bash
-# Paths are resolved from the repository root by default.
-DICE_MOSS_TTS_ROOT=tts/moss-tts-nano
-DICE_MOSS_TTS_MODEL_DIR=tts/moss-tts-nano/models/MOSS-TTS-Nano-100M-ONNX-xslim-dynq
-DICE_MOSS_TTS_HOST=127.0.0.1
-DICE_MOSS_TTS_PORT=18082
-DICE_MOSS_TTS_VOICE=Junhao
-# Optional voice-clone reference WAV. It is loaded when the bridge starts.
-DICE_MOSS_TTS_REFERENCE_AUDIO=/absolute/path/reference.wav
-DICE_MOSS_TTS_MAX_NEW_FRAMES=120
-DICE_MOSS_TTS_VOICE_CLONE_MAX_TEXT_TOKENS=24
-DICE_MOSS_TTS_FIRST_CHUNK_TEXT_TOKENS=16
-DICE_MOSS_TTS_TIMEOUT_SECONDS=120
-DICE_MOSS_TTS_START_TIMEOUT_SECONDS=300
-```
+All runtime, voice, and generation parameters are configured in this
+component's `config.json` (see the component-local configuration section
+below); paths default to the repository root so the checkout can be moved
+without changing code.
 
 MOSS currently has no generic speed control, so this provider accepts only
 `speed=1.0`. The configured voice is prepared when the bridge starts; changing
@@ -58,16 +45,16 @@ voice or enabling voice cloning requires restarting the provider.
 
 ## Select it
 
-Keep Qwen3 as the default and select MOSS temporarily:
+Set the dice game manifest's `providers.tts` to `tts_moss_nano` and
+restart:
 
 ```bash
 cd <repo-root>
 scripts/stop_web.sh
-DICE_TTS_PROVIDER=tts_moss_nano scripts/start_web.sh
+scripts/start_web.sh
 ```
 
-Or set the dice game manifest's `providers.tts` to `tts_moss_nano`. The web
-backend must be restarted after changing provider selection.
+The web backend must be restarted after changing provider selection.
 
 ## Component checks
 
@@ -80,9 +67,9 @@ python3 backend/componentctl.py stop tts_moss_nano
 ```
 
 The migrated MOSS source can be updated in `tts/moss-tts-nano` without
-changing Dice Arena core scheduling. If a separate delivery is used, set
-`DICE_MOSS_TTS_ROOT` and optionally `DICE_MOSS_TTS_MODEL_DIR`; the adapter
-contract remains unchanged unless the runtime API changes.
+changing Dice Arena core scheduling. If a separate delivery is used, point the
+component config's `runtime.root` (and optionally `runtime.model_dir`) at it;
+the adapter contract remains unchanged unless the runtime API changes.
 
 ## Component-local configuration
 
@@ -96,10 +83,9 @@ runtime delivery. Paths in the checked-in config are relative:
 - `voice.name` selects the built-in voice, while `voice.reference_audio`
   enables voice cloning from a WAV reference.
 
-The precedence is **environment variable > component config > code default**.
-This means existing `DICE_MOSS_TTS_*` deployments continue to work, while
-changing a voice or reference audio normally only requires editing this
-component's config and restarting the TTS provider.
+The component config is the single configuration source; changing a
+voice or reference audio only requires editing this component's config and
+restarting the TTS provider.
 
 Example voice-clone switch:
 

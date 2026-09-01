@@ -6,7 +6,6 @@ After=network.target
 Type=simple
 User=spacemit
 WorkingDirectory=%h/projects/dice-game/main
-EnvironmentFile=-%h/projects/dice-game/main/.dice-arena.env
 ExecStart=%h/projects/dice-game/main/scripts/start_web.sh
 ExecStop=%h/projects/dice-game/main/scripts/stop_web.sh
 Restart=on-failure

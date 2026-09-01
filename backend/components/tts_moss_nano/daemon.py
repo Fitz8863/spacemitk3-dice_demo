@@ -9,8 +9,7 @@ can be forwarded as soon as each decoded text chunk is available.
 
 The source delivery is versioned with the game in ``tts/moss-tts-nano``.
 Board-specific model files, Python wheels, and native libraries remain ignored
-artifacts in that directory, matching the existing ``tts/qwen3-tts`` layout;
-``DICE_MOSS_TTS_ROOT`` can still override the path for development.
+artifacts in that directory, matching the existing ``tts/qwen3-tts`` layout.
 """
 from __future__ import annotations
 
@@ -35,14 +34,10 @@ COMPONENT_DIR = Path(__file__).resolve().parent
 BACKEND_ROOT = PROJECT_ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
-from core.env import load_board_env
 from core.tts_config import load_component_config
 from core.tts_protocol import encode_audio_frame, encode_end_frame, encode_error_frame
 from components.tts_moss_nano.settings import load_settings
 
-load_board_env()
-# Compatibility export for diagnostics; runtime settings are read through the
-# package's single settings loader in ``main``.
 TTS_CONFIG = load_component_config(COMPONENT_DIR)
 
 

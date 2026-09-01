@@ -16,6 +16,14 @@ class TtsConfigError(ValueError):
     """Raised when a component TTS config is missing or malformed."""
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _is_loopback_http_url(base_url: str) -> bool:
+    parsed = urlsplit(base_url)
+    return parsed.scheme == "http" and parsed.hostname in _LOOPBACK_HOSTS
+
+
 def load_component_config(component_dir: Path) -> dict[str, Any]:
     """Load ``config.json`` from one component package.
 
@@ -92,6 +100,15 @@ def validate_tts_component_config(config: dict[str, Any]) -> None:
             raise TtsConfigError("TTS runtime.base_url must be an absolute HTTP(S) URL")
     elif kind in {"cloud", "external"}:
         raise TtsConfigError("cloud/external TTS runtimes require runtime.base_url")
+    if kind == "local":
+        # Local runtimes are board-internal bridges; restricting them to a
+        # loopback origin keeps a misconfigured URL from turning the backend
+        # into a request proxy.
+        if base_url is not None and not _is_loopback_http_url(base_url):
+            raise TtsConfigError("local TTS runtime.base_url must be an http:// loopback address")
+        host = runtime.get("host")
+        if host is not None and str(host) not in _LOOPBACK_HOSTS:
+            raise TtsConfigError("local TTS runtime.host must be a loopback address")
 
     voice = config.get("voice", {})
     if voice is not None and not isinstance(voice, dict):

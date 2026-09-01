@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 from core.components import build_registry
-from core.env import load_board_env
 from core.errors import (
     DiceArenaError,
     InvalidRequestError,
@@ -55,10 +54,10 @@ from components.vision_yolov8_adjudicator.profile import (
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = ROOT / "web"
-load_board_env()
 
-# Resolve runtime settings only after loading the board-local env file.
-JOB_TIMEOUT_SECONDS = int(os.environ.get("DICE_JOB_TIMEOUT_SECONDS", "120"))
+# Operational fallback; each game manifest's timeouts.adjudication_seconds owns
+# the per-round budget.
+JOB_TIMEOUT_SECONDS = 120
 COMPONENTS = build_registry()
 GAMES = load_games()
 
@@ -179,7 +178,7 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
             runtime_video = runtime_config.get("video", {}) if isinstance(runtime_config.get("video"), dict) else {}
         except Exception:
             runtime_video = {}
-        base_url = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or video.get("webrtc_base_url", "") or runtime_video.get("webrtc_base_url", "") or component_video.get("webrtc_base_url", "")
+        base_url = video.get("webrtc_base_url", "") or runtime_video.get("webrtc_base_url", "") or component_video.get("webrtc_base_url", "")
         runtime = config.get("runtime", {})
         runtime = runtime if isinstance(runtime, dict) else {}
         metadata = _safe_profile_metadata(profile, base_url, runtime)
@@ -189,7 +188,7 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
             if not isinstance(item_profile, dict):
                 continue
             item_video = item_profile.get("video", {})
-            item_base = os.environ.get("DICE_MEDIAMTX_WEBRTC_BASE_URL", "") or (
+            item_base = (
                 item_video.get("webrtc_base_url", "") if isinstance(item_video, dict) else ""
             ) or runtime_video.get("webrtc_base_url", "") or component_video.get("webrtc_base_url", "")
             profile_metadata.append(_safe_profile_metadata(item_profile, item_base, runtime))
@@ -399,7 +398,7 @@ class Handler(BaseHTTPRequestHandler):
                 "tts_ready": bool(tts_health.get("ok", False)),
                 "tts_engine": tts_health.get("engine", ""),
                 "tts_speaker": tts_health.get("speaker", ""),
-                "camera": os.environ.get("DICE_CAMERA", "config.json"),
+                "camera": "config.json",
             })
             return
         if path == "/api/tts/health":

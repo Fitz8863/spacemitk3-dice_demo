@@ -23,13 +23,15 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
 
 可以在开发机编辑文件，但**编译、跑摄像头、OpenCL/SpaceMIT EP、算力核验证必须在 K3 板端执行**。不要用开发机编译结果声称板端可用。登录板端：`ssh spacemit@<K3-IP>`。
 
-## 当前组件调度实现（2026-08-30）
+## 当前组件调度实现（2026-09-01）
+
+- **JSON 配置文件是唯一配置来源（2026-09-01 起）**：环境变量覆盖层（`.dice-arena.env` 与全部 `DICE_*` 输入端变量）已移除。改游戏 manifest、组件 `config.json` 或 vision runtime `config.json` 后重启即生效；不要建议用户用环境变量调参。
 
 - `backend/components/<id>/manifest.json` + `provider.py` 是可插拔功能包；`backend/core/components.py` 动态扫描并注册 provider，并校验视觉/TTS 的正式接口。
 - 游戏通过语义插槽选择 provider；当前骰子配置为
   `providers.vision_adjudicator=vision_yolov8_adjudicator` 与
   `providers.tts=tts_moss_nano`。`tts_qwen3` 是可选 provider。
-- 新 TTS 复制一个功能包并继承 `TtsProvider`，最小实现 `health()`、`synthesize()` 即可接入；需要分段低延迟时再覆盖 `stream()`；可用 `DICE_TTS_PROVIDER=<id>` 切换默认 provider，前端请求保持不变。Provider 可用 `manifest.lifecycle.start/stop` 声明本地模型进程管理命令，`componentctl.py`/`start_web.sh` 会按所选 provider 调度。
+- 新 TTS 复制一个功能包并继承 `TtsProvider`，最小实现 `health()`、`synthesize()` 即可接入；需要分段低延迟时再覆盖 `stream()`；切换默认 provider 只需修改游戏 manifest 的 `providers.tts`（改后重启），前端请求保持不变。Provider 可用 `manifest.lifecycle.start/stop` 声明本地模型进程管理命令，`componentctl.py`/`start_web.sh` 会按所选 provider 调度。
 - 当前 YOLO 包是 `type=vision, role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于目标坐标的 YOLO 包应使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得混入裁决器插槽。算法名不是职责接口。
 - 游戏视觉配置必须内嵌在 `backend/games/<game_id>/manifest.json` 的
   `vision_profile` 节点；不要新增外置 `vision_profile.json`。视觉 runtime 的硬件、RTSP
@@ -48,9 +50,9 @@ scripts/start_web.sh   # 启动当前游戏选择的 TTS provider，再启动 ba
 # 停止
 scripts/stop_web.sh
 
-# 选择 TTS 后启动整体项目
-DICE_TTS_PROVIDER=tts_qwen3 scripts/start_web.sh
-DICE_TTS_PROVIDER=tts_moss_nano scripts/start_web.sh
+# 切换 TTS：修改 backend/games/dice/manifest.json 的 providers.tts 后重启
+scripts/stop_web.sh
+scripts/start_web.sh
 ```
 
 健康检查：
@@ -158,12 +160,12 @@ select → rules → ready → countdown → shaking → open → analysis → r
 ## 必须遵守的约束（非可选）
 
 - **胜负只能由 K3 YOLOv8 detection + Python profile/provider 产生**，禁止网页随机结果兜底。具体稳定帧、规则、LLM 一致/覆盖/超时回退策略由游戏 manifest 的 `vision_profile` 声明。
-- **LLM key 不进仓库**：优先从 `.dice-arena.env`（`DICE_LLM_API_KEY=...`，chmod 600）或环境变量提供。若板端工作副本的 `vision/yolov8_adjudicator/config.json` 已含本地 key，不要打印、覆盖或直接提交；提交时使用清空 key 的版本，完成后恢复用户本地值。不要把 key 写进 `web/`、API 响应或日志。
+- **LLM key 存放于** `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm.api_key`。该文件被 Git 跟踪，**仓库必须保持私有**；若将来要公开仓库，先在服务商处轮换 key。不要把 key 写进 `web/`、API 响应或日志；提交推送包含真实 key 的文件前先与用户确认。
 - **不要回滚/覆盖用户本地修改**：`git status` 里 `vision/yolov8_adjudicator/config.json` 常处于未提交的本地修改状态（涉及 LLM 配置），操作前重新确认，提交时只提交本次任务相关文件。
 - **CPU/EP 亲和性不要混用**：TTS 用 preferred cores `8,9,10,11,12,13`；YOLO EP affinity 是 `14;15`（`config.json` 的 `ep_affinity`）。`taskset`/环境变量只证明配置意图，不证明 AI Core 实际利用率。
 - **不要声称未实现的功能**：当前没有机械臂、没有 ROS2、没有 WebSocket、TTS 不是逐 PCM 流式、底层模型支持 voice cloning 但接口未开放参考音频上传。
 - **一次只允许一个 YOLOv8 分析任务**（`create_job()` 里 `active_job_id` 单任务锁），避免争用摄像头/算力。
-- 不提交：`.dice-arena.env`、`*.log`、`*.pid`、`build/`、`*.onnx`、`*.gguf`、speaker `*.bin`（见根 `.gitignore`）。
+- 不提交：`*.log`、`*.pid`、`build/`、`*.onnx`、`*.gguf`、speaker `*.bin`（见根 `.gitignore`）。
 
 ## 子工程规范速查
 

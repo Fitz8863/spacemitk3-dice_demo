@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any, Callable
@@ -17,9 +16,6 @@ GAMES_ROOT = ROOT / "backend" / "games"
 _PROVIDER_SLOT_ALIASES = {
     # Migration alias for manifests written before visual roles were explicit.
     "vision_adjudicator": ("vision",),
-}
-_PROVIDER_ENV_ALIASES = {
-    "vision_adjudicator": ("DICE_VISION_PROVIDER",),
 }
 
 
@@ -228,21 +224,13 @@ def resolve_provider_id(
     provider_slot: str,
     fallback: str = "",
 ) -> str:
-    """Resolve one semantic provider slot from env and game configuration.
+    """Resolve one semantic provider slot from the game manifest.
 
     Slots describe responsibility (for example ``vision_adjudicator``), not
-    implementation technology (for example YOLO). Canonical configuration is
-    checked first, followed by narrowly scoped migration aliases.
+    implementation technology (for example YOLO). The game manifest is the
+    single configuration source; canonical slots are checked first, followed
+    by narrowly scoped migration aliases.
     """
-    env_names = (
-        f"DICE_{provider_slot.upper()}_PROVIDER",
-        *_PROVIDER_ENV_ALIASES.get(provider_slot, ()),
-    )
-    for env_name in env_names:
-        override = os.environ.get(env_name, "").strip()
-        if override:
-            return override
-
     providers = manifest.get("providers", {})
     if isinstance(providers, dict):
         for slot in (provider_slot, *_PROVIDER_SLOT_ALIASES.get(provider_slot, ())):

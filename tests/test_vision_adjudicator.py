@@ -1467,9 +1467,7 @@ def test_provider_cancel_keeps_resident_runtime_warm():
     ]
 
 
-def test_resident_round_emits_video_before_waiting_for_observation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_resident_round_emits_video_before_waiting_for_observation(tmp_path: Path):
     """Every resident round must publish its profile video URL immediately."""
     import threading
     import time
@@ -1494,11 +1492,10 @@ def test_resident_round_emits_video_before_waiting_for_observation(
 
     image = tmp_path / "stable.jpg"
     image.write_bytes(b"resident-round")
-    monkeypatch.setenv("DICE_MEDIAMTX_WEBRTC_BASE_URL", "http://100.118.229.28:8889")
     profile = {
         "game_id": "x",
         "vision": {"stable_frames": 1},
-        "video": {"path": "/dice/"},
+        "video": {"path": "/dice/", "webrtc_base_url": "http://100.118.229.28:8889"},
         "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
         "lifecycle": {"post_result_hold_seconds": 0},
         "runtime": {"mode": "resident", "prewarm_camera": True},

@@ -22,6 +22,10 @@ __pycache__/
 .DS_Store
 *~
 
+# Local AI tool state
+.mimosa/
+.zcode/
+
 # Local runtime secrets / generated media
 .env
 vision/yolov8_adjudicator/config.local.json

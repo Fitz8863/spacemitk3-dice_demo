@@ -167,7 +167,6 @@ manifest.
 The YOLO runtime's deployment defaults live in
 `vision/yolov8_adjudicator/config.json`: camera, inference/EP settings, RTSP
 and the MediaMTX WebRTC base URL. The vision component config only contains
-provider lifecycle/runtime paths and LLM endpoint/model/key settings. A
-deployment may override the WebRTC base with
-`DICE_MEDIAMTX_WEBRTC_BASE_URL`; games still provide only a safe path such as
-`/dice/`.
+provider lifecycle/runtime paths and LLM endpoint/model/key settings.
+Games still provide only a safe path such as
+`/dice/`; the deployment WebRTC base URL comes from the runtime config.

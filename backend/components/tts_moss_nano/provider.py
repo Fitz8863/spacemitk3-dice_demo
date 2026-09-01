@@ -5,6 +5,7 @@ import json
 import urllib.error
 import urllib.request
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from core.errors import TtsServiceError, TtsValidationError
 from core.tts import TtsProvider
@@ -20,6 +21,16 @@ MOSS_VOICE = SETTINGS.voice
 MOSS_VOICE_MODE = SETTINGS.voice_mode
 MOSS_REFERENCE_AUDIO = str(SETTINGS.reference_audio) if SETTINGS.reference_audio else ""
 MOSS_ENGINE = "moss-tts-nano-spacemit-ep"
+
+
+def _moss_url(path: str) -> str:
+    """Build a bridge URL after verifying the configured origin is loopback."""
+    parsed = urlsplit(MOSS_URL)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise TtsServiceError(
+            "tts_moss_nano bridge base_url must be an http:// loopback address"
+        )
+    return f"{MOSS_URL}{path}"
 
 
 def _json_request(url: str, *, timeout: float) -> dict[str, Any]:
@@ -45,7 +56,7 @@ class TtsMossNano(TtsProvider):
 
     def health(self) -> dict[str, Any]:
         try:
-            remote = _json_request(f"{MOSS_URL}/health", timeout=1.5)
+            remote = _json_request(_moss_url("/health"), timeout=1.5)
         except TtsServiceError as exc:
             return {
                 "id": self.id,
@@ -109,7 +120,7 @@ class TtsMossNano(TtsProvider):
     def synthesize(self, payload: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
         text, voice = self._validate_payload(payload)
         request = urllib.request.Request(
-            f"{MOSS_URL}/v1/audio/speech",
+            _moss_url("/v1/audio/speech"),
             data=self._body(text, voice),
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -138,7 +149,7 @@ class TtsMossNano(TtsProvider):
     def stream(self, payload: dict[str, Any], write_frame: Callable[[bytes], None]) -> None:
         text, voice = self._validate_payload(payload)
         request = urllib.request.Request(
-            f"{MOSS_URL}/v1/audio/speech/stream",
+            _moss_url("/v1/audio/speech/stream"),
             data=self._body(text, voice),
             headers={"Content-Type": "application/json"},
             method="POST",

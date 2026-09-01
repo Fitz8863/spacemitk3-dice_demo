@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from core.components import build_registry
-from core.env import load_board_env
 from core.errors import DiceArenaError
 from core.games import load_games, require_game, resolve_provider_id
 
@@ -83,7 +82,6 @@ def main() -> int:
     parser.add_argument("--game", default="dice")
     args = parser.parse_args()
 
-    load_board_env()
     if args.action in {"selected", "start-selected", "stop-selected"}:
         if not args.provider:
             parser.error("provider slot is required for selected actions")

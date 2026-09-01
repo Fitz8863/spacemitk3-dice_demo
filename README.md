@@ -80,15 +80,7 @@ systemctl status dice-arena-web.service
 
 `web/` 前端和 `backend/server.py` 都只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。网页请求 `/api/adjudicate` 后，bridge 会通过 `vision_yolov8_adjudicator` 启动或复用 `vision/yolov8_adjudicator/build/yolov8_camera`；YOLO runtime 只输出稳定检测证据，LLM 请求由 Python provider 发起。浏览器在板端通过 `127.0.0.1` 访问时，可以正常申请摄像头权限；如果从其他设备通过 HTTP IP 访问，浏览器可能因非安全上下文限制摄像头权限，但实际识别仍使用 K3 板端摄像头。
 
-首次接入大模型时，在 K3 项目根目录创建不纳入 Git 的凭据文件（不要把 key 写进网页或提交到仓库）：
-
-```bash
-cd <repo-root>
-printf 'DICE_LLM_API_KEY=%s\n' '你的大模型API_KEY' > .dice-arena.env
-chmod 600 .dice-arena.env
-```
-
-也可以在启动 `scripts/start_web.sh` 前直接导出 `DICE_LLM_API_KEY`。如果没有配置 key，`/api/health` 会显示 `llm_configured:false`，进入开盖后的视觉裁决阶段会明确提示未配置，而不是使用随机骰子或直接判定胜负。
+大模型的 endpoint、model 和 API key 统一配置在 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段。该文件被 Git 跟踪，**仓库必须保持私有**；不要把 key 写进网页或日志。修改后重启 `scripts/start_web.sh` 生效。如果没有配置 key，`/api/health` 会显示 `llm_configured:false`，进入开盖后的视觉裁决阶段会明确提示未配置，而不是使用随机骰子或直接判定胜负。
 
 页面交互流程：
 
@@ -181,7 +173,7 @@ cmake --build build -j4
 
 当前迁移的模型是 YOLOv8 raw 输出模型，预期输出 `[1, 10, 8400]`。程序会在 CPU 侧执行 YOLOv8 解码和 NMS，并以模型无关的 detection 列表和稳定帧快照交给游戏 profile 解释；不会在 C++ 中固化骰子数量、分区、求和或胜负规则。
 
-`vision/yolov8_adjudicator/config.json` 是 YOLO runtime 的硬件、推理、RTSP 和 WebRTC 基础地址唯一默认来源。`backend/components/vision_yolov8_adjudicator/config.json` 只保存 Provider 的 runtime 路径/生命周期与 LLM endpoint、model；其中 `runtime.config` 显式指向前述 runtime 配置，避免两份硬件配置分叉。真实 API key 仍只通过未纳入 Git 的 `.dice-arena.env` 或 `DICE_LLM_API_KEY` 提供。游戏 manifest 只声明自己的 `video.path`，部署环境可通过 `DICE_MEDIAMTX_WEBRTC_BASE_URL` 覆盖基础地址。
+`vision/yolov8_adjudicator/config.json` 是 YOLO runtime 的硬件、推理、RTSP 和 WebRTC 基础地址唯一默认来源。`backend/components/vision_yolov8_adjudicator/config.json` 只保存 Provider 的 runtime 路径/生命周期与 LLM endpoint、model、API key（仓库须保持私有）。游戏 manifest 只声明自己的 `video.path`，完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
 
 
 ## 迁移的 Qwen3-TTS 服务
@@ -259,7 +251,7 @@ tts_moss_nano -> tts provider，代理仓库内 `tts/moss-tts-nano` 的 MOSS-TTS
 ```
 
 当前骰子游戏默认选择 `tts_moss_nano`；`tts_qwen3` 仍是可选的本地 provider，可通过游戏
-manifest 或 `DICE_TTS_PROVIDER` 切换。视觉裁决器的模型、类别映射、规则、LLM prompt、视频
+manifest 的 `providers.tts` 切换。视觉裁决器的模型、类别映射、规则、LLM prompt、视频
 path、超时、裁决前置等待（`lifecycle.pre_adjudication_wait_seconds`，检测开始前的静默等待，
 不占用裁决超时预算）和结果保持时间统一放在游戏 `manifest.json` 的 `vision_profile` 中；不要再创建
 同目录的外置 `vision_profile.json`。视觉 runtime 的摄像头、推理、RTSP 和 MediaMTX
@@ -279,11 +271,11 @@ WebRTC 基础地址只在 `vision/yolov8_adjudicator/config.json` 保存部署�
 `vision_adjudicator` 只返回物理侧 `LEFT`、`RIGHT` 或 `TIE`。玩家和 Agent 的身份由游戏
 manifest 顶层 `participants` 映射，属于上层业务，不由视觉功能包解释。
 
-临时切换到板端 MOSS-TTS-Nano：
+临时切换到板端 MOSS-TTS-Nano：把 `backend/games/dice/manifest.json` 的 `providers.tts` 改为 `tts_moss_nano`，然后重启：
 
 ```bash
 scripts/stop_web.sh
-DICE_TTS_PROVIDER=tts_moss_nano scripts/start_web.sh
+scripts/start_web.sh
 ```
 
 MOSS 组件默认使用仓库内路径：
@@ -294,8 +286,8 @@ tts/moss-tts-nano
 
 MOSS 组件直接调用板端 runtime 的 `on_pcm_chunk` 回调：每个文本 chunk 解码完成后立即作为一个 WAV 帧送入
 `/api/tts/stream`，网页收到首帧就开始播放，后续 chunk 继续生成并播放。当前是 chunk 级流式，不是逐 codec 帧真流式。
-如果使用其他 MOSS 交付目录，只需要在 `.dice-arena.env` 中调整
-`DICE_MOSS_TTS_ROOT`、`DICE_MOSS_TTS_MODEL_DIR`、`DICE_MOSS_TTS_VOICE` 等配置；默认路径已经是仓库内的
+如果使用其他 MOSS 交付目录，只需要在 `backend/components/tts_moss_nano/config.json` 中调整
+`runtime.root`、`runtime.model_dir`、`voice` 等配置；默认路径已经是仓库内的
 `tts/moss-tts-nano`，模型、依赖包和生成音频按该目录 `.gitignore` 管理。
 
 添加新的 TTS 时，继承 `backend/core/tts.py` 的 `TtsProvider`。最小实现只需要提供 `health()` 和 `synthesize()`；基类会把单个完整 WAV 自动包装成一帧 `/api/tts/stream`。如果新模型支持更低延迟的分段生成，再覆盖 `stream()`：
@@ -318,11 +310,11 @@ class TtsNew(TtsProvider):
 }
 ```
 
-也可以使用环境变量临时切换当前 Web 服务的默认 TTS：
+切换当前 Web 服务的默认 TTS：把游戏 manifest 的 `providers.tts` 改为目标 provider id（如 `tts_new`），然后重启：
 
 ```bash
 scripts/stop_web.sh
-DICE_TTS_PROVIDER=tts_new scripts/start_web.sh
+scripts/start_web.sh
 ```
 
 组件包可在 `manifest.json.lifecycle` 声明自己的启动/停止命令；`scripts/start_web.sh` 和 systemd Web 服务会启动当前选中的 TTS provider，而不是硬编码启动 Qwen3。没有本地生命周期、由外部服务管理的 provider 可设置 `TTS_AUTOSTART=0`。新增/删除组件或修改游戏 `providers` 后需要重启后端，使注册表重新扫描。

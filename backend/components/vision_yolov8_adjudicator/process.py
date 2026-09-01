@@ -260,7 +260,15 @@ class YoloRuntimeProcess:
                 continue
             if isinstance(event, dict):
                 yield event
+        # EOF on the event pipe means the child is exiting.  Its inherited
+        # write end closes just before the process becomes reapable, so wait
+        # briefly instead of racing ``poll`` and dropping the exit event.
         returncode = process.poll()
+        if returncode is None:
+            try:
+                returncode = process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                returncode = None
         if returncode is not None and not self._runtime_exit_emitted:
             self._runtime_exit_emitted = True
             yield {"event": "runtime_exit", "returncode": returncode}

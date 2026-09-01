@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,8 +60,7 @@ class DispatcherTests(unittest.TestCase):
 
     def test_dispatcher_uses_backend_selection_not_request_override(self):
         dispatcher = TtsDispatcher(self.registry, self.games)
-        with patch.dict(os.environ, {"DICE_TTS_PROVIDER": "tts_dummy"}, clear=False):
-            selected = dispatcher.provider({"game": "dice", "provider": "some_other"})
+        selected = dispatcher.provider({"game": "dice", "provider": "some_other"})
         self.assertIs(selected, self.provider)
 
     def test_dispatcher_delegates_synthesis_and_stream(self):
@@ -86,8 +83,7 @@ class DispatcherTests(unittest.TestCase):
         })
         games = {"dice": {"enabled": True, "providers": {"tts": provider.id}}}
         dispatcher = TtsDispatcher(registry, games)
-        with patch.dict(os.environ, {"DICE_TTS_PROVIDER": ""}, clear=False):
-            audio, headers = dispatcher.synthesize({"game": "dice", "text": "cloud"})
+        audio, headers = dispatcher.synthesize({"game": "dice", "text": "cloud"})
         self.assertEqual(audio, WAV)
         self.assertEqual(headers["X-TTS-Runtime"], "cloud")
         self.assertIsNone(_command_for({"id": provider.id, "lifecycle": {}}, "start"))
@@ -121,6 +117,20 @@ class TtsContractTests(unittest.TestCase):
             validate_tts_component_config({"runtime": {"kind": "unknown"}})
         with self.assertRaises(TtsConfigError):
             validate_tts_component_config({"runtime": {"kind": "cloud", "base_url": "not a url"}})
+
+    def test_local_tts_runtime_must_stay_on_loopback(self):
+        with self.assertRaisesRegex(TtsConfigError, "loopback"):
+            validate_tts_component_config({
+                "runtime": {"kind": "local", "base_url": "http://192.168.1.5:18082"},
+            })
+        with self.assertRaisesRegex(TtsConfigError, "loopback"):
+            validate_tts_component_config({
+                "runtime": {"kind": "local", "host": "0.0.0.0", "port": 18082},
+            })
+        # Cloud and externally managed providers may use remote origins.
+        validate_tts_component_config({
+            "runtime": {"kind": "cloud", "base_url": "https://tts.example.com"},
+        })
 
     def test_tts_manifest_requires_component_config(self):
         with self.assertRaisesRegex(ValueError, "component-local config"):
@@ -158,9 +168,8 @@ class TtsContractTests(unittest.TestCase):
             "limits": {"request_timeout_seconds": 12},
             "execution_provider": {"intra_thread_num": 2, "inter_thread_num": 1, "intra_thread_affinity": "1;2", "disable_op_type_filter": "Add"},
         }
-        with patch.dict(os.environ, {}, clear=True):
-            qwen_settings = load_qwen_settings(qwen)
-            moss_settings = load_moss_settings(moss)
+        qwen_settings = load_qwen_settings(qwen)
+        moss_settings = load_moss_settings(moss)
         self.assertEqual(qwen_settings.default_voice, "narrator")
         self.assertEqual(qwen_settings.model_dir, Path("/tmp/qwen-root/model"))
         self.assertEqual(qwen_settings.url, "http://127.0.0.1:19080")

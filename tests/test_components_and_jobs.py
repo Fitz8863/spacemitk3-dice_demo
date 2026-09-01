@@ -272,18 +272,14 @@ class ComponentTests(unittest.TestCase):
     def test_semantic_adjudicator_slot_supports_legacy_aliases(self):
         canonical = {"providers": {"vision_adjudicator": "vision_new"}}
         legacy = {"providers": {"vision": "vision_old"}}
-        with patch.dict("os.environ", {
-            "DICE_VISION_ADJUDICATOR_PROVIDER": "",
-            "DICE_VISION_PROVIDER": "",
-        }):
-            self.assertEqual(
-                resolve_provider_id(canonical, "vision_adjudicator", "vision_fallback"),
-                "vision_new",
-            )
-            self.assertEqual(
-                resolve_provider_id(legacy, "vision_adjudicator", "vision_fallback"),
-                "vision_old",
-            )
+        self.assertEqual(
+            resolve_provider_id(canonical, "vision_adjudicator", "vision_fallback"),
+            "vision_new",
+        )
+        self.assertEqual(
+            resolve_provider_id(legacy, "vision_adjudicator", "vision_fallback"),
+            "vision_old",
+        )
 
     def test_dice_pipeline_invokes_adjudicator_interface(self):
         registry = ComponentRegistry()
@@ -293,24 +289,20 @@ class ComponentTests(unittest.TestCase):
             "role": "adjudicator",
             "entry": "provider.py:DummyAdjudicator",
         })
-        with patch.dict("os.environ", {
-            "DICE_VISION_ADJUDICATOR_PROVIDER": "",
-            "DICE_VISION_PROVIDER": "",
-        }):
-            result = dice_pipeline.run(
-                lambda _line: None,
-                lambda: False,
-                1.0,
-                components=registry,
-                manifest={
-                    "participants": {"player": "LEFT", "agent": "RIGHT"},
-                    "providers": {"vision_adjudicator": "vision_dummy_adjudicator"},
-                    "vision_profile": json.loads(
-                        (ROOT / "backend/games/dice/manifest.json").read_text()
-                    )["vision_profile"],
-                },
-                on_event=lambda _event: None,
-            )
+        result = dice_pipeline.run(
+            lambda _line: None,
+            lambda: False,
+            1.0,
+            components=registry,
+            manifest={
+                "participants": {"player": "LEFT", "agent": "RIGHT"},
+                "providers": {"vision_adjudicator": "vision_dummy_adjudicator"},
+                "vision_profile": json.loads(
+                    (ROOT / "backend/games/dice/manifest.json").read_text()
+                )["vision_profile"],
+            },
+            on_event=lambda _event: None,
+        )
         self.assertEqual(result["winner"], "LEFT")
         self.assertEqual(result["winner_role"], "PLAYER")
         self.assertEqual(result["player_score"], 20)

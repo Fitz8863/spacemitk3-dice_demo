@@ -13,9 +13,6 @@ resolve_tts_provider() {
     if [[ -f "$TTS_PROVIDER_FILE" ]]; then
         provider="$(head -n 1 "$TTS_PROVIDER_FILE" 2>/dev/null || true)"
     fi
-    if [[ -z "$provider" && -n "${DICE_TTS_PROVIDER:-}" ]]; then
-        provider="$DICE_TTS_PROVIDER"
-    fi
     if [[ -z "$provider" ]]; then
         provider="$(curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null \
             | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("tts_provider", ""))' 2>/dev/null || true)"

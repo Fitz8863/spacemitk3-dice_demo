@@ -1,16 +1,18 @@
 # Dice Arena 项目上下文（供后续 AI / 开发者快速接手）
 
 > **用途**：新对话或新开发者进入项目时，先阅读本文件，再检查代码和板端实际状态。
-> **记录日期**：2026-08-30
+> **记录日期**：2026-09-01
 > **当前阶段**：K3 板端 Web 交互 + YOLOv8 骰子识别 + 大模型复核已接通；机械臂尚未接入，目前由人手完成摇骰、停骰和开盖。
 > **重要原则**：本文将“已实现/已验证”和“未来规划”分开描述。未来规划不能被当成当前已有功能。
 
-## 当前实现覆盖（2026-08-30）
+## 当前实现覆盖（2026-09-01）
 
-以下内容覆盖本文中关于组件调度的旧描述：后端扫描 `backend/components/*/manifest.json`，按 `entry` 动态加载功能包并通过 `ComponentRegistry` 按 ID 注入游戏流程。视觉 provider 继续使用广义 `type=vision`，但必须再声明职责 `role`：当前骰子 YOLO 包是 `role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于获取目标坐标/空间位置的 YOLO 包必须使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得接入裁决器插槽。骰子游戏通过 `manifest.json.providers.vision_adjudicator` 选择裁决器。TTS 通过 `providers.tts` 或 `DICE_TTS_PROVIDER` 选择 provider；当前骰子默认使用 `tts_moss_nano`，`tts_qwen3` 是可选 provider。请求体中的 `provider` 不会覆盖后端选择。新增 TTS 不需要修改 `server.py` 或前端：新增功能包并继承 `TtsProvider`，最小实现 `health()` 与 `synthesize()`；只有需要分段低延迟时才覆盖 `stream()`。
+2026-09-01 起环境变量覆盖层已整体移除：`.dice-arena.env` 加载器（`backend/core/env.py`）删除，`DICE_LLM_*`、`DICE_TTS_PROVIDER`、`DICE_MOSS_TTS_*`、`DICE_MEDIAMTX_WEBRTC_BASE_URL` 等输入端覆盖分支全部清理，JSON 配置文件（游戏 manifest、组件 `config.json`、`vision/yolov8_adjudicator/config.json`）成为唯一配置来源——改 JSON、重启服务、必然生效。LLM endpoint/model/key 位于 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段（该文件被 Git 跟踪，仓库必须保持私有）。daemon 内部为底层原生库 `setdefault` 注入的 `SPACEMIT_EP_*` 变量是 C 库接口，不是人工配置入口。
+
+以下内容覆盖本文中关于组件调度的旧描述：后端扫描 `backend/components/*/manifest.json`，按 `entry` 动态加载功能包并通过 `ComponentRegistry` 按 ID 注入游戏流程。视觉 provider 继续使用广义 `type=vision`，但必须再声明职责 `role`：当前骰子 YOLO 包是 `role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于获取目标坐标/空间位置的 YOLO 包必须使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得接入裁决器插槽。骰子游戏通过 `manifest.json.providers.vision_adjudicator` 选择裁决器。TTS 通过游戏 manifest 的 `providers.tts` 选择 provider；当前骰子默认使用 `tts_moss_nano`，`tts_qwen3` 是可选 provider。请求体中的 `provider` 不会覆盖后端选择。新增 TTS 不需要修改 `server.py` 或前端：新增功能包并继承 `TtsProvider`，最小实现 `health()` 与 `synthesize()`；只有需要分段低延迟时才覆盖 `stream()`。
 游戏视觉 profile 已正式内嵌到 `backend/games/<game_id>/manifest.json` 的 `vision_profile` 节点；不要再创建外置 `vision_profile.json`。该节点负责模型、类别、规则、LLM prompt、视频 path、任务超时和结果保持时长。`vision/yolov8_adjudicator/config.json` 是 YOLO runtime 的硬件、RTSP 和 MediaMTX WebRTC 基础地址配置；组件配置只负责 provider 生命周期与 LLM endpoint/model/key。
 Provider 可在 manifest 的 `lifecycle.start/stop` 中声明本地模型进程管理命令；`backend/componentctl.py` 和 `scripts/start_web.sh` 会按当前选中的 TTS provider 启动对应 runtime，不再把 Web 启动流程绑定到 Qwen3。新增/删除功能包或修改游戏 provider 后需重启后端以重新扫描。
-当前已加入 `tts_moss_nano` 组件：它只负责 Dice Arena 的 `TtsProvider` 适配和本地 HTTP bridge，完整 MOSS-TTS-Nano runtime 源码已迁移到仓库 `tts/moss-tts-nano`，模型/依赖按该目录 `.gitignore` 保留为板端运行时文件；通过 `DICE_MOSS_TTS_ROOT`/`DICE_MOSS_TTS_MODEL_DIR` 可替换路径。bridge 直接复用板端 `OnnxTtsRuntime` 的 `on_pcm_chunk` 回调，按文本 chunk 生成并即时发送 WAV 帧，前端可在首个 chunk 完成后立即播放；当前是 chunk 级流式，不是逐 codec 帧真流式。默认 voice 为 `Junhao`，不支持通用 `speed` 调节，因此适配器只接受 `speed=1.0`。更新 MOSS 独立项目时无需修改 Dice Arena 核心调度；只有外部 runtime Python 接口改变时才需要更新该组件适配器。
+当前已加入 `tts_moss_nano` 组件：它只负责 Dice Arena 的 `TtsProvider` 适配和本地 HTTP bridge，完整 MOSS-TTS-Nano runtime 源码已迁移到仓库 `tts/moss-tts-nano`，模型/依赖按该目录 `.gitignore` 保留为板端运行时文件；通过组件 `config.json` 的 `runtime.root`/`runtime.model_dir` 可替换路径。bridge 直接复用板端 `OnnxTtsRuntime` 的 `on_pcm_chunk` 回调，按文本 chunk 生成并即时发送 WAV 帧，前端可在首个 chunk 完成后立即播放；当前是 chunk 级流式，不是逐 codec 帧真流式。默认 voice 为 `Junhao`，不支持通用 `speed` 调节，因此适配器只接受 `speed=1.0`。更新 MOSS 独立项目时无需修改 Dice Arena 核心调度；只有外部 runtime Python 接口改变时才需要更新该组件适配器。
 
 YOLOv8 新版支持 `--event-fd FD`，通过独立的 JSONL 管道发送结构化 `started`、`phase`、`progress`、`result` 事件；stdout/stderr 仅作为诊断日志。裁决主接口为 `/api/adjudicate...`，`/api/analyze...` 仅保留为迁移别名。任务快照包含 `events`。2026-08-27 已在 K3 重新编译并验证 `jsonl-events-v1`、SSE 完整分析和最终 `verified:true` 结果。2026-08-28 已在 K3 用 `/usr/bin/python3` 通过 14 个后端测试、重启 Web/TTS、确认 `/api/health` 注册 `vision/adjudicator`，并用有界 `/api/adjudicate` 冒烟跑到 `verifying` 后取消，YOLO 子进程随后正常退出。
 
@@ -116,9 +118,8 @@ main/
 │   ├── README.md
 │   ├── archive/
 │   └── superpowers/plans、specs/
-├── deploy/
-│   ├── dice-arena-web.service       # 可选 systemd Web 服务
-└── .dice-arena.env                  # 板端本地密钥配置，不纳入 Git
+└── deploy/
+    └── dice-arena-web.service       # 可选 systemd Web 服务
 ```
 
 以下是运行时文件，不应提交：
@@ -127,7 +128,6 @@ main/
 /tmp/dice-arena-web-<uid>-<port>.pid
 web/dice-arena-web.log
 backend/__pycache__/
-.dice-arena.env
 vision/yolov8_adjudicator/build/
 ```
 
@@ -447,33 +447,13 @@ resident 模式下网页启动后即可看到 `yolov8_camera`；只有收到 `ST
 
 ## 6. 密钥和配置安全
 
-LLM API Key 不应出现在：
+LLM API key 当前直接保存在 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段。该文件被 Git 跟踪，因此**仓库必须保持私有**；如果将来要公开仓库，先在服务商处轮换 key。Key 绝不应出现在：
 
 - `web/` 前端代码；
-- HTTP API 响应；
-- Git 提交；
-- README 或本上下文文档；
+- HTTP API 响应（health 只暴露 `llm_configured` 布尔值）；
 - 可公开的运行日志。
 
-板端使用未纳入 Git 的文件：
-
-```text
-/home/spacemit/projects/dice-game/main/.dice-arena.env
-```
-
-示意格式：
-
-```text
-DICE_LLM_API_KEY=<secret>
-```
-
-权限建议：
-
-```bash
-chmod 600 .dice-arena.env
-```
-
-`vision/yolov8_adjudicator/config.json` 只保存硬件 runtime 默认值和 MediaMTX WebRTC 基础地址；LLM endpoint/model/key 位于 `backend/components/vision_yolov8_adjudicator/config.json`，真实 API key 优先由环境变量提供，不进入 Git。游戏 manifest 只保存 `vision_profile.video.path`，不能把主机地址写进每个游戏。
+`vision/yolov8_adjudicator/config.json` 只保存硬件 runtime 默认值和 MediaMTX WebRTC 基础地址；LLM endpoint/model/key 位于 `backend/components/vision_yolov8_adjudicator/config.json`。游戏 manifest 只保存 `vision_profile.video.path`，不能把主机地址写进每个游戏。
 
 ---
 
@@ -614,7 +594,7 @@ ros2_ws/
 
 现有 C++ YOLOv8 不需要立即重写为 ROS2 节点。第一阶段继续由
 `vision_yolov8_adjudicator` 通过控制通道调度 resident `yolov8_camera`；新游戏只需在
-自己的 `manifest.json` 的 `vision_profile` 节点中声明模型、规则、提示词和视频 path；MediaMTX 基础地址统一由 `vision/yolov8_adjudicator/config.json` 的 `video.webrtc_base_url` 提供，部署环境可用 `DICE_MEDIAMTX_WEBRTC_BASE_URL` 覆盖。
+自己的 `manifest.json` 的 `vision_profile` 节点中声明模型、规则、提示词和视频 path；MediaMTX 基础地址统一由 `vision/yolov8_adjudicator/config.json` 的 `video.webrtc_base_url` 提供。
 
 ---
 
@@ -898,7 +878,7 @@ git log -5 --oneline --decorate
 如果要提交代码：
 
 - 只提交本次任务相关文件；
-- 不提交 `.dice-arena.env`、API Key、日志、PID、build 目录；
+- 不提交日志、PID、build 目录；包含真实 LLM key 的组件 config.json 是否推送由用户决定；
 - 不覆盖用户未提交的 `config.json` 修改；
 - 在 K3 上完成必要编译和有界运行测试后，再推送；
 - 用户当前约定的目标仓库和分支是 `origin/main`，但推送前仍需重新确认远端和分支状态。

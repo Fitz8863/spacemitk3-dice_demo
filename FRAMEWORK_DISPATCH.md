@@ -113,19 +113,18 @@ main/
 视觉组件配置不重复保存摄像头、RTSP 或 WebRTC 基础地址。新增游戏只写自己的 `vision_profile.video.path`，例如 `/dice/` 或 `/rps/`。完整播放地址由基础地址和 path 安全拼接：
 
 ```text
-DICE_MEDIAMTX_WEBRTC_BASE_URL
+游戏 manifest vision_profile.video.webrtc_base_url（可选）
     > vision/yolov8_adjudicator/config.json.video.webrtc_base_url
-    > 兼容期旧字段
 ```
 
 当前部署基础地址为 `http://100.118.229.28:8889`；骰子页面最终播放 `http://100.118.229.28:8889/dice/`。YOLO 发布的 RTSP 路径只供 MediaMTX 接管，浏览器不直接使用。
 
 ## 4. 服务启动时发生什么
 
-1. `scripts/start_web.sh` 读取 `DICE_TTS_PROVIDER`；未设置时读取当前游戏 manifest 的 `providers.tts`，骰子当前为 `tts_moss_nano`。
+1. `scripts/start_web.sh` 通过 `backend/componentctl.py selected tts` 读取当前游戏 manifest 的 `providers.tts`，骰子当前为 `tts_moss_nano`。
 2. 脚本调用 `backend/componentctl.py start <provider>`。本地 TTS provider 启动自己的 runtime；云端 provider 可以没有 lifecycle 脚本。
 3. 脚本启动 `backend/server.py --host 0.0.0.0 --port 8080`，并写入被忽略的 PID/日志文件。
-4. `server.py` 加载板端 `.dice-arena.env` 和环境变量，扫描 `backend/components/*/manifest.json`，动态加载 provider。
+4. `server.py` 扫描 `backend/components/*/manifest.json`，动态加载 provider。
 5. `load_games()` 扫描 `backend/games/*/manifest.json`，校验 `participants`、`providers`、播报条目和内嵌 `vision_profile`。
 6. 服务创建全局 `ComponentRegistry`、`GameRegistry`、job 表和单视觉任务锁。
 
@@ -241,7 +240,7 @@ TTS 与视觉一样使用职责接口和目录功能包：
 
 ## 8. 安全和边界
 
-- LLM key 只从 `.dice-arena.env` 或环境变量注入，不能写入 Git、前端、公开 manifest 或日志。当前工作区若有用户本地组件 config 修改，提交整理时必须跳过。
+- LLM key 存放在 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm.api_key`（Git 跟踪文件，仓库须保持私有），不能写入前端、公开 manifest 或日志。当前工作区若有用户本地组件 config 修改，提交整理时必须跳过。
 - profile 的模型路径、视频 path、snapshot path 都经过校验；视频 path 只能是安全 URL path，不能包含主机、query、fragment 或 `..`。
 - provider 业务事件使用独立 JSONL 通道；不要从 stdout/stderr 的日志文本猜测胜负。
 - 网页不生成随机结果；裁决必须来自 runtime detection 和 profile/provider 规则。

@@ -22,7 +22,6 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from core.components import build_registry  # noqa: E402
-from core.env import load_board_env  # noqa: E402
 from core.games import load_games  # noqa: E402
 from core.tts_dispatch import TtsDispatcher  # noqa: E402
 
@@ -118,7 +117,6 @@ def _stop_if_owned(provider_id: str, owned: bool) -> None:
 
 
 def interactive(provider_id: str | None, game_id: str, player: AudioPlayer) -> int:
-    load_board_env()
     components = build_registry(log=False)
     games = load_games()
     dispatcher = TtsDispatcher(components, games)

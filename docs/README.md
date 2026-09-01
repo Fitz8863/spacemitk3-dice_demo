@@ -19,7 +19,7 @@
 
 - 游戏配置：`backend/games/<game_id>/manifest.json`。其中的 `providers` 选择语义职责，`vision_profile` 描述该游戏的模型、类别、规则、LLM prompt、视频 path、超时和结果保持时间。
 - 视觉 runtime 配置：`vision/yolov8_adjudicator/config.json`。这里保存摄像头、推理、RTSP 和 MediaMTX WebRTC 基础地址等部署默认值。
-- provider 配置：`backend/components/<provider_id>/config.json`。这里保存适配器的运行时路径、端口、endpoint 和生命周期设置；LLM 密钥只允许通过板端环境变量或未跟踪的 `.dice-arena.env` 注入。
+- provider 配置：`backend/components/<provider_id>/config.json`。这里保存适配器的运行时路径、端口、endpoint 和生命周期设置；LLM 密钥也直接保存在该文件的 `llm` 段（仓库须保持私有）。
 
 新增游戏通常只需要添加一个游戏目录和 manifest；新增 TTS 或视觉能力只需要添加对应 provider 功能包并在游戏 manifest 中选择。空间定位类视觉必须使用独立的 `role=localizer` 插槽，不能接入 `vision_adjudicator`。
 

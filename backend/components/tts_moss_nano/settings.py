@@ -1,25 +1,14 @@
 """Single source of truth for the MOSS-TTS-Nano Dice Arena package settings."""
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from core.env import load_board_env
 from core.tts_config import config_value, load_component_config, resolve_config_path
-
-load_board_env()
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 COMPONENT_DIR = Path(__file__).resolve().parent
-
-
-def _value(config: dict[str, Any], env_name: str, *keys: str, default: Any) -> Any:
-    env_value = os.environ.get(env_name)
-    if env_value not in (None, ""):
-        return env_value
-    return config_value(config, *keys, default=default)
 
 
 @dataclass(frozen=True)
@@ -66,41 +55,41 @@ def load_settings(config: dict[str, Any] | None = None) -> MossSettings:
     config = config if config is not None else load_component_config(COMPONENT_DIR)
     default_root = PROJECT_ROOT / "tts" / "moss-tts-nano"
     root = resolve_config_path(
-        _value(config, "DICE_MOSS_TTS_ROOT", "runtime", "root", default=str(default_root)),
+        config_value(config, "runtime", "root", default=str(default_root)),
         base_dir=PROJECT_ROOT,
     ) or default_root.resolve()
-    model_value = _value(config, "DICE_MOSS_TTS_MODEL_DIR", "runtime", "model_dir", default="")
-    model_dir = resolve_model_dir(root, model_value)
-    host = str(_value(config, "DICE_MOSS_TTS_HOST", "runtime", "host", default="127.0.0.1"))
-    port = int(_value(config, "DICE_MOSS_TTS_PORT", "runtime", "port", default=18082))
-    base_url = str(_value(
+    model_dir = resolve_model_dir(root, config_value(config, "runtime", "model_dir", default=""))
+    host = str(config_value(config, "runtime", "host", default="127.0.0.1"))
+    port = int(config_value(config, "runtime", "port", default=18082))
+    base_url = str(config_value(
         config,
-        "DICE_MOSS_TTS_URL",
         "runtime",
         "base_url",
-        default=os.environ.get("DICE_TTS_URL", f"http://{host}:{port}"),
+        default=f"http://{host}:{port}",
     )).rstrip("/")
-    voice_mode = str(_value(config, "DICE_MOSS_TTS_VOICE_MODE", "voice", "mode", default="builtin")).strip().lower()
-    voice = str(_value(config, "DICE_MOSS_TTS_VOICE", "voice", "name", default="Junhao")).strip() or "Junhao"
-    reference_value = os.environ.get("DICE_MOSS_TTS_REFERENCE_AUDIO")
-    if reference_value is None and voice_mode == "clone":
-        reference_value = config_value(config, "voice", "reference_audio", default="")
+    voice_mode = str(config_value(config, "voice", "mode", default="builtin")).strip().lower()
+    voice = str(config_value(config, "voice", "name", default="Junhao")).strip() or "Junhao"
+    reference_value = (
+        config_value(config, "voice", "reference_audio", default="")
+        if voice_mode == "clone"
+        else None
+    )
     reference_audio = (
         resolve_config_path(reference_value, base_dir=root)
         if voice_mode == "clone"
         else None
     )
-    max_new_frames = int(_value(config, "DICE_MOSS_TTS_MAX_NEW_FRAMES", "generation", "max_new_frames", default=120))
-    clone_tokens = int(_value(config, "DICE_MOSS_TTS_VOICE_CLONE_MAX_TEXT_TOKENS", "generation", "voice_clone_max_text_tokens", default=24))
-    first_chunk = int(_value(config, "DICE_MOSS_TTS_FIRST_CHUNK_TEXT_TOKENS", "generation", "first_chunk_text_tokens", default=16))
-    warmup_text = str(_value(config, "DICE_MOSS_TTS_WARMUP_TEXT", "startup", "warmup_text", default="你好，这是 MOSS TTS Nano 在 K3 上的演示。"))
-    seed = int(_value(config, "DICE_MOSS_TTS_SEED", "generation", "seed", default=1234))
-    start_timeout = int(_value(config, "DICE_MOSS_TTS_START_TIMEOUT_SECONDS", "startup", "start_timeout_seconds", default=300))
-    request_timeout = float(_value(config, "DICE_MOSS_TTS_TIMEOUT_SECONDS", "limits", "request_timeout_seconds", default=120))
-    ep_intra = int(_value(config, "SPACEMIT_EP_INTRA_THREAD_NUM", "execution_provider", "intra_thread_num", default=4))
-    ep_inter = int(_value(config, "SPACEMIT_EP_INTER_THREAD_NUM", "execution_provider", "inter_thread_num", default=1))
-    ep_affinity = str(_value(config, "SPACEMIT_EP_INTRA_THREAD_AFFINITY", "execution_provider", "intra_thread_affinity", default="8;9;10;11"))
-    ep_filter = str(_value(config, "SPACEMIT_EP_DISABLE_OP_TYPE_FILTER", "execution_provider", "disable_op_type_filter", default=""))
+    max_new_frames = int(config_value(config, "generation", "max_new_frames", default=120))
+    clone_tokens = int(config_value(config, "generation", "voice_clone_max_text_tokens", default=24))
+    first_chunk = int(config_value(config, "generation", "first_chunk_text_tokens", default=16))
+    warmup_text = str(config_value(config, "startup", "warmup_text", default="你好，这是 MOSS TTS Nano 在 K3 上的演示。"))
+    seed = int(config_value(config, "generation", "seed", default=1234))
+    start_timeout = int(config_value(config, "startup", "start_timeout_seconds", default=300))
+    request_timeout = float(config_value(config, "limits", "request_timeout_seconds", default=120))
+    ep_intra = int(config_value(config, "execution_provider", "intra_thread_num", default=4))
+    ep_inter = int(config_value(config, "execution_provider", "inter_thread_num", default=1))
+    ep_affinity = str(config_value(config, "execution_provider", "intra_thread_affinity", default="8;9;10;11"))
+    ep_filter = str(config_value(config, "execution_provider", "disable_op_type_filter", default=""))
     if voice_mode not in {"builtin", "clone"}:
         raise ValueError("MOSS voice.mode must be builtin or clone")
     if voice_mode == "clone" and reference_audio is None:
