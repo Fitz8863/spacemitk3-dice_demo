@@ -193,6 +193,280 @@ def _patch_dummy_registry(monkeypatch):
     monkeypatch.setattr(server, "COMPONENTS", combined)
 
 
+ROUND_MACHINE = {
+    "schema_version": 1,
+    "initial": "rules",
+    "states": {
+        "rules": {
+            "on_enter": [{"action": "speech", "mode": "tts_local", "text": "规则"}],
+            "on_intent": {
+                "confirm": {"to": "analysis"},
+                "back": {"exit": True},
+            },
+        },
+        "analysis": {
+            "on_enter": [
+                {"action": "speech", "mode": "audio", "audio": "audio/intro.wav", "await": True},
+                {"action": "adjudicate"},
+            ],
+            "on_event": {
+                "adjudication.result": {"to": "result"},
+                "adjudication.diagnosis": {"to": "failed"},
+            },
+        },
+        "failed": {
+            "on_enter": [{"action": "speech", "mode": "tts_local", "text": "重试"}],
+            "on_intent": {"retry": {"to": "analysis"}},
+        },
+        "result": {
+            "on_enter": [{
+                "action": "speech",
+                "select_by": "winner_role",
+                "cases": {
+                    "PLAYER": {"mode": "tts_local", "text": "玩家胜 {player_score}"},
+                    "AGENT": {"mode": "tts_local", "text": "Agent 胜 {agent_score}"},
+                    "TIE": {"mode": "tts_local", "text": "平局"},
+                },
+            }],
+            "on_intent": {"new_round": {"to": "rules"}},
+        },
+    },
+}
+
+
+def _write_round_games_root(tmp_path, with_audio=True):
+    games_root = tmp_path / "games"
+    game_dir = games_root / "dice"
+    game_dir.mkdir(parents=True)
+    if with_audio:
+        (game_dir / "audio").mkdir()
+        (game_dir / "audio" / "intro.wav").write_bytes(WAV)
+    real_profile = json.loads(
+        (ROOT / "backend/games/dice/manifest.json").read_text(encoding="utf-8")
+    )["vision_profile"]
+    manifest = {
+        "id": "dice",
+        "name": "Dice",
+        "enabled": True,
+        "participants": {"player": "LEFT", "agent": "RIGHT"},
+        "providers": {
+            "tts_local": "tts_dummy",
+            "tts_remote": "tts_dummy_remote",
+            "vision_adjudicator": "vision_dummy",
+        },
+        "voice": "announcer",
+        "speed": 1.25,
+        "state_machine": ROUND_MACHINE,
+        "vision_profile": real_profile,
+    }
+    (game_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+    return games_root
+
+
+def _round_server_env(monkeypatch, tmp_path, with_audio=True):
+    games_root = _write_round_games_root(tmp_path, with_audio=with_audio)
+    registry = ComponentRegistry()
+    registry.register(DummyVisionAdjudicator(), {
+        "id": "vision_dummy", "type": "vision", "role": "adjudicator",
+        "name": "Dummy Vision Adjudicator", "version": "1", "enabled": True,
+        "entry": "provider.py:DummyVisionAdjudicator",
+    })
+    registry.register(DummyTts(), {
+        "id": "tts_dummy", "type": "tts", "name": "Dummy TTS",
+        "version": "1", "enabled": True, "entry": "provider.py:DummyTts",
+    })
+    registry.register(DummyRemoteTts(), {
+        "id": "tts_dummy_remote", "type": "tts", "name": "Dummy Remote TTS",
+        "version": "1", "enabled": True, "entry": "provider.py:DummyRemoteTts",
+    })
+    monkeypatch.setattr(server, "COMPONENTS", registry)
+    monkeypatch.setattr(server, "_GAMES_ROOT", games_root)
+    monkeypatch.setattr(server, "GAMES", server.load_games(games_root))
+    monkeypatch.setattr(server, "_GAMES_MTIMES", server._manifest_mtimes())
+    monkeypatch.setattr(server, "rounds", {})
+    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return httpd, thread, httpd.server_address[1]
+
+
+def _round_wait_until(port, round_id, predicate, timeout=20.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        connection = HTTPConnection("127.0.0.1", port, timeout=3)
+        connection.request("GET", f"/api/game/rounds/{round_id}")
+        response = connection.getresponse()
+        snapshot = json.loads(response.read())
+        connection.close()
+        if predicate(snapshot):
+            return snapshot
+        time.sleep(0.05)
+    raise AssertionError(f"round condition not reached: {snapshot}")
+
+
+def _round_speech_events(snapshot):
+    return [e for e in snapshot["events"] if e.get("event") == "speech"]
+
+
+def _round_post(port, path, payload=None):
+    connection = HTTPConnection("127.0.0.1", port, timeout=5)
+    body = json.dumps(payload or {}).encode("utf-8")
+    connection.request(
+        "POST", path, body=body, headers={"Content-Type": "application/json"}
+    )
+    response = connection.getresponse()
+    data = response.read()
+    headers = dict(response.getheaders())
+    connection.close()
+    return response.status, headers, data
+
+
+def test_round_api_creates_and_drives_full_flow(tmp_path, monkeypatch):
+    httpd, thread, port = _round_server_env(monkeypatch, tmp_path)
+    try:
+        status, _, data = _round_post(port, "/api/game/rounds", {"game": "dice"})
+        assert status == 201
+        snapshot = json.loads(data)
+        round_id = snapshot["round_id"]
+        assert snapshot["status"] == "running"
+        assert snapshot["state"] == "rules"
+
+        # on_enter speech emits a directive; the frame endpoint resolves it
+        # through the local slot provider.
+        snapshot = _round_wait_until(
+            port, round_id, lambda s: _round_speech_events(s)
+        )
+        directive = _round_speech_events(snapshot)[0]
+        assert directive["mode"] == "tts_local"
+        assert directive["voice"] == "announcer"
+        assert directive["speed"] == 1.25
+
+        status, headers, data = _round_post(
+            port, f"/api/game/rounds/{round_id}/speech",
+            {"directive_id": directive["directive_id"]},
+        )
+        assert status == 200
+        assert headers["X-Dice-TTS-Provider"] == "tts_dummy"
+        assert int.from_bytes(data[:4], "big") == len(WAV)
+        assert data[4:-4] == WAV
+        assert data[-4:] == b"\0\0\0\0"
+
+        status, _, _ = _round_post(
+            port, f"/api/game/rounds/{round_id}/intents", {"intent": "confirm"}
+        )
+        assert status == 200
+        snapshot = _round_wait_until(
+            port, round_id, lambda s: s["state"] == "analysis"
+        )
+        # The awaited audio directive must block adjudication until acked.
+        audio = [e for e in _round_speech_events(snapshot) if e.get("mode") == "audio"]
+        assert audio, snapshot["events"]
+
+        status, headers, data = _round_post(
+            port, f"/api/game/rounds/{round_id}/speech",
+            {"directive_id": audio[0]["directive_id"]},
+        )
+        assert status == 200
+        assert headers["X-Dice-Speech-Mode"] == "audio"
+        assert data[4:-4] == WAV
+
+        status, _, _ = _round_post(
+            port, f"/api/game/rounds/{round_id}/intents",
+            {"intent": "speech_done", "directive_id": audio[0]["directive_id"]},
+        )
+        assert status == 200
+
+        snapshot = _round_wait_until(
+            port, round_id, lambda s: s["state"] == "result"
+        )
+        assert snapshot["result"]["winner_role"] == "PLAYER"
+        assert snapshot["result"]["player_score"] == 20
+        announce = [
+            e for e in _round_speech_events(snapshot)
+            if "玩家胜" in e.get("text", "")
+        ]
+        assert announce and announce[0]["text"] == "玩家胜 20"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2)
+
+
+def test_round_api_rejects_unknown_intent_and_unknown_directive(tmp_path, monkeypatch):
+    httpd, thread, port = _round_server_env(monkeypatch, tmp_path)
+    try:
+        _, _, data = _round_post(port, "/api/game/rounds", {"game": "dice"})
+        round_id = json.loads(data)["round_id"]
+
+        status, _, data = _round_post(
+            port, f"/api/game/rounds/{round_id}/intents", {"intent": "stop_shake"}
+        )
+        assert status == 409
+        assert "ROUND_INTENT_REJECTED" in data.decode("utf-8")
+
+        status, _, data = _round_post(
+            port, f"/api/game/rounds/{round_id}/speech", {"directive_id": "ghost"}
+        )
+        assert status == 404
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2)
+
+
+def test_round_api_cancel_and_supersede_end_running_rounds(tmp_path, monkeypatch):
+    httpd, thread, port = _round_server_env(monkeypatch, tmp_path)
+    try:
+        _, _, data = _round_post(port, "/api/game/rounds", {"game": "dice"})
+        first_id = json.loads(data)["round_id"]
+        # Creating the next round supersedes (cancels) the stale one.
+        status, _, data = _round_post(port, "/api/game/rounds", {"game": "dice"})
+        assert status == 201
+        second_id = json.loads(data)["round_id"]
+        _round_wait_until(port, first_id, lambda s: s["status"] == "cancelled")
+
+        status, _, _ = _round_post(
+            port, f"/api/game/rounds/{second_id}/cancel"
+        )
+        assert status == 200
+        snapshot = _round_wait_until(port, second_id, lambda s: s["status"] == "cancelled")
+        assert snapshot["status"] == "cancelled"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2)
+
+
+def test_round_api_exit_intent_and_sse_stream(tmp_path, monkeypatch):
+    httpd, thread, port = _round_server_env(monkeypatch, tmp_path)
+    try:
+        _, _, data = _round_post(port, "/api/game/rounds", {"game": "dice"})
+        round_id = json.loads(data)["round_id"]
+        _round_post(port, f"/api/game/rounds/{round_id}/intents", {"intent": "back"})
+
+        connection = HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request("GET", f"/api/game/rounds/{round_id}/stream")
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        connection.close()
+        assert response.status == 200
+        assert "event: snapshot" in body
+        assert "event: complete" in body
+        assert '"round_complete"' in body
+
+        # A finished round rejects further intents.
+        status, _, _ = _round_post(
+            port, f"/api/game/rounds/{round_id}/intents", {"intent": "confirm"}
+        )
+        assert status == 409
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2)
+
+
 class ServerApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

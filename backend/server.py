@@ -33,11 +33,13 @@ from core.games import (
     GameRegistry,
     load_games,
     require_game,
+    resolve_game_audio_path,
     resolve_provider_id,
     resolve_adjudication_timeout,
     run_game,
 )
 from core.jobs import ComponentJob
+from core.state_machine import GameRound, IntentRejectedError, RoundClosedError
 from core.tts_dispatch import TtsDispatcher
 from core.tts_protocol import (
     encode_audio_frame,
@@ -259,6 +261,65 @@ jobs: dict[str, ComponentJob] = {}
 jobs_lock = threading.Lock()
 active_job_id: str | None = None
 
+# Authoritative game rounds.  One active round at a time mirrors the
+# single-YOLO-job rule; creating a new round cancels a stale one so a
+# browser refresh (which abandons its round) cannot block the next session.
+rounds: dict[str, GameRound] = {}
+rounds_lock = threading.Lock()
+
+_ROUND_TIMEOUT_FALLBACK_SECONDS = JOB_TIMEOUT_SECONDS
+
+
+def _round_adjudicate_fn(game_id: str):
+    """Bridge a round's adjudicate action onto the shared provider pipeline."""
+
+    def adjudicate(manifest, on_event, is_cancelled, on_log):
+        return run_game(
+            get_games(),
+            game_id,
+            on_log,
+            is_cancelled,
+            on_event,
+            resolve_adjudication_timeout(
+                require_game(get_games(), game_id), _ROUND_TIMEOUT_FALLBACK_SECONDS
+            ),
+            COMPONENTS,
+        )
+
+    return adjudicate
+
+
+def create_round(game_id: str) -> GameRound:
+    manifest = require_game(get_games(), game_id)
+    if not isinstance(manifest.get("state_machine"), dict):
+        raise InvalidRequestError(f"game {game_id} declares no state_machine")
+    with rounds_lock:
+        for existing in list(rounds.values()):
+            if existing.status == "running":
+                existing.cancel()
+        # Finished rounds are dropped once the table grows past a small
+        # watermark; snapshots stay queryable for the current session.
+        finished = [rid for rid, item in rounds.items() if item.status != "running"]
+        for stale_id in finished[: max(0, len(rounds) - 16)]:
+            rounds.pop(stale_id, None)
+        round_ = GameRound(
+            game_id=game_id,
+            manifest=manifest,
+            adjudicate_fn=_round_adjudicate_fn(game_id),
+            log=lambda line: print(f"[round:{round_.id[:8]}] {line}", flush=True),
+        )
+        rounds[round_.id] = round_
+    round_.start()
+    return round_
+
+
+def _lookup_round(round_id: str) -> GameRound:
+    with rounds_lock:
+        round_ = rounds.get(round_id)
+    if round_ is None:
+        raise JobNotFoundError(round_id)
+    return round_
+
 
 def _shutdown_runtime_components() -> None:
     """Stop provider-owned resident workers before the backend exits."""
@@ -408,6 +469,145 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self.close_connection = True
 
+    @staticmethod
+    def round_stream_delta(snapshot: dict[str, Any], after_sequence: int) -> dict[str, Any]:
+        """Build a compact SSE update for one authoritative round."""
+        return {
+            "round_id": snapshot["round_id"],
+            "game_id": snapshot["game_id"],
+            "status": snapshot["status"],
+            "state": snapshot["state"],
+            "error": snapshot["error"],
+            "result": snapshot["result"],
+            "events": [
+                event for event in snapshot["events"]
+                if int(event.get("sequence", 0)) > after_sequence
+            ],
+            "event_sequence": snapshot["event_sequence"],
+            "revision": snapshot["revision"],
+        }
+
+    def stream_round_events(self, round_: GameRound) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        snapshot = round_.snapshot()
+        revision = snapshot["revision"]
+        event_sequence = snapshot["event_sequence"]
+        self.send_sse_snapshot(snapshot, "snapshot")
+        try:
+            while snapshot["status"] == "running":
+                snapshot = round_.wait_for_update(revision, timeout=15.0)
+                if snapshot["revision"] <= revision:
+                    self.send_sse_snapshot({
+                        "round_id": round_.id,
+                        "revision": revision,
+                        "event_sequence": event_sequence,
+                    }, "heartbeat")
+                    continue
+                delta = self.round_stream_delta(snapshot, event_sequence)
+                revision = snapshot["revision"]
+                event_sequence = snapshot["event_sequence"]
+                if snapshot["status"] != "running":
+                    self.send_sse_snapshot(delta, "complete")
+                    return
+                self.send_sse_snapshot(delta)
+            self.send_sse_snapshot(self.round_stream_delta(snapshot, event_sequence), "complete")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            self.close_connection = True
+
+    def send_round_speech_frames(self, round_: GameRound, directive_id: str) -> None:
+        """Stream one directive's audio: manifest WAV or provider TTS frames."""
+        directive = round_.find_directive(directive_id)
+        if directive is None:
+            self.send_error_json(DiceArenaError(
+                f"speech directive not found: {directive_id}",
+                "SPEECH_DIRECTIVE_NOT_FOUND",
+                404,
+            ))
+            return
+        game_id = round_.game_id
+        provider = None
+        speech_provider_id = None
+        speech_payload: dict[str, Any] | None = None
+        frame: bytes | None = None
+        if directive.get("mode") == "audio":
+            try:
+                audio_path = resolve_game_audio_path(game_id, str(directive.get("audio") or ""), root=_GAMES_ROOT)
+                frame = encode_audio_frame(audio_path.read_bytes())
+            except FileNotFoundError as exc:
+                self.send_error_json(DiceArenaError(
+                    f"audio file not found: {exc}", "AUDIO_FILE_NOT_FOUND", 404
+                ))
+                return
+            except (OSError, ValueError) as exc:
+                self.send_error_json(DiceArenaError(str(exc), "AUDIO_CONFIG_ERROR", 400))
+                return
+        else:
+            entry: dict[str, Any] = {"mode": str(directive.get("mode") or "tts_local")}
+            if directive.get("provider"):
+                entry["provider"] = str(directive["provider"])
+            try:
+                dispatcher = _tts_dispatcher()
+                speech_provider_id = dispatcher.provider_id_for_speech_entry(entry, game_id)
+                speech_payload = {
+                    "game": game_id,
+                    "text": str(directive.get("text") or ""),
+                    "voice": str(directive.get("voice") or "default"),
+                    "speed": directive.get("speed", 1.0),
+                }
+                provider = dispatcher.provider(
+                    speech_payload, game_id=game_id, provider_id=speech_provider_id
+                )
+                if not callable(getattr(provider, "stream", None)):
+                    raise InvalidRequestError(
+                        f"TTS provider {provider.id} does not implement stream()"
+                    )
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
+                return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-dice-arena-wav-stream")
+        self.send_header("X-Dice-Speech-Directive", directive_id)
+        self.send_header("X-Dice-Speech-Mode", str(directive.get("mode") or "tts_local"))
+        if provider is not None:
+            self.send_header("X-Dice-TTS-Provider", provider.id)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            if provider is not None and speech_payload is not None:
+                def write_frame(audio: bytes) -> None:
+                    self.wfile.write(encode_audio_frame(audio))
+                    self.wfile.flush()
+
+                _tts_dispatcher().stream(
+                    speech_payload,
+                    write_frame,
+                    game_id=game_id,
+                    provider_id=speech_provider_id,
+                )
+            elif frame is not None:
+                self.wfile.write(frame)
+            self.wfile.write(encode_end_frame())
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:
+            print(f"[round] speech stream directive={directive_id} failed: {exc}", flush=True)
+            try:
+                self.wfile.write(encode_error_frame(str(exc)))
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
     def do_GET(self) -> None:  # noqa: N802
         parsed_url = urlsplit(self.path)
         path = parsed_url.path
@@ -465,6 +665,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/games":
             self.send_json({"games": get_games().public_all()})
+            return
+        if path.startswith("/api/game/rounds/"):
+            remainder = path[len("/api/game/rounds/"):]
+            round_id, _, suffix = remainder.partition("/")
+            try:
+                round_ = _lookup_round(round_id)
+            except JobNotFoundError as exc:
+                self.send_error_json(exc)
+                return
+            if suffix == "stream":
+                self.stream_round_events(round_)
+            else:
+                self.send_json(round_.snapshot())
             return
         remainder = _adjudication_job_remainder(path)
         if remainder is not None:
@@ -569,6 +782,51 @@ class Handler(BaseHTTPRequestHandler):
             except DiceArenaError as exc:
                 self.send_error_json(exc)
             return
+        if path == "/api/game/rounds":
+            try:
+                payload = self.read_json()
+                game_id = str(payload.get("game") or "dice")
+                round_ = create_round(game_id)
+                self.send_json(round_.snapshot(), HTTPStatus.CREATED)
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
+            return
+        if path.startswith("/api/game/rounds/"):
+            remainder = path[len("/api/game/rounds/"):]
+            round_id, _, suffix = remainder.partition("/")
+            if suffix in {"intents", "cancel", "speech"}:
+                try:
+                    round_ = _lookup_round(round_id)
+                except JobNotFoundError as exc:
+                    self.send_error_json(exc)
+                    return
+                if suffix == "speech":
+                    try:
+                        payload = self.read_json()
+                        directive_id = str(payload.get("directive_id") or "").strip()
+                        if not directive_id:
+                            raise InvalidRequestError("directive_id is required")
+                    except DiceArenaError as exc:
+                        self.send_error_json(exc)
+                        return
+                    self.send_round_speech_frames(round_, directive_id)
+                    return
+                if suffix == "cancel":
+                    round_.cancel()
+                    self.send_json(round_.snapshot())
+                    return
+                # intents
+                try:
+                    payload = self.read_json()
+                    intent = str(payload.get("intent") or "").strip()
+                    if not intent:
+                        raise InvalidRequestError("intent is required")
+                    self.send_json(round_.submit_intent(intent, payload))
+                except DiceArenaError as exc:
+                    self.send_error_json(exc)
+                except Exception as exc:
+                    self.send_error_json(DiceArenaError(str(exc), "ROUND_INTENT_ERROR", 500))
+                return
         remainder = _adjudication_job_remainder(path)
         if remainder is not None and remainder.endswith("/cancel"):
             job_id = remainder[:-len("/cancel")].rstrip("/")

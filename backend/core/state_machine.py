@@ -173,6 +173,18 @@ class GameRound:
             )
             return self._snapshot_locked()
 
+    def find_directive(self, directive_id: str) -> dict[str, Any] | None:
+        """Return one emitted speech directive by id (for the frame endpoint).
+
+        The events list is a bounded window, so very old directives may no
+        longer resolve; repeated reads of a live directive are idempotent.
+        """
+        with self.condition:
+            for event in self.events:
+                if event.get("event") == "speech" and event.get("directive_id") == directive_id:
+                    return dict(event)
+        return None
+
     def _snapshot_locked(self) -> dict[str, Any]:
         return {
             "round_id": self.id,

@@ -20,9 +20,13 @@ _PROVIDER_SLOT_ALIASES = {
 }
 
 
-def resolve_game_audio_path(game_id: str, audio: str) -> Path:
-    """Resolve a manifest audio path without allowing it to escape its game."""
-    game_root = (GAMES_ROOT / game_id).resolve()
+def resolve_game_audio_path(game_id: str, audio: str, root: Path | None = None) -> Path:
+    """Resolve a manifest audio path without allowing it to escape its game.
+
+    ``root`` overrides the module-level games root so a hot-reloaded or
+    injected registry can serve audio from its own directory.
+    """
+    game_root = ((root or GAMES_ROOT) / game_id).resolve()
     relative = Path(audio)
     if relative.is_absolute() or ".." in relative.parts or relative.suffix.lower() != ".wav":
         raise ValueError("audio path must be a relative .wav path")
