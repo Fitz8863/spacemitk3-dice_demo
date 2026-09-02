@@ -393,6 +393,10 @@ function createRoundClient(gameId, handlers) {
   let roundId = null;
   let source = null;
   let lastSequence = 0;
+  // Set once the round reaches a terminal snapshot or the client cancels:
+  // afterwards every event is stale game state and must not reach the UI,
+  // otherwise a finished view resurrects itself after returnToSelect().
+  let closed = false;
 
   function dispatch(event, snapshot) {
     if (event.event === 'state_changed') {
@@ -409,12 +413,22 @@ function createRoundClient(gameId, handlers) {
   }
 
   function ingest(snapshot) {
+    if (closed) return;
     for (const item of (snapshot.events || [])) {
       const sequence = Number(item.sequence || 0);
       if (sequence > lastSequence) {
         lastSequence = sequence;
         dispatch(item, snapshot);
       }
+    }
+    // A terminal snapshot ends the client: round_complete has just been
+    // dispatched (onComplete navigates or shows the failure), and the
+    // snapshot's top-level state is stale game state — syncing it would
+    // resurrect the finished view on top of the game list.
+    if (snapshot.status && snapshot.status !== 'running') {
+      closed = true;
+      teardownStream();
+      return;
     }
     // Top-level state keeps the view aligned even if a state_changed event
     // slid between two SSE deliveries (or after a reconnect snapshot).
@@ -453,16 +467,24 @@ function createRoundClient(gameId, handlers) {
 
   async function submitIntent(intent, payload = {}) {
     if (!roundId) throw new Error('对局尚未创建');
-    return requestJson(`/api/game/rounds/${roundId}/intents`, {
+    const snapshot = await requestJson(`/api/game/rounds/${roundId}/intents`, {
       method: 'POST',
       body: JSON.stringify({ intent, ...payload }),
     });
+    // Ingest the response so terminal transitions (e.g. an exit intent)
+    // navigate even when the SSE stream is broken; sequence dedup keeps
+    // this idempotent with the stream.
+    if (snapshot && typeof snapshot === 'object' && 'status' in snapshot) {
+      ingest(snapshot);
+    }
+    return snapshot;
   }
 
   async function cancel() {
     if (!roundId) return;
     const target = roundId;
     roundId = null;
+    closed = true;
     teardownStream();
     try {
       await requestJson(`/api/game/rounds/${target}/cancel`, { method: 'POST', body: '{}' });

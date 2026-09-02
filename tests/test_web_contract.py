@@ -468,3 +468,32 @@ def test_manifest_state_machine_declares_the_full_graph():
     result_entry = machine["states"]["result"]["on_enter"][0]
     assert result_entry["select_by"] == "winner_role"
     assert set(result_entry["cases"]) == {"PLAYER", "AGENT", "TIE"}
+
+
+def test_frontend_ignores_stale_events_after_round_ends():
+    """A terminal round must never resurrect its finished view."""
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    dice = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+
+    ingest = app.split("function ingest", 1)[1].split("function subscribe", 1)[0]
+    assert "if (closed) return;" in ingest
+    # The terminal snapshot closes the client without syncing its stale
+    # top-level state, so returnToSelect() stays the last navigation.
+    assert "snapshot.status !== 'running'" in ingest
+    assert "teardownStream()" in ingest
+    # Intent responses are ingested too, so exit intents navigate even when
+    # the SSE stream is broken; sequence dedup keeps this idempotent.
+    client = app.split("async function submitIntent", 1)[1].split("async function cancel", 1)[0]
+    assert "ingest(snapshot)" in client
+    assert "closed = true" in app
+    # dice.js must not re-render states once its round is gone.
+    sync = dice.split("onSyncState:", 1)[1].split("},", 1)[0]
+    assert "if (!round || !round.roundId) return;" in sync
+
+
+def test_frontend_renders_countdown_top_value_with_ceil():
+    """The first tick fires just under the full budget; ceil keeps 3 visible."""
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    tick = js.split("function renderTick", 1)[1].split("function resetAnalysisSteps", 1)[0]
+    assert "Math.ceil(remaining / 1000)" in tick
+    assert "Math.floor" not in tick

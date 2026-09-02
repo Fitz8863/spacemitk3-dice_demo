@@ -182,10 +182,13 @@ export function register(engine) {
   function renderTick(event) {
     const remaining = Number(event.remaining_ms);
     if (!Number.isFinite(remaining) || remaining < 0) return;
+    // Ceil, not floor: the first tick fires when the full budget is still
+    // on the clock (remaining_ms just under 3000), and the player must see
+    // 3 → 2 → 1 exactly like the previous synchronous countdown did.
     if (lastRenderedState === 'shake_countdown' || lastRenderedState === 'vision_countdown') {
-      $('countdownNumber').textContent = Math.max(1, Math.floor(remaining / 1000));
+      $('countdownNumber').textContent = Math.max(1, Math.ceil(remaining / 1000));
     } else if (lastRenderedState === 'shaking') {
-      const seconds = Math.max(1, Math.floor(remaining / 1000));
+      const seconds = Math.max(1, Math.ceil(remaining / 1000));
       const shakeSeconds = $('shakeSeconds');
       const urgent = seconds <= 3;
       shakeSeconds.textContent = String(seconds).padStart(2, '0');
@@ -442,6 +445,9 @@ export function register(engine) {
         returnToSelect();
       },
       onSyncState: (snapshot) => {
+        // The round is gone after teardown (returnToSelect/cancel); a stale
+        // snapshot must never re-render a finished game view.
+        if (!round || !round.roundId) return;
         if (snapshot.state && snapshot.state !== lastRenderedState) {
           renderState(snapshot.state, {});
           if (snapshot.state === 'result' && snapshot.result) showResult(snapshot.result);
