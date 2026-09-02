@@ -33,7 +33,17 @@
 X100 0-7 簇（RTF≈0.24 占用可接受，组件 config 预留 `cpu_affinity` 旋钮）。
 
 
-2026-09-01 起环境变量覆盖层已整体移除：`.dice-arena.env` 加载器（`backend/core/env.py`）删除，`DICE_LLM_*`、`DICE_TTS_PROVIDER`、`DICE_MOSS_TTS_*`、`DICE_MEDIAMTX_WEBRTC_BASE_URL` 等输入端覆盖分支全部清理，JSON 配置文件（游戏 manifest、组件 `config.json`、`vision/yolov8_adjudicator/config.json`）成为唯一配置来源。游戏 manifest 进一步支持热加载：server.py 的 `get_games()` 按 mtime 自动重载，改台词/换 WAV/按句换引擎保存+刷新页面即生效，坏配置自动保留最后可用版本（删除游戏需重启）；组件 config.json 仍是改后重启生效。LLM endpoint/model/key 位于 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段（该文件被 Git 跟踪，仓库必须保持私有）。daemon 内部为底层原生库 `setdefault` 注入的 `SPACEMIT_EP_*` 变量是 C 库接口，不是人工配置入口。
+2026-09-02（晚）起新增**全局配置层**：`backend/config.json`（校验器 `core/arena_config.py`）
+持有部署级默认——四个引擎槽位（tts_local/tts_remote/asr/vision_adjudicator）、默认
+voice/speed、语音总闸 `asr_enabled`（与游戏级 `asr.enabled` AND）。优先级阶梯：台词级
+钉死 > 游戏 manifest 槽位 > 全局；游戏不写槽位即继承全局（dice manifest 已瘦身，
+不再声明 providers/voice/speed）。**本地 TTS 引擎启动钉死**：main() 用
+`resolve_local_tts_pin`（全局+启用游戏）解析唯一本地引擎，冲突拒绝启动，运行期改
+`tts_local` 只打漂移日志不切换。`componentctl referenced` 改为全域收集（全局槽位
+∪各游戏∪台词钉死），`create_round`/`run_game`/TTS/health 解析全部走全局回退。
+字段参考 `backend/参数说明.md`；切换操作已改写进 `TTS配置与切换指南.md`。
+
+2026-09-02 起环境变量覆盖层已整体移除：`.dice-arena.env` 加载器（`backend/core/env.py`）删除，`DICE_LLM_*`、`DICE_TTS_PROVIDER`、`DICE_MOSS_TTS_*`、`DICE_MEDIAMTX_WEBRTC_BASE_URL` 等输入端覆盖分支全部清理，JSON 配置文件（游戏 manifest、组件 `config.json`、`vision/yolov8_adjudicator/config.json`）成为唯一配置来源。游戏 manifest 进一步支持热加载：server.py 的 `get_games()` 按 mtime 自动重载，改台词/换 WAV/按句换引擎保存+刷新页面即生效，坏配置自动保留最后可用版本（删除游戏需重启）；组件 config.json 仍是改后重启生效。LLM endpoint/model/key 位于 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段（该文件被 Git 跟踪，仓库必须保持私有）。daemon 内部为底层原生库 `setdefault` 注入的 `SPACEMIT_EP_*` 变量是 C 库接口，不是人工配置入口。
 
 以下内容覆盖本文中关于组件调度的旧描述：后端扫描 `backend/components/*/manifest.json`，按 `entry` 动态加载功能包并通过 `ComponentRegistry` 按 ID 注入游戏流程。视觉 provider 继续使用广义 `type=vision`，但必须再声明职责 `role`：当前骰子 YOLO 包是 `role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于获取目标坐标/空间位置的 YOLO 包必须使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得接入裁决器插槽。骰子游戏通过 `manifest.json.providers.vision_adjudicator` 选择裁决器。TTS 通过游戏 manifest 的双槽位选择 provider：`providers.tts_local`（本地槽）与 `providers.tts_remote`（远程槽）；台词 mode 只有 `audio`/`tts_local`/`tts_remote` 三种（旧写法 `tts` 与 `providers.tts` 已移除，含它们的 manifest 会加载失败），可按句混用本地与远程引擎，任意台词可用 `provider` 字段显式钉死 provider。`start_web.sh` 会自动启动 manifest 引用到的全部本地 provider。当前骰子本地槽为 `tts_moss_nano`，远程槽为 `tts_gptsovits`——后者通过 HTTP 调用 Tailscale 内另一台 GPU 主机上的 GPT-SoVITS v2ProPlus（9873 按音色名流式调用），无本地 lifecycle，服务地址收敛在组件 `config.json` 的 `runtime.base_url` 一处。`tts_qwen3` 是本地可选 provider。请求体中的 `provider` 不会覆盖后端选择。新增 TTS 不需要修改 `server.py` 或前端：新增功能包并继承 `TtsProvider`，最小实现 `health()` 与 `synthesize()`；只有需要分段低延迟时才覆盖 `stream()`。
 游戏视觉 profile 已正式内嵌到 `backend/games/<game_id>/manifest.json` 的 `vision_profile` 节点；不要再创建外置 `vision_profile.json`。该节点负责模型、类别、规则、LLM prompt、视频 path、任务超时和结果保持时长。`vision/yolov8_adjudicator/config.json` 是 YOLO runtime 的硬件、RTSP 和 MediaMTX WebRTC 基础地址配置；组件配置只负责 provider 生命周期与 LLM endpoint/model/key。

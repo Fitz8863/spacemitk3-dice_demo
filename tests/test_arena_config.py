@@ -411,6 +411,32 @@ def _setup_server(monkeypatch, tmp_path, *, manifest_providers, arena_payload):
     return httpd, provider
 
 
+def test_real_dice_manifest_and_arena_config_compose():
+    """Regression: the slimmed dice manifest resolves every slot via the arena.
+
+    The dice manifest deliberately declares no providers/voice/speed anymore;
+    if this breaks, either the manifest regained slots or the packaged
+    backend/config.json lost them.
+    """
+    from core.games import GAMES_ROOT, load_games
+    from core.arena_config import load_arena_config as load_arena_path
+
+    games = load_games(GAMES_ROOT)
+    manifest = games.get("dice")
+    # load_games always injects a (possibly empty) providers dict; the slimmed
+    # manifest must declare no slots of its own.
+    assert not manifest.get("providers")
+    assert "voice" not in manifest
+    arena = load_arena_path(ROOT / "backend" / "config.json")
+    merged = with_global_defaults(manifest, arena)
+    for slot in ("tts_local", "tts_remote", "asr", "vision_adjudicator"):
+        assert merged["providers"][slot], f"slot {slot} must resolve via the arena"
+    assert "voice" in merged
+    assert "speed" in merged
+    enabled = [m for m in games.all() if m.get("enabled", False)]
+    assert resolve_local_tts_pin(arena, enabled) == merged["providers"]["tts_local"]
+
+
 def test_round_uses_arena_tts_slot_when_manifest_has_none(tmp_path, monkeypatch):
     """A game manifest without provider slots still speaks via the arena slots."""
     httpd, _provider = _setup_server(

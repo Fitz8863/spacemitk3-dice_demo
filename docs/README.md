@@ -15,6 +15,7 @@
 | [`../vision/yolov8_adjudicator/README.md`](../vision/yolov8_adjudicator/README.md) | YOLOv8 K3 runtime、控制协议、快照和 MediaMTX 播放边界。 |
 | [`../backend/components/tts_qwen3/README.md`](../backend/components/tts_qwen3/README.md) | Qwen3-TTS provider 的配置与运行说明。 |
 | [`../backend/components/tts_moss_nano/README.md`](../backend/components/tts_moss_nano/README.md) | MOSS-TTS-Nano provider 的配置与运行说明。 |
+| [`../backend/参数说明.md`](../backend/参数说明.md) | 全局配置 backend/config.json 字段参考（引擎槽位/音色语速/语音总闸、优先级阶梯、本地 TTS 钉死规则）。 |
 | [`../backend/games/dice/参数说明.md`](../backend/games/dice/参数说明.md) | 骰子游戏 manifest.json 全字段参考（JSON 无注释，这份就是注释），含生效方式速查。 |
 | [`../backend/components/asr_zipformer/参数说明.md`](../backend/components/asr_zipformer/参数说明.md) | ASR 引擎组件配置（采集设备/VAD 断句/绑核）全字段参考。 |
 | [`../backend/components/tts_gptsovits/参数说明.md`](../backend/components/tts_gptsovits/参数说明.md) | 远程 GPT-SoVITS 组件配置（服务地址/请求采样参数/音色）全字段参考。 |

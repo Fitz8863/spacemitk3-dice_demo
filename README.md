@@ -98,7 +98,7 @@ systemctl status dice-arena-web.service
 
 > 切换 TTS provider、调整音色/语速/流式参数的完整步骤见 [`TTS配置与切换指南.md`](TTS配置与切换指南.md)。
 
-游戏流程由 `backend/games/<game_id>/manifest.json` 的 `state_machine` 节点声明，**后端是唯一权威**：前端只提交意图（实体按键/页面按钮）并渲染事件流，不再自行推进状态或决定播报时机。台词内联在状态的 `speech` 动作里，每条动作可选择实时 TTS（本地/远程槽位）或已有 WAV：
+配置分两层：**全局配置 `backend/config.json`**（部署级：引擎槽位、默认音色/语速、语音总闸，对所有游戏生效，字段见 [`backend/参数说明.md`](backend/参数说明.md)）与**游戏 manifest `backend/games/<game_id>/manifest.json`**（该游戏怎么玩：状态机、台词、词表、vision_profile；不写的槽位继承全局）。游戏流程由 manifest 的 `state_machine` 节点声明，**后端是唯一权威**：前端只提交意图（实体按键/页面按钮）并渲染事件流，不再自行推进状态或决定播报时机。台词内联在状态的 `speech` 动作里，每条动作可选择实时 TTS（本地/远程槽位）或已有 WAV：
 
 ```json
 "state_machine": {
@@ -154,16 +154,18 @@ systemctl status dice-arena-web.service
 除按键外，游戏可开启语音作为第二种意图输入。骰子游戏当前在 `rules` 状态支持：对着麦克风说「确认」等价于按绿色按钮（提交 `confirm` 意图），「重复/再来一遍」重播规则，「返回/退出」退出。
 
 ```jsonc
-// backend/games/dice/manifest.json
-"providers": { "asr": "asr_zipformer", ... },
+// backend/games/dice/manifest.json —— 游戏层：开关与触发词
 "asr": {
-  "enabled": true,                       // 总开关，热加载（改后下一局生效）
+  "enabled": true,                       // 游戏级开关，热加载（改后下一局生效）
   "phrases": {                           // 意图 → 触发词表，可自由增删
     "confirm": ["确认"],
     "repeat": ["重复", "再来一遍"],
     "back": ["返回", "退出"]
   }
 }
+// backend/config.json —— 全局层：识别引擎与总闸
+"providers": { "asr": "asr_zipformer" },
+"asr_enabled": true                      // 总闸：false 时所有游戏语音失效
 ```
 
 工作方式：

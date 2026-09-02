@@ -1,6 +1,6 @@
 # TTS 配置与切换指南
 
-> 更新日期：2026-09-01 | 适用版本：当前 `codex/vision-yolov8-adjudicator` 分支
+> 更新日期：2026-09-02 | 适用版本：`asr-voice-input` 分支
 > 本文回答两个问题：**怎么切换 TTS**、**每个参数在哪里改、是什么意思**。
 > GPT-SoVITS 服务端自身的部署与接口细节见 [`TTS接口文档.md`](TTS接口文档.md)。
 
@@ -8,9 +8,9 @@
 
 ## 0. 一条核心规则
 
-**所有配置都是 JSON 文件，没有环境变量覆盖层。** 生效规则分两类：
+**所有配置都是 JSON 文件，没有环境变量覆盖层。** 生效规则分三类：
 
-- **游戏 manifest（`backend/games/dice/manifest.json`）支持热加载**：改完保存，刷新网页即生效（后端检测 mtime 自动重载，无需重启）。写错了不会让游戏消失——后端保留最后一份可用配置并在 Web 日志记录解析错误，改好后刷新即可。删除整个游戏或改槽位指向的新引擎需要重启。
+- **全局配置（`backend/config.json`）与游戏 manifest（`backend/games/<游戏>/manifest.json`）支持热加载**：改完保存即生效（后端检测 mtime 自动重载，下一回合用新值）。写错了不会让游戏消失——后端保留最后一份可用配置并在 Web 日志记录解析错误。**例外：本地 TTS 引擎选择在启动时钉死**，运行期改 `tts_local` 不会切换（只打日志），切换本地引擎必须重启。
 - **组件 config.json / vision runtime config 仍需重启**（引擎进程启动时读取）：
 
 ```bash
@@ -19,13 +19,14 @@ scripts/stop_web.sh
 scripts/start_web.sh
 ```
 
-配置分三层，各管一件事：
+配置分四层，各管一件事（越靠近使用点优先级越高）：
 
 | 层 | 文件 | 管什么 |
 |---|---|---|
-| **游戏层** | `backend/games/dice/manifest.json` | **选本地/远程 TTS 槽位**、默认音色/语速、每句播报文案（三种 mode，见第 3 节）；**保存+刷新网页即生效** |
+| **全局层** | `backend/config.json` | **部署级默认**：本地/远程 TTS 槽位、默认音色/语速（所有游戏共享；字段说明见 `backend/参数说明.md`） |
+| **游戏层** | `backend/games/dice/manifest.json` | 每句播报文案（三种 mode，见第 3 节）；可覆盖全局槽位/音色/语速（不写即继承全局） |
 | **组件层** | `backend/components/tts_<id>/config.json` | 该 provider 的引擎地址、音色、生成参数 |
-| **请求层** | 浏览器/API 请求体 | 单次合成的临时覆盖（前端正常情况下不传，全部走 manifest） |
+| **请求层** | 浏览器/API 请求体 | 单次合成的临时覆盖（前端正常情况下不传，全部走配置） |
 
 ---
 
@@ -46,15 +47,14 @@ scripts/start_web.sh
 
 ## 2. 切换默认 TTS（标准操作）
 
-**唯一方法**：改游戏 manifest 的 `providers.tts`，然后重启。
+**唯一方法**：改全局配置 `backend/config.json` 的 `providers.tts_local`，然后重启（本地引擎运行期钉死，切换必须重启）。
 
 ### 2.1 步骤
 
-1. 编辑 `backend/games/dice/manifest.json` 的槽位（当前骰子已配好双槽位）：
+1. 编辑 `backend/config.json` 的槽位：
 
 ```json
 "providers": {
-  "vision_adjudicator": "vision_yolov8_adjudicator",
   "tts_local": "tts_moss_nano",
   "tts_remote": "tts_gptsovits"
 }
@@ -63,6 +63,8 @@ scripts/start_web.sh
 - `tts_local`（本地槽）：板端引擎，合法值 `tts_moss_nano` / `tts_qwen3`
 - `tts_remote`（远程槽）：云端/远程引擎，合法值 `tts_gptsovits` 或未来新增的远程 provider
 - "默认 provider" 指 `tts_local` 槽位，`/api/health` 的 `tts_provider` 字段显示它
+- **唯一性约束**：全局与各启用游戏若解析出多个不同的本地引擎，后端拒绝启动（一台演示机只跑一个本地引擎）
+- 个别游戏想用不同引擎时，在该游戏 manifest 的 `providers` 里覆盖对应槽位（例如未来的猜拳游戏可用不同声音）
 
 2. 重启：
 
@@ -79,24 +81,21 @@ curl -s http://127.0.0.1:8080/api/health | python3 -c "import json,sys; d=json.l
 
 ### 2.2 注意事项
 
-- **启动脚本会做一致性检查**：如果服务已在运行而 manifest 又改了 provider，`start_web.sh` 会拒绝启动并提示先 stop——按提示先 `stop_web.sh` 再 `start_web.sh` 即可，这是防止新旧 provider 混跑的保护，不是故障。
-- **换 provider 必换声音**：三个 provider 音色体系互不相通，manifest 里 `voice` 字段的含义随 provider 变（见第 4 节）。
+- **启动脚本会做一致性检查**：如果服务已在运行而配置又改了 provider，`start_web.sh` 会拒绝启动并提示先 stop——按提示先 `stop_web.sh` 再 `start_web.sh` 即可，这是防止新旧 provider 混跑的保护，不是故障。
+- **换 provider 必换声音**：三个 provider 音色体系互不相通，`voice` 字段的含义随 provider 变（见第 4 节）。
 - **切换前建议先单独验通**目标 provider（第 5 节的 health 检查），避免游戏进行中才发现服务不可达。
-- **启动脚本会自动启动 manifest 引用的全部本地 provider**（本地槽 + 远程槽 + 台词级覆盖），远程 provider 无本地生命周期自动跳过；这样按句混用时切换零等待。
-- 其他游戏（如 rps）的 manifest 有自己的 `providers.tts`，互不影响；当前只有 dice 启用。
+- **启动脚本会自动启动全局槽位与各游戏引用到的全部本地 provider**（含台词级 `provider` 钉死），远程 provider 无本地生命周期自动跳过；这样按句混用时切换零等待。
+- **运行期改 `tts_local` 不会切换引擎**：后端启动时钉死本地引擎，改配置只会在日志打漂移提示；想切换必须重启。远程槽位无此限制（热加载生效）。
 
 ---
 
 ## 3. 游戏层参数（dice manifest）
 
-位置：`backend/games/dice/manifest.json`。
+位置：`backend/games/dice/manifest.json`（完整字段参考见同目录 `参数说明.md`）。
 
-### 3.1 全局默认音色与语速
+### 3.1 默认音色与语速
 
-```json
-"voice": "default",
-"speed": 1.0
-```
+默认值在**全局配置** `backend/config.json`（`voice`/`speed`，所有游戏共享）。游戏 manifest 可覆盖（写在顶层），单条台词可再覆盖（写在 speech 动作里）——三层阶梯：台词 > 游戏 > 全局。骰子游戏当前不写，直接用全局默认。
 
 - `voice` 的解析规则随 provider：
   - `tts_moss_nano`：只认 `default`（实际音色由组件 config 的 `voice.name` 决定）；传其他值会报错
@@ -268,17 +267,17 @@ curl -X POST http://100.95.19.17:9873/tts \
 ## 6. 请求层参数（API 调用方参考）
 
 游戏流程内前端不直接调 TTS 接口：状态机下发 speech 指令，前端经
-`/api/game/rounds/<id>/speech` 按指令拉帧（provider 由后端按 manifest 解析）。
+`/api/game/rounds/<id>/speech` 按指令拉帧（provider 由后端按"台词钉死 > 游戏槽位 > 全局槽位"解析）。
 手工调试直接调 `/api/tts/stream` 时可用：
 
 | 字段 | 说明 |
 |---|---|
 | `text` | 必填，≤4000 字符 |
 | `voice` | 省略/`default` 走组件默认；显式值按第 3.1 节规则解析 |
-| `speed` | 省略走 manifest/组件默认；moss 只接受 1.0 |
-| `game` | 决定用哪个游戏的 manifest 选择 provider |
+| `speed` | 省略走全局/游戏/组件默认；moss 只接受 1.0 |
+| `game` | 决定用哪个游戏的 manifest（叠加全局默认）选择 provider |
 
-请求体里的 `provider` 字段**不会**覆盖后端选择——provider 只认 manifest。
+请求体里的 `provider` 字段**不会**覆盖后端选择——provider 只认配置文件。
 
 ---
 
@@ -300,15 +299,15 @@ curl -X POST http://100.95.19.17:9873/tts \
 ## 8. 参数速查卡
 
 ```text
-切本地 provider   →  manifest providers.tts_local（moss / qwen3）
-切远程 provider   →  manifest providers.tts_remote（gptsovits / 未来新增云端）
+切本地 provider   →  backend/config.json providers.tts_local（moss / qwen3）+ 重启
+切远程 provider   →  backend/config.json providers.tts_remote（gptsovits / 未来新增云端）
 某句换引擎        →  state_machine.states.<状态> 内该 speech 动作的 mode（或加 "provider": "<id>" 钉死）
 换 moss 音色      →  backend/components/tts_moss_nano/config.json → voice.name / voice.reference_audio
-换 gptsovits 音色 →  backend/components/tts_gptsovits/config.json → voice.name（或 manifest 全局 voice）
-改默认语速        →  manifest 顶层 speed（moss 不支持）
-改某句文案        →  manifest 对应状态 speech 动作的 text
+换 gptsovits 音色 →  backend/components/tts_gptsovits/config.json → voice.name（或全局 voice）
+改默认语速        →  backend/config.json 顶层 speed（moss 不支持）
+改某句文案        →  游戏 manifest 对应状态 speech 动作的 text
 改服务地址        →  对应组件 config.json 的 runtime.base_url
-改 manifest 后    →  保存 + 刷新网页即生效（热加载）
+改全局/游戏配置后 →  保存即热加载（下一回合生效；唯独本地 TTS 切换需重启）
 改组件 config 后  →  scripts/stop_web.sh && scripts/start_web.sh
 ```
 

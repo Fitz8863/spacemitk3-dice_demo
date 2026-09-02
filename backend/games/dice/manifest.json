@@ -8,12 +8,6 @@
 		"player": "LEFT",
 		"agent": "RIGHT"
 	},
-	"providers": {
-		"vision_adjudicator": "vision_yolov8_adjudicator",
-		"tts_local": "tts_moss_nano",
-		"tts_remote": "tts_gptsovits",
-		"asr": "asr_zipformer"
-	},
 	"asr": {
 		"enabled": true,
 		"phrases": {
@@ -107,10 +101,6 @@
 			"adjudication_seconds": 30
 		}
 	},
-	"voice": "default",
-	"speed": 1.0,
-
-
 	"state_machine": {
 		"schema_version": 1,
 		"initial": "rules",

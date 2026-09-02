@@ -26,7 +26,9 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
 
 ## 当前组件调度实现（2026-09-01）
 
-- **JSON 配置文件是唯一配置来源（2026-09-01 起）**：环境变量覆盖层（`.dice-arena.env` 与全部 `DICE_*` 输入端变量）已移除。游戏 manifest 支持热加载（mtime 检测，保存+刷新页面即生效；坏配置保留最后可用版本，删除游戏或换槽位指向的新引擎需重启）；组件 `config.json` 与 vision runtime `config.json` 改后重启生效。不要建议用户用环境变量调参。
+- **JSON 配置文件是唯一配置来源（2026-09-01 起）**：环境变量覆盖层（`.dice-arena.env` 与全部 `DICE_*` 输入端变量）已移除。**全局配置 `backend/config.json` 与游戏 manifest 支持热加载**（mtime 检测，保存后下一回合生效；坏配置保留最后可用版本）；**例外：本地 TTS 引擎启动时钉死，运行期改 `tts_local` 不切换**（切换本地引擎、删除游戏需重启）；组件 `config.json` 与 vision runtime `config.json` 改后重启生效。不要建议用户用环境变量调参。
+
+- **全局配置（2026-09-02 起）**：`backend/config.json` 是部署级默认层（引擎槽位/音色语速/语音总闸 `asr_enabled`，字段见 `backend/参数说明.md`），对所有游戏生效。优先级阶梯：台词级钉死 > 游戏 manifest 槽位 > 全局。游戏 manifest 不写槽位即继承全局（骰子已完全依赖全局槽位）。本地 TTS 全局唯一：全局与启用游戏解析出多个本地引擎时拒绝启动。
 
 - `backend/components/<id>/manifest.json` + `provider.py` 是可插拔功能包；`backend/core/components.py` 动态扫描并注册 provider，并校验视觉/TTS 的正式接口。
 - **后端权威状态机（2026-09-02 起）**：游戏流程由 manifest 的 `state_machine` 节点声明
@@ -44,10 +46,8 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
   所有指令回执，不再仅 `await:true`；无回执 90s 惰性过期），播报期间语音输入无效，
   按键不受限。`asr_zipformer` 功能包按需 spawn `arecord | stream_asr --pcm --jsonl`
   子进程对（无 lifecycle、不进 start_web.sh），麦克风跟随系统默认输入设备。
-- 游戏通过语义插槽选择 provider；当前骰子配置为
-  `providers.vision_adjudicator=vision_yolov8_adjudicator`、`providers.tts_local=tts_moss_nano`
-  与 `providers.tts_remote=tts_gptsovits`；语音输入为 `providers.asr=asr_zipformer`。`tts_qwen3` 是本地可选 provider。
-- 新 TTS 复制一个功能包并继承 `TtsProvider`，最小实现 `health()`、`synthesize()` 即可接入；需要分段低延迟时再覆盖 `stream()`；切换默认 provider 只需修改游戏 manifest 的 `providers.tts`（改后重启），前端请求保持不变。Provider 可用 `manifest.lifecycle.start/stop` 声明本地模型进程管理命令，`componentctl.py`/`start_web.sh` 会按所选 provider 调度。
+- 引擎槽位在**全局配置** `backend/config.json` 选择（当前 `tts_local=tts_moss_nano`、`tts_remote=tts_gptsovits`、`asr=asr_zipformer`、`vision_adjudicator=vision_yolov8_adjudicator`）；游戏 manifest 可按槽位覆盖。`tts_qwen3` 是本地可选 provider。
+- 新 TTS 复制一个功能包并继承 `TtsProvider`，最小实现 `health()`、`synthesize()` 即可接入；需要分段低延迟时再覆盖 `stream()`；切换默认 provider 改全局配置 `providers.tts_local` 后重启，前端请求保持不变。Provider 可用 `manifest.lifecycle.start/stop` 声明本地模型进程管理命令，`componentctl.py`/`start_web.sh` 会按"全局槽位 ∪ 各游戏 ∪ 台词钉死"的引用集调度。
 - 当前 YOLO 包是 `type=vision, role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于目标坐标的 YOLO 包应使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得混入裁决器插槽。算法名不是职责接口。
 - 游戏视觉配置必须内嵌在 `backend/games/<game_id>/manifest.json` 的
   `vision_profile` 节点；不要新增外置 `vision_profile.json`。视觉 runtime 的硬件、RTSP
