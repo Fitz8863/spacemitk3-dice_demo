@@ -725,3 +725,49 @@ class ServerApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_round_cancel_drains_body_on_keep_alive_connection(tmp_path, monkeypatch):
+    """An unread cancel body must not poison the next request on the connection.
+
+    The browser reuses one HTTP/1.1 connection; a POST body the handler never
+    reads is parsed as the next request line ("{}POST ...") and fails it with
+    501 — which surfaced as "对局创建失败" on the second game entry.
+    """
+    httpd, thread, port = _round_server_env(monkeypatch, tmp_path)
+    try:
+        connection = HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request(
+            "POST", "/api/game/rounds",
+            body=json.dumps({"game": "dice"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        body = response.read()
+        assert response.status == 201, body
+        round_id = json.loads(body)["round_id"]
+
+        # Cancel carries a body on this same keep-alive connection.
+        connection.request(
+            "POST", f"/api/game/rounds/{round_id}/cancel",
+            body="{}",
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 200
+
+        # The next request on the same connection must not see stale bytes.
+        connection.request(
+            "POST", "/api/game/rounds",
+            body=json.dumps({"game": "dice"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        body = response.read()
+        assert response.status == 201, (response.status, body)
+        connection.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2)

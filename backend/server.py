@@ -703,6 +703,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.serve_static(path)
 
+    def drain_body(self) -> None:
+        """Consume an unread POST body so keep-alive framing stays intact.
+
+        A body left in the socket buffer is parsed as the next pipelined
+        request line on this persistent connection and corrupts it.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length > 0:
+            self.rfile.read(length)
+
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
         if path == "/api/tts/stream":
@@ -812,6 +825,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_round_speech_frames(round_, directive_id)
                     return
                 if suffix == "cancel":
+                    self.drain_body()
                     round_.cancel()
                     self.send_json(round_.snapshot())
                     return
@@ -835,6 +849,7 @@ class Handler(BaseHTTPRequestHandler):
             if not job:
                 self.send_error_json(JobNotFoundError(job_id))
             else:
+                self.drain_body()
                 job.cancel()
                 self.send_json(job.snapshot())
             return

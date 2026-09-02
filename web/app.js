@@ -487,7 +487,9 @@ function createRoundClient(gameId, handlers) {
     closed = true;
     teardownStream();
     try {
-      await requestJson(`/api/game/rounds/${target}/cancel`, { method: 'POST', body: '{}' });
+      // No body: a cancel carries no payload, and an unread body would
+      // corrupt keep-alive connections on the server.
+      await requestJson(`/api/game/rounds/${target}/cancel`, { method: 'POST' });
     } catch (_) { /* already finished */ }
   }
 
