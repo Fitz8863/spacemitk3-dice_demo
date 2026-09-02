@@ -39,6 +39,7 @@ from core.games import (
     run_game,
 )
 from core.jobs import ComponentJob
+from core.asr_bridge import AsrIntentBridge
 from core.state_machine import GameRound, IntentRejectedError, RoundClosedError
 from core.tts_dispatch import TtsDispatcher
 from core.tts_protocol import (
@@ -267,6 +268,10 @@ active_job_id: str | None = None
 rounds: dict[str, GameRound] = {}
 rounds_lock = threading.Lock()
 
+# Voice input channel: round-scoped ASR sessions that submit intents exactly
+# like button presses.  Games opt in via the manifest ``asr`` section.
+ASR_BRIDGE = AsrIntentBridge(components=COMPONENTS)
+
 _ROUND_TIMEOUT_FALLBACK_SECONDS = JOB_TIMEOUT_SECONDS
 
 
@@ -310,6 +315,12 @@ def create_round(game_id: str) -> GameRound:
         )
         rounds[round_.id] = round_
     round_.start()
+    # Voice input never gates round creation: a missing or broken ASR
+    # provider only means this round runs on buttons alone.
+    try:
+        ASR_BRIDGE.start_for_round(round_)
+    except Exception as exc:
+        print(f"[asr] failed to start for round {round_.id[:8]}: {exc!r}", flush=True)
     return round_
 
 
@@ -323,6 +334,10 @@ def _lookup_round(round_id: str) -> GameRound:
 
 def _shutdown_runtime_components() -> None:
     """Stop provider-owned resident workers before the backend exits."""
+    try:
+        ASR_BRIDGE.stop()
+    except Exception as exc:
+        print(f"[asr] bridge stop failed: {exc!r}", flush=True)
     with jobs_lock:
         active = jobs.get(active_job_id) if active_job_id else None
     if active is not None and active.status in {"queued", "running"}:

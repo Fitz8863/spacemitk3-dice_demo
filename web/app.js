@@ -304,11 +304,12 @@ function createSpeechScheduler(requestId) {
   return player;
 }
 
-// 播放一条后端 speech 指令：拉帧 → 排片播放 → await 指令播完回执。
-// 播放失败也会回执，让状态机立即继续而不等 30 秒兜底。
+// 播放一条后端 speech 指令：拉帧 → 排片播放 → 回执 speech_done。
+// 回执不再仅限 await 指令：引擎用它清除"播报进行中"登记（ASR 播报闸
+// 依赖该登记），所以每条指令播完/失败/被顶替都要回执，finally 统一出口。
 async function playDirective(round, directive) {
   const acknowledge = () => {
-    if (directive.await && round && round.roundId) {
+    if (round && round.roundId) {
       round.submitIntent('speech_done', { directive_id: directive.directive_id })
         .catch(() => { /* round may already be closed; the engine fallback covers it */ });
     }
@@ -372,17 +373,18 @@ async function playDirective(round, directive) {
     }
     if (scheduler) await scheduler.waitDrained();
     await producer;
-    acknowledge();
   } catch (error) {
     await producer.catch(() => {});
     if (error.name === 'AbortError' || requestId !== state.ttsRequestId || !state.sound) return;
     console.error(`Speech directive ${directive.directive_id} failed after ${playedFrames} frame(s):`, error);
     toast('语音播放失败，请检查语音组件');
-    acknowledge();
   } finally {
     if (scheduler && state.ttsPlaybackCancel === scheduler.cancel) {
       state.ttsPlaybackCancel = null;
     }
+    // 所有退出路径（成功/失败/被新指令顶替）都恰好回执一次：await 的
+    // 唤醒引擎等待者，非 await 的释放播报闸登记。
+    acknowledge();
   }
 }
 

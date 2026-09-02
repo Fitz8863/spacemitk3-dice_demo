@@ -41,6 +41,12 @@ from core.state_schema import validate_state_machine
 # stall the round forever; after this many seconds the sequence continues.
 AWAIT_FALLBACK_SECONDS = 30.0
 
+# Emitted speech directives stay registered for the ASR speech gate until
+# the client acknowledges with ``speech_done``.  A client that vanished
+# mid-playback must not pin the gate forever either, so unacknowledged
+# entries expire lazily on read after this many seconds.
+SPEECH_ACK_FALLBACK_SECONDS = 90.0
+
 _RELAYED_PROVIDER_EVENTS = {"phase", "progress", "video", "result", "diagnosis"}
 _TERMINAL_STATUSES = {"exited", "cancelled", "error"}
 
@@ -83,6 +89,7 @@ class GameRound:
         manifest: Mapping[str, Any],
         adjudicate_fn: AdjudicateFn | None = None,
         await_fallback_seconds: float = AWAIT_FALLBACK_SECONDS,
+        speech_ack_fallback_seconds: float = SPEECH_ACK_FALLBACK_SECONDS,
         round_id: str | None = None,
         log: Callable[[str], None] | None = None,
     ) -> None:
@@ -96,6 +103,7 @@ class GameRound:
         )
         self._adjudicate_fn = adjudicate_fn or self._default_adjudicate_fn
         self._await_fallback_seconds = await_fallback_seconds
+        self._speech_ack_fallback_seconds = speech_ack_fallback_seconds
         self._log = log or (lambda line: print(f"[round:{self.id[:8]}] {line}", flush=True))
 
         self.status = "running"
@@ -114,6 +122,9 @@ class GameRound:
         # abandon work when it no longer matches.
         self._generation = 0
         self._awaiting_directive: str | None = None
+        # directive_id -> monotonic deadline for the speech gate; entries are
+        # released by speech_done and expire lazily if a client disappears.
+        self._active_speech: dict[str, float] = {}
         self._worker: threading.Thread | None = None
 
     # ---- lifecycle -----------------------------------------------------
@@ -173,6 +184,20 @@ class GameRound:
             )
             return self._snapshot_locked()
 
+    @property
+    def speech_active(self) -> bool:
+        """True while an emitted speech directive may still be playing.
+
+        Registered when a directive is emitted, released by the client's
+        ``speech_done`` acknowledgement, and lazily expired for clients
+        that disappear.  The ASR input channel suppresses intent matching
+        while this is True so a round's own announcements cannot trigger
+        themselves; skipping a playing announcement stays a button action.
+        """
+        with self.condition:
+            self._prune_speech_locked()
+            return bool(self._active_speech)
+
     def find_directive(self, directive_id: str) -> dict[str, Any] | None:
         """Return one emitted speech directive by id (for the frame endpoint).
 
@@ -186,6 +211,7 @@ class GameRound:
         return None
 
     def _snapshot_locked(self) -> dict[str, Any]:
+        self._prune_speech_locked()
         return {
             "round_id": self.id,
             "game_id": self.game_id,
@@ -193,6 +219,7 @@ class GameRound:
             "state": self.state,
             "error": self.error,
             "result": self.result,
+            "speech_active": bool(self._active_speech),
             "events": list(self.events),
             "event_sequence": self.event_sequence,
             "revision": self.revision,
@@ -227,15 +254,30 @@ class GameRound:
         self.finished_at = now_ms()
         self._generation += 1
         self._awaiting_directive = None
+        self._active_speech.clear()
         self._emit_locked({"event": "round_complete", "status": status, "state": self.state})
 
     def _ack_speech_locked(self, directive_id: str) -> None:
-        """Wake the worker waiting on an awaited speech directive."""
+        """Release one speech directive and wake a worker awaiting it."""
+        self._active_speech.pop(directive_id, None)
         if self._awaiting_directive == directive_id:
             self._awaiting_directive = None
             self.condition.notify_all()
         # A late or duplicate acknowledgement for an already-released
         # directive is idempotent and ignored.
+
+    def _prune_speech_locked(self) -> None:
+        """Drop speech-gate entries whose acknowledgement window elapsed."""
+        if not self._active_speech:
+            return
+        now = time.monotonic()
+        expired = [
+            directive_id
+            for directive_id, deadline in self._active_speech.items()
+            if deadline <= now
+        ]
+        for directive_id in expired:
+            del self._active_speech[directive_id]
 
     # ---- transitions ----------------------------------------------------
 
@@ -428,7 +470,11 @@ class GameRound:
             directive["provider"] = entry["provider"]
         directive["voice"] = entry.get("voice") or voice_default
         directive["speed"] = entry.get("speed") or speed_default
-        self._emit(directive)
+        with self.condition:
+            self._active_speech[directive["directive_id"]] = (
+                time.monotonic() + self._speech_ack_fallback_seconds
+            )
+            self._emit_locked(directive)
         return directive
 
     def _run_adjudication(self, generation: int) -> bool:

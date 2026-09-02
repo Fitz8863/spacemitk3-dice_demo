@@ -145,7 +145,6 @@ def test_frontend_shouts_stop_before_reveal_ready():
     assert "speakState" not in js
     assert "startRevealTransition" not in js
     assert "submitIntent('speech_done'" in app
-    assert "directive.await" in app
 
 
 def test_frontend_distinguishes_llm_override_from_consensus():
@@ -436,15 +435,21 @@ def test_frontend_round_client_drives_the_game():
 
 
 def test_frontend_acks_awaited_directives_and_mutes_cleanly():
-    """await 指令播完回执；静音模式立即回执，避免状态机等待兜底。"""
+    """所有指令播完都回执（await 唤醒等待者、非 await 释放播报闸）；静音立即回执。"""
     app = (ROOT / "web/app.js").read_text(encoding="utf-8")
 
     play = app.split("async function playDirective", 1)[1].split(
         "// ---- 权威对局客户端", 1
     )[0]
-    assert "directive.await" in play
+    # Acknowledgement is unconditional: every directive (awaited or not)
+    # releases the engine's speech-gate registration when playback ends.
     assert "submitIntent('speech_done'" in play
-    # Muted playback must still acknowledge awaited directives.
+    assert "directive.await &&" not in play
+    # All exit paths acknowledge exactly once via the shared finally block
+    # (the last one in the function — the producer closure has its own).
+    body = play.rsplit("} finally {", 1)[1]
+    assert "acknowledge()" in body
+    # Muted playback must still acknowledge immediately.
     muted = play.split("if (!state.sound)", 1)[1].split("}", 1)[0]
     assert "acknowledge()" in muted
 

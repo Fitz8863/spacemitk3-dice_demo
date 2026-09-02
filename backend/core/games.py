@@ -56,6 +56,42 @@ def render_speech_text(template: str, values: Any) -> str:
     )
 
 
+def validate_asr_section(asr: Any, machine: dict[str, Any]) -> dict[str, Any]:
+    """Validate the optional ``asr`` voice-input section of a game manifest.
+
+    ``phrases`` maps intent names to trigger words.  Intents must be declared
+    in the state machine's ``on_intent`` tables so a typo cannot silently
+    disable voice control; the built-in ``speech_done`` intent is not
+    remappable because it belongs to the speech acknowledgement protocol.
+    """
+    if not isinstance(asr, dict):
+        raise ValueError("asr must be an object")
+    enabled = asr.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("asr.enabled must be boolean")
+    phrases = asr.get("phrases")
+    if not isinstance(phrases, dict) or not phrases:
+        raise ValueError("asr.phrases must map intents to non-empty trigger-word lists")
+    known_intents: set[str] = set()
+    for state in (machine.get("states") or {}).values():
+        if isinstance(state, dict):
+            known_intents.update((state.get("on_intent") or {}).keys())
+    for intent, words in phrases.items():
+        if intent not in known_intents:
+            raise ValueError(
+                f"asr.phrases key {intent!r} is not an intent of this game's state machine"
+            )
+        if (
+            not isinstance(words, list)
+            or not words
+            or not all(isinstance(word, str) and word.strip() for word in words)
+        ):
+            raise ValueError(f"asr.phrases.{intent} must be a non-empty list of trigger words")
+        if len(words) != len(set(words)):
+            raise ValueError(f"asr.phrases.{intent} must not contain duplicate trigger words")
+    return {"enabled": enabled, "phrases": phrases}
+
+
 class GameRegistry:
     def __init__(self) -> None:
         self._games: dict[str, dict[str, Any]] = {}
@@ -107,15 +143,20 @@ def public_game_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
                 "min_views": int(multi.get("min_views", 1)),
                 "views": [],
             }
-            for view in multi.get("views", []):
+            for view in multi.get("views"):
                 if not isinstance(view, dict) or not isinstance(view.get("id"), str):
                     continue
                 safe_multi["views"].append({
                     "id": view["id"],
-                    "video": _public_video(view.get("video")),
+                    "video": _public_video(view["video"]),
                 })
             safe_profile["multi_view"] = safe_multi
         public["vision_profile"] = safe_profile
+    asr = manifest.get("asr")
+    if isinstance(asr, dict):
+        # Trigger words stay server-side; the browser only learns whether the
+        # voice input channel exists for this game.
+        public["asr"] = {"enabled": bool(asr.get("enabled", True))}
     return public
 
 
@@ -144,6 +185,8 @@ def load_games(root: Path | None = None) -> GameRegistry:
             if not isinstance(machine, dict):
                 raise ValueError("state_machine must be an object")
             manifest["state_machine"] = validate_state_machine(machine, game_id)
+            if "asr" in manifest:
+                manifest["asr"] = validate_asr_section(manifest["asr"], manifest["state_machine"])
 
             if "components" in manifest:
                 legacy_components = manifest["components"]
