@@ -11,7 +11,24 @@
 	"providers": {
 		"vision_adjudicator": "vision_yolov8_adjudicator",
 		"tts_local": "tts_moss_nano",
-		"tts_remote": "tts_gptsovits"
+		"tts_remote": "tts_gptsovits",
+		"asr": "asr_zipformer"
+	},
+	"asr": {
+		"enabled": true,
+		"phrases": {
+			"confirm": [
+				"确认"
+			],
+			"repeat": [
+				"重复",
+				"再来一遍"
+			],
+			"back": [
+				"返回",
+				"退出"
+			]
+		}
 	},
 	"vision_profile": {
 		"schema_version": 1,
@@ -95,7 +112,7 @@
 				"ui": {
 					"view": "rules",
 					"title": "游戏规则",
-					"copy": "听完规则后按 Enter 确认，按 ↓ 可以再听一次。"
+					"copy": "听完规则后按 Enter 确认，播报结束后也可以说“确认”，按 ↓ 可以再听一次。"
 				},
 				"on_enter": [
 					{
@@ -122,7 +139,6 @@
 					}
 				}
 			},
-			
 			"ready": {
 				"ui": {
 					"view": "ready",
