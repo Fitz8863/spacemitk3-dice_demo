@@ -479,6 +479,29 @@ def test_frontend_surfaces_asr_recognition_feedback():
     assert ".asr-feedback.level-info" in css
 
 
+def test_manifest_voice_phrases_cover_every_state_intent():
+    """每个可按键触发的意图都必须有语音触发词（speech_done 除外）。
+
+    回归守护：2026-09-03 实测 ready 状态说"确定"无效——confirm 只在
+    rules 声明，start_shake/retry/new_round 等完全没有词表。新状态/
+    新意图接入时若漏配语音，这里直接报出缺口位置。
+    """
+    manifest = dice_manifest()
+    phrases = manifest["asr"]["phrases"]
+    missing = []
+    for state_name, state in manifest["state_machine"]["states"].items():
+        for intent in (state.get("on_intent") or {}):
+            if intent == "speech_done":
+                continue
+            if intent not in phrases:
+                missing.append(f"{state_name}.{intent}")
+    assert not missing, f"语音不可达的意图（asr.phrases 缺条目）: {missing}"
+    # Dual-purpose words are the mechanism that lets one word follow the
+    # game: 确定 confirms in rules and starts the shake in ready.
+    assert "确定" in phrases["confirm"]
+    assert "确定" in phrases["start_shake"]
+
+
 def test_manifest_state_machine_declares_the_full_graph():
     manifest = dice_manifest()
     machine = manifest["state_machine"]

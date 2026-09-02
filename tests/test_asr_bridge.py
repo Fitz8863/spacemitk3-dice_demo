@@ -67,6 +67,23 @@ class PhraseMatchingTests(unittest.TestCase):
         self.assertEqual(match_phrase_intent(phrases, "那我就确认了"), "confirm")
         self.assertEqual(match_phrase_intent(phrases, "返回 吧"), "back")
 
+    def test_match_collects_every_candidate_in_order(self):
+        from core.asr_bridge import match_phrase_intents
+
+        phrases = {
+            "confirm": ["确定"],
+            "start_shake": ["开始", "确定"],
+            "stop_shake": ["停止", "停"],
+            "back": ["返回"],
+        }
+        # One word backing several intents: all candidates, declaration order.
+        self.assertEqual(match_phrase_intents(phrases, "确定"), ["confirm", "start_shake"])
+        self.assertEqual(match_phrase_intents(phrases, "开始"), ["start_shake"])
+        # Repeated hits on the same intent stay a single candidate.
+        self.assertEqual(match_phrase_intents(phrases, "停 停止"), ["stop_shake"])
+        self.assertEqual(match_phrase_intents(phrases, "返回"), ["back"])
+        self.assertEqual(match_phrase_intents(phrases, "今天天气"), [])
+
     def test_match_tolerates_case_and_spacing(self):
         self.assertEqual(match_phrase_intent({"start": ["START"]}, "go start now"), "start")
 
@@ -200,7 +217,11 @@ class BridgeTests(unittest.TestCase):
     def _enabled_manifest(self):
         manifest = _round_manifest(asr={
             "enabled": True,
-            "phrases": {"confirm": ["确认"], "back": ["返回"]},
+            "phrases": {
+                "confirm": ["确认", "确定"],
+                "start_shake": ["开始", "确定"],
+                "back": ["返回", "退出"],
+            },
         })
         manifest["providers"]["asr"] = "asr_dummy"
         return manifest
@@ -225,6 +246,18 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(round_.submitted, [("confirm", {"source": "asr", "text": "那我就确认了"})])
         self.assertEqual(round_.observations, [{
             "event": "asr", "status": "submitted", "text": "那我就确认了", "matched": "confirm",
+        }])
+
+    def test_rejected_first_candidate_falls_through_to_next(self):
+        """确定 at ready: confirm is rejected, start_shake is accepted."""
+        round_ = FakeRound(self._enabled_manifest())
+        # Simulate the real dice machine: confirm only exists in rules.
+        round_.rejected = {"confirm"}
+        self.bridge.start_for_round(round_)
+        self.provider.sessions[0]["on_sentence"]("确定")
+        self.assertEqual(round_.submitted, [("start_shake", {"source": "asr", "text": "确定"})])
+        self.assertEqual(round_.observations, [{
+            "event": "asr", "status": "submitted", "text": "确定", "matched": "start_shake",
         }])
 
     def test_unmatched_sentence_is_ignored(self):

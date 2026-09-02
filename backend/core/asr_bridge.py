@@ -28,14 +28,29 @@ def normalize_speech_text(text: str) -> str:
 
 def match_phrase_intent(phrases: dict[str, list[str]], text: str) -> str | None:
     """Return the first intent whose trigger word occurs in ``text``."""
+    intents = match_phrase_intents(phrases, text)
+    return intents[0] if intents else None
+
+
+def match_phrase_intents(phrases: dict[str, list[str]], text: str) -> list[str]:
+    """Return every intent whose trigger word occurs in ``text``, in order.
+
+    One word may legitimately back several intents (``确定`` both confirms
+    the rules and starts the shake); which one applies is decided by the
+    round's current state, so the caller tries the candidates in order and
+    keeps the first the state machine accepts.
+    """
     normalized = normalize_speech_text(text)
     if not normalized:
-        return None
+        return []
+    intents: list[str] = []
     for intent, words in phrases.items():
         for word in words:
             if normalize_speech_text(word) in normalized:
-                return intent
-    return None
+                if intent not in intents:
+                    intents.append(intent)
+                break
+    return intents
 
 
 class AsrIntentBridge:
@@ -110,30 +125,41 @@ class AsrIntentBridge:
         sentence with no visible feedback would leave the player wondering
         whether voice input works at all.
         """
-        intent = match_phrase_intent(phrases, text)
-        if intent is None:
+        candidates = match_phrase_intents(phrases, text)
+        if not candidates:
             self._log(f"heard {text!r}: no trigger word matched")
             round_.emit_observation({"event": "asr", "status": "unmatched", "text": text})
             return
         if round_.speech_active:
-            self._log(f"heard {text!r} matched {intent!r} while speech is playing; ignored")
+            self._log(
+                f"heard {text!r} matched {candidates!r} while speech is playing; ignored"
+            )
             round_.emit_observation({
-                "event": "asr", "status": "suppressed", "text": text, "matched": intent,
+                "event": "asr", "status": "suppressed", "text": text,
+                "matched": candidates[0],
             })
             return
-        try:
-            round_.submit_intent(intent, {"source": "asr", "text": text})
-        except DiceArenaError as exc:
-            # Spoken words that the current state does not accept, or a round
-            # that just ended, are normal conversation — not an error path.
-            self._log(f"heard {text!r} matched {intent!r}: {exc.message}")
+        # One word can back several intents (确定 confirms the rules and
+        # starts the shake); try the candidates in order and keep the first
+        # the current state accepts, so the same word follows the game.
+        rejected: list[str] = []
+        for intent in candidates:
+            try:
+                round_.submit_intent(intent, {"source": "asr", "text": text})
+            except DiceArenaError as exc:
+                # Spoken words that the current state does not accept, or a
+                # round that just ended, are normal conversation.
+                self._log(f"heard {text!r} matched {intent!r}: {exc.message}")
+                rejected.append(intent)
+                continue
+            self._log(f"heard {text!r} -> intent {intent!r} submitted")
             round_.emit_observation({
-                "event": "asr", "status": "rejected", "text": text, "matched": intent,
+                "event": "asr", "status": "submitted", "text": text, "matched": intent,
             })
             return
-        self._log(f"heard {text!r} -> intent {intent!r} submitted")
         round_.emit_observation({
-            "event": "asr", "status": "submitted", "text": text, "matched": intent,
+            "event": "asr", "status": "rejected", "text": text,
+            "matched": candidates[0],
         })
 
     def _watch_round(self, round_: Any, session: Any) -> None:
