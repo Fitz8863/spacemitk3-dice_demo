@@ -1,7 +1,12 @@
-// 摇骰子游戏模块：状态机、阶段文案、骰子渲染与胜负结果。
-// 通过 engine 注入视图切换 / TTS / 网络能力，不含游戏列表与通用壳逻辑。
+// 摇骰子游戏模块：后端权威状态机的声明式前端。
+// 后端通过 round 事件流驱动一切：state_changed 切视图、speech 播台词、
+// tick 渲染倒计时、adjudication 透传渲染分析进度；本模块只提交意图
+// （实体按键/页面按钮）并渲染，不自行推进游戏状态。
 export function register(engine) {
-  const { state, $, setPhase, speakState, requestJson, toast, stopSpeech, returnToSelect } = engine;
+  const {
+    state, $, setPhase, toast, stopSpeech, requestJson,
+    returnToSelect, createRoundClient, playDirective,
+  } = engine;
 
   const dicePips = {
     1: [4], 2: [0, 8], 3: [0, 4, 8], 4: [0, 2, 6, 8],
@@ -10,25 +15,19 @@ export function register(engine) {
 
   let playerDice = [];
   let agentDice = [];
-  let shakeTimer = null;
-  let countdownTimer = null;
-  let revealTransitionTimer = null;
   let countdownAudioContext = null;
   let visionStreamToken = 0;
-  let pendingAnalysisResult = null;
   let participantSides = null;
+  let round = null;
+  let lastRenderedState = '';
 
-  const phases = ['select', 'rules', 'ready', 'countdown', 'shaking', 'open', 'analysis', 'result'];
-  const SHAKE_DURATION_SECONDS = 10;
-  const shakeCountdownMeta = ['同步倒计时', '与 Agent 保持同步，倒计时结束后开始摇骰。'];
-  const visionCountdownMeta = ['准备视觉裁决', '请保持骰子和骰盅位置不动，倒计时结束后开始视觉裁决。'];
+  // 后端 ui 文案缺省时的前端兜底（正常路径都来自 manifest state_machine.ui）。
   const phaseMeta = {
-    select: ['选择一场游戏', '欢迎来到 Dice Arena，选择游戏后按 OK 开始。'],
     rules: ['游戏规则', '听完规则后按 Enter 确认，按 ↓ 可以再听一次。'],
     ready: ['准备好了吗？', '人手操作模式已开启，拿起骰盅后点击开始。'],
-    countdown: shakeCountdownMeta,
+    countdown: ['同步倒计时', ''],
     shaking: ['摇骰进行中', '双方同时摇骰，准备好后可提前停止。'],
-    open: ['你准备好了吗？听语音倒计时同时开盖', '请同时打开骰盅，开盖过场结束后自动进入倒计时。'],
+    open: ['你准备好了吗？听语音倒计时同时开盖', ''],
     analysis: ['正在判定胜负', '视觉裁决器正在识别骰子点数，随后由大模型复核。'],
     result: ['本局结果', ''],
   };
@@ -49,14 +48,7 @@ export function register(engine) {
     $('agentScoreSide').style.gridColumn = agent === 'LEFT' ? '1' : '3';
   }
 
-  function assertResultParticipants(result) {
-    if (!participantSides
-        || result.player_side !== participantSides.player
-        || result.agent_side !== participantSides.agent) {
-      throw new Error('裁决结果与游戏参与者位置配置不一致');
-    }
-  }
-
+  // ---- 实时画面（MediaMTX WebRTC iframe，保持原有边界） ----
   function stopVisionStream() {
     visionStreamToken += 1;
     const panel = $('analysisStreamPanel');
@@ -97,8 +89,6 @@ export function register(engine) {
     if (status) status.textContent = '正在连接实时画面…';
     frame.onload = () => {
       if (token !== visionStreamToken || state.phase !== 'analysis') return;
-      // iframe load only confirms that the MediaMTX player page loaded.
-      // The embedded page still needs to negotiate WebRTC and receive a track.
       if (status) status.textContent = '播放页面已加载，等待 YOLO 画面…';
     };
     frame.onerror = () => {
@@ -108,6 +98,7 @@ export function register(engine) {
     frame.src = streamUrl.toString();
   }
 
+  // ---- 结果与比分渲染 ----
   function diceMarkup(values, className = '') {
     return values.map((value) => `<div class="die ${className}" aria-label="${value}点">${Array.from({ length: 9 }, (_, i) => `<span class="${dicePips[value].includes(i) ? 'on' : ''}"></span>`).join('')}</div>`).join('');
   }
@@ -119,6 +110,7 @@ export function register(engine) {
     $('agentDice').innerHTML = diceMarkup(agentDice, 'agent-die');
   }
 
+  // ---- 倒计时音效（纯前端 UI 反馈） ----
   function prepareCountdownAudio() {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
     if (!AudioContext) return;
@@ -171,71 +163,39 @@ export function register(engine) {
     }
   }
 
-  function updateShakeCountdown(seconds) {
-    const shakeSeconds = $('shakeSeconds');
-    const urgent = seconds <= 3 && seconds > 0;
-    shakeSeconds.textContent = String(seconds).padStart(2, '0');
-    shakeSeconds.classList.toggle('is-urgent', urgent);
-    if (urgent) playCountdownCue(seconds);
+  // ---- 后端事件渲染 ----
+  function renderState(stateName, ui) {
+    if (stateName === lastRenderedState) return;
+    lastRenderedState = stateName;
+    const view = ui.view || stateName;
+    const meta = [ui.title || '', ui.copy || ''];
+    setPhase(view, meta[0] || meta[1] ? meta : undefined);
+    if (stateName === 'analysis') {
+      resetAnalysisSteps();
+    } else if (stateName === 'ready' || stateName === 'rules') {
+      playerDice = [];
+      agentDice = [];
+      updateScores();
+    }
   }
 
-  function countdown(next, label, hint, meta = shakeCountdownMeta) {
-    clearInterval(countdownTimer);
-    let seconds = 3;
-    $('countdownHint').textContent = hint;
-    $('countdownNumber').textContent = seconds;
-    phaseMeta.countdown = meta;
-    setPhase('countdown');
-    countdownTimer = setInterval(() => {
-      seconds -= 1;
-      $('countdownNumber').textContent = Math.max(0, seconds);
-      if (seconds <= 0) {
-        clearInterval(countdownTimer);
-        next();
-      }
-    }, 900);
-  }
-
-  function beginShake() {
-    setPhase('shaking');
-    let seconds = SHAKE_DURATION_SECONDS;
-    updateShakeCountdown(seconds);
-    clearInterval(shakeTimer);
-    shakeTimer = setInterval(() => {
-      seconds -= 1;
-      updateShakeCountdown(Math.max(0, seconds));
-      if (seconds <= 0) stopShake();
-    }, 1000);
-  }
-
-  function stopShake() {
-    clearInterval(shakeTimer);
-    clearTimeout(revealTransitionTimer);
-    setPhase('open');
-    // 先喊一声"停"，喊完再念开盖提示；4 秒过场计时从"停"结束起算，
-    // 保持原有的开盖节奏。TTS 失败时 promise 也会落定，流程继续。
-    const startRevealTransition = () => {
-      speakState('reveal_ready');
-      revealTransitionTimer = setTimeout(() => {
-        revealTransitionTimer = null;
-        beginRevealCountdown();
-      }, 4000);
-    };
-    speakState('shake_stop').then(startRevealTransition);
-  }
-
-  function beginRevealCountdown() {
-    countdown(
-      reveal,
-      'VISION COUNTDOWN',
-      '请保持骰子和骰盅位置不动。',
-      visionCountdownMeta,
-    );
+  function renderTick(event) {
+    const remaining = Number(event.remaining_ms);
+    if (!Number.isFinite(remaining) || remaining < 0) return;
+    if (lastRenderedState === 'shake_countdown' || lastRenderedState === 'vision_countdown') {
+      $('countdownNumber').textContent = Math.max(1, Math.floor(remaining / 1000));
+    } else if (lastRenderedState === 'shaking') {
+      const seconds = Math.max(1, Math.floor(remaining / 1000));
+      const shakeSeconds = $('shakeSeconds');
+      const urgent = seconds <= 3;
+      shakeSeconds.textContent = String(seconds).padStart(2, '0');
+      shakeSeconds.classList.toggle('is-urgent', urgent);
+      if (urgent) playCountdownCue(seconds);
+    }
   }
 
   function resetAnalysisSteps() {
     stopVisionStream();
-    pendingAnalysisResult = null;
     $('stepCapture').classList.add('active');
     $('stepCapture').classList.remove('failed');
     $('stepCapture').querySelector('span').textContent = '✓';
@@ -283,23 +243,23 @@ export function register(engine) {
     return [reason, countText ? `检测数量：${countText}` : ''].filter(Boolean);
   }
 
-  function updateAnalysisProgress(job) {
-    if (job.phase === 'detecting') {
+  function updateAnalysisProgress(event) {
+    if (event.phase === 'detecting') {
       $('stepDetect').classList.add('active');
       $('stepDetect').querySelector('span').textContent = '…';
-      const count = Number(job.stable_count || 0);
-      const required = Number(job.stable_frames || 0);
+      const count = Number(event.stable_count || 0);
+      const required = Number(event.stable_frames || 0);
       $('analysisStatus').textContent = count > 0 && required > 0
         ? `YOLOv8 正在检测双方各 5 颗骰子，并等待稳定帧（${count}/${required}）…`
         : 'YOLOv8 正在检测双方各 5 颗骰子，并等待稳定帧…';
-    } else if (job.phase === 'verifying') {
+    } else if (event.phase === 'verifying') {
       $('stepDetect').classList.add('active');
       $('stepDetect').querySelector('span').textContent = '✓';
       $('stepJudge').classList.add('active');
       $('stepJudge').querySelector('span').textContent = '…';
       $('analysisStatus').textContent = 'YOLOv8 结果已稳定，正在调用大模型复核…';
-    } else if (job.phase === 'holding') {
-      const remaining = Number(job.remaining_ms);
+    } else if (event.phase === 'holding') {
+      const remaining = Number(event.remaining_ms);
       $('stepDetect').classList.add('active');
       $('stepDetect').querySelector('span').textContent = '✓';
       $('stepJudge').classList.add('active');
@@ -307,177 +267,15 @@ export function register(engine) {
       $('analysisStatus').textContent = Number.isFinite(remaining) && remaining > 0
         ? `结果已锁定，实时画面将继续播放 ${Math.ceil(remaining / 1000)} 秒…`
         : '结果已锁定，实时画面仍在播放…';
-    } else {
-      $('analysisStatus').textContent = 'K3 推理进程已启动，等待识别结果…';
     }
   }
 
-  function updateStructuredEvent(event) {
-    if (!event || typeof event !== 'object') return;
-    if (event.event === 'video') {
-      startVisionStream(event);
-    } else if (event.event === 'result') {
-      pendingAnalysisResult = event.result && typeof event.result === 'object'
-        ? event.result
-        : event;
-    } else if (event.event === 'diagnosis' || event.diagnosed) {
-      pendingAnalysisResult = event.result && typeof event.result === 'object'
-        ? event.result
-        : event;
-    } else if (event.event === 'phase' || event.event === 'progress') {
-      updateAnalysisProgress(event);
+  function assertResultParticipants(result) {
+    if (!participantSides
+        || result.player_side !== participantSides.player
+        || result.agent_side !== participantSides.agent) {
+      throw new Error('裁决结果与游戏参与者位置配置不一致');
     }
-  }
-
-  function applyAnalysisSnapshot(snapshot, eventSequence) {
-    let latestHoldingEvent = null;
-    for (const event of (snapshot.events || [])) {
-      const sequence = Number(event.sequence || 0);
-      if (sequence > eventSequence.value) {
-        eventSequence.value = sequence;
-        if (event.phase === 'holding') latestHoldingEvent = event;
-        updateStructuredEvent(event);
-      }
-    }
-    // A provider emits ``complete`` before its worker returns to ComponentJob;
-    // during that small window the snapshot can still be ``running`` with
-    // only the earlier result event available. Wait for the terminal success
-    // snapshot (which carries the canonical result) before closing SSE or
-    // switching to the result view.
-    const terminal = snapshot.status === 'success'
-      || (snapshot.phase === 'complete' && snapshot.result);
-    if (snapshot.status === 'error' && snapshot.result && snapshot.result.diagnosed) {
-      pendingAnalysisResult = snapshot.result;
-      return true;
-    }
-    if (terminal && (snapshot.result || pendingAnalysisResult)) {
-      $('stepDetect').classList.add('active');
-      $('stepDetect').querySelector('span').textContent = '✓';
-      $('stepJudge').classList.add('active');
-      $('stepJudge').querySelector('span').textContent = '✓';
-      const result = snapshot.result || pendingAnalysisResult;
-      pendingAnalysisResult = result;
-      $('analysisStatus').textContent = result.source === 'yolo_timeout_fallback'
-        ? '大模型请求超时，已使用稳定的 YOLOv8 结果，结果已锁定。'
-        : result.source === 'llm_override'
-          ? 'YOLOv8 与大模型结果不一致，已以大模型结果为准。'
-          : result.source === 'yolo_only'
-            ? '未启用大模型复核，已使用稳定的 YOLOv8 结果。'
-            : 'YOLOv8 与大模型复核一致，结果已锁定。';
-      return true;
-    }
-    if (snapshot.status === 'error' || snapshot.cancelled) {
-      throw new Error(snapshot.error || 'K3 视觉裁决已取消');
-    }
-    // SSE snapshots expose the lifecycle phase at the top level, while the
-    // countdown value belongs to the structured holding event. Preserve that
-    // richer event instead of overwriting it with a generic message.
-    updateAnalysisProgress(latestHoldingEvent || snapshot);
-    return false;
-  }
-
-  function streamAnalysis(jobId) {
-    if (!('EventSource' in window)) return Promise.reject(new Error('浏览器不支持 SSE'));
-    return new Promise((resolve, reject) => {
-      const source = new EventSource(`/api/adjudicate/${jobId}/stream`);
-      const eventSequence = { value: 0 };
-      let settled = false;
-
-      const finish = (error = null) => {
-        if (settled) return;
-        settled = true;
-        source.close();
-        if (error) reject(error); else resolve();
-      };
-      const handle = (event) => {
-        try {
-          const snapshot = JSON.parse(event.data);
-          if (applyAnalysisSnapshot(snapshot, eventSequence)) finish();
-          else if (snapshot.status === 'error') finish(new Error(snapshot.error || 'K3 视觉裁决失败'));
-        } catch (error) {
-          finish(error);
-        }
-      };
-      source.addEventListener('snapshot', handle);
-      source.addEventListener('update', handle);
-      source.addEventListener('complete', handle);
-      source.onerror = () => {
-        if (!settled) finish(new Error('SSE 连接中断'));
-      };
-    });
-  }
-
-  async function pollAnalysisFallback(jobId) {
-    for (;;) {
-      const job = await requestJson(`/api/adjudicate/${jobId}`);
-      if (applyAnalysisSnapshot(job, { value: 0 })) return;
-      await new Promise((resolve) => setTimeout(resolve, 700));
-    }
-  }
-
-  async function pollAnalysis(jobId) {
-    try {
-      await streamAnalysis(jobId);
-    } catch (error) {
-      // SSE is the primary push path. Keep the existing snapshot polling as a
-      // compatibility fallback for older browsers or an upgraded backend that
-      // is temporarily unavailable.
-      if (error.message !== 'SSE 连接中断' && error.message !== '浏览器不支持 SSE') {
-        throw error;
-      }
-      await pollAnalysisFallback(jobId);
-    }
-    const job = await requestJson(`/api/adjudicate/${jobId}`);
-    if (job.status === 'error' && job.result && job.result.diagnosed) {
-      showDiagnosis(job.result);
-    } else if ((job.status === 'success' || job.phase === 'complete') && (job.result || pendingAnalysisResult)) {
-      showResult(job.result || pendingAnalysisResult);
-    }
-  }
-
-  async function reveal() {
-    setPhase('analysis');
-    resetAnalysisSteps();
-    speakState('analysis_started');
-    try {
-      const job = await requestJson('/api/adjudicate', { method: 'POST', body: JSON.stringify({ game: 'dice' }) });
-      await pollAnalysis(job.job_id);
-    } catch (error) {
-      stopVisionStream();
-      markAnalysisFailure();
-      document.querySelector('.analysis-spinner')?.classList.add('hidden');
-      $('analysisTitle').textContent = '识别未完成';
-      $('analysisStatus').textContent = error.message;
-      $('analysisFailureActions').classList.remove('hidden');
-      toast(`K3 视觉裁决失败：${error.message}`);
-    }
-  }
-
-  function showDiagnosis(result) {
-    stopVisionStream();
-    if (!result || result.retry_required !== true) {
-      throw new Error('诊断结果缺少 retry_required 标记');
-    }
-    const diagnosis = result && result.diagnosis && typeof result.diagnosis === 'object'
-      ? result.diagnosis : {};
-    markAnalysisFailure();
-    document.querySelector('.analysis-spinner')?.classList.add('hidden');
-    $('analysisTitle').textContent = '本次裁决未完成';
-    const details = diagnosisDetails(diagnosis);
-    $('analysisStatus').textContent = [
-      diagnosis.message
-        || '当前画面无法形成稳定检测结果，请检查摆放和光线后重新开始。',
-      ...details,
-    ].join(' ');
-    $('analysisFailureActions').classList.remove('hidden');
-    toast('视觉裁决未完成，可按蓝色按钮重新识别');
-    speakState('analysis_retry_hint');
-  }
-
-  function retryAdjudication() {
-    if (state.phase !== 'analysis' || $('analysisFailureActions').classList.contains('hidden')) return;
-    stopSpeech();
-    reveal();
   }
 
   function showResult(result) {
@@ -491,7 +289,6 @@ export function register(engine) {
       throw new Error('裁决结果缺少有效的玩家或 Agent 分数');
     }
     updateScores(player, agent);
-    setPhase('result');
     const banner = $('resultBanner');
     const winnerRole = result.winner_role;
     const tie = winnerRole === 'TIE';
@@ -505,64 +302,105 @@ export function register(engine) {
       ? '大模型超时，采用 YOLOv8'
       : result.source === 'yolo_failure_fallback'
         ? '大模型请求失败，采用 YOLOv8'
-      : result.source === 'llm_override'
-        ? '大模型结果不一致，以大模型结果为准'
-        : result.source === 'yolo_only'
-          ? '当前未启用大模型'
-          : '大模型复核一致';
+        : result.source === 'llm_override'
+          ? '大模型结果不一致，以大模型结果为准'
+          : result.source === 'yolo_only'
+            ? '当前未启用大模型'
+            : '大模型复核一致';
     $('resultSubtitle').textContent = `YOLOv8：玩家 ${player} : Agent ${agent}；${verificationText}`;
     banner.classList.toggle('loss', !playerWins && !tie);
-    const resultTtsKey = tie ? 'result_tie' : playerWins ? 'result_player_win' : 'result_agent_win';
-    speakState(resultTtsKey, { player_score: player, agent_score: agent });
   }
 
-  function resetRound() {
+  function showDiagnosis(result) {
     stopVisionStream();
-    clearTimeout(revealTransitionTimer);
-    revealTransitionTimer = null;
-    playerDice = [];
-    agentDice = [];
-    $('analysisFailureActions').classList.add('hidden');
-    $('stepDetect').classList.remove('failed');
-    $('stepJudge').classList.remove('failed');
-    updateScores();
-    setPhase('ready');
+    const diagnosis = result && result.diagnosis && typeof result.diagnosis === 'object'
+      ? result.diagnosis : {};
+    markAnalysisFailure();
+    document.querySelector('.analysis-spinner')?.classList.add('hidden');
+    $('analysisTitle').textContent = '本次裁决未完成';
+    const details = diagnosisDetails(diagnosis);
+    $('analysisStatus').textContent = [
+      diagnosis.message
+        || '当前画面无法形成稳定检测结果，请检查摆放和光线后重新开始。',
+      ...details,
+    ].join(' ');
+    $('analysisFailureActions').classList.remove('hidden');
   }
 
-  function backFromRules() {
-    stopSpeech();
-    returnToSelect();
+  function handleRoundEvent(event, snapshot) {
+    if (event.event === 'video') {
+      startVisionStream(event);
+    } else if (event.event === 'phase' || event.event === 'progress') {
+      updateAnalysisProgress(event);
+    } else if (event.event === 'result' && snapshot && snapshot.result) {
+      // Physical result relayed by the provider; role-projected rendering
+      // happens on the result state below with the authoritative snapshot.
+      updateAnalysisProgress({ phase: 'holding' });
+    } else if (event.event === 'diagnosis' && snapshot && snapshot.result) {
+      showDiagnosis(snapshot.result);
+    }
   }
 
-  function repeatRules() {
-    toast('正在重复播报游戏规则');
-    speakState('rules_intro');
+  // ---- 意图提交 ----
+  function submitIntent(intent, payload = {}) {
+    if (!round) return Promise.resolve();
+    return round.submitIntent(intent, payload).catch((error) => {
+      if (error.silent) return; // 按键时机不合状态属正常对局
+      console.error(`Intent ${intent} failed:`, error);
+    });
   }
 
-  function confirmRules() {
-    setPhase('ready');
-    speakState('rules_confirmed');
+  function analysisFailureVisible() {
+    const actions = $('analysisFailureActions');
+    return actions && !actions.classList.contains('hidden');
   }
 
   const handlers = {
     startShake: () => {
       prepareCountdownAudio();
-      speakState('shake_started');
-      countdown(beginShake, 'GET READY', '和 Agent 同步');
+      submitIntent('start_shake');
     },
-    readyBack: () => returnToSelect(),
-    stopShake: () => stopShake(),
-    analysisRetry: () => retryAdjudication(),
-    analysisNewRound: () => resetRound(),
-    analysisBackToGames: () => returnToSelect(),
-    newRound: () => resetRound(),
-    backToGames: () => returnToSelect(),
-    repeatRules,
-    confirmRules,
-    backFromRules: () => backFromRules(),
+    readyBack: () => submitIntent('back'),
+    stopShake: () => submitIntent('stop_shake'),
+    confirmRules: () => submitIntent('confirm'),
+    repeatRules: () => {
+      toast('正在重复播报游戏规则');
+      submitIntent('repeat');
+    },
+    backFromRules: () => submitIntent('back'),
+    analysisRetry: () => submitIntent('retry'),
+    analysisNewRound: () => submitIntent('new_round'),
+    analysisBackToGames: () => submitIntent('back'),
+    newRound: () => submitIntent('new_round'),
+    backToGames: () => submitIntent('back'),
   };
 
-  function enter(manifest) {
+  function onKey(event) {
+    if (event.key === 'Escape') {
+      if (['rules', 'ready', 'result'].includes(state.phase)) submitIntent('back');
+      else if (state.phase === 'analysis' && analysisFailureVisible()) submitIntent('back');
+      return;
+    }
+    if (event.key === 'Enter') {
+      if (state.phase === 'rules') submitIntent('confirm');
+      else if (state.phase === 'ready') handlers.startShake();
+      return;
+    }
+    if (state.phase === 'rules' && event.key === 'ArrowDown') {
+      handlers.repeatRules();
+      return;
+    }
+    if (state.phase === 'analysis' && event.key === 'ArrowDown') {
+      if (analysisFailureVisible()) submitIntent('retry');
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      return;
+    }
+  }
+
+  // ---- 对局生命周期 ----
+  async function enter(manifest) {
     configureParticipants(manifest);
     stopVisionStream();
     playerDice = [];
@@ -571,53 +409,71 @@ export function register(engine) {
     document.querySelector('.analysis-spinner')?.classList.remove('hidden');
     updateScores();
     Object.entries(handlers).forEach(([id, fn]) => $(id).addEventListener('click', fn));
+    lastRenderedState = '';
     setPhase('rules');
-    speakState('rules_intro');
+
+    round = createRoundClient(manifest.id, {
+      onStateChange: (stateName, ui, snapshot) => {
+        renderState(stateName, ui);
+        if (stateName === 'result' && snapshot && snapshot.result) {
+          showResult(snapshot.result);
+        } else if (stateName === 'analysis_failed' && snapshot && snapshot.result) {
+          showDiagnosis(snapshot.result);
+          toast('视觉裁决未完成，可按蓝色按钮重新识别');
+        }
+      },
+      onSpeech: (directive) => {
+        playDirective(round, directive);
+      },
+      onTick: renderTick,
+      onEvent: handleRoundEvent,
+      onComplete: (event) => {
+        if (event.status === 'error') {
+          stopVisionStream();
+          markAnalysisFailure();
+          document.querySelector('.analysis-spinner')?.classList.add('hidden');
+          $('analysisTitle').textContent = '识别未完成';
+          $('analysisStatus').textContent = '视觉裁决异常结束，请重新开始一局';
+          $('analysisFailureActions').classList.remove('hidden');
+          toast('K3 视觉裁决失败');
+          return;
+        }
+        // exited / cancelled: the player left, follow them back to the list.
+        returnToSelect();
+      },
+      onSyncState: (snapshot) => {
+        if (snapshot.state && snapshot.state !== lastRenderedState) {
+          renderState(snapshot.state, {});
+          if (snapshot.state === 'result' && snapshot.result) showResult(snapshot.result);
+          else if (snapshot.state === 'analysis_failed' && snapshot.result) showDiagnosis(snapshot.result);
+        }
+      },
+    });
+
+    try {
+      await round.start();
+    } catch (error) {
+      console.error('Failed to start round:', error);
+      toast('对局创建失败，请检查后端服务');
+      returnToSelect();
+    }
   }
 
   function teardown() {
     stopVisionStream();
-    clearInterval(shakeTimer);
-    clearInterval(countdownTimer);
-    clearTimeout(revealTransitionTimer);
-    shakeTimer = null;
-    countdownTimer = null;
-    revealTransitionTimer = null;
     participantSides = null;
     Object.entries(handlers).forEach(([id, fn]) => $(id).removeEventListener('click', fn));
     stopSpeech();
-  }
-
-  function onKey(event) {
-    if (event.key === 'Escape') {
-      if (state.phase === 'rules') backFromRules();
-      else if (state.phase === 'ready' || state.phase === 'result') returnToSelect();
-      else if (state.phase === 'analysis' && !$('analysisFailureActions').classList.contains('hidden')) {
-        returnToSelect();
-      }
-      return;
+    if (round) {
+      round.cancel();
+      round = null;
     }
-    if (event.key === 'Enter') {
-      if (state.phase === 'rules') confirmRules();
-      else if (state.phase === 'ready') handlers.startShake();
-      return;
-    }
-    if (state.phase === 'rules' && event.key === 'ArrowDown') {
-      repeatRules();
-      return;
-    }
-    if (state.phase === 'analysis' && event.key === 'ArrowDown') {
-      retryAdjudication();
-      return;
-    }
-    if (event.key === 'ArrowUp') {
-      return;
-    }
+    lastRenderedState = '';
   }
 
   return {
     id: 'dice',
-    phases,
+    phases: ['select', 'rules', 'ready', 'countdown', 'shaking', 'open', 'analysis', 'result'],
     progressCount: 6,
     phaseMeta,
     enter,

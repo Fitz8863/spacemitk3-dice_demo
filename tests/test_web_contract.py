@@ -27,40 +27,21 @@ def test_frontend_has_no_hardcoded_mediamtx_host():
 
 def test_frontend_keeps_video_until_terminal_complete():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
 
     assert "phase === 'holding'" in js
-    assert "status === 'success'" in js
-    assert "phase === 'complete'" in js
+    assert "'round_complete'" in app
     assert "startVisionStream(event)" in js
+    assert "stopVisionStream()" in js
 
 
 def test_frontend_preserves_holding_countdown_from_structured_event():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
-    apply_snapshot = js.split("function applyAnalysisSnapshot", 1)[1].split(
-        "function streamAnalysis", 1
-    )[0]
+    holding = js.split("event.phase === 'holding'", 1)[1].split("}", 1)[0]
 
-    assert "latestHoldingEvent" in js
-    assert "updateAnalysisProgress(latestHoldingEvent || snapshot)" in js
-    assert "updateAnalysisProgress(snapshot);" not in apply_snapshot
-
-
-def test_frontend_accepts_the_three_speech_modes():
-    """The browser must gate exactly the manifest's three modes.
-
-    A backend-only mode rename once left the browser rejecting ``tts_local``
-    locally, so speech requests never reached the server at all.
-    """
-    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
-    normalize = app.split("function normalizeSpeechEntry", 1)[1].split(
-        "function renderTtsText", 1
-    )[0]
-
-    assert "mode !== 'tts_local' && mode !== 'tts_remote' && mode !== 'audio'" in normalize
-    assert "entry.mode || 'tts_local'" in normalize
-    assert "mode: 'tts_local', text: entry" in normalize
-    # The legacy 'tts' spelling must not gate requests in the browser.
-    assert "mode !== 'tts'" not in normalize
+    assert "remaining_ms" in holding
+    assert "实时画面将继续播放" in js
+    assert "Math.ceil(remaining / 1000)" in holding
 
 
 def test_frontend_open_phase_prompts_readiness_without_duplicate_banner():
@@ -143,34 +124,28 @@ def test_frontend_buttons_match_controller_key_colors():
 
 
 def test_frontend_shouts_stop_before_reveal_ready():
-    """At shake end the flow shouts 停 first, then speaks the reveal line."""
+    """The 停 → reveal rhythm is declared by the backend state machine."""
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
 
-    stop_shake = js.split("function stopShake", 1)[1].split(
-        "function beginRevealCountdown", 1
-    )[0]
-    # Execution contract: shout 停, and only when its playback promise
-    # settles, run the reveal transition which speaks the reveal line.
-    assert "const startRevealTransition = () => {" in stop_shake
-    assert "speakState('reveal_ready')" in stop_shake
-    assert "speakState('shake_stop').then(startRevealTransition);" in stop_shake
-    # 停 must finish before the reveal line starts: the reveal transition is
-    # chained on the spoken promise, not run in parallel.
-    assert ".then(startRevealTransition)" in stop_shake
-
-    stop_entry = dice_state("open_reveal")["on_enter"][0]
+    open_reveal = dice_state("open_reveal")
+    stop_entry = open_reveal["on_enter"][0]
     assert stop_entry["mode"] == "audio"
     assert stop_entry["audio"] == "audio/停.wav"
     assert stop_entry["text"].strip() == "停！"
     assert stop_entry["await"] is True
+    # The reveal line follows in the same on_enter sequence, and the hold
+    # window starts only after the awaited clip finishes.
+    assert open_reveal["on_enter"][1]["text"].startswith("准备好了没有")
+    assert open_reveal["duration"] == 4
 
-    # speakState (engine, app.js) must expose the playback promise so the
-    # chain in stopShake can wait for 停 to finish.
-    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
-    assert (
-        "return speak('', { ...config, source: { mode: entry.mode, key, values } });"
-        in app
-    )
+    # The frontend must not re-implement the chain: awaiting is an engine
+    # concern, playback acknowledgement happens through the round client.
+    assert "function stopShake" not in js
+    assert "speakState" not in js
+    assert "startRevealTransition" not in js
+    assert "submitIntent('speech_done'" in app
+    assert "directive.await" in app
 
 
 def test_frontend_distinguishes_llm_override_from_consensus():
@@ -181,9 +156,9 @@ def test_frontend_distinguishes_llm_override_from_consensus():
 def test_frontend_renders_structured_diagnosis_and_retry_prompt():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     assert "showDiagnosis" in js
-    assert "retry_required" in js
     assert "本次裁决未完成" in js
     assert "diagnosis.message" in js
+    assert "analysisFailureActions" in js
 
 
 def test_frontend_blue_button_retries_adjudication_after_diagnosis():
@@ -192,14 +167,12 @@ def test_frontend_blue_button_retries_adjudication_after_diagnosis():
 
     assert 'aria-keyshortcuts="ArrowDown"' in html
     assert "state.phase === 'analysis' && event.key === 'ArrowDown'" in js
-    retry = js.split("function retryAdjudication", 1)[1].split("function showResult", 1)[0]
-    assert "reveal()" in retry
-    assert "stopSpeech()" in retry
-    # Announcing the diagnosis tells the player the blue button retries.
-    diagnosis = js.split("function showDiagnosis", 1)[1].split("function retryAdjudication", 1)[0]
-    assert "analysis_retry_hint" in diagnosis
+    # Retrying re-enters adjudication through the backend state machine.
+    assert "submitIntent('retry')" in js
+    # The retry hint itself is spoken by the backend on entering the failed state.
     retry_entry = dice_state("analysis_failed")["on_enter"][0]
     assert retry_entry["mode"] == "tts_local"
+    assert "重新识别" in retry_entry["text"]
 
 
 def test_frontend_diagnosis_marks_detection_failed_and_shows_evidence():
@@ -225,19 +198,19 @@ def test_frontend_failure_state_offers_retry_new_round_or_game_list():
     assert "重新识别" in html
     assert "再来一局" in html
     assert "退出游戏，返回列表" in html
-    assert "analysisRetry: () => retryAdjudication()" in js
-    assert "analysisNewRound: () => resetRound()" in js
-    assert "analysisBackToGames: () => returnToSelect()" in js
-    # Rendering a diagnosis must not relaunch adjudication by itself; only the
-    # blue-button retry entry may call reveal().
-    diagnosis = js.split("function showDiagnosis", 1)[1].split("function retryAdjudication", 1)[0]
-    assert "reveal()" not in diagnosis
+    assert "analysisRetry: () => submitIntent('retry')" in js
+    assert "analysisNewRound: () => submitIntent('new_round')" in js
+    assert "analysisBackToGames: () => submitIntent('back')" in js
+    # Rendering a diagnosis must not relaunch adjudication by itself; only
+    # submitting the retry intent may re-enter the analysis state.
+    diagnosis = js.split("function showDiagnosis", 1)[1].split("function handleRoundEvent", 1)[0]
+    assert "submitIntent" not in diagnosis
 
 
 def test_frontend_does_not_mark_yolo_complete_while_still_detecting():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
-    detecting = js.split("if (job.phase === 'detecting')", 1)[1].split(
-        "} else if (job.phase === 'verifying')", 1
+    detecting = js.split("if (event.phase === 'detecting')", 1)[1].split(
+        "} else if (event.phase === 'verifying')", 1
     )[0]
     assert "querySelector('span').textContent = '…'" in detecting
     assert "querySelector('span').textContent = '✓'" not in detecting
@@ -269,21 +242,16 @@ def test_frontend_uses_manifest_participant_layout_and_role_result():
 def test_frontend_enters_open_transition_and_starts_countdown_automatically():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
-    stop_shake = js.split("function stopShake", 1)[1].split(
-        "function beginRevealCountdown", 1
-    )[0]
 
-    assert "setPhase('open')" in stop_shake
-    assert "countdown(" not in stop_shake
-    assert "speakState('reveal_ready')" in stop_shake
-    assert "revealTransitionTimer = setTimeout" in stop_shake
-    assert "beginRevealCountdown();" in stop_shake
-    assert re.search(r"\},\s*\d+\);", stop_shake)
-    assert "clearTimeout(revealTransitionTimer)" in js
-    assert "开盖过场结束后自动进入倒计时" in js
+    # Timers, transitions, and the reveal chain all live in the backend
+    # state machine; the game module renders events and submits intents only.
+    assert "setTimeout" not in js
+    assert "setInterval" not in js
+    assert "setPhase('open'" not in js
     assert 'id="revealDice"' not in html
     open_reveal = dice_state("open_reveal")
     assert open_reveal["on_enter"][0].get("await") is True
+    assert open_reveal["on_expire"]["to"] == "vision_countdown"
     reveal_entry = open_reveal["on_enter"][1]
     assert reveal_entry["mode"] == "tts_local"
     assert reveal_entry["text"]
@@ -292,34 +260,30 @@ def test_frontend_enters_open_transition_and_starts_countdown_automatically():
 def test_frontend_counts_down_after_open_transition_before_adjudication():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
 
-    assert "function beginRevealCountdown" in js
-    confirm_open = js.split("function beginRevealCountdown", 1)[1].split(
-        "function resetAnalysisSteps", 1
-    )[0]
-    assert re.search(r"countdown\(\s*reveal,", confirm_open)
-    assert "VISION COUNTDOWN" in confirm_open
-    assert "请保持骰子和骰盅位置不动" in confirm_open
+    # The vision countdown is a backend state; the frontend only renders ticks.
+    vision_countdown = dice_state("vision_countdown")
+    assert vision_countdown["duration"] == 3
+    assert vision_countdown["tick_seconds"] == 0.9
+    assert vision_countdown["on_expire"]["to"] == "analysis"
+    assert vision_countdown["ui"]["view"] == "countdown"
+    assert "请保持骰子和骰盅位置不动" in vision_countdown["ui"]["copy"]
+    assert "countdownNumber" in js
     assert "revealDice" not in js
 
 
 def test_frontend_uses_vision_specific_copy_during_post_open_countdown():
-    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
-
-    assert "visionCountdownMeta" in js
-    assert "倒计时结束后开始视觉裁决" in js
-    confirm_open = js.split("function beginRevealCountdown", 1)[1].split(
-        "function resetAnalysisSteps", 1
-    )[0]
-    assert "visionCountdownMeta" in confirm_open
+    copy = dice_state("vision_countdown")["ui"]["copy"]
+    assert "倒计时结束后开始视觉裁决" in copy
 
 
 def test_frontend_uses_ten_second_shake_and_urgent_last_three_seconds():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
 
-    assert "const SHAKE_DURATION_SECONDS = 10;" in js
+    # The ten-second budget is owned by the backend state machine.
+    assert dice_state("shaking")["duration"] == 10
     assert 'id="shakeSeconds">10<' in html
-    assert "const urgent = seconds <= 3 && seconds > 0;" in js
+    assert "const urgent = seconds <= 3;" in js
     assert "shakeSeconds.classList.toggle('is-urgent', urgent)" in js
     assert "if (urgent) playCountdownCue(seconds);" in js
 
@@ -361,19 +325,18 @@ def test_frontend_uses_louder_tense_warning_tone_for_urgent_countdown():
 
 def test_frontend_plays_shake_started_with_get_ready_countdown_not_ten_second_timer():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
-    begin_shake = js.split("function beginShake", 1)[1].split(
-        "function stopShake", 1
-    )[0]
-    start_handler = js.split("startShake: () => {", 1)[1].split(
-        "stopShake: () => stopShake()", 1
-    )[0]
 
-    assert "speakState('shake_started')" not in begin_shake
-    assert "countdown(beginShake, 'GET READY', '和 Agent 同步');" in start_handler
-    assert "speakState('shake_started');" in start_handler
-    assert start_handler.index("speakState('shake_started')") < start_handler.index(
-        "countdown(beginShake"
-    )
+    # The start cue is the shake_countdown state's on_enter audio, and the
+    # frontend no longer owns any shake timer or countdown orchestration.
+    countdown_state = dice_state("shake_countdown")
+    entry = countdown_state["on_enter"][0]
+    assert entry["mode"] == "audio"
+    assert entry["audio"] == "audio/warm_321开始.wav"
+    assert countdown_state["duration"] == 3
+    assert countdown_state["tick_seconds"] == 0.9
+    assert "function beginShake" not in js
+    assert "SHAKE_DURATION_SECONDS" not in js
+    assert "start_shake" in js
 
 
 def test_frontend_removes_decorative_status_labels_and_keyboard_hints():
@@ -435,7 +398,7 @@ def test_frontend_uses_color_controller_hints_for_navigation_copy():
     assert '>✓<' not in app
     assert '>↻<' not in app
     assert '>↩<' not in app
-    assert 'renderPhaseCopy(phase, meta[1])' in app
+    assert 'renderPhaseCopy(phase, resolved[1])' in app
     assert '.controller-key-green' in css
     assert '.controller-key-blue' in css
     assert '.controller-key-red' in css
@@ -452,3 +415,56 @@ def test_frontend_hides_result_phase_copy_when_empty():
     assert "node.classList.add('hidden')" in app
     assert "result: ['本局结果', '']" in dice
     assert '点数已经锁定，看看谁赢下了这一局。' not in dice
+
+
+def test_frontend_round_client_drives_the_game():
+    """The game module submits intents and renders; it never advances state."""
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+
+    assert "createRoundClient" in app
+    assert "/api/game/rounds" in app
+    assert "`/api/game/rounds/${round.roundId}/speech`" in app
+    assert "EventSource(`/api/game/rounds/${roundId}/stream`)" in app
+    assert "submitIntent" in js
+    assert "createRoundClient" in js
+    # Intent outcomes that conflict with the current state are normal play.
+    assert "ROUND_INTENT_REJECTED" in app
+    assert "error.silent" in app
+
+
+def test_frontend_acks_awaited_directives_and_mutes_cleanly():
+    """await 指令播完回执；静音模式立即回执，避免状态机等待兜底。"""
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+
+    play = app.split("async function playDirective", 1)[1].split(
+        "// ---- 权威对局客户端", 1
+    )[0]
+    assert "directive.await" in play
+    assert "submitIntent('speech_done'" in play
+    # Muted playback must still acknowledge awaited directives.
+    muted = play.split("if (!state.sound)", 1)[1].split("}", 1)[0]
+    assert "acknowledge()" in muted
+
+
+def test_manifest_state_machine_declares_the_full_graph():
+    manifest = dice_manifest()
+    machine = manifest["state_machine"]
+    assert machine["initial"] == "rules"
+    names = set(machine["states"])
+    assert {
+        "rules", "ready", "shake_countdown", "shaking", "open_reveal",
+        "vision_countdown", "analysis", "analysis_failed", "result",
+    } <= names
+    # Analysis routes both provider outcomes.
+    analysis = machine["states"]["analysis"]["on_event"]
+    assert analysis["adjudication.result"]["to"] == "result"
+    assert analysis["adjudication.diagnosis"]["to"] == "analysis_failed"
+    # Retry re-enters adjudication without resetting the round.
+    failed = machine["states"]["analysis_failed"]["on_intent"]
+    assert failed["retry"]["to"] == "analysis"
+    assert failed["new_round"]["to"] == "ready"
+    # The result announcement picks its line from the adjudicated role.
+    result_entry = machine["states"]["result"]["on_enter"][0]
+    assert result_entry["select_by"] == "winner_role"
+    assert set(result_entry["cases"]) == {"PLAYER", "AGENT", "TIE"}
