@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "providers": {
+    "tts_local": "tts_moss_nano",
+    "tts_remote": "tts_gptsovits",
+    "asr": "asr_zipformer",
+    "vision_adjudicator": "vision_yolov8_adjudicator"
+  },
+  "voice": "default",
+  "speed": 1.0,
+  "asr_enabled": true
+}

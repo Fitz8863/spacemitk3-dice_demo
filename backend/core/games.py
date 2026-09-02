@@ -277,9 +277,19 @@ def run_game(
     on_event: Callable[[dict[str, Any]], None],
     timeout_seconds: float,
     components: Any,
+    defaults: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run a game's pipeline with the shared provider registry injected."""
+    """Run a game's pipeline with the shared provider registry injected.
+
+    ``defaults`` is the arena config (backend/config.json): it underlays the
+    game manifest so a pipeline resolving a provider slot the manifest leaves
+    open still finds the deployment-wide engine.
+    """
     manifest = require_game(registry, game_id)
+    if defaults:
+        from core.arena_config import with_global_defaults
+
+        manifest = with_global_defaults(manifest, defaults)
     module = importlib.import_module(f"games.{game_id}.pipeline")
     return module.run(
         on_log,

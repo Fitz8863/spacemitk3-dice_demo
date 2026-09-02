@@ -40,6 +40,14 @@ from core.games import (
 )
 from core.jobs import ComponentJob
 from core.asr_bridge import AsrIntentBridge
+from core.arena_config import (
+    ARENA_CONFIG_PATH,
+    ArenaConfigError,
+    arena_slot_value,
+    load_arena_config,
+    resolve_local_tts_pin,
+    with_global_defaults,
+)
 from core.state_machine import GameRound, IntentRejectedError, RoundClosedError
 from core.tts_dispatch import TtsDispatcher
 from core.tts_protocol import (
@@ -103,15 +111,71 @@ def get_games() -> GameRegistry:
             else:
                 GAMES = candidate
                 _GAMES_MTIMES = mtimes
+                _check_local_tts_drift()
         return GAMES
 
 
 _GAMES_MTIMES: dict[str, float] = _manifest_mtimes()
 
+# Arena (project-wide) config: deployment defaults that follow the process
+# rather than any single game — provider slots, TTS voice/speed defaults,
+# and the global ASR breaker.  Hot-reloaded with the same keep-last-good
+# rule as game manifests; the local TTS selection is additionally pinned at
+# process start (see main) because a running engine cannot be swapped.
+_ARENA_CONFIG: dict[str, Any] = {}
+_ARENA_MTIME: float | None = None
+_LOCAL_TTS_PIN: str | None = None
+
+
+def get_arena_config() -> dict[str, Any]:
+    """Return the arena config, reloading backend/config.json on mtime change."""
+    global _ARENA_CONFIG, _ARENA_MTIME
+    try:
+        mtime = ARENA_CONFIG_PATH.stat().st_mtime
+    except OSError:
+        mtime = None
+    if mtime != _ARENA_MTIME:
+        _ARENA_MTIME = mtime
+        try:
+            _ARENA_CONFIG = load_arena_config(ARENA_CONFIG_PATH)
+            print("[arena] config loaded", flush=True)
+        except ArenaConfigError as exc:
+            print(f"[arena] keep last good config: {exc}", flush=True)
+        _check_local_tts_drift()
+    return _ARENA_CONFIG
+
+
+def _enabled_game_manifests() -> list[dict[str, Any]]:
+    return [m for m in get_games().all() if m.get("enabled", False)]
+
+
+def _check_local_tts_drift() -> None:
+    """A mid-run local-TTS config change must not switch the running engine."""
+    if _LOCAL_TTS_PIN is None:
+        return
+    try:
+        would_pin = resolve_local_tts_pin(get_arena_config(), _enabled_game_manifests())
+    except ArenaConfigError as exc:
+        print(
+            f"[arena] local TTS conflict appeared at runtime "
+            f"(frozen: {_LOCAL_TTS_PIN}): {exc}",
+            flush=True,
+        )
+        return
+    if would_pin and would_pin != _LOCAL_TTS_PIN:
+        print(
+            f"[arena] local TTS config now points at {would_pin} but the process "
+            f"is frozen on {_LOCAL_TTS_PIN}; restart to switch engines",
+            flush=True,
+        )
+
 
 def _game_provider_id(game_id: str, provider_slot: str, fallback: str) -> str:
     manifest = require_game(get_games(), game_id)
-    return resolve_provider_id(manifest, provider_slot, fallback)
+    provider_id = resolve_provider_id(manifest, provider_slot)
+    if not provider_id:
+        provider_id = arena_slot_value(get_arena_config(), provider_slot)
+    return provider_id or fallback
 
 
 def _provider_health(
@@ -165,7 +229,7 @@ def _selected_provider_id(game_id: str, provider_slot: str, fallback: str) -> st
 
 def _selected_tts_id(game_id: str = "dice") -> str:
     try:
-        return TtsDispatcher(COMPONENTS, get_games()).provider_id(game_id)
+        return _tts_dispatcher().provider_id(game_id)
     except DiceArenaError:
         return "tts_qwen3"
 
@@ -249,13 +313,20 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
 
 def _tts_provider(payload: dict[str, Any], game_id: str | None = None):
     """Compatibility wrapper for callers that still import this helper."""
-    return TtsDispatcher(COMPONENTS, get_games()).provider(payload, game_id)
+    return _tts_dispatcher().provider(payload, game_id)
 
 
 def _tts_dispatcher() -> TtsDispatcher:
     # Resolve on demand so tests and board operators can replace the registry
-    # or environment without restarting this module object.
-    return TtsDispatcher(COMPONENTS, get_games())
+    # or environment without restarting this module object.  Arena slots fill
+    # in behind the game manifest; the pinned local TTS engine (frozen at
+    # process start) overrides even later manifest edits.
+    return TtsDispatcher(
+        COMPONENTS,
+        get_games(),
+        slot_fallbacks=lambda slot: arena_slot_value(get_arena_config(), slot),
+        pinned_local_tts=_LOCAL_TTS_PIN,
+    )
 
 
 jobs: dict[str, ComponentJob] = {}
@@ -289,6 +360,7 @@ def _round_adjudicate_fn(game_id: str):
                 require_game(get_games(), game_id), _ROUND_TIMEOUT_FALLBACK_SECONDS
             ),
             COMPONENTS,
+            defaults=get_arena_config(),
         )
 
     return adjudicate
@@ -298,6 +370,9 @@ def create_round(game_id: str) -> GameRound:
     manifest = require_game(get_games(), game_id)
     if not isinstance(manifest.get("state_machine"), dict):
         raise InvalidRequestError(f"game {game_id} declares no state_machine")
+    # The round snapshots the *effective* manifest: arena defaults underlaid,
+    # the global ASR breaker applied.  Engine and ASR bridge read it as-is.
+    manifest = with_global_defaults(manifest, get_arena_config())
     with rounds_lock:
         for existing in list(rounds.values()):
             if existing.status == "running":
@@ -379,6 +454,7 @@ def create_adjudication_job(game_id: str) -> ComponentJob:
             return run_game(
                 get_games(), game_id, on_log, is_cancelled, on_event,
                 resolve_adjudication_timeout(require_game(get_games(), game_id), JOB_TIMEOUT_SECONDS), COMPONENTS,
+                defaults=get_arena_config(),
             )
 
         job = ComponentJob(run_fn=run_fn, name=f"{game_id}-job")
@@ -896,8 +972,21 @@ def main() -> None:
     parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8080")))
     args = parser.parse_args()
+    # The local TTS engine is chosen exactly once per process: startup pins
+    # it and later config edits cannot switch it (a resident engine cannot
+    # be swapped mid-run).  A configuration naming two engines refuses to
+    # start rather than silently picking one.
+    global _LOCAL_TTS_PIN
+    try:
+        _LOCAL_TTS_PIN = resolve_local_tts_pin(
+            get_arena_config(), _enabled_game_manifests()
+        )
+    except ArenaConfigError as exc:
+        print(f"[arena] refusing to start: {exc}", flush=True)
+        raise SystemExit(1) from exc
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Dice Arena K3 backend listening on http://{args.host}:{args.port}", flush=True)
+    print(f"Local TTS provider: {_LOCAL_TTS_PIN or 'none'}", flush=True)
     adjudicator = next((item for item in COMPONENTS.all(include_health=True)
                         if item["type"] == "vision" and item["role"] == "adjudicator"), None)
     print(

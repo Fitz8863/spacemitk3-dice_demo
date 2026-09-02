@@ -24,19 +24,37 @@ class TtsDispatcher:
         games: GameRegistry,
         *,
         default_provider: str = "tts_qwen3",
+        slot_fallbacks: Callable[[str], str] | None = None,
+        pinned_local_tts: str | None = None,
     ) -> None:
         self.components = components
         self.games = games
         self.default_provider = default_provider
+        # Arena (backend/config.json) slot defaults, filled in only when the
+        # game manifest leaves a slot unconfigured.
+        self._slot_fallbacks = slot_fallbacks
+        # The local TTS engine is chosen once at process start; while set it
+        # overrides even later manifest edits (switching requires a restart).
+        self._pinned_local_tts = pinned_local_tts
 
     @staticmethod
     def game_id(payload: dict[str, Any] | None, fallback: str = "dice") -> str:
         value = (payload or {}).get("game") or fallback
         return str(value)
 
+    def _slot_value(self, slot: str, game_id: str) -> str:
+        """Resolve one provider slot: pin > game manifest > arena > builtin."""
+        if slot == "tts_local" and self._pinned_local_tts:
+            return self._pinned_local_tts
+        provider_id = resolve_provider_id(require_game(self.games, game_id), slot)
+        if not provider_id and self._slot_fallbacks is not None:
+            provider_id = self._slot_fallbacks(slot)
+        if not provider_id and slot == "tts_local":
+            provider_id = self.default_provider
+        return provider_id
+
     def provider_id(self, game_id: str = "dice") -> str:
-        manifest = require_game(self.games, game_id)
-        return resolve_provider_id(manifest, "tts_local", self.default_provider)
+        return self._slot_value("tts_local", game_id)
 
     def provider_id_for_speech_entry(self, entry: dict[str, Any], game_id: str) -> str:
         """Resolve the provider id for one manifest speech entry.
@@ -56,8 +74,7 @@ class TtsDispatcher:
                 "TTS_SLOT_NOT_CONFIGURED",
                 500,
             )
-        fallback = self.default_provider if slot == "tts_local" else ""
-        provider_id = resolve_provider_id(require_game(self.games, game_id), slot, fallback)
+        provider_id = self._slot_value(slot, game_id)
         if not provider_id:
             raise DiceArenaError(
                 f"speech mode {mode!r} needs providers.{slot} "
