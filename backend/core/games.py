@@ -143,7 +143,7 @@ def public_game_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
                 "min_views": int(multi.get("min_views", 1)),
                 "views": [],
             }
-            for view in multi.get("views"):
+            for view in multi.get("views", []):
                 if not isinstance(view, dict) or not isinstance(view.get("id"), str):
                     continue
                 safe_multi["views"].append({

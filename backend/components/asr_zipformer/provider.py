@@ -178,9 +178,9 @@ class _AsrSession:
                 line = raw.decode("utf-8", errors="replace").strip()
                 if line:
                     self._ready.set()
-                    self._on_log(f"[asr] {line}")
+                    self._on_log(f"{line}")
         except Exception as exc:  # diagnostics only; never kill the backend
-            self._on_log(f"[asr] stderr reader error: {exc}")
+            self._on_log(f"stderr reader error: {exc}")
         finally:
             self._ready.set()
 
@@ -194,7 +194,7 @@ class _AsrSession:
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
-                    self._on_log(f"[asr] non-JSON output ignored: {line[:200]}")
+                    self._on_log(f"non-JSON output ignored: {line[:200]}")
                     continue
                 if not isinstance(event, dict):
                     continue
@@ -205,19 +205,19 @@ class _AsrSession:
                         try:
                             self._on_sentence(text)
                         except Exception as exc:
-                            self._on_log(f"[asr] sentence callback error: {exc}")
+                            self._on_log(f"sentence callback error: {exc}")
                 elif kind == "stats":
                     rtf = event.get("rtf")
-                    self._on_log(f"[asr] stats rtf={rtf}")
+                    self._on_log(f"stats rtf={rtf}")
                 # "partial" events are intentionally dropped: too chatty for
                 # logs and not used for intent matching.
         except Exception as exc:  # see _read_stderr
-            self._on_log(f"[asr] event reader error: {exc}")
+            self._on_log(f"event reader error: {exc}")
         finally:
             capture_rc = self._returncode(self._capture)
             asr_rc = self._returncode(self._asr)
             if not self._stopped:
-                self._on_log(f"[asr] session ended unexpectedly (asr rc={asr_rc}, capture rc={capture_rc})")
+                self._on_log(f"session ended unexpectedly (asr rc={asr_rc}, capture rc={capture_rc})")
 
     @staticmethod
     def _returncode(process: subprocess.Popen | None) -> Any:
@@ -366,7 +366,7 @@ class ZipformerAsrProvider(AsrProvider):
             if not session.running:
                 raise AsrSessionError("ASR process exited during startup (see asr log)")
             on_log(
-                f"[asr] model load exceeded {start_timeout:g}s; continuing anyway"
+                f"model load exceeded {start_timeout:g}s; continuing anyway"
             )
         return session
 

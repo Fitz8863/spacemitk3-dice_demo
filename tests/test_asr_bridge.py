@@ -308,6 +308,22 @@ class ValidateAsrSectionTests(unittest.TestCase):
         self.assertEqual(public["asr"], {"enabled": True})
         self.assertNotIn("phrases", public["asr"])
 
+    def test_public_projection_handles_the_packaged_manifests(self):
+        """Regression: the real dice/rps manifests project without raising.
+
+        Both packaged manifests declare multi_view without a ``views`` list
+        (multi-view disabled); the projection must tolerate that, and the
+        wired dice manifest must expose its asr switch.
+        """
+        from core.games import GAMES_ROOT, load_games
+
+        registry = load_games(GAMES_ROOT)
+        public = registry.public_all()
+        ids = {game["id"] for game in public}
+        self.assertIn("dice", ids)
+        dice = next(game for game in public if game["id"] == "dice")
+        self.assertEqual(dice["asr"], {"enabled": True})
+
 
 # ---- server-level integration (real engine + real bridge, dummy provider) ----
 
