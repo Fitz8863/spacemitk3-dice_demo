@@ -65,14 +65,14 @@ body[data-phase="open"] .stage-body { flex: 0; padding: 0; }
 .game-lock { border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; color: var(--muted); font-size: 15px; }
 
 /* 按钮 */
-.primary-button, .secondary-button, .stop-button { border: 0; border-radius: 14px; padding: 20px 40px; cursor: pointer; font-weight: 700; font-size: 22px; transition: .18s; }
-.primary-button { background: var(--accent); color: var(--accent-contrast); box-shadow: 0 8px 18px rgba(37, 99, 235, .2); }
-.primary-button:hover { filter: brightness(1.12); transform: translateY(-2px); }
-.primary-button span { margin-left: 12px; font-size: 24px; }
-.secondary-button { color: var(--muted-2); background: var(--surface); border: 2px solid var(--line); box-shadow: var(--shadow); }
-.secondary-button:hover { background: var(--surface-muted); }
-.stop-button { background: #fef3f2; color: #b42318; border: 2px solid #fecdca; box-shadow: 0 8px 18px rgba(220, 38, 38, .1); }
-.stop-button:hover { background: #fee4e2; }
+/* 实体按键同色按钮：绿=确认/开始，蓝=向下/重听/重试，红=停止/返回 */
+.btn-circle, .btn-pill { display: inline-flex; align-items: center; justify-content: center; border: 0; cursor: pointer; font-weight: 800; color: #fff; transition: .18s; }
+.btn-circle { width: 128px; height: 128px; border-radius: 50%; padding: 0 12px; font-size: 24px; line-height: 1.25; text-align: center; }
+.btn-pill { border-radius: 999px; padding: 16px 36px; font-size: 22px; }
+.btn-circle:hover, .btn-pill:hover { filter: brightness(1.12); transform: translateY(-2px); }
+.btn-green { background: #16a34a; box-shadow: 0 8px 18px rgba(22, 163, 74, .22); }
+.btn-red { background: #dc2626; box-shadow: 0 8px 18px rgba(220, 38, 38, .22); }
+.btn-blue { background: #2563eb; box-shadow: 0 8px 18px rgba(37, 99, 235, .22); }
 
 
 /* 规则 */

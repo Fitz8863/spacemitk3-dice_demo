@@ -27,7 +27,7 @@
         <!-- 选择游戏 -->
         <section class="view" data-view="select">
           <div class="game-list" id="gameList" role="listbox" aria-label="游戏列表"></div>
-          <button class="primary-button" id="startGame" type="button">进入游戏 <span>→</span></button>
+          <button class="btn-circle btn-green" id="startGame" type="button">进入游戏</button>
         </section>
 
         <!-- 游戏规则 -->
@@ -38,16 +38,19 @@
             <div class="rules-item"><span>03</span><div><strong>视觉判定</strong><p>开盖后保持骰子不动，等待识别和结果播报。</p></div></div>
           </div>
           <div class="view-actions">
-            <button class="secondary-button" id="backFromRules" type="button">← 返回</button>
-            <button class="secondary-button" id="repeatRules" type="button" aria-keyshortcuts="ArrowDown">↻ 再听一次</button>
-            <button class="primary-button" id="confirmRules" type="button" aria-keyshortcuts="Enter">我明白了 <span>→</span></button>
+            <button class="btn-circle btn-red" id="backFromRules" type="button">返回</button>
+            <button class="btn-circle btn-blue" id="repeatRules" type="button" aria-keyshortcuts="ArrowDown">再听一次</button>
+            <button class="btn-circle btn-green" id="confirmRules" type="button" aria-keyshortcuts="Enter">我明白了</button>
           </div>
         </section>
 
         <!-- 准备 -->
         <section class="view hidden" data-view="ready">
           <h2 class="view-title">请拿起骰盅，准备摇骰</h2>
-          <button class="primary-button" id="startShake" type="button">开始摇骰 <span>→</span></button>
+          <div class="view-actions">
+            <button class="btn-circle btn-red" id="readyBack" type="button">返回</button>
+            <button class="btn-circle btn-green" id="startShake" type="button">开始摇骰</button>
+          </div>
         </section>
 
         <!-- 倒计时 -->
@@ -61,7 +64,7 @@
           <div class="shake-cup" aria-hidden="true">🎲</div>
           <h2 class="view-title">摇起来！</h2>
           <div class="shake-timer"><span>剩余</span><strong id="shakeSeconds">10</strong><span>秒</span></div>
-          <button class="stop-button" id="stopShake" type="button">停止摇骰</button>
+          <button class="btn-circle btn-red" id="stopShake" type="button">停止摇骰</button>
         </section>
 
         <!-- 开盖 -->
@@ -95,9 +98,9 @@
           </div>
           <p class="analysis-status" id="analysisStatus">正在请求 K3 YOLOv8 推理进程…</p>
           <div class="view-actions analysis-failure-actions hidden" id="analysisFailureActions">
-            <button class="primary-button" id="analysisRetry" type="button" aria-keyshortcuts="ArrowDown">↻ 重新识别</button>
-            <button class="secondary-button" id="analysisNewRound" type="button">再来一局</button>
-            <button class="secondary-button" id="analysisBackToGames" type="button">退出游戏，返回列表</button>
+            <button class="btn-pill btn-red" id="analysisBackToGames" type="button">退出游戏，返回列表</button>
+            <button class="btn-circle btn-blue" id="analysisRetry" type="button" aria-keyshortcuts="ArrowDown">重新识别</button>
+            <button class="btn-circle btn-green" id="analysisNewRound" type="button">再来一局</button>
           </div>
         </section>
 
@@ -124,8 +127,8 @@
             </div>
           </div>
           <div class="view-actions">
-            <button class="secondary-button" id="newRound" type="button">再来一局</button>
-            <button class="primary-button" id="backToGames" type="button">返回游戏列表 <span>→</span></button>
+            <button class="btn-circle btn-green" id="newRound" type="button">再来一局</button>
+            <button class="btn-pill btn-red" id="backToGames" type="button">返回游戏列表</button>
           </div>
         </section>
 

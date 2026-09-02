@@ -94,6 +94,76 @@ def test_frontend_result_copy_has_no_doubled_llm_prefix():
     assert "大模型未启用大模型" not in js
 
 
+def test_frontend_buttons_match_controller_key_colors():
+    """Page buttons mirror the physical controller color semantics.
+
+    绿=Enter 确认/开始，蓝=ArrowDown 向下/重听/重试，红=Escape 停止/返回；
+    短文案用圆形，长文案用胶囊。旧调色板类必须移除以免颜色语义分叉。
+    """
+    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+    lines = html.splitlines()
+
+    def class_of(button_id):
+        line = next(line for line in lines if f'id="{button_id}"' in line)
+        return line.split("class=\"", 1)[1].split("\"", 1)[0]
+
+    assert class_of("startGame") == "btn-circle btn-green"
+    assert class_of("confirmRules") == "btn-circle btn-green"
+    assert class_of("startShake") == "btn-circle btn-green"
+    assert class_of("analysisNewRound") == "btn-circle btn-green"
+    assert class_of("newRound") == "btn-circle btn-green"
+    assert class_of("repeatRules") == "btn-circle btn-blue"
+    assert class_of("analysisRetry") == "btn-circle btn-blue"
+    assert class_of("stopShake") == "btn-circle btn-red"
+    assert class_of("backFromRules") == "btn-circle btn-red"
+    assert class_of("readyBack") == "btn-circle btn-red"
+    assert class_of("analysisBackToGames") == "btn-pill btn-red"
+    assert class_of("backToGames") == "btn-pill btn-red"
+
+    assert "primary-button" not in html
+    assert "secondary-button" not in html
+    assert "stop-button" not in html
+    for token in (".btn-circle", ".btn-pill", ".btn-green", ".btn-red", ".btn-blue"):
+        assert token in css
+    # 按钮色必须与 controller-key 提示圆点同源
+    assert css.count("background: #16a34a") == 2
+    assert css.count("background: #dc2626") == 2
+    assert css.count("background: #2563eb") == 2
+
+
+def test_frontend_shouts_stop_before_reveal_ready():
+    """At shake end the flow shouts 停 first, then speaks the reveal line."""
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    manifest = json.loads(
+        (ROOT / "backend/games/dice/manifest.json").read_text(encoding="utf-8")
+    )
+
+    stop_shake = js.split("function stopShake", 1)[1].split(
+        "function beginRevealCountdown", 1
+    )[0]
+    # Execution contract: shout 停, and only when its playback promise
+    # settles, run the reveal transition which speaks the reveal line.
+    assert "const startRevealTransition = () => {" in stop_shake
+    assert "speakState('reveal_ready')" in stop_shake
+    assert "speakState('shake_stop').then(startRevealTransition);" in stop_shake
+    # 停 must finish before the reveal line starts: the reveal transition is
+    # chained on the spoken promise, not run in parallel.
+    assert ".then(startRevealTransition)" in stop_shake
+
+    stop_entry = manifest["texts"]["shake_stop"]
+    assert stop_entry["mode"] == "tts_local"
+    assert stop_entry["text"].strip() == "停！"
+
+    # speakState (engine, app.js) must expose the playback promise so the
+    # chain in stopShake can wait for 停 to finish.
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    assert (
+        "return speak('', { ...config, source: { mode: entry.mode, key, values } });"
+        in app
+    )
+
+
 def test_frontend_distinguishes_llm_override_from_consensus():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     assert "llm_override" in js

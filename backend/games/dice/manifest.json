@@ -20,10 +20,8 @@
       "model": "vision/yolov8_adjudicator/models/best.q.onnx",
       "class_map": {"0": "1", "1": "2", "2": "3", "3": "4", "4": "5", "5": "6"},
       "participants": ["LEFT", "RIGHT"],
-      "participant_assignment": "x_midpoint",
       "expected_count": 5,
       "stable_frames": 30,
-      "rejudge_on_change": true,
       "grouping": "divider_regions",
       "divider_detection": true
     },
@@ -31,9 +29,6 @@
     "rule": {"kind": "numeric_compare", "aggregation": "sum", "higher_wins": true, "tie_value": "TIE"},
     "llm": {
       "enabled": true,
-      "transport": "openai_compatible",
-      "input_mode": "stable_frame_and_prompt",
-      "image_source": "stable_frame",
       "context_mode": "single_turn_no_history",
       "timeout_seconds": 3,
       "system_prompt": "You are a strict dice-sum judge. Use only the supplied image. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
@@ -43,7 +38,7 @@
       "diagnosis_user_prompt_template": "The YOLO detector could not obtain a valid stable dice result. Detector summary: {detector_summary}. Explain the most likely reason, such as incomplete dice count, overlapping dice, occlusion, poor lighting, or unclear divider. Return {\"reason_code\":\"INCOMPLETE_OBJECTS|OVERLAPPING_OBJECTS|LOW_LIGHT|OCCLUDED|NO_OBJECTS_DETECTED|UNSTABLE_DETECTION|SCENE_GEOMETRY_UNCLEAR|UNKNOWN\",\"message\":\"...\",\"retry\":true}.",
       "diagnosis_allowed_reason_codes": ["INCOMPLETE_OBJECTS", "OVERLAPPING_OBJECTS", "LOW_LIGHT", "OCCLUDED", "NO_OBJECTS_DETECTED", "UNSTABLE_DETECTION", "SCENE_GEOMETRY_UNCLEAR", "UNKNOWN"]
     },
-    "video": {"enabled": true, "protocol": "webrtc", "path": "/dice/", "autoplay": true, "muted": true},
+    "video": {"enabled": true, "protocol": "webrtc", "path": "/dice/"},
     "lifecycle": {"pre_adjudication_wait_seconds": 4, "post_result_hold_seconds": 3},
     "timeouts": {"yolo_detection_seconds": 4, "adjudication_seconds": 30}
   },
@@ -62,6 +57,11 @@
       "mode": "audio",
       "audio": "audio/warm_321开始.wav",
       "text": "三，二，一，开始"
+    },
+    "shake_stop": {
+      "mode": "audio",
+      "audio": "audio/停.wav",
+      "text": "停！"
     },
     "reveal_ready": {
       "mode": "tts_local",

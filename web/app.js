@@ -430,21 +430,23 @@ async function speak(message, options = { voice: 'default', speed: 1.0 }) {
 }
 
 function speakState(key, values = {}) {
-  if (!state.sound) return;
+  if (!state.sound) return Promise.resolve();
   try {
     const config = getTtsConfig();
     const entry = normalizeSpeechEntry(config.texts[key]);
     if (entry.mode === 'audio') {
-      speak('', { ...config, source: { mode: 'audio', key, values } });
-      return;
+      return speak('', { ...config, source: { mode: 'audio', key, values } });
     }
-    speak('', { ...config, source: { mode: entry.mode, key, values } });
+    // 返回播放 promise，调用方（如 stopShake 的"停→开盖"链）可以等
+    // 上一条播完再起下一条，避免后一条 speak 把前一条打断。
+    return speak('', { ...config, source: { mode: entry.mode, key, values } });
   } catch (error) {
     console.error(`Failed to load TTS state ${key}:`, error);
     if (!state.ttsConfigErrorNotified) {
       state.ttsConfigErrorNotified = true;
       toast('TTS 文案配置加载失败，请检查后端 /api/games');
     }
+    return Promise.resolve();
   }
 }
 

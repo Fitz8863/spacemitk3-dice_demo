@@ -212,11 +212,16 @@ export function register(engine) {
     clearInterval(shakeTimer);
     clearTimeout(revealTransitionTimer);
     setPhase('open');
-    speakState('reveal_ready');
-    revealTransitionTimer = setTimeout(() => {
-      revealTransitionTimer = null;
-      beginRevealCountdown();
-    }, 4000);
+    // 先喊一声"停"，喊完再念开盖提示；4 秒过场计时从"停"结束起算，
+    // 保持原有的开盖节奏。TTS 失败时 promise 也会落定，流程继续。
+    const startRevealTransition = () => {
+      speakState('reveal_ready');
+      revealTransitionTimer = setTimeout(() => {
+        revealTransitionTimer = null;
+        beginRevealCountdown();
+      }, 4000);
+    };
+    speakState('shake_stop').then(startRevealTransition);
   }
 
   function beginRevealCountdown() {
@@ -545,6 +550,7 @@ export function register(engine) {
       speakState('shake_started');
       countdown(beginShake, 'GET READY', '和 Agent 同步');
     },
+    readyBack: () => returnToSelect(),
     stopShake: () => stopShake(),
     analysisRetry: () => retryAdjudication(),
     analysisNewRound: () => resetRound(),
