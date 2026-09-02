@@ -15,6 +15,7 @@
 | [`../vision/yolov8_adjudicator/README.md`](../vision/yolov8_adjudicator/README.md) | YOLOv8 K3 runtime、控制协议、快照和 MediaMTX 播放边界。 |
 | [`../backend/components/tts_qwen3/README.md`](../backend/components/tts_qwen3/README.md) | Qwen3-TTS provider 的配置与运行说明。 |
 | [`../backend/components/tts_moss_nano/README.md`](../backend/components/tts_moss_nano/README.md) | MOSS-TTS-Nano provider 的配置与运行说明。 |
+| [`../backend/games/dice/参数说明.md`](../backend/games/dice/参数说明.md) | 骰子游戏 manifest.json 全字段参考（JSON 无注释，这份就是注释），含生效方式速查。 |
 
 ## 配置入口
 
