@@ -149,6 +149,31 @@ systemctl status dice-arena-web.service
 - 未来接机械臂时，在对应状态加一条新动作类型（如 `{"action": "robot", "command": "shake_dice"}`）并注册对应执行器与 `command` 类型功能包即可，无需改引擎和前端。
 - manifest 支持热加载（mtime 检测，保存后下一局生效；坏配置保留最后可用版本）。正在跑的一局使用创建时的状态机快照。修改 manifest 结构后无需重启后端。
 
+## 语音输入（ASR 语音确认）
+
+除按键外，游戏可开启语音作为第二种意图输入。骰子游戏当前在 `rules` 状态支持：对着麦克风说「确认」等价于按绿色按钮（提交 `confirm` 意图），「重复/再来一遍」重播规则，「返回/退出」退出。
+
+```jsonc
+// backend/games/dice/manifest.json
+"providers": { "asr": "asr_zipformer", ... },
+"asr": {
+  "enabled": true,                       // 总开关，热加载（改后下一局生效）
+  "phrases": {                           // 意图 → 触发词表，可自由增删
+    "confirm": ["确认"],
+    "repeat": ["重复", "再来一遍"],
+    "back": ["返回", "退出"]
+  }
+}
+```
+
+工作方式：
+
+- 识别由板端 `asr/zipformer-streaming`（真流式 Zipformer，SpaceMIT EP，RTF≈0.24）完成，`asr_zipformer` 功能包在**回合期间**按需拉起 `arecord | stream_asr --pcm --jsonl` 子进程对，回合结束自动停麦；麦克风跟随**系统默认输入设备**（桌面声音设置里换，无需改配置）。
+- **播报闸**：语音输入只在台词播报结束后有效——TTS 播报期间说的触发词会被忽略（防止游戏自己的播报触发自己）。不想等播报就按实体按键，按键不受此限制。
+- 触发词做子串匹配（识别文本去空格转小写后包含触发词即命中），所以「那我就确认了」也能确认。词表应选日常口语中不常出现的词，避免播报结束后旁人闲聊误触发。
+- 引擎零侵入：语音意图与按键走同一条 `submit_intent` 路径，不适配当前状态的词会被静默忽略（如裁决阶段说「确认」）。
+- 新游戏/新 provider：功能包继承 `AsrProvider`（`core/asr.py`）实现 `start_session`/`stop_session`，游戏 manifest 声明 `asr` 节即可；ASR 故障不影响按键流程。
+
 ## K3 后端接口
 
 ```text

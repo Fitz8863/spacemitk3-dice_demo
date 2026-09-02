@@ -11,6 +11,7 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
 - `AI_PROJECT_CONTEXT.md` — 最完整的技术上下文（架构、状态机、安全约束、未来机械臂演进）。
 - `vision/yolov8_adjudicator/AGENTS.md` — YOLOv8 C++ 子工程的构建/测试/编码规范。
 - `tts/qwen3-tts/AGENTS.md` — Qwen3-TTS 子工程的运行/验证/核心亲和性约束。
+- `asr/zipformer-streaming/AGENTS.md` — 板端流式 ASR 子工程的构建/验证/JSONL 事件契约。
 
 ## 环境与路径（重要）
 
@@ -36,9 +37,16 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
   播完回执 `speech_done` 后状态机才继续；`select_by: winner_role` 按裁决结果选台词。
   转换是显式命名图（`to` 按状态名引用，悬空引用加载报错、不可达状态告警）。
   一局 = 一个 round（`/api/game/rounds` 系列 API），新 round 自动取消残留活动 round。
+- **语音输入通道（2026-09-02 起）**：游戏 manifest 的 `asr` 节（`enabled` + `phrases`
+  意图→触发词表，热加载）+ `providers.asr` 槽位开启语音确认；`core/asr_bridge.py` 在
+  回合期间持有 ASR 会话，识别句归一化子串匹配后走 `submit_intent` 注入（与按键同路，
+  引擎无改动）。**播报闸**：speech 指令发出即登记、`speech_done` 回执释放（前端对
+  所有指令回执，不再仅 `await:true`；无回执 90s 惰性过期），播报期间语音输入无效，
+  按键不受限。`asr_zipformer` 功能包按需 spawn `arecord | stream_asr --pcm --jsonl`
+  子进程对（无 lifecycle、不进 start_web.sh），麦克风跟随系统默认输入设备。
 - 游戏通过语义插槽选择 provider；当前骰子配置为
   `providers.vision_adjudicator=vision_yolov8_adjudicator`、`providers.tts_local=tts_moss_nano`
-  与 `providers.tts_remote=tts_gptsovits`。`tts_qwen3` 是本地可选 provider。
+  与 `providers.tts_remote=tts_gptsovits`；语音输入为 `providers.asr=asr_zipformer`。`tts_qwen3` 是本地可选 provider。
 - 新 TTS 复制一个功能包并继承 `TtsProvider`，最小实现 `health()`、`synthesize()` 即可接入；需要分段低延迟时再覆盖 `stream()`；切换默认 provider 只需修改游戏 manifest 的 `providers.tts`（改后重启），前端请求保持不变。Provider 可用 `manifest.lifecycle.start/stop` 声明本地模型进程管理命令，`componentctl.py`/`start_web.sh` 会按所选 provider 调度。
 - 当前 YOLO 包是 `type=vision, role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于目标坐标的 YOLO 包应使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得混入裁决器插槽。算法名不是职责接口。
 - 游戏视觉配置必须内嵌在 `backend/games/<game_id>/manifest.json` 的

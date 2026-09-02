@@ -17,6 +17,21 @@
 一局 = 一个 round，刷新即放弃（新 round 自动取消旧活动 round）。已在 K3 板端完成全流程
 验证（含 停→开盖→4 秒过场节奏、0.9 秒倒计时、真实 YOLO+LLM 裁决、热加载）。
 
+2026-09-02 起新增**语音输入通道（ASR）**：`asr/zipformer-streaming`（从
+`~/projects/asr` 移植入库的 C++ 真流式 Zipformer，`--jsonl` 输出机器可读事件；模型按
+项目 .gitignore 不入库，tarball 分发见其 README）+ `backend/components/asr_zipformer`
+功能包（`type=asr`，继承 `core/asr.py` 的 `AsrProvider`，回合期间按需 spawn
+`arecord | stream_asr --pcm --jsonl` 子进程对，无 lifecycle 不进 start_web.sh）+
+`core/asr_bridge.py`（识别句 → manifest `asr.phrases` 归一化子串匹配 →
+`submit_intent` 注入，与按键同路，引擎零改动）。**播报闸**：speech 指令发出即登记
+`_active_speech`，前端现在对**所有**指令回执 `speech_done`（不再仅 `await:true`，
+回执统一在 `playDirective` 的 finally 块），无回执 90s 惰性过期——播报期间语音输入
+无效，按键不受限。开关 = 游戏 manifest `asr.enabled`（热加载）；麦克风跟随系统默认
+输入设备。已在板上验证：会话拉起/EP 模型加载/播报闸登记与释放/取消回合自动停麦/
+开关热切换/进程无泄漏；真实人声「确认」跳转待人工验证。已知边界：server 被 SIGKILL
+时 setsid 的 ASR 子进程可能残留（SIGTERM 路径干净停麦）；ASR EP 线程与主进程同在
+X100 0-7 簇（RTF≈0.24 占用可接受，组件 config 预留 `cpu_affinity` 旋钮）。
+
 
 2026-09-01 起环境变量覆盖层已整体移除：`.dice-arena.env` 加载器（`backend/core/env.py`）删除，`DICE_LLM_*`、`DICE_TTS_PROVIDER`、`DICE_MOSS_TTS_*`、`DICE_MEDIAMTX_WEBRTC_BASE_URL` 等输入端覆盖分支全部清理，JSON 配置文件（游戏 manifest、组件 `config.json`、`vision/yolov8_adjudicator/config.json`）成为唯一配置来源。游戏 manifest 进一步支持热加载：server.py 的 `get_games()` 按 mtime 自动重载，改台词/换 WAV/按句换引擎保存+刷新页面即生效，坏配置自动保留最后可用版本（删除游戏需重启）；组件 config.json 仍是改后重启生效。LLM endpoint/model/key 位于 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段（该文件被 Git 跟踪，仓库必须保持私有）。daemon 内部为底层原生库 `setdefault` 注入的 `SPACEMIT_EP_*` 变量是 C 库接口，不是人工配置入口。
 
