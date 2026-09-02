@@ -165,6 +165,11 @@ class ComponentTests(unittest.TestCase):
             registry.provider_ids("tts"),
             ["tts_gptsovits", "tts_moss_nano", "tts_qwen3"],
         )
+        self.assertEqual(registry.provider_ids("asr"), ["asr_zipformer"])
+        self.assertEqual(
+            registry.get_manifest("asr_zipformer")["entry"],
+            "provider.py:ZipformerAsrProvider",
+        )
         self.assertEqual(registry.get_manifest("tts_qwen3")["entry"], "provider.py:TtsQwen3")
         self.assertEqual(registry.get_manifest("tts_moss_nano")["entry"], "provider.py:TtsMossNano")
         self.assertEqual(

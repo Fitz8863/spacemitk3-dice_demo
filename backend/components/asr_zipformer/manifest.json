@@ -1,0 +1,14 @@
+{
+  "id": "asr_zipformer",
+  "type": "asr",
+  "name": "Zipformer Streaming ASR",
+  "version": "1.0",
+  "enabled": true,
+  "entry": "provider.py:ZipformerAsrProvider",
+  "capabilities": [
+    "asr.streaming",
+    "asr.vad_segmented",
+    "asr.zh_en"
+  ],
+  "config": "config.json"
+}
