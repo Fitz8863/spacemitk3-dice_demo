@@ -258,6 +258,84 @@ class RunGameDefaultsTests(unittest.TestCase):
         )
 
 
+# ---- componentctl: arena-wide referenced collection + selected fallback ----
+
+class ReferencedArenaTests(unittest.TestCase):
+    @staticmethod
+    def _game(providers=None, *, enabled=True, pins=()):
+        on_enter = [
+            {"action": "speech", "mode": "tts_local", "text": "台词", **({"provider": pin} if pin else {})}
+            for pin in pins
+        ] or [{"action": "speech", "mode": "tts_local", "text": "台词"}]
+        manifest = {
+            "id": "dice", "name": "Dice", "enabled": enabled,
+            "state_machine": {
+                "schema_version": 1, "initial": "rules",
+                "states": {"rules": {"on_enter": on_enter}},
+            },
+        }
+        if providers is not None:
+            manifest["providers"] = providers
+        return manifest
+
+    def test_arena_slots_first_then_games_and_pins(self):
+        from componentctl import _referenced_tts_providers_arena
+
+        arena = {"providers": {"tts_local": "tts_a", "tts_remote": "tts_b"}}
+        games = [self._game(providers={"tts_local": "tts_a", "tts_remote": "tts_c"}, pins=("tts_d",))]
+        self.assertEqual(
+            _referenced_tts_providers_arena(arena, games),
+            ["tts_a", "tts_b", "tts_c", "tts_d"],
+        )
+
+    def test_game_override_agreeing_with_arena_deduplicates(self):
+        from componentctl import _referenced_tts_providers_arena
+
+        arena = {"providers": {"tts_local": "tts_a"}}
+        games = [self._game(providers={"tts_local": "tts_a"})]
+        self.assertEqual(_referenced_tts_providers_arena(arena, games), ["tts_a"])
+
+    def test_historic_default_when_no_local_engine_anywhere(self):
+        from componentctl import _referenced_tts_providers_arena
+
+        arena = {"providers": {"tts_remote": "tts_c"}}
+        games = [self._game(providers={"tts_remote": "tts_c"})]
+        self.assertEqual(
+            _referenced_tts_providers_arena(arena, games),
+            ["tts_qwen3", "tts_c"],
+        )
+
+    def test_disabled_games_are_skipped(self):
+        from componentctl import _referenced_tts_providers_arena
+
+        arena = {"providers": {"tts_local": "tts_a"}}
+        games = [
+            self._game(providers={"tts_local": "tts_a"}),
+            self._game(providers={"tts_local": "tts_x"}, enabled=False),
+        ]
+        self.assertEqual(_referenced_tts_providers_arena(arena, games), ["tts_a"])
+
+    def test_selected_provider_id_falls_back_to_arena(self):
+        import componentctl
+
+        games_registry = GameRegistry()
+        games_registry.register({
+            "id": "dice", "name": "Dice", "enabled": True,
+            "participants": {"player": "LEFT", "agent": "RIGHT"},
+        })
+        with patch.object(componentctl, "load_games", return_value=games_registry), \
+                patch.object(componentctl, "load_arena_config",
+                             return_value={"providers": {"tts_local": "tts_a",
+                                                         "vision_adjudicator": "vision_x"}}):
+            self.assertEqual(componentctl._selected_provider_id("tts_local", "dice"), "tts_a")
+            self.assertEqual(
+                componentctl._selected_provider_id("vision_adjudicator", "dice"), "vision_x"
+            )
+            # Slots with neither manifest nor arena value keep their builtin
+            # fallbacks.
+            self.assertEqual(componentctl._selected_provider_id("tts_local", "dice"), "tts_a")
+
+
 # ---- server-level integration: the real wiring, tmp manifests + tmp arena ----
 
 MACHINE = {

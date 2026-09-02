@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from core.arena_config import arena_slot_value, load_arena_config
 from core.components import build_registry
 from core.errors import DiceArenaError
 from core.games import load_games, require_game, resolve_provider_id
@@ -62,12 +63,11 @@ def _health(provider: Any) -> dict[str, Any]:
 
 def _selected_provider_id(provider_slot: str, game_id: str) -> str:
     manifest = require_game(load_games(), game_id)
+    provider_id = resolve_provider_id(manifest, provider_slot)
+    if not provider_id:
+        provider_id = arena_slot_value(load_arena_config(), provider_slot)
     fallbacks = {"tts_local": "tts_qwen3", "vision_adjudicator": "vision_yolov8_adjudicator"}
-    return resolve_provider_id(
-        manifest,
-        provider_slot,
-        fallbacks.get(provider_slot, ""),
-    )
+    return provider_id or fallbacks.get(provider_slot, "")
 
 
 def _referenced_tts_providers(manifest: dict[str, Any], *, local_fallback: str) -> list[str]:
@@ -96,6 +96,43 @@ def _referenced_tts_providers(manifest: dict[str, Any], *, local_fallback: str) 
     return ids
 
 
+def _referenced_tts_providers_arena(
+    arena: dict[str, Any] | None,
+    game_manifests: list[dict[str, Any]],
+) -> list[str]:
+    """Collect TTS providers across the arena config and every enabled game.
+
+    The arena slots come first — they are the deployment defaults, so the
+    first line stays the primary (local-slot) voice for start scripts —
+    followed by each enabled game's own slots and per-speech pins.  The
+    historic builtin default applies only when no local engine is configured
+    anywhere.
+    """
+    ids: list[str] = []
+
+    def add(provider_id: str) -> None:
+        provider_id = provider_id.strip()
+        if provider_id and provider_id not in ids:
+            ids.append(provider_id)
+
+    local_configured = False
+    arena_local = arena_slot_value(arena, "tts_local")
+    if arena_local:
+        local_configured = True
+        add(arena_local)
+    add(arena_slot_value(arena, "tts_remote"))
+    for manifest in game_manifests:
+        if not isinstance(manifest, dict) or not manifest.get("enabled", False):
+            continue
+        if resolve_provider_id(manifest, "tts_local"):
+            local_configured = True
+        for provider_id in _referenced_tts_providers(manifest, local_fallback=""):
+            add(provider_id)
+    if not local_configured:
+        ids.insert(0, "tts_qwen3")
+    return ids
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Dice Arena provider runtime control")
     parser.add_argument(
@@ -114,8 +151,11 @@ def main() -> int:
             parser.error("provider slot is required for selected actions")
         try:
             if args.action == "referenced":
-                for referenced_id in _referenced_tts_providers(
-                    require_game(load_games(), args.game), local_fallback="tts_qwen3"
+                # Referenced is arena-wide: the arena slots plus every
+                # enabled game, so start/stop scripts manage the whole
+                # deployment regardless of which game is passed in.
+                for referenced_id in _referenced_tts_providers_arena(
+                    load_arena_config(), load_games().all()
                 ):
                     print(referenced_id)
                 return 0
