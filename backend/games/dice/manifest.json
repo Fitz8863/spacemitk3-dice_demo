@@ -18,7 +18,11 @@
 		"enabled": true,
 		"phrases": {
 			"confirm": [
-				"确认"
+				"确认",
+				"确定",
+				"OK",
+				"明白了",
+				"开始"
 			],
 			"repeat": [
 				"重复",
@@ -30,6 +34,7 @@
 			]
 		}
 	},
+
 	"vision_profile": {
 		"schema_version": 1,
 		"game_id": "dice",
@@ -104,6 +109,8 @@
 	},
 	"voice": "default",
 	"speed": 1.0,
+
+
 	"state_machine": {
 		"schema_version": 1,
 		"initial": "rules",
