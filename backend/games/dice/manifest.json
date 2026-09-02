@@ -1,309 +1,310 @@
 {
-  "id": "dice",
-  "name": "摇骰子",
-  "icon": "⚄",
-  "description": "双方各 5 颗 · 比较点数总和",
-  "enabled": true,
-  "participants": {
-    "player": "LEFT",
-    "agent": "RIGHT"
-  },
-  "providers": {
-    "vision_adjudicator": "vision_yolov8_adjudicator",
-    "tts_local": "tts_moss_nano",
-    "tts_remote": "tts_gptsovits"
-  },
-  "vision_profile": {
-    "schema_version": 1,
-    "game_id": "dice",
-    "vision": {
-      "model": "vision/yolov8_adjudicator/models/best.q.onnx",
-      "class_map": {
-        "0": "1",
-        "1": "2",
-        "2": "3",
-        "3": "4",
-        "4": "5",
-        "5": "6"
-      },
-      "participants": [
-        "LEFT",
-        "RIGHT"
-      ],
-      "expected_count": 5,
-      "stable_frames": 30,
-      "grouping": "divider_regions",
-      "divider_detection": true
-    },
-    "multi_view": {
-      "enabled": false,
-      "min_views": 1,
-      "yolo_fusion": "majority_vote",
-      "llm_images": "all_stable_views"
-    },
-    "rule": {
-      "kind": "numeric_compare",
-      "aggregation": "sum",
-      "higher_wins": true,
-      "tie_value": "TIE"
-    },
-    "llm": {
-      "enabled": true,
-      "context_mode": "single_turn_no_history",
-      "timeout_seconds": 8,
-      "system_prompt": "You are a strict dice-sum judge. Use only the supplied image. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
-      "user_prompt_template": "Inspect the supplied stable frame and compare the two sides. Return {\"winner\":\"LEFT|RIGHT|TIE\"}.",
-      "allowed_outcomes": [
-        "LEFT",
-        "RIGHT",
-        "TIE"
-      ],
-      "diagnosis_system_prompt": "You are a strict visual inspection diagnostician. Do not declare a winner. Use only the supplied image and detector summary. Return exactly one JSON object with reason_code, message, and retry=true.",
-      "diagnosis_user_prompt_template": "The YOLO detector could not obtain a valid stable dice result. Detector summary: {detector_summary}. Explain the most likely reason, such as incomplete dice count, overlapping dice, occlusion, poor lighting, or unclear divider. Return {\"reason_code\":\"INCOMPLETE_OBJECTS|OVERLAPPING_OBJECTS|LOW_LIGHT|OCCLUDED|NO_OBJECTS_DETECTED|UNSTABLE_DETECTION|SCENE_GEOMETRY_UNCLEAR|UNKNOWN\",\"message\":\"...\",\"retry\":true}.",
-      "diagnosis_allowed_reason_codes": [
-        "INCOMPLETE_OBJECTS",
-        "OVERLAPPING_OBJECTS",
-        "LOW_LIGHT",
-        "OCCLUDED",
-        "NO_OBJECTS_DETECTED",
-        "UNSTABLE_DETECTION",
-        "SCENE_GEOMETRY_UNCLEAR",
-        "UNKNOWN"
-      ]
-    },
-    "video": {
-      "enabled": true,
-      "protocol": "webrtc",
-      "path": "/dice/"
-    },
-    "lifecycle": {
-      "pre_adjudication_wait_seconds": 4,
-      "post_result_hold_seconds": 3
-    },
-    "timeouts": {
-      "yolo_detection_seconds": 4,
-      "adjudication_seconds": 30
-    }
-  },
-  "voice": "default",
-  "speed": 1.0,
-  "state_machine": {
-    "schema_version": 1,
-    "initial": "rules",
-    "states": {
-      "rules": {
-        "ui": {
-          "view": "rules",
-          "title": "游戏规则",
-          "copy": "听完规则后按 Enter 确认，按 ↓ 可以再听一次。"
-        },
-        "on_enter": [
-          {
-            "action": "speech",
-            "mode": "tts_local",
-            "text": " 欢迎来到摇骰子游戏。下面由我去宣读规则，当前双方各有五颗骰子，听语音提示开始摇骰子。屏幕的倒计时结束后就停止摇骰并且摆放到桌子上白色圆圈的区域，然后同时开盖，点数总和更大的一方获胜，如果明白了，请按绿色按钮开始游戏；如果需要再听一次，请按蓝色的按钮。"
-          }
-        ],
-        "on_intent": {
-          "confirm": {
-            "to": "ready"
-          },
-          "repeat": {
-            "actions": [
-              {
-                "action": "speech",
-                "mode": "tts_local",
-                "text": " 欢迎来到摇骰子游戏。下面由我去宣读规则，当前双方各有五颗骰子，听语音提示开始摇骰子。屏幕的倒计时结束后就停止摇骰并且摆放到桌子上白色圆圈的区域，然后同时开盖，点数总和更大的一方获胜，如果明白了，请按绿色按钮开始游戏；如果需要再听一次，请按蓝色的按钮。"
-              }
-            ]
-          },
-          "back": {
-            "exit": true
-          }
-        }
-      },
-      "ready": {
-        "ui": {
-          "view": "ready",
-          "title": "准备好了吗？",
-          "copy": "人手操作模式已开启，拿起骰盅后点击开始。"
-        },
-        "on_enter": [
-          {
-            "action": "speech",
-            "mode": "tts_local",
-            "text": "准备好了吗，按下绿色按钮马上开始。"
-          }
-        ],
-        "on_intent": {
-          "start_shake": {
-            "to": "shake_countdown"
-          },
-          "back": {
-            "exit": true
-          }
-        }
-      },
-      "shake_countdown": {
-        "ui": {
-          "view": "countdown",
-          "title": "同步倒计时",
-          "copy": "与 Agent 保持同步，倒计时结束后开始摇骰。"
-        },
-        "duration": 2.4,
-        "tick_seconds": 0.8,
-        "on_enter": [
-          {
-            "action": "speech",
-            "mode": "audio",
-            "audio": "audio/warm_321开始.wav",
-            "text": "三，二，一，开始"
-          }
-        ],
-        "on_expire": {
-          "to": "shaking"
-        }
-      },
-      "shaking": {
-        "ui": {
-          "view": "shaking",
-          "title": "摇骰进行中",
-          "copy": "双方同时摇骰，准备好后可提前停止。"
-        },
-        "duration": 10,
-        "tick_seconds": 1.0,
-        "on_intent": {
-          "stop_shake": {
-            "to": "open_reveal"
-          }
-        },
-        "on_expire": {
-          "to": "open_reveal"
-        }
-      },
-      "open_reveal": {
-        "ui": {
-          "view": "open",
-          "title": "你准备好了吗？听语音倒计时同时开盖",
-          "copy": "请同时打开骰盅，开盖过场结束后自动进入倒计时。"
-        },
-        "on_enter": [
-          {
-            "action": "speech",
-            "mode": "audio",
-            "audio": "audio/停.wav",
-            "text": "停！",
-            "await": true
-          },
-          {
-            "action": "speech",
-            "mode": "tts_local",
-            "text": "准备好了没有？三，二，一,开盖！"
-          }
-        ],
-        "duration": 4,
-        "tick_seconds": 1.0,
-        "on_expire": {
-          "to": "vision_countdown"
-        }
-      },
-      "vision_countdown": {
-        "ui": {
-          "view": "countdown",
-          "title": "准备视觉裁决",
-          "copy": "请保持骰子和骰盅位置不动，倒计时结束后开始视觉裁决。"
-        },
-        "duration": 2.4,
-        "tick_seconds": 0.8,
-        "on_expire": {
-          "to": "analysis"
-        }
-      },
-      "analysis": {
-        "ui": {
-          "view": "analysis",
-          "title": "正在判定胜负",
-          "copy": "视觉裁决器正在识别骰子点数，随后由大模型复核。"
-        },
-        "on_enter": [
-          {
-            "action": "speech",
-            "mode": "tts_local",
-            "text": "正在调用视觉判断结果"
-          },
-          {
-            "action": "adjudicate"
-          }
-        ],
-        "on_event": {
-          "adjudication.result": {
-            "to": "result"
-          },
-          "adjudication.diagnosis": {
-            "to": "analysis_failed"
-          }
-        }
-      },
-      "analysis_failed": {
-        "ui": {
-          "view": "analysis",
-          "title": "本次裁决未完成",
-          "copy": ""
-        },
-        "on_enter": [
-          {
-            "action": "speech",
-            "mode": "tts_local",
-            "text": "本次识别未完成，请整理好骰子后，可选择按蓝色按钮重新识别。"
-          }
-        ],
-        "on_intent": {
-          "retry": {
-            "to": "analysis"
-          },
-          "new_round": {
-            "to": "ready"
-          },
-          "back": {
-            "exit": true
-          }
-        }
-      },
-      "result": {
-        "ui": {
-          "view": "result",
-          "title": "本局结果",
-          "copy": ""
-        },
-        "on_enter": [
-          {
-            "action": "speech",
-            "select_by": "winner_role",
-            "cases": {
-              "PLAYER": {
-                "mode": "tts_local",
-                "text": "当前玩家点数是{player_score}，Agent点数是{agent_score}。恭喜你，你赢了，你真的太棒了，快去找工作人员领取奖励吧。"
-              },
-              "AGENT": {
-                "mode": "tts_local",
-                "text": "当前玩家点数是{player_score}，Agent点数是{agent_score}。很遗憾，你输了哦，要不再来一局？"
-              },
-              "TIE": {
-                "mode": "tts_local",
-                "text": "当前玩家点数{player_score}。Agent点数{agent_score}。本局平局，要不再来一局？"
-              }
-            }
-          }
-        ],
-        "on_intent": {
-          "new_round": {
-            "to": "ready"
-          },
-          "back": {
-            "exit": true
-          }
-        }
-      }
-    }
-  }
+	"id": "dice",
+	"name": "摇骰子",
+	"icon": "⚄",
+	"description": "双方各 5 颗 · 比较点数总和",
+	"enabled": true,
+	"participants": {
+		"player": "LEFT",
+		"agent": "RIGHT"
+	},
+	"providers": {
+		"vision_adjudicator": "vision_yolov8_adjudicator",
+		"tts_local": "tts_moss_nano",
+		"tts_remote": "tts_gptsovits"
+	},
+	"vision_profile": {
+		"schema_version": 1,
+		"game_id": "dice",
+		"vision": {
+			"model": "vision/yolov8_adjudicator/models/best.q.onnx",
+			"class_map": {
+				"0": "1",
+				"1": "2",
+				"2": "3",
+				"3": "4",
+				"4": "5",
+				"5": "6"
+			},
+			"participants": [
+				"LEFT",
+				"RIGHT"
+			],
+			"expected_count": 5,
+			"stable_frames": 30,
+			"grouping": "divider_regions",
+			"divider_detection": true
+		},
+		"multi_view": {
+			"enabled": false,
+			"min_views": 1,
+			"yolo_fusion": "majority_vote",
+			"llm_images": "all_stable_views"
+		},
+		"rule": {
+			"kind": "numeric_compare",
+			"aggregation": "sum",
+			"higher_wins": true,
+			"tie_value": "TIE"
+		},
+		"llm": {
+			"enabled": true,
+			"context_mode": "single_turn_no_history",
+			"timeout_seconds": 4,
+			"system_prompt": "You are a strict dice-sum judge. Use only the supplied image. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
+			"user_prompt_template": "Inspect the supplied stable frame and compare the two sides. Return {\"winner\":\"LEFT|RIGHT|TIE\"}.",
+			"allowed_outcomes": [
+				"LEFT",
+				"RIGHT",
+				"TIE"
+			],
+			"diagnosis_system_prompt": "You are a strict visual inspection diagnostician. Do not declare a winner. Use only the supplied image and detector summary. Return exactly one JSON object with reason_code, message, and retry=true.",
+			"diagnosis_user_prompt_template": "The YOLO detector could not obtain a valid stable dice result. Detector summary: {detector_summary}. Explain the most likely reason, such as incomplete dice count, overlapping dice, occlusion, poor lighting, or unclear divider. Return {\"reason_code\":\"INCOMPLETE_OBJECTS|OVERLAPPING_OBJECTS|LOW_LIGHT|OCCLUDED|NO_OBJECTS_DETECTED|UNSTABLE_DETECTION|SCENE_GEOMETRY_UNCLEAR|UNKNOWN\",\"message\":\"...\",\"retry\":true}.",
+			"diagnosis_allowed_reason_codes": [
+				"INCOMPLETE_OBJECTS",
+				"OVERLAPPING_OBJECTS",
+				"LOW_LIGHT",
+				"OCCLUDED",
+				"NO_OBJECTS_DETECTED",
+				"UNSTABLE_DETECTION",
+				"SCENE_GEOMETRY_UNCLEAR",
+				"UNKNOWN"
+			]
+		},
+		"video": {
+			"enabled": true,
+			"protocol": "webrtc",
+			"path": "/dice/"
+		},
+		"lifecycle": {
+			"pre_adjudication_wait_seconds": 4,
+			"post_result_hold_seconds": 3
+		},
+		"timeouts": {
+			"yolo_detection_seconds": 4,
+			"adjudication_seconds": 30
+		}
+	},
+	"voice": "default",
+	"speed": 1.0,
+	"state_machine": {
+		"schema_version": 1,
+		"initial": "rules",
+		"states": {
+			"rules": {
+				"ui": {
+					"view": "rules",
+					"title": "游戏规则",
+					"copy": "听完规则后按 Enter 确认，按 ↓ 可以再听一次。"
+				},
+				"on_enter": [
+					{
+						"action": "speech",
+						"mode": "tts_local",
+						"text": " 欢迎来到摇骰子游戏。下面由我去宣读规则，当前双方各有五颗骰子，听语音提示开始摇骰子。屏幕的倒计时结束后就停止摇骰并且摆放到桌子上白色圆圈的区域，然后同时开盖，点数总和更大的一方获胜，如果明白了，请按绿色按钮开始游戏；如果需要再听一次，请按蓝色的按钮。"
+					}
+				],
+				"on_intent": {
+					"confirm": {
+						"to": "ready"
+					},
+					"repeat": {
+						"actions": [
+							{
+								"action": "speech",
+								"mode": "tts_local",
+								"text": " 欢迎来到摇骰子游戏。下面由我去宣读规则，当前双方各有五颗骰子，听语音提示开始摇骰子。屏幕的倒计时结束后就停止摇骰并且摆放到桌子上白色圆圈的区域，然后同时开盖，点数总和更大的一方获胜，如果明白了，请按绿色按钮开始游戏；如果需要再听一次，请按蓝色的按钮。"
+							}
+						]
+					},
+					"back": {
+						"exit": true
+					}
+				}
+			},
+			
+			"ready": {
+				"ui": {
+					"view": "ready",
+					"title": "准备好了吗？",
+					"copy": "人手操作模式已开启，拿起骰盅后点击开始。"
+				},
+				"on_enter": [
+					{
+						"action": "speech",
+						"mode": "tts_local",
+						"text": "准备好了吗，按下绿色按钮马上开始。"
+					}
+				],
+				"on_intent": {
+					"start_shake": {
+						"to": "shake_countdown"
+					},
+					"back": {
+						"exit": true
+					}
+				}
+			},
+			"shake_countdown": {
+				"ui": {
+					"view": "countdown",
+					"title": "同步倒计时",
+					"copy": "与 Agent 保持同步，倒计时结束后开始摇骰。"
+				},
+				"duration": 2.4,
+				"tick_seconds": 0.8,
+				"on_enter": [
+					{
+						"action": "speech",
+						"mode": "audio",
+						"audio": "audio/warm_321开始.wav",
+						"text": "三，二，一，开始"
+					}
+				],
+				"on_expire": {
+					"to": "shaking"
+				}
+			},
+			"shaking": {
+				"ui": {
+					"view": "shaking",
+					"title": "摇骰进行中",
+					"copy": "双方同时摇骰，准备好后可提前停止。"
+				},
+				"duration": 10,
+				"tick_seconds": 1.0,
+				"on_intent": {
+					"stop_shake": {
+						"to": "open_reveal"
+					}
+				},
+				"on_expire": {
+					"to": "open_reveal"
+				}
+			},
+			"open_reveal": {
+				"ui": {
+					"view": "open",
+					"title": "你准备好了吗？听语音倒计时同时开盖",
+					"copy": "请同时打开骰盅，开盖过场结束后自动进入倒计时。"
+				},
+				"on_enter": [
+					{
+						"action": "speech",
+						"mode": "audio",
+						"audio": "audio/停.wav",
+						"text": "停！",
+						"await": true
+					},
+					{
+						"action": "speech",
+						"mode": "tts_local",
+						"text": "准备好了没有？三，二，一,开盖！"
+					}
+				],
+				"duration": 4,
+				"tick_seconds": 1.0,
+				"on_expire": {
+					"to": "vision_countdown"
+				}
+			},
+			"vision_countdown": {
+				"ui": {
+					"view": "countdown",
+					"title": "准备视觉裁决",
+					"copy": "请保持骰子和骰盅位置不动，倒计时结束后开始视觉裁决。"
+				},
+				"duration": 2.4,
+				"tick_seconds": 0.8,
+				"on_expire": {
+					"to": "analysis"
+				}
+			},
+			"analysis": {
+				"ui": {
+					"view": "analysis",
+					"title": "正在判定胜负",
+					"copy": "视觉裁决器正在识别骰子点数，随后由大模型复核。"
+				},
+				"on_enter": [
+					{
+						"action": "speech",
+						"mode": "tts_local",
+						"text": "正在调用视觉判断结果"
+					},
+					{
+						"action": "adjudicate"
+					}
+				],
+				"on_event": {
+					"adjudication.result": {
+						"to": "result"
+					},
+					"adjudication.diagnosis": {
+						"to": "analysis_failed"
+					}
+				}
+			},
+			"analysis_failed": {
+				"ui": {
+					"view": "analysis",
+					"title": "本次裁决未完成",
+					"copy": ""
+				},
+				"on_enter": [
+					{
+						"action": "speech",
+						"mode": "tts_local",
+						"text": "本次识别未完成，请整理好骰子后，可选择按蓝色按钮重新识别。"
+					}
+				],
+				"on_intent": {
+					"retry": {
+						"to": "analysis"
+					},
+					"new_round": {
+						"to": "ready"
+					},
+					"back": {
+						"exit": true
+					}
+				}
+			},
+			"result": {
+				"ui": {
+					"view": "result",
+					"title": "本局结果",
+					"copy": ""
+				},
+				"on_enter": [
+					{
+						"action": "speech",
+						"select_by": "winner_role",
+						"cases": {
+							"PLAYER": {
+								"mode": "tts_local",
+								"text": "当前玩家点数是{player_score}，Agent点数是{agent_score}。恭喜你，你赢了，你真的太棒了，快去找工作人员领取奖励吧。"
+							},
+							"AGENT": {
+								"mode": "tts_local",
+								"text": "当前玩家点数是{player_score}，Agent点数是{agent_score}。很遗憾，你输了哦，要不再来一局？"
+							},
+							"TIE": {
+								"mode": "tts_local",
+								"text": "当前玩家点数{player_score}。Agent点数{agent_score}。本局平局，要不再来一局？"
+							}
+						}
+					}
+				],
+				"on_intent": {
+					"new_round": {
+						"to": "ready"
+					},
+					"back": {
+						"exit": true
+					}
+				}
+			}
+		}
+	}
 }
