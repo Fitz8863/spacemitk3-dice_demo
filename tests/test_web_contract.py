@@ -454,6 +454,31 @@ def test_frontend_acks_awaited_directives_and_mutes_cleanly():
     assert "acknowledge()" in muted
 
 
+def test_frontend_surfaces_asr_recognition_feedback():
+    """每句 ASR 识别结果都要有可见反馈：生效/播报闸暂缓/不支持/未匹配。"""
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+
+    # Feedback lives in the engine layer (any game benefits) and taps the
+    # round event stream — no separate transport, no game-module awareness.
+    assert "event.event === 'asr'" in app
+    assert "showAsrFeedback(event)" in app
+    assert "asrFeedback" in html
+    assert "aria-live=\"polite\"" in html.split('id="asrFeedback"', 1)[1].split(">", 1)[0]
+    # All four outcomes are distinguishable, and the speech-gate one points
+    # the player at the physical buttons instead of just going silent.
+    assert "status === 'submitted'" in app
+    assert "status === 'suppressed'" in app
+    assert "status === 'rejected'" in app
+    assert "未匹配语音指令" in app
+    assert "不想等可按绿色按钮" in app
+    assert ".asr-feedback" in css
+    assert ".asr-feedback.level-ok" in css
+    assert ".asr-feedback.level-wait" in css
+    assert ".asr-feedback.level-info" in css
+
+
 def test_manifest_state_machine_declares_the_full_graph():
     manifest = dice_manifest()
     machine = manifest["state_machine"]

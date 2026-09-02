@@ -66,6 +66,36 @@ function toast(message) {
   setTimeout(() => node.classList.remove('show'), 2800);
 }
 
+// ---- ASR 语音反馈 ----
+// 后端把每句识别结果以 asr 观测事件广播（生效/被播报闸暂缓/当前状态
+// 不支持/未匹配触发词）。任何游戏的语音输入都在引擎层统一反馈，游戏
+// 模块不感知；播报中与未匹配也要提示，否则玩家不知道语音通道在工作。
+let asrFeedbackTimer = null;
+function showAsrFeedback(event) {
+  const node = $('asrFeedback');
+  if (!node) return;
+  const heard = `听到「${event.text || ''}」`;
+  let message;
+  let level;
+  if (event.status === 'submitted') {
+    message = `🎤 ${heard}，已生效`;
+    level = 'ok';
+  } else if (event.status === 'suppressed') {
+    message = `🎤 ${heard}——正在播报，暂不生效；不想等可按绿色按钮`;
+    level = 'wait';
+  } else if (event.status === 'rejected') {
+    message = `🎤 ${heard}（当前步骤不支持语音操作，请使用按键）`;
+    level = 'info';
+  } else {
+    message = `🎤 ${heard}（未匹配语音指令）`;
+    level = 'info';
+  }
+  node.textContent = message;
+  node.className = `asr-feedback show level-${level}`;
+  clearTimeout(asrFeedbackTimer);
+  asrFeedbackTimer = setTimeout(() => node.classList.remove('show'), level === 'wait' ? 3600 : 2400);
+}
+
 // ---- 语音播放（后端 speech 指令驱动） ----
 function stopSpeech() {
   state.ttsRequestId += 1;
@@ -407,6 +437,8 @@ function createRoundClient(gameId, handlers) {
       handlers.onSpeech?.(event);
     } else if (event.event === 'tick') {
       handlers.onTick?.(event);
+    } else if (event.event === 'asr') {
+      showAsrFeedback(event);
     } else if (event.event === 'round_complete') {
       handlers.onComplete?.(event, snapshot || null);
     } else {

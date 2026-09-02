@@ -102,12 +102,24 @@ class AsrIntentBridge:
         return True
 
     def _on_sentence(self, round_: Any, phrases: dict[str, list[str]], text: str) -> None:
+        """Match one finalized sentence and surface the outcome to the UI.
+
+        Every recognition result is relayed as an ``asr`` observation event so
+        the browser can acknowledge what was heard (submitted / suppressed by
+        the speech gate / rejected by the current state / unmatched).  A
+        sentence with no visible feedback would leave the player wondering
+        whether voice input works at all.
+        """
         intent = match_phrase_intent(phrases, text)
         if intent is None:
             self._log(f"heard {text!r}: no trigger word matched")
+            round_.emit_observation({"event": "asr", "status": "unmatched", "text": text})
             return
         if round_.speech_active:
             self._log(f"heard {text!r} matched {intent!r} while speech is playing; ignored")
+            round_.emit_observation({
+                "event": "asr", "status": "suppressed", "text": text, "matched": intent,
+            })
             return
         try:
             round_.submit_intent(intent, {"source": "asr", "text": text})
@@ -115,8 +127,14 @@ class AsrIntentBridge:
             # Spoken words that the current state does not accept, or a round
             # that just ended, are normal conversation — not an error path.
             self._log(f"heard {text!r} matched {intent!r}: {exc.message}")
+            round_.emit_observation({
+                "event": "asr", "status": "rejected", "text": text, "matched": intent,
+            })
             return
         self._log(f"heard {text!r} -> intent {intent!r} submitted")
+        round_.emit_observation({
+            "event": "asr", "status": "submitted", "text": text, "matched": intent,
+        })
 
     def _watch_round(self, round_: Any, session: Any) -> None:
         """Stop the session once its round reaches a terminal status."""

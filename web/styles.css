@@ -139,6 +139,13 @@ body[data-phase="open"] .stage-body { flex: 0; padding: 0; }
 .toast { position: fixed; left: 50%; bottom: 34px; transform: translate(-50%, 20px); padding: 16px 24px; border: 1px solid rgba(5, 150, 105, .35); border-radius: 12px; background: var(--surface); color: #067647; box-shadow: var(--shadow); font-size: 18px; opacity: 0; pointer-events: none; transition: .25s; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
+/* ASR 语音反馈：顶部气泡，按事件结果分级（ok=生效 / wait=播报闸暂缓 / info=未匹配或不受支持） */
+.asr-feedback { position: fixed; top: 26px; left: 50%; transform: translate(-50%, -16px); max-width: min(86vw, 680px); padding: 14px 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--muted-2); box-shadow: var(--shadow); font-size: 19px; font-weight: 650; opacity: 0; pointer-events: none; transition: .22s; z-index: 30; }
+.asr-feedback.show { opacity: 1; transform: translate(-50%, 0); }
+.asr-feedback.level-ok { border-color: rgba(22, 163, 74, .45); color: #067647; background: rgba(52, 211, 153, .1); }
+.asr-feedback.level-wait { border-color: rgba(217, 119, 6, .5); color: #b54708; background: rgba(255, 214, 130, .16); }
+.asr-feedback.level-info { color: var(--muted-2); }
+
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes countPop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 @keyframes shake { 0%, 100% { transform: rotate(-12deg) translate(-6px, 0); } 50% { transform: rotate(12deg) translate(6px, -8px); } }

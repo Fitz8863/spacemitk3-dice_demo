@@ -144,10 +144,14 @@ class FakeRound:
         self.status = status
         self.rejected = set(rejected)
         self.submitted = []
+        self.observations = []
 
     @property
     def speech_active(self):
         return self._speech_active
+
+    def emit_observation(self, event):
+        self.observations.append(dict(event))
 
     def submit_intent(self, name, payload=None):
         if self.status != "running" or name in self.rejected:
@@ -219,12 +223,19 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(len(self.provider.sessions), 1)
         self.provider.sessions[0]["on_sentence"]("那我就确认了")
         self.assertEqual(round_.submitted, [("confirm", {"source": "asr", "text": "那我就确认了"})])
+        self.assertEqual(round_.observations, [{
+            "event": "asr", "status": "submitted", "text": "那我就确认了", "matched": "confirm",
+        }])
 
     def test_unmatched_sentence_is_ignored(self):
         round_ = FakeRound(self._enabled_manifest())
         self.bridge.start_for_round(round_)
         self.provider.sessions[0]["on_sentence"]("今天天气不错")
         self.assertEqual(round_.submitted, [])
+        self.assertEqual(
+            round_.observations,
+            [{"event": "asr", "status": "unmatched", "text": "今天天气不错"}],
+        )
 
     def test_speech_gate_suppresses_matching(self):
         round_ = FakeRound(self._enabled_manifest(), speech_active=True)
@@ -232,12 +243,18 @@ class BridgeTests(unittest.TestCase):
         self.provider.sessions[0]["on_sentence"]("确认")
         self.assertEqual(round_.submitted, [])
         self.assertTrue(any("speech is playing" in line for line in self.logs))
+        self.assertEqual(round_.observations, [{
+            "event": "asr", "status": "suppressed", "text": "确认", "matched": "confirm",
+        }])
 
     def test_rejected_intent_is_swallowed(self):
         round_ = FakeRound(self._enabled_manifest(), rejected={"confirm"})
         self.bridge.start_for_round(round_)
         self.provider.sessions[0]["on_sentence"]("确认")  # must not raise
         self.assertEqual(round_.submitted, [])
+        self.assertEqual(round_.observations, [{
+            "event": "asr", "status": "rejected", "text": "确认", "matched": "confirm",
+        }])
 
     def test_provider_startup_failure_returns_false(self):
         provider = FakeAsr(raise_on_start=True)
@@ -453,6 +470,13 @@ def test_round_with_asr_enabled_starts_session_and_voice_confirms(tmp_path, monk
                 break
             time.sleep(0.05)
         assert snapshot["state"] == "ready"
+
+        # Both recognition attempts are visible to the browser: the gated
+        # one and the effective one, in order.
+        asr_statuses = [
+            e["status"] for e in snapshot["events"] if e.get("event") == "asr"
+        ]
+        assert asr_statuses == ["suppressed", "submitted"]
     finally:
         httpd.shutdown()
 

@@ -210,6 +210,15 @@ class GameRound:
                     return dict(event)
         return None
 
+    def emit_observation(self, event: Mapping[str, Any]) -> None:
+        """Relay a side-channel observation into the round event stream.
+
+        For non-state-machine inputs the frontend should surface (currently
+        ASR recognition results).  These events never advance state; they
+        share the bounded event window and the SSE delivery path.
+        """
+        self._emit(dict(event))
+
     def _snapshot_locked(self) -> dict[str, Any]:
         self._prune_speech_locked()
         return {

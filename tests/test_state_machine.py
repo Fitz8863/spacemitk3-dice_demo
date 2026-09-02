@@ -289,6 +289,20 @@ class RoundEngineTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: len(self.events_of(round_, "speech")) == 2))
         self.assertEqual(round_.snapshot()["state"], "rules")
 
+    def test_emit_observation_relays_side_channel_events(self):
+        round_ = self.make_round()
+        self.assertTrue(wait_for(lambda: self.events_of(round_, "speech")))
+        before = round_.snapshot()["revision"]
+        round_.emit_observation({"event": "asr", "status": "submitted", "text": "确认"})
+        snapshot = round_.snapshot()
+        self.assertGreater(snapshot["revision"], before)
+        asr = [e for e in snapshot["events"] if e.get("event") == "asr"]
+        self.assertEqual(len(asr), 1)
+        self.assertEqual(asr[0]["status"], "submitted")
+        self.assertEqual(asr[0]["text"], "确认")
+        # Observations never advance state on their own.
+        self.assertEqual(snapshot["state"], "rules")
+
     def test_exit_intent_ends_round_and_rejects_further_intents(self):
         round_ = self.make_round()
         round_.submit_intent("back")
