@@ -16,6 +16,11 @@
 | [`../backend/components/tts_qwen3/README.md`](../backend/components/tts_qwen3/README.md) | Qwen3-TTS provider 的配置与运行说明。 |
 | [`../backend/components/tts_moss_nano/README.md`](../backend/components/tts_moss_nano/README.md) | MOSS-TTS-Nano provider 的配置与运行说明。 |
 | [`../backend/games/dice/参数说明.md`](../backend/games/dice/参数说明.md) | 骰子游戏 manifest.json 全字段参考（JSON 无注释，这份就是注释），含生效方式速查。 |
+| [`../backend/components/asr_zipformer/参数说明.md`](../backend/components/asr_zipformer/参数说明.md) | ASR 引擎组件配置（采集设备/VAD 断句/绑核）全字段参考。 |
+| [`../backend/components/tts_gptsovits/参数说明.md`](../backend/components/tts_gptsovits/参数说明.md) | 远程 GPT-SoVITS 组件配置（服务地址/请求采样参数/音色）全字段参考。 |
+| [`../backend/components/tts_moss_nano/参数说明.md`](../backend/components/tts_moss_nano/参数说明.md) | 本地 MOSS 组件配置（音色克隆/生成参数/EP 绑核）全字段参考，补充其 README 未覆盖的段落。 |
+| [`../backend/components/tts_qwen3/参数说明.md`](../backend/components/tts_qwen3/参数说明.md) | 本地 Qwen3-TTS 组件配置全字段参考。 |
+| [`../backend/components/vision_yolov8_adjudicator/参数说明.md`](../backend/components/vision_yolov8_adjudicator/参数说明.md) | 视觉裁决组件配置 + runtime 硬件配置双文件参考，含游戏 profile 覆盖优先级。 |
 
 ## 配置入口
 
