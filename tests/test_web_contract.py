@@ -214,7 +214,7 @@ def test_frontend_does_not_mark_yolo_complete_while_still_detecting():
     )[0]
     assert "querySelector('span').textContent = '…'" in detecting
     assert "querySelector('span').textContent = '✓'" not in detecting
-    assert "以大模型结果为准" in js
+    assert "以大模型为准" in js
 
 
 def test_frontend_uses_manifest_participant_layout_and_role_result():
@@ -261,9 +261,10 @@ def test_frontend_counts_down_after_open_transition_before_adjudication():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
 
     # The vision countdown is a backend state; the frontend only renders ticks.
+    # 0.8s per number matches the reveal voice's 三二一 pacing.
     vision_countdown = dice_state("vision_countdown")
-    assert vision_countdown["duration"] == 3
-    assert vision_countdown["tick_seconds"] == 0.9
+    assert vision_countdown["duration"] == 2.4
+    assert vision_countdown["tick_seconds"] == 0.8
     assert vision_countdown["on_expire"]["to"] == "analysis"
     assert vision_countdown["ui"]["view"] == "countdown"
     assert "请保持骰子和骰盅位置不动" in vision_countdown["ui"]["copy"]
@@ -332,8 +333,9 @@ def test_frontend_plays_shake_started_with_get_ready_countdown_not_ten_second_ti
     entry = countdown_state["on_enter"][0]
     assert entry["mode"] == "audio"
     assert entry["audio"] == "audio/warm_321开始.wav"
-    assert countdown_state["duration"] == 3
-    assert countdown_state["tick_seconds"] == 0.9
+    # 0.8s per number, 2.4s total: the countdown ends as the clip says 开始.
+    assert countdown_state["duration"] == 2.4
+    assert countdown_state["tick_seconds"] == 0.8
     assert "function beginShake" not in js
     assert "SHAKE_DURATION_SECONDS" not in js
     assert "start_shake" in js
@@ -492,8 +494,21 @@ def test_frontend_ignores_stale_events_after_round_ends():
 
 
 def test_frontend_renders_countdown_top_value_with_ceil():
-    """The first tick fires just under the full budget; ceil keeps 3 visible."""
+    """Countdown numbers step once per tick_seconds to match the voice pace."""
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     tick = js.split("function renderTick", 1)[1].split("function resetAnalysisSteps", 1)[0]
+    # One number per tick_seconds (from the tick event), not per whole second.
+    assert "Number(event.tick_seconds || 1) * 1000" in tick
+    assert "Math.ceil(remaining / perNumber)" in tick
+    # The shake timer keeps literal seconds-to-go.
     assert "Math.ceil(remaining / 1000)" in tick
     assert "Math.floor" not in tick
+
+
+def test_frontend_renders_reask_and_tie_upheld_sources():
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    assert "yolo_reask_confirmed" in js
+    assert "大模型复问后与 YOLOv8 一致" in js
+    assert "yolo_reask_fallback" in js
+    assert "tie_upheld" in js
+    assert "双方点数相同，判定平局" in js

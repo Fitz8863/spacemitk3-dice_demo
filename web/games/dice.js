@@ -182,11 +182,12 @@ export function register(engine) {
   function renderTick(event) {
     const remaining = Number(event.remaining_ms);
     if (!Number.isFinite(remaining) || remaining < 0) return;
-    // Ceil, not floor: the first tick fires when the full budget is still
-    // on the clock (remaining_ms just under 3000), and the player must see
-    // 3 → 2 → 1 exactly like the previous synchronous countdown did.
     if (lastRenderedState === 'shake_countdown' || lastRenderedState === 'vision_countdown') {
-      $('countdownNumber').textContent = Math.max(1, Math.ceil(remaining / 1000));
+      // 每个数字显示 tick_seconds 秒（manifest 状态机的节奏字段），
+      // 与预录语音"三二一"的语速对齐；缺省回退按整秒取整。
+      const perNumber = Number(event.tick_seconds || 1) * 1000;
+      const total = Math.max(1, Math.round(Number(event.duration_seconds || 3) / (event.tick_seconds || 1)));
+      $('countdownNumber').textContent = Math.min(total, Math.max(1, Math.ceil(remaining / perNumber)));
     } else if (lastRenderedState === 'shaking') {
       const seconds = Math.max(1, Math.ceil(remaining / 1000));
       const shakeSeconds = $('shakeSeconds');
@@ -306,10 +307,16 @@ export function register(engine) {
       : result.source === 'yolo_failure_fallback'
         ? '大模型请求失败，采用 YOLOv8'
         : result.source === 'llm_override'
-          ? '大模型结果不一致，以大模型结果为准'
-          : result.source === 'yolo_only'
-            ? '当前未启用大模型'
-            : '大模型复核一致';
+          ? '大模型两次复核一致，以大模型为准'
+          : result.source === 'yolo_reask_confirmed'
+            ? '大模型复问后与 YOLOv8 一致'
+            : result.source === 'yolo_reask_fallback'
+              ? '大模型复问无定论，采用 YOLOv8'
+              : result.source === 'tie_upheld'
+                ? '双方点数相同，判定平局'
+                : result.source === 'yolo_only'
+                  ? '当前未启用大模型'
+                  : '大模型复核一致';
     $('resultSubtitle').textContent = `YOLOv8：玩家 ${player} : Agent ${agent}；${verificationText}`;
     banner.classList.toggle('loss', !playerWins && !tie);
   }

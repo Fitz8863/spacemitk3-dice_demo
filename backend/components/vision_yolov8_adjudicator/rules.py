@@ -229,9 +229,26 @@ def evaluate_rule(rule: Mapping[str, Any], observations: Sequence[Mapping[str, A
 
 
 def finalize_outcome(
-    *, yolo_outcome: str | None, llm_outcome: str | None, llm_status: str
+    *,
+    yolo_outcome: str | None,
+    llm_outcome: str | None,
+    llm_status: str,
+    reask: Mapping[str, Any] | None = None,
+    tie_value: str = "TIE",
 ) -> dict[str, Any]:
-    """Apply the documented YOLO/LLM precedence and return decision metadata."""
+    """Apply the documented YOLO/LLM precedence and return decision metadata.
+
+    When the verifier disagrees with the detector, its answer is corroborated
+    by one bounded re-ask (``reask``: ``{"outcome": ..., "status": ...}``):
+
+    * the re-ask agrees with the detector → the first answer was a fluke, and
+      the detector's result stands;
+    * the re-ask repeats the disagreement → the verifier is stable and may
+      override — except that a ``tie_value`` outcome is arithmetic fact and
+      can never be promoted into a winner;
+    * anything else (re-ask timeout, or a third distinct outcome) → no
+      corroborated verdict exists and the detector's result stands.
+    """
 
     if llm_status not in {"success", "timeout", "disabled", "failure", "error"}:
         raise RuleError(f"unsupported LLM status: {llm_status!r}")
@@ -239,6 +256,17 @@ def finalize_outcome(
         raise RuleError("yolo_outcome must be a non-empty string or None")
     if llm_outcome is not None and (not isinstance(llm_outcome, str) or not llm_outcome.strip()):
         raise RuleError("llm_outcome must be a non-empty string or None")
+
+    reask_outcome: str | None = None
+    reask_status = "not_needed"
+    if reask is not None:
+        if not isinstance(reask, Mapping):
+            raise RuleError("reask must be an object")
+        raw_outcome = reask.get("outcome")
+        if raw_outcome is not None and (not isinstance(raw_outcome, str) or not raw_outcome.strip()):
+            raise RuleError("reask.outcome must be a non-empty string or None")
+        reask_outcome = raw_outcome.strip() if isinstance(raw_outcome, str) else None
+        reask_status = str(reask.get("status") or "unknown")
 
     if llm_status == "disabled":
         if yolo_outcome is None:
@@ -249,9 +277,40 @@ def finalize_outcome(
     elif llm_status == "success":
         if llm_outcome is None:
             raise RuleError("LLM success requires an outcome")
-        value = llm_outcome.strip()
-        source = "consensus" if yolo_outcome == value else "llm_override"
-        verification_status = "agreed" if source == "consensus" else "overridden"
+        first = llm_outcome.strip()
+        if yolo_outcome is not None and first == yolo_outcome.strip():
+            value = first
+            source = "consensus"
+            verification_status = "agreed"
+        else:
+            # The verifier dissents; require corroboration before letting it
+            # outrank the detector's arithmetic.
+            yolo = yolo_outcome.strip() if yolo_outcome is not None else None
+            if reask_status == "success" and reask_outcome is not None and yolo is not None:
+                if reask_outcome == yolo:
+                    value = yolo
+                    source = "yolo_reask_confirmed"
+                    verification_status = "reask_confirmed"
+                elif reask_outcome == first and yolo == tie_value:
+                    # Equal sums (or equivalent physical evidence) cannot be
+                    # promoted into a winner, however stable the dissent is.
+                    value = yolo
+                    source = "tie_upheld"
+                    verification_status = "tie_upheld"
+                elif reask_outcome == first:
+                    value = reask_outcome
+                    source = "llm_override"
+                    verification_status = "overridden"
+                else:
+                    value = yolo
+                    source = "yolo_reask_fallback"
+                    verification_status = "reask_unresolved"
+            else:
+                if yolo is None:
+                    raise RuleError("LLM success requires a YOLO outcome to fall back to")
+                value = yolo
+                source = "yolo_reask_fallback"
+                verification_status = "reask_unresolved"
     elif llm_status == "timeout":
         if yolo_outcome is None:
             raise RuleError("LLM timeout cannot be used without a YOLO outcome")
@@ -273,6 +332,8 @@ def finalize_outcome(
             "status": verification_status,
             "yolo_outcome": yolo_outcome,
             "llm_outcome": llm_outcome,
+            "reask_outcome": reask_outcome,
+            "reask_status": reask_status,
             "llm_called": llm_status not in {"disabled"},
         },
     }

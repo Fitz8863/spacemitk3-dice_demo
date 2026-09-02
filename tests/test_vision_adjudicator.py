@@ -566,11 +566,65 @@ def test_categorical_relation_rejects_unknown_category():
         evaluate_rule(rule, [{"participants": {"LEFT": "lizard", "RIGHT": "scissors"}}])
 
 
-def test_llm_success_overrides_yolo_mismatch():
-    result = finalize_outcome(yolo_outcome="LEFT", llm_outcome="RIGHT", llm_status="success")
+def test_llm_success_overrides_yolo_mismatch_only_when_corroborated():
+    # A corroborated dissent may override the detector.
+    result = finalize_outcome(
+        yolo_outcome="LEFT", llm_outcome="RIGHT", llm_status="success",
+        reask={"outcome": "RIGHT", "status": "success"},
+    )
     assert result["outcome"]["value"] == "RIGHT"
     assert result["decision_source"] == "llm_override"
     assert result["adjudicated"] is True
+    assert result["verification"]["reask_outcome"] == "RIGHT"
+
+    # An uncorroborated dissent (no re-ask, timeout, or a third outcome)
+    # never outranks the detector.
+    for reask in (None, {"outcome": None, "status": "timeout"}, {"outcome": "TIE", "status": "success"}):
+        result = finalize_outcome(
+            yolo_outcome="LEFT", llm_outcome="RIGHT", llm_status="success", reask=reask,
+        )
+        assert result["outcome"]["value"] == "LEFT"
+        assert result["decision_source"] == "yolo_reask_fallback"
+
+
+def test_reask_confirms_yolo_after_llm_fluke():
+    result = finalize_outcome(
+        yolo_outcome="LEFT", llm_outcome="RIGHT", llm_status="success",
+        reask={"outcome": "LEFT", "status": "success"},
+    )
+    assert result["outcome"]["value"] == "LEFT"
+    assert result["decision_source"] == "yolo_reask_confirmed"
+    assert result["verification"]["status"] == "reask_confirmed"
+
+
+def test_tie_cannot_be_overridden_into_a_winner():
+    # 14:14 is an arithmetic tie: however stable the verifier's dissent is,
+    # it can never promote the outcome into a winner.
+    result = finalize_outcome(
+        yolo_outcome="TIE", llm_outcome="LEFT", llm_status="success",
+        reask={"outcome": "LEFT", "status": "success"},
+    )
+    assert result["outcome"]["value"] == "TIE"
+    assert result["decision_source"] == "tie_upheld"
+    assert result["verification"]["status"] == "tie_upheld"
+    assert result["verification"]["llm_outcome"] == "LEFT"
+
+    # A custom tie_value gets the same protection.
+    result = finalize_outcome(
+        yolo_outcome="draw", llm_outcome="LEFT", llm_status="success",
+        reask={"outcome": "LEFT", "status": "success"}, tie_value="draw",
+    )
+    assert result["outcome"]["value"] == "draw"
+    assert result["decision_source"] == "tie_upheld"
+
+
+def test_tie_with_flipping_llm_confirms_tie_via_reask():
+    result = finalize_outcome(
+        yolo_outcome="TIE", llm_outcome="LEFT", llm_status="success",
+        reask={"outcome": "TIE", "status": "success"},
+    )
+    assert result["outcome"]["value"] == "TIE"
+    assert result["decision_source"] == "yolo_reask_confirmed"
 
 
 def test_llm_timeout_falls_back_to_yolo():
@@ -607,7 +661,10 @@ def test_project_result_adds_generic_and_dice_compatibility_fields():
 
 def test_project_result_preserves_frontend_result_contract():
     profile = {"game_id": "dice", "llm": {"allowed_outcomes": ["LEFT", "RIGHT", "TIE"]}}
-    decision = finalize_outcome(yolo_outcome="LEFT", llm_outcome="RIGHT", llm_status="success")
+    decision = finalize_outcome(
+        yolo_outcome="LEFT", llm_outcome="RIGHT", llm_status="success",
+        reask={"outcome": "RIGHT", "status": "success"},
+    )
     result = project_result(
         profile,
         decision,
@@ -882,6 +939,62 @@ def test_provider_multiview_sends_single_llm_request(tmp_path: Path):
     v=V(); p=VisionYolov8Adjudicator(runtime_factory=lambda vid:Runtime(vid),verifier=v)
     out=p.adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
     assert out["outcome"]["value"] == "LEFT" and v.calls == 1
+
+
+def test_provider_reasks_llm_on_disagreement(tmp_path: Path):
+    (tmp_path / "a.jpg").write_bytes(b"a")
+    class Runtime:
+        def start(self, *a, **k):
+            self.events_data = iter([{"event": "observation", "stable": True, "yolo_outcome": "TIE", "snapshot": {"path": str(tmp_path / "a.jpg")}}])
+        def send(self, c): pass
+        def events(self): return self.events_data
+        def stop(self): pass
+    class V:
+        def __init__(self, answers): self.calls = 0; self.answers = answers
+        def verify(self, **kw):
+            self.calls += 1
+            outcome = self.answers[min(self.calls, len(self.answers)) - 1]
+            return type("R", (), {"status": "success", "outcome": outcome, "error": None})()
+    profile = {"game_id": "x", "vision": {"stable_frames": 1}, "rule": {"kind": "numeric_compare", "aggregation": "sum", "tie_value": "TIE"}, "llm": {"enabled": True, "timeout_seconds": 3, "system_prompt": "s", "user_prompt_template": "u", "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]}, "lifecycle": {"post_result_hold_seconds": 0}, "timeouts": {"adjudication_seconds": 15}}
+
+    # The re-ask flips back to the detector: the first dissent was a fluke.
+    v = V(["LEFT", "TIE"])
+    (tmp_path / "a.jpg").write_bytes(b"a")  # each round's cleanup unlinks it
+    out = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime(), verifier=v).adjudicate(
+        VisionAdjudicationRequest("x", profile, "r", 2),
+        on_log=lambda x: None, on_event=lambda e: None, is_cancelled=lambda: False,
+    )
+    assert v.calls == 2
+    assert out["decision_source"] == "yolo_reask_confirmed"
+    assert out["outcome"]["value"] == "TIE"
+
+    # The dissent is stable, but a tie is arithmetic fact and stays a tie.
+    v = V(["LEFT", "LEFT"])
+    (tmp_path / "a.jpg").write_bytes(b"a")
+    out = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime(), verifier=v).adjudicate(
+        VisionAdjudicationRequest("x", profile, "r", 2),
+        on_log=lambda x: None, on_event=lambda e: None, is_cancelled=lambda: False,
+    )
+    assert v.calls == 2
+    assert out["decision_source"] == "tie_upheld"
+    assert out["outcome"]["value"] == "TIE"
+
+    # Away from the tie, a stable dissent still overrides (documented semantics).
+    class RuntimeLeft:
+        def start(self, *a, **k):
+            self.events_data = iter([{"event": "observation", "stable": True, "yolo_outcome": "RIGHT", "snapshot": {"path": str(tmp_path / "a.jpg")}}])
+        def send(self, c): pass
+        def events(self): return self.events_data
+        def stop(self): pass
+    v = V(["LEFT", "LEFT"])
+    (tmp_path / "a.jpg").write_bytes(b"a")
+    out = VisionYolov8Adjudicator(runtime_factory=lambda vid: RuntimeLeft(), verifier=v).adjudicate(
+        VisionAdjudicationRequest("x", profile, "r", 2),
+        on_log=lambda x: None, on_event=lambda e: None, is_cancelled=lambda: False,
+    )
+    assert v.calls == 2
+    assert out["decision_source"] == "llm_override"
+    assert out["outcome"]["value"] == "LEFT"
 
 
 def test_provider_cleans_runtime_snapshots_after_llm(tmp_path: Path):
@@ -1212,7 +1325,9 @@ def test_provider_reuses_resident_runtime_for_two_rounds_without_stale_observati
         "START_ADJUDICATION", "FINAL_RESULT", "STOP_ADJUDICATION",
         "START_ADJUDICATION", "FINAL_RESULT", "STOP_ADJUDICATION",
     ]
-    assert verifier.seen == [b"round-1", b"round-2"]
+    # Round 2's dissent (RIGHT yolo vs LEFT llm) triggers one corroborating
+    # re-ask against the same image.
+    assert verifier.seen == [b"round-1", b"round-2", b"round-2"]
 
 
 def test_provider_ignores_stale_idle_event_before_current_round_detection(tmp_path: Path):
@@ -1674,4 +1789,6 @@ def test_provider_marks_disabled_llm_as_yolo_only_not_timeout(tmp_path: Path):
         "yolo_outcome": "LEFT",
         "llm_outcome": None,
         "llm_called": False,
+        "reask_outcome": None,
+        "reask_status": "not_needed",
     }

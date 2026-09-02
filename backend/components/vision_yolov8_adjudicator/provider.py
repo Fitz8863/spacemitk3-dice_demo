@@ -794,6 +794,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             on_event({"event":"phase", "phase":"verifying"}); cfg = profile.get("llm", {})
             cfg = cfg if isinstance(cfg, Mapping) else {}
             status, out = ("timeout", None) if cfg.get("enabled", True) else ("disabled", None)
+            reask = None
             if cfg.get("enabled", True):
                 paths = []
                 for observation in ordered:
@@ -831,7 +832,33 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                         verifier = OpenAICompatibleVisionVerifier(endpoint, model=transport["model"], api_key=transport["api_key"])
                         vr = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=llm_timeout, model=transport["model"])
                     status, out = vr.status, vr.outcome
-            decision = finalize_outcome(yolo_outcome=yolo, llm_outcome=out, llm_status=status)
+                    # A lone dissent from the verifier is re-asked once within
+                    # the same budget: an answer corroborated by the re-ask may
+                    # override, an answer that flips back confirms the detector,
+                    # and anything else leaves the detector's result standing.
+                    if (
+                        status == "success"
+                        and isinstance(out, str)
+                        and yolo is not None
+                        and out.strip() != str(yolo).strip()
+                    ):
+                        reask_remaining = max(0.0, deadline - time.monotonic())
+                        if reask_remaining > 0:
+                            reask_timeout = min(
+                                self._llm_timeout(profile, fallback_timeout), reask_remaining
+                            )
+                            vr2 = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=reask_timeout, model=transport["model"])
+                            reask = {"outcome": vr2.outcome, "status": vr2.status}
+                        else:
+                            reask = {"outcome": None, "status": "timeout"}
+                        on_log(f"[vision] LLM dissented ({out}); re-ask -> {reask.get('status')}:{reask.get('outcome')}")
+            decision = finalize_outcome(
+                yolo_outcome=yolo,
+                llm_outcome=out,
+                llm_status=status,
+                reask=reask,
+                tie_value=str(rule.get("tie_value", "TIE")),
+            )
             final = project_result(profile, decision, {**normalized[0], "views": normalized})
             final_command = {"command": "FINAL_RESULT", "request_id": request.request_id,
                              "outcome": final["outcome"],

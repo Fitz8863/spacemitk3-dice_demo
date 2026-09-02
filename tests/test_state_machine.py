@@ -311,6 +311,10 @@ class RoundEngineTests(unittest.TestCase):
         self.assertGreaterEqual(len(ticks), 1)
         self.assertEqual(ticks[0]["state"], "timed")
         self.assertGreater(ticks[0]["remaining_ms"], 0)
+        # The tick carries the state's rhythm so the frontend can step one
+        # number per tick_seconds.
+        self.assertEqual(ticks[0]["tick_seconds"], 0.1)
+        self.assertEqual(ticks[0]["duration_seconds"], 0.3)
 
     def test_early_intent_wins_against_expiring_timer(self):
         payload = machine()

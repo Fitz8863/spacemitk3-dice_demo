@@ -193,7 +193,7 @@ build/yolov8_camera --config vision/yolov8_adjudicator/config.json \
 3. runtime 达到 profile 的稳定帧数量后输出一帧私有 snapshot 和通用 detection；黑线/divider 仅作为场景几何辅助信息。
 4. provider 根据 `class_map`、participants、分组方式和 `rule` 计算每个视角的 YOLO 初判。多视角属于同一个裁决对象，按 profile 的 `majority_vote` 做多数投票。
 5. 如果启用 LLM，provider 将稳定帧和本局 prompt 作为一次无历史的 OpenAI-compatible 多模态请求。LLM 只负责复核图片，不接收其他请求上下文。
-6. 结果优先级：YOLO 与 LLM 一致使用 `consensus`；LLM 成功但不一致使用 `llm_override`；LLM 超时使用 `yolo_timeout_fallback`；其他无效响应或检测证据不足进入错误。
+6. 结果优先级：YOLO 与 LLM 一致使用 `consensus`；不一致时对 LLM 复问一次做佐证——复问与 YOLO 一致用 `yolo_reask_confirmed`，复问仍坚持且非平局才用 `llm_override`（平局是算术事实，`tie_upheld` 永不被推翻），复问无定论用 `yolo_reask_fallback`；LLM 超时使用 `yolo_timeout_fallback`；其他无效响应或检测证据不足进入错误。
 7. provider 发出 `FINAL_RESULT` 给 runtime，再发出 `STOP_ADJUDICATION`。这会立即停止 YOLO 推理，但 resident 摄像头和视频链路继续保持。
 8. 发送 `result` 后进入 `holding`，等待 `lifecycle.post_result_hold_seconds`。保持期间不重新检测、不重复调用 LLM，只继续让前端观看实时画面；值为 `0` 时立即结束。
 9. provider 发出 `complete`，任务变为 `success`，resident runtime 回到 `idle`；per-request 模式则回收进程和摄像头。

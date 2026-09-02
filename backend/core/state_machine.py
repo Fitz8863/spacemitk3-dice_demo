@@ -378,10 +378,15 @@ class GameRound:
                 remaining = end - time.monotonic()
                 if remaining <= 0:
                     return True
+                # Carry the state's rhythm so the frontend can render one
+                # number per tick (ceil(remaining / tick)) and stay in step
+                # with a pre-recorded voice countdown.
                 self._emit_locked({
                     "event": "tick",
                     "state": name,
                     "remaining_ms": int(remaining * 1000),
+                    "tick_seconds": tick,
+                    "duration_seconds": float(duration),
                 })
             time.sleep(min(tick, max(remaining, 0.01)))
 
