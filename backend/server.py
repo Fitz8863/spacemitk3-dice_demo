@@ -373,6 +373,10 @@ def create_round(game_id: str) -> GameRound:
     # The round snapshots the *effective* manifest: arena defaults underlaid,
     # the global ASR breaker applied.  Engine and ASR bridge read it as-is.
     manifest = with_global_defaults(manifest, get_arena_config())
+    if "participants" not in manifest:
+        raise InvalidRequestError(
+            f"game {game_id} declares no participants and the arena config provides none"
+        )
     with rounds_lock:
         for existing in list(rounds.values()):
             if existing.status == "running":
@@ -755,7 +759,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"components": COMPONENTS.all(include_health=True)})
             return
         if path == "/api/games":
-            self.send_json({"games": get_games().public_all()})
+            self.send_json({"games": get_games().public_all(get_arena_config())})
             return
         if path.startswith("/api/game/rounds/"):
             remainder = path[len("/api/game/rounds/"):]

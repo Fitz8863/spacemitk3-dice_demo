@@ -108,9 +108,21 @@ class GameRegistry:
     def all(self) -> list[dict[str, Any]]:
         return list(self._games.values())
 
-    def public_all(self) -> list[dict[str, Any]]:
-        """Return browser-safe manifests without model, prompt, or device data."""
-        return [public_game_manifest(manifest) for manifest in self._games.values()]
+    def public_all(self, arena: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Return browser-safe manifests without model, prompt, or device data.
+
+        ``arena`` (the global config) is underlaid first so projection fields
+        a game inherits from the deployment — participants in particular —
+        still reach the browser.
+        """
+        if arena is None:
+            return [public_game_manifest(manifest) for manifest in self._games.values()]
+        from core.arena_config import with_global_defaults
+
+        return [
+            public_game_manifest(with_global_defaults(manifest, arena))
+            for manifest in self._games.values()
+        ]
 
 
 def _public_video(video: Any) -> dict[str, Any]:
@@ -175,7 +187,13 @@ def load_games(root: Path | None = None) -> GameRegistry:
                 raise ValueError("missing or invalid name")
             if not isinstance(manifest.get("enabled"), bool):
                 raise ValueError("missing or invalid enabled")
-            manifest["participants"] = normalize_participants(manifest.get("participants"))
+            # participants is optional here: the arena config (backend/config.json)
+            # underlays the deployment-wide table mapping when a game leaves it
+            # out; a game that declares it overrides per game.
+            if manifest.get("participants") is not None:
+                manifest["participants"] = normalize_participants(manifest.get("participants"))
+            else:
+                manifest.pop("participants", None)
             if "texts" in manifest:
                 # The per-key speech table was replaced by inline speech
                 # actions on state-machine states; keeping both would let a

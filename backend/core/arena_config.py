@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from core.participants import normalize_participants
+
 ROOT = Path(__file__).resolve().parents[2]
 ARENA_CONFIG_PATH = ROOT / "backend" / "config.json"
 
@@ -31,6 +33,12 @@ def validate_arena_config(payload: Any) -> dict[str, Any]:
         for key, value in providers.items()
     ):
         raise ArenaConfigError("providers must map slots to non-empty provider ids")
+    participants = payload.get("participants")
+    if participants is not None:
+        try:
+            normalize_participants(participants)
+        except ValueError as exc:
+            raise ArenaConfigError(f"participants is invalid: {exc}") from exc
     voice = payload.get("voice")
     if voice is not None and (not isinstance(voice, str) or not voice.strip()):
         raise ArenaConfigError("voice must be a non-empty string")
@@ -94,6 +102,10 @@ def with_global_defaults(
         if isinstance(game_providers, Mapping):
             providers.update(game_providers)
         merged["providers"] = providers
+    if "participants" not in merged and isinstance(arena.get("participants"), Mapping):
+        # The player/Agent physical-side mapping is a property of the table
+        # setup, not of any game; games may still override it.
+        merged["participants"] = dict(arena["participants"])
     if "voice" not in merged and isinstance(arena.get("voice"), str) and arena["voice"]:
         merged["voice"] = arena["voice"]
     if "speed" not in merged:

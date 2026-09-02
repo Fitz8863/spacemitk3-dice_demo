@@ -134,6 +134,25 @@ class MergeTests(unittest.TestCase):
         merged = with_global_defaults({"id": "dice"}, {**VALID_ARENA, "asr_enabled": False})
         self.assertNotIn("asr", merged)
 
+    def test_participants_underlay(self):
+        arena = {**VALID_ARENA, "participants": {"player": "LEFT", "agent": "RIGHT"}}
+        # A game that declares nothing inherits the deployment table mapping.
+        merged = with_global_defaults({"id": "dice"}, arena)
+        self.assertEqual(merged["participants"], {"player": "LEFT", "agent": "RIGHT"})
+        # A game that declares its own mapping wins.
+        merged = with_global_defaults(
+            {"participants": {"player": "RIGHT", "agent": "LEFT"}}, arena
+        )
+        self.assertEqual(merged["participants"], {"player": "RIGHT", "agent": "LEFT"})
+
+    def test_invalid_arena_participants_rejected(self):
+        with self.assertRaises(ArenaConfigError):
+            validate_arena_config({
+                **VALID_ARENA, "participants": {"player": "LEFT", "agent": "LEFT"},
+            })
+        with self.assertRaises(ArenaConfigError):
+            validate_arena_config({**VALID_ARENA, "participants": {"player": "UP"}})
+
     def test_source_manifest_is_not_mutated(self):
         manifest = {"providers": {"tts_local": "tts_qwen3"}, "asr": {"enabled": True}}
         with_global_defaults(manifest, {**VALID_ARENA, "asr_enabled": False})
@@ -427,10 +446,12 @@ def test_real_dice_manifest_and_arena_config_compose():
     # manifest must declare no slots of its own.
     assert not manifest.get("providers")
     assert "voice" not in manifest
+    assert "participants" not in manifest
     arena = load_arena_path(ROOT / "backend" / "config.json")
     merged = with_global_defaults(manifest, arena)
     for slot in ("tts_local", "tts_remote", "asr", "vision_adjudicator"):
         assert merged["providers"][slot], f"slot {slot} must resolve via the arena"
+    assert merged["participants"] == {"player": "LEFT", "agent": "RIGHT"}
     assert "voice" in merged
     assert "speed" in merged
     enabled = [m for m in games.all() if m.get("enabled", False)]
@@ -537,6 +558,81 @@ def test_startup_refuses_conflicting_local_tts(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["server.py", "--port", "0"])
     with pytest.raises(SystemExit):
         server.main()
+
+
+def test_participants_inherit_from_arena_end_to_end(tmp_path, monkeypatch):
+    """A game manifest without participants loads and plays via the arena mapping."""
+    games_root = tmp_path / "games"
+    (games_root / "dice").mkdir(parents=True)
+    (games_root / "dice" / "manifest.json").write_text(json.dumps({
+        "id": "dice", "name": "Dice", "enabled": True,
+        "state_machine": MACHINE,
+    }), encoding="utf-8")
+    arena_path = tmp_path / "config.json"
+    arena_path.write_text(json.dumps({
+        "schema_version": 1,
+        "providers": {"tts_local": "tts_dummy"},
+        "participants": {"player": "LEFT", "agent": "RIGHT"},
+    }), encoding="utf-8")
+
+    registry = ComponentRegistry()
+    registry.register(DummyTts(), {
+        "id": "tts_dummy", "type": "tts", "entry": "provider.py:DummyTts",
+    })
+    monkeypatch.setattr(server, "COMPONENTS", registry)
+    monkeypatch.setattr(server, "_GAMES_ROOT", games_root)
+    monkeypatch.setattr(server, "GAMES", server.load_games(games_root))
+    monkeypatch.setattr(server, "_GAMES_MTIMES", server._manifest_mtimes())
+    monkeypatch.setattr(server, "rounds", {})
+    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", arena_path)
+    monkeypatch.setattr(server, "_ARENA_CONFIG", {})
+    monkeypatch.setattr(server, "_ARENA_MTIME", None)
+    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    port = httpd.server_address[1]
+    try:
+        # The public projection must carry the arena-inherited mapping.
+        connection = HTTPConnection("127.0.0.1", port, timeout=3)
+        connection.request("GET", "/api/games")
+        games = json.loads(connection.getresponse().read())["games"]
+        connection.close()
+        dice = next(g for g in games if g["id"] == "dice")
+        assert dice["participants"] == {"player": "LEFT", "agent": "RIGHT"}
+
+        # And a round on that game must start (the merged manifest carries it).
+        connection = HTTPConnection("127.0.0.1", port, timeout=3)
+        connection.request("POST", "/api/game/rounds", body=b'{"game":"dice"}',
+                           headers={"Content-Type": "application/json"})
+        response = connection.getresponse()
+        snapshot = json.loads(response.read())
+        connection.close()
+        assert response.status == 201
+        assert snapshot["state"] == "rules"
+    finally:
+        httpd.shutdown()
+
+
+def test_round_without_any_participants_is_rejected(tmp_path, monkeypatch):
+    """No game mapping and no arena mapping = clear error, not a mid-round crash."""
+    games_root = tmp_path / "games"
+    (games_root / "dice").mkdir(parents=True)
+    (games_root / "dice" / "manifest.json").write_text(json.dumps({
+        "id": "dice", "name": "Dice", "enabled": True,
+        "state_machine": MACHINE,
+    }), encoding="utf-8")
+    arena_path = tmp_path / "config.json"
+    arena_path.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    monkeypatch.setattr(server, "_GAMES_ROOT", games_root)
+    monkeypatch.setattr(server, "GAMES", server.load_games(games_root))
+    monkeypatch.setattr(server, "_GAMES_MTIMES", server._manifest_mtimes())
+    monkeypatch.setattr(server, "rounds", {})
+    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", arena_path)
+    monkeypatch.setattr(server, "_ARENA_CONFIG", {})
+    monkeypatch.setattr(server, "_ARENA_MTIME", None)
+
+    with pytest.raises(Exception) as excinfo:
+        server.create_round("dice")
+    assert "participants" in str(excinfo.value)
 
 
 if __name__ == "__main__":

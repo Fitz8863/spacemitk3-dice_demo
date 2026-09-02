@@ -6,6 +6,10 @@
     "asr": "asr_zipformer",
     "vision_adjudicator": "vision_yolov8_adjudicator"
   },
+  "participants": {
+    "player": "LEFT",
+    "agent": "RIGHT"
+  },
   "voice": "default",
   "speed": 1.0,
   "asr_enabled": true
