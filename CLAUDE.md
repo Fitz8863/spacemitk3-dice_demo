@@ -28,10 +28,17 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
 - **JSON 配置文件是唯一配置来源（2026-09-01 起）**：环境变量覆盖层（`.dice-arena.env` 与全部 `DICE_*` 输入端变量）已移除。游戏 manifest 支持热加载（mtime 检测，保存+刷新页面即生效；坏配置保留最后可用版本，删除游戏或换槽位指向的新引擎需重启）；组件 `config.json` 与 vision runtime `config.json` 改后重启生效。不要建议用户用环境变量调参。
 
 - `backend/components/<id>/manifest.json` + `provider.py` 是可插拔功能包；`backend/core/components.py` 动态扫描并注册 provider，并校验视觉/TTS 的正式接口。
+- **后端权威状态机（2026-09-02 起）**：游戏流程由 manifest 的 `state_machine` 节点声明
+  （`backend/core/state_schema.py` 校验、`backend/core/state_machine.py` 引擎 `GameRound` 驱动）。
+  前端只提交意图并渲染事件（`web/app.js` 的 `createRoundClient`），不自驱状态、不再有
+  `speakState`/`texts` 台词表。台词内联在状态的 `speech` 动作（mode 仍是
+  `audio`/`tts_local`/`tts_remote` 三种，可按动作钉 `provider`）；`await:true` 台词由前端
+  播完回执 `speech_done` 后状态机才继续；`select_by: winner_role` 按裁决结果选台词。
+  转换是显式命名图（`to` 按状态名引用，悬空引用加载报错、不可达状态告警）。
+  一局 = 一个 round（`/api/game/rounds` 系列 API），新 round 自动取消残留活动 round。
 - 游戏通过语义插槽选择 provider；当前骰子配置为
   `providers.vision_adjudicator=vision_yolov8_adjudicator`、`providers.tts_local=tts_moss_nano`
-  与 `providers.tts_remote=tts_gptsovits`。台词 mode 只有三种：`audio`（预录 WAV）/`tts_local`/`tts_remote`，可在 manifest 里按句混用本地与远程引擎；任意合成
-  台词可用 `provider` 字段显式钉死单个 provider。`tts_qwen3` 是本地可选 provider。
+  与 `providers.tts_remote=tts_gptsovits`。`tts_qwen3` 是本地可选 provider。
 - 新 TTS 复制一个功能包并继承 `TtsProvider`，最小实现 `health()`、`synthesize()` 即可接入；需要分段低延迟时再覆盖 `stream()`；切换默认 provider 只需修改游戏 manifest 的 `providers.tts`（改后重启），前端请求保持不变。Provider 可用 `manifest.lifecycle.start/stop` 声明本地模型进程管理命令，`componentctl.py`/`start_web.sh` 会按所选 provider 调度。
 - 当前 YOLO 包是 `type=vision, role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于目标坐标的 YOLO 包应使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得混入裁决器插槽。算法名不是职责接口。
 - 游戏视觉配置必须内嵌在 `backend/games/<game_id>/manifest.json` 的

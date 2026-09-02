@@ -7,6 +7,17 @@
 
 ## 当前实现覆盖（2026-09-01）
 
+2026-09-02 起游戏调度升级为**后端权威状态机**：`backend/games/<game_id>/manifest.json` 的
+`state_machine` 节点（校验器 `backend/core/state_schema.py`、引擎 `backend/core/state_machine.py`
+的 `GameRound`）声明每个状态的 on_enter 动作（speech/adjudicate，未来 robot）、意图转换表、
+计时器与事件路由；后端通过 `/api/game/rounds` 系列 API 驱动整局，前端 `web/app.js`
+（`createRoundClient` + `playDirective`）只提交意图、渲染事件、播台词并在 `await` 指令播完
+回执 `speech_done`。旧 `texts` 台词表与 `/api/speech/stream` 已移除（台词内联进 speech 动作，
+音频经 `/api/game/rounds/<id>/speech` 按指令拉帧）。`/api/adjudicate` 保留为调试入口。
+一局 = 一个 round，刷新即放弃（新 round 自动取消旧活动 round）。已在 K3 板端完成全流程
+验证（含 停→开盖→4 秒过场节奏、0.9 秒倒计时、真实 YOLO+LLM 裁决、热加载）。
+
+
 2026-09-01 起环境变量覆盖层已整体移除：`.dice-arena.env` 加载器（`backend/core/env.py`）删除，`DICE_LLM_*`、`DICE_TTS_PROVIDER`、`DICE_MOSS_TTS_*`、`DICE_MEDIAMTX_WEBRTC_BASE_URL` 等输入端覆盖分支全部清理，JSON 配置文件（游戏 manifest、组件 `config.json`、`vision/yolov8_adjudicator/config.json`）成为唯一配置来源。游戏 manifest 进一步支持热加载：server.py 的 `get_games()` 按 mtime 自动重载，改台词/换 WAV/按句换引擎保存+刷新页面即生效，坏配置自动保留最后可用版本（删除游戏需重启）；组件 config.json 仍是改后重启生效。LLM endpoint/model/key 位于 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段（该文件被 Git 跟踪，仓库必须保持私有）。daemon 内部为底层原生库 `setdefault` 注入的 `SPACEMIT_EP_*` 变量是 C 库接口，不是人工配置入口。
 
 以下内容覆盖本文中关于组件调度的旧描述：后端扫描 `backend/components/*/manifest.json`，按 `entry` 动态加载功能包并通过 `ComponentRegistry` 按 ID 注入游戏流程。视觉 provider 继续使用广义 `type=vision`，但必须再声明职责 `role`：当前骰子 YOLO 包是 `role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于获取目标坐标/空间位置的 YOLO 包必须使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得接入裁决器插槽。骰子游戏通过 `manifest.json.providers.vision_adjudicator` 选择裁决器。TTS 通过游戏 manifest 的双槽位选择 provider：`providers.tts_local`（本地槽）与 `providers.tts_remote`（远程槽）；台词 mode 只有 `audio`/`tts_local`/`tts_remote` 三种（旧写法 `tts` 与 `providers.tts` 已移除，含它们的 manifest 会加载失败），可按句混用本地与远程引擎，任意台词可用 `provider` 字段显式钉死 provider。`start_web.sh` 会自动启动 manifest 引用到的全部本地 provider。当前骰子本地槽为 `tts_moss_nano`，远程槽为 `tts_gptsovits`——后者通过 HTTP 调用 Tailscale 内另一台 GPU 主机上的 GPT-SoVITS v2ProPlus（9873 按音色名流式调用），无本地 lifecycle，服务地址收敛在组件 `config.json` 的 `runtime.base_url` 一处。`tts_qwen3` 是本地可选 provider。请求体中的 `provider` 不会覆盖后端选择。新增 TTS 不需要修改 `server.py` 或前端：新增功能包并继承 `TtsProvider`，最小实现 `health()` 与 `synthesize()`；只有需要分段低延迟时才覆盖 `stream()`。

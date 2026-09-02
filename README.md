@@ -94,49 +94,82 @@ systemctl status dice-arena-web.service
 
 实体按键：绿色按键发送 `Enter`，用于确认、进入和开始；红色按键发送 `Escape`，用于返回或取消；蓝色按键发送 `ArrowDown`，用于向下选择或重听规则；黄色按键发送 `ArrowUp`，用于向上选择。摇骰进行中继续使用页面上的“停止摇骰”按钮。
 
-## 配置游戏语音
+## 配置游戏状态机与语音
 
 > 切换 TTS provider、调整音色/语速/流式参数的完整步骤见 [`TTS配置与切换指南.md`](TTS配置与切换指南.md)。
 
-每个游戏的页面状态语音集中在 `backend/games/<game_id>/manifest.json`（保存后刷新网页即生效，无需重启）。每条台词可选择实时 TTS（本地/远程槽位）或已有 WAV；网页只提交状态键，具体播放策略由后端读取 manifest 决定：
+游戏流程由 `backend/games/<game_id>/manifest.json` 的 `state_machine` 节点声明，**后端是唯一权威**：前端只提交意图（实体按键/页面按钮）并渲染事件流，不再自行推进状态或决定播报时机。台词内联在状态的 `speech` 动作里，每条动作可选择实时 TTS（本地/远程槽位）或已有 WAV：
 
 ```json
-{
-  "id": "dice",
-  "voice": "default",
-  "speed": 1.0,
-  "texts": {
-    "rules_intro": {
-      "mode": "audio",
-      "audio": "audio/rules_intro.wav",
-      "text": "双方各摇五颗骰子，停止后同时开盖。"
+"state_machine": {
+  "schema_version": 1,
+  "initial": "rules",
+  "states": {
+    "rules": {
+      "ui": {"view": "rules", "title": "游戏规则", "copy": "……"},
+      "on_enter": [
+        {"action": "speech", "mode": "tts_local", "text": "欢迎来到摇骰子游戏。……"}
+      ],
+      "on_intent": {
+        "confirm": {"to": "ready"},
+        "repeat": {"actions": [{"action": "speech", "mode": "tts_local", "text": "……"}]},
+        "back": {"exit": true}
+      }
     },
-    "result_player_win": {
-      "mode": "tts_local",
-      "text": "恭喜你，玩家获胜。玩家点数 {player_score}，Agent 点数 {agent_score}。"
+    "open_reveal": {
+      "on_enter": [
+        {"action": "speech", "mode": "audio", "audio": "audio/停.wav", "text": "停！", "await": true},
+        {"action": "speech", "mode": "tts_local", "text": "准备好了没有？三，二，一,开盖！"}
+      ],
+      "duration": 4,
+      "on_expire": {"to": "vision_countdown"}
+    },
+    "result": {
+      "on_enter": [{
+        "action": "speech",
+        "select_by": "winner_role",
+        "cases": {
+          "PLAYER": {"mode": "tts_local", "text": "……{player_score}……{agent_score}……"},
+          "AGENT": {"mode": "tts_local", "text": "……"},
+          "TIE": {"mode": "tts_local", "text": "……"}
+        }
+      }],
+      "on_intent": {"new_round": {"to": "ready"}, "back": {"exit": true}}
     }
   }
 }
 ```
 
-`mode=tts_local` 使用本地槽位的 TTS provider（`mode=tts_remote` 走远程槽位）；`mode=audio` 从该游戏目录读取 WAV，例如上述文件应放在 `backend/games/dice/audio/rules_intro.wav`。第一版只接受 WAV，并拒绝绝对路径和 `..` 越界路径。`text` 在 audio 模式下是可选说明。旧的纯字符串条目仍兼容并视为 `tts_local`；`mode` 只接受 `tts_local`/`tts_remote`/`audio` 三种值。
+要点：
 
-当前状态键包括：`rules_intro`、`rules_confirmed`、`shake_started`、`reveal_ready`、`analysis_started`、`result_tie`、`result_player_win` 和 `result_agent_win`。`reveal_ready` 会在摇骰结束、进入开盖过场时播报；过场页面保持 2 秒后，网页自动执行 3 秒视觉倒计时，再启动视觉裁决。TTS 胜负文案支持 `{player_score}`、`{agent_score}` 占位符；`voice` 和 `speed` 是游戏级 TTS 默认参数。修改 manifest 或添加 WAV 后需要重启后端，使 manifest 重新加载。
+- 状态机是**显式命名的有向图**：`to` 按状态名引用，支持任意跳转、回跳（如 `analysis_failed --retry--> analysis`）与跳过；删除状态时改掉引用它的边即可，悬空引用在加载时报错。
+- 触发器三类：`on_intent`（前端按键意图）、`duration` + `on_expire`（计时器，`tick_seconds` 可配，倒计时默认 0.9 秒还原舞台节奏）、`on_event`（后端内部事件，如 `adjudication.result`/`adjudication.diagnosis`）。
+- `speech` 动作 `mode` 只有 `tts_local`/`tts_remote`/`audio` 三种；`await: true` 表示后端等待前端播放完成回执（`speech_done`）后才继续推进，保住「停 → 开盖词 → 4 秒过场」的节奏；`select_by: winner_role` 按裁决结果选台词，`{player_score}`/`{agent_score}` 占位符由引擎渲染。
+- `audio` 模式从该游戏目录读取 WAV（如 `audio/停.wav`），拒绝绝对路径和 `..` 越界。游戏级 `voice`/`speed` 是 TTS 默认参数，单条动作可覆盖。
+- 未来接机械臂时，在对应状态加一条新动作类型（如 `{"action": "robot", "command": "shake_dice"}`）并注册对应执行器与 `command` 类型功能包即可，无需改引擎和前端。
+- manifest 支持热加载（mtime 检测，保存后下一局生效；坏配置保留最后可用版本）。正在跑的一局使用创建时的状态机快照。修改 manifest 结构后无需重启后端。
 
 ## K3 后端接口
 
 ```text
-GET  /api/health                    查看 bridge、YOLOv8、LLM 和 TTS 状态
-GET  /api/tts/health                检查当前选中的 TTS provider
-POST /api/speech/stream              按游戏台词键选择 TTS 或已有 WAV
-POST /api/tts/stream                 单次提交整段文本，按 WAV 帧持续返回
-POST /api/tts/synthesize              手工调试：单段文本转一个 WAV
-POST /api/adjudicate                   启动一轮视觉裁决，返回 job_id
+GET  /api/health                       查看 bridge、YOLOv8、LLM 和 TTS 状态
+GET  /api/tts/health                   检查当前选中的 TTS provider
+POST /api/tts/stream                   单次提交整段文本，按 WAV 帧持续返回
+POST /api/tts/synthesize               手工调试：单段文本转一个 WAV
+POST /api/game/rounds                  创建一局权威状态机对局，返回 round_id
+POST /api/game/rounds/<id>/intents     提交意图（按键动作与 speech_done 回执）
+GET  /api/game/rounds/<id>             查询对局快照（状态、事件、结果）
+GET  /api/game/rounds/<id>/stream      SSE 推送对局事件（state_changed/speech/tick/裁决透传）
+POST /api/game/rounds/<id>/speech      按指令 id 拉取台词音频帧（audio 读 WAV / TTS 流式）
+POST /api/game/rounds/<id>/cancel      取消对局（浏览器刷新即放弃，新对局自动取消旧对局）
+POST /api/adjudicate                   调试入口：直接启动一轮视觉裁决，返回 job_id
 GET  /api/adjudicate/<job_id>          兼容查询任务快照（旧客户端可轮询）
 GET  /api/adjudicate/<job_id>/events   查询结构化裁决事件
 GET  /api/adjudicate/<job_id>/stream   SSE 推送结构化进度和最终结果
 POST /api/adjudicate/<job_id>/cancel   取消当前裁决任务
 ```
+
+游戏对局的正常入口是 `/api/game/rounds` 系列：前端创建 round 后按状态机提交意图并渲染事件流；`/api/adjudicate` 保留为独立调试入口，走同一条 provider 管线。
 
 旧的 `/api/analyze...` 路由仍作为迁移别名保留。未来用于目标坐标/空间位置的视觉定位器应使用独立接口和路由，不复用裁决接口。
 

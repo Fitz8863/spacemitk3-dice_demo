@@ -104,23 +104,30 @@ curl -s http://127.0.0.1:8080/api/health | python3 -c "import json,sys; d=json.l
   - `tts_gptsovits`：`default` → 组件 config 的 `voice.name`；也可直接写服务端注册表里的音色 id（当前已注册：`fll`、`leimu`、`violet`、`anke`、`demo_female_zh`、`zanni`）
 - `speed`：只对 qwen3 和 gptsovits 生效（gptsovits 会被夹到 0.5~2.0）；moss 恒为 1.0，传其他值会明确报错而不是静默忽略。
 
-### 3.2 每句播报（texts 节点）—— 三种 mode 按句混用
+### 3.2 每句播报（state_machine 的 speech 动作）—— 三种 mode 按句混用
+
+台词内联在 manifest `state_machine.states.<状态>` 的 `speech` 动作里（2026-09-02 起后端
+权威状态机驱动，旧 `texts` 台词表已移除）：
 
 ```json
-"shake_started": {
-  "mode": "audio",
-  "audio": "audio/warm_321开始.wav",
-  "text": "三，二，一，开始"
+"shake_countdown": {
+  "on_enter": [
+    {"action": "speech", "mode": "audio", "audio": "audio/warm_321开始.wav", "text": "三，二，一，开始"}
+  ],
+  "duration": 3, "tick_seconds": 0.9,
+  "on_expire": {"to": "shaking"}
 },
-"analysis_started": {
-  "mode": "tts_local",
-  "text": "正在调用视觉判断结果"
-},
-"analysis_retry_hint": {
-  "mode": "tts_remote",
-  "text": "本次识别未完成，请整理好骰子后，可选择按蓝色按钮重新识别。"
+"analysis": {
+  "on_enter": [
+    {"action": "speech", "mode": "tts_local", "text": "正在调用视觉判断结果"},
+    {"action": "adjudicate"}
+  ]
 }
 ```
+
+`await: true` 的 speech 动作要等前端播完回执 `speech_done` 才继续推进（保住「停→开盖」
+节奏）；`select_by: winner_role` + `cases` 按胜负选台词。完整 schema 见 README 的
+「配置游戏状态机与语音」。
 
 | mode | 走哪个引擎 | 典型用途 |
 |---|---|---|
@@ -260,8 +267,9 @@ curl -X POST http://100.95.19.17:9873/tts \
 
 ## 6. 请求层参数（API 调用方参考）
 
-前端正常情况只发 `{"game":"dice","key":"台词键","values":{...}}` 到 `/api/speech/stream`，
-由 manifest 决定一切。直接调 `/api/tts/stream` 时可用：
+游戏流程内前端不直接调 TTS 接口：状态机下发 speech 指令，前端经
+`/api/game/rounds/<id>/speech` 按指令拉帧（provider 由后端按 manifest 解析）。
+手工调试直接调 `/api/tts/stream` 时可用：
 
 | 字段 | 说明 |
 |---|---|
@@ -294,11 +302,11 @@ curl -X POST http://100.95.19.17:9873/tts \
 ```text
 切本地 provider   →  manifest providers.tts_local（moss / qwen3）
 切远程 provider   →  manifest providers.tts_remote（gptsovits / 未来新增云端）
-某句换引擎        →  texts.<key>.mode: audio | tts_local | tts_remote（或加 "provider": "<id>" 钉死）
+某句换引擎        →  state_machine.states.<状态> 内该 speech 动作的 mode（或加 "provider": "<id>" 钉死）
 换 moss 音色      →  backend/components/tts_moss_nano/config.json → voice.name / voice.reference_audio
 换 gptsovits 音色 →  backend/components/tts_gptsovits/config.json → voice.name（或 manifest 全局 voice）
 改默认语速        →  manifest 顶层 speed（moss 不支持）
-改某句文案        →  manifest texts.<key>.text
+改某句文案        →  manifest 对应状态 speech 动作的 text
 改服务地址        →  对应组件 config.json 的 runtime.base_url
 改 manifest 后    →  保存 + 刷新网页即生效（热加载）
 改组件 config 后  →  scripts/stop_web.sh && scripts/start_web.sh

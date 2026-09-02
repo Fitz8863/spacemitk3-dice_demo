@@ -132,6 +132,22 @@ main/
 
 新增 provider 或修改游戏 provider 后需要重启后端，让 registry 和 manifest 重新扫描。无需在 `server.py` 添加具体 provider 的 import。
 
+## 4.5 一局游戏的权威状态机时序（2026-09-02 起）
+
+一局 = 一个 round（`/api/game/rounds`）。后端 `GameRound` 按 manifest `state_machine`
+驱动全部流程，前端只提交意图并渲染事件：
+
+```text
+POST /api/game/rounds                    创建 round（自动取消残留活动 round）
+  └─ state_changed(rules) + speech 指令   → 前端拉帧播放（/rounds/<id>/speech）
+POST /rounds/<id>/intents {"intent":...}  按键意图（confirm/start_shake/stop_shake/retry/…）
+POST /rounds/<id>/intents {"intent":"speech_done","directive_id":...}  await 台词播完回执
+GET  /rounds/<id>/stream                 SSE：state_changed/speech/tick/裁决事件透传/complete
+```
+
+意图、计时器到期与裁决事件并发时由引擎的 generation 计数保证先到先赢；`await` 台词
+30 秒无回执自动兜底推进。`/api/adjudicate` 保留为独立调试入口（同一 provider 管线）。
+
 ## 5. 一轮视觉裁决的时序
 
 ### 5.1 创建任务
@@ -145,7 +161,8 @@ Content-Type: application/json
 {"game":"dice"}
 ```
 
-`server.py` 校验游戏并创建 `ComponentJob`，同时只允许一个 `queued` 或 `running` 视觉任务。请求立即返回 `202 + job_id`，前端随后连接 SSE。
+`server.py` 校验游戏并创建 `ComponentJob`，同时只允许一个 `queued` 或 `running` 视觉任务。请求立即返回 `202 + job_id`，前端随后连接 SSE。（正常游戏流程中该步骤由状态机的
+`adjudicate` 动作经 `run_game` 桥接发起，本节描述的 job 语义不变。）
 
 ### 5.2 provider 和 runtime
 
