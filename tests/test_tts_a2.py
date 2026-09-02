@@ -15,7 +15,6 @@ from core.components import ComponentRegistry, _validate_manifest  # noqa: E402
 from core.errors import DiceArenaError  # noqa: E402
 from core.tts import TtsProvider  # noqa: E402
 from core.tts_config import TtsConfigError, validate_tts_component_config  # noqa: E402
-from core.games import normalize_speech_entry  # noqa: E402
 from core.tts_dispatch import TtsDispatcher  # noqa: E402
 from components.tts_qwen3.settings import load_settings as load_qwen_settings  # noqa: E402
 from components.tts_moss_nano.settings import load_settings as load_moss_settings  # noqa: E402
@@ -149,53 +148,24 @@ class DispatcherTests(unittest.TestCase):
 
 
 class TtsContractTests(unittest.TestCase):
-    def test_speech_manifest_entries_normalize_legacy_text_and_audio_modes(self):
-        self.assertEqual(
-            normalize_speech_entry("欢迎"),
-            {"mode": "tts_local", "text": "欢迎"},
-        )
-        self.assertEqual(
-            normalize_speech_entry({"mode": "audio", "audio": "audio/rules.wav"}),
-            {"mode": "audio", "audio": "audio/rules.wav"},
-        )
-        with self.assertRaises(ValueError):
-            normalize_speech_entry({"mode": "audio", "audio": "../secret.wav"})
-        with self.assertRaises(ValueError):
-            normalize_speech_entry({"mode": "unknown", "text": "bad"})
-
-    def test_speech_entries_support_remote_mode_and_provider_override(self):
-        self.assertEqual(
-            normalize_speech_entry({"mode": "tts_remote", "text": "远端"}),
-            {"mode": "tts_remote", "text": "远端"},
-        )
-        self.assertEqual(
-            normalize_speech_entry({"mode": "tts_local", "text": "本地"}),
-            {"mode": "tts_local", "text": "本地"},
-        )
-        self.assertEqual(
-            normalize_speech_entry({
-                "mode": "tts_remote", "text": "远端", "provider": "tts_gptsovits",
-            }),
-            {"mode": "tts_remote", "text": "远端", "provider": "tts_gptsovits"},
-        )
-        # Legacy string entries keep mapping to the local slot.
-        self.assertEqual(
-            normalize_speech_entry("欢迎"), {"mode": "tts_local", "text": "欢迎"}
-        )
-        with self.assertRaises(ValueError):
-            normalize_speech_entry({"mode": "tts", "text": "旧写法已移除"})
-        with self.assertRaises(ValueError):
-            normalize_speech_entry({"mode": "tts_remote", "text": "x", "provider": " "})
-        with self.assertRaises(ValueError):
-            normalize_speech_entry({"mode": "audio", "audio": "a.wav", "provider": "tts_x"})
-
     def test_referenced_tts_providers_collects_slots_and_overrides(self):
         manifest = {
             "providers": {"tts_local": "tts_a", "tts_remote": "tts_b"},
-            "texts": {
-                "override": {"mode": "tts_remote", "text": "1", "provider": "tts_c"},
-                "local": {"mode": "tts_local", "text": "2"},
-                "clip": {"mode": "audio", "audio": "audio/a.wav"},
+            "state_machine": {
+                "initial": "rules",
+                "states": {
+                    "rules": {
+                        "on_enter": [{"action": "speech", "mode": "tts_local", "text": "2"}],
+                        "on_intent": {
+                            "remote": {"actions": [
+                                {"action": "speech", "mode": "tts_remote", "text": "1", "provider": "tts_c"},
+                            ]},
+                            "clip": {"actions": [
+                                {"action": "speech", "mode": "audio", "audio": "audio/a.wav"},
+                            ]},
+                        },
+                    },
+                },
             },
         }
         self.assertEqual(

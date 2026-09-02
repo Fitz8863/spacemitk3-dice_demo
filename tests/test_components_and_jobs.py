@@ -97,7 +97,17 @@ class ComponentTests(unittest.TestCase):
                 "enabled": True,
                 "participants": {"player": "LEFT", "agent": "RIGHT"},
                 "providers": {},
-                "texts": {},
+                "state_machine": {
+                    "schema_version": 1,
+                    "initial": "rules",
+                    "states": {
+                        "rules": {
+                            "on_enter": [
+                                {"action": "speech", "mode": "tts_local", "text": "欢迎"}
+                            ]
+                        }
+                    }
+                },
                 "vision_profile": profile,
             }), encoding="utf-8")
             with patch.object(games_module, "GAMES_ROOT", Path(temp_dir)):
@@ -124,7 +134,17 @@ class ComponentTests(unittest.TestCase):
                 "enabled": True,
                 "participants": {"player": "LEFT", "agent": "LEFT"},
                 "providers": {},
-                "texts": {},
+                "state_machine": {
+                    "schema_version": 1,
+                    "initial": "rules",
+                    "states": {
+                        "rules": {
+                            "on_enter": [
+                                {"action": "speech", "mode": "tts_local", "text": "欢迎"}
+                            ]
+                        }
+                    }
+                },
             }), encoding="utf-8")
             with patch.object(games_module, "GAMES_ROOT", Path(temp_dir)):
                 registry = load_games()

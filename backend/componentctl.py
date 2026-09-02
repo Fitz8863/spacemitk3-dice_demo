@@ -12,6 +12,7 @@ from typing import Any
 from core.components import build_registry
 from core.errors import DiceArenaError
 from core.games import load_games, require_game, resolve_provider_id
+from core.state_schema import iter_speech_actions
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,9 +73,10 @@ def _selected_provider_id(provider_slot: str, game_id: str) -> str:
 def _referenced_tts_providers(manifest: dict[str, Any], *, local_fallback: str) -> list[str]:
     """Collect every TTS provider id this manifest can synthesize through.
 
-    Covers both semantic slots (local/remote) plus any per-line ``provider``
-    override in ``texts``; the default (local slot) provider comes first so
-    start scripts keep a stable notion of the game's primary voice.
+    Covers both semantic slots (local/remote) plus any per-action ``provider``
+    override on a state-machine speech action (including ``select_by`` cases);
+    the default (local slot) provider comes first so start scripts keep a
+    stable notion of the game's primary voice.
     """
     ids: list[str] = []
 
@@ -85,9 +87,10 @@ def _referenced_tts_providers(manifest: dict[str, Any], *, local_fallback: str) 
 
     add(resolve_provider_id(manifest, "tts_local", local_fallback))
     add(resolve_provider_id(manifest, "tts_remote", ""))
-    for entry in (manifest.get("texts") or {}).values():
-        if isinstance(entry, dict):
-            provider = entry.get("provider")
+    machine = manifest.get("state_machine")
+    if isinstance(machine, dict):
+        for action in iter_speech_actions(machine):
+            provider = action.get("provider")
             if isinstance(provider, str):
                 add(provider)
     return ids

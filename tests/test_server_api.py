@@ -123,77 +123,41 @@ def _write_hot_reload_games_root(tmp_path, text):
         "enabled": True,
         "participants": {"player": "LEFT", "agent": "RIGHT"},
         "providers": {"tts_local": "tts_dummy"},
-        "texts": {"result_tie": {"mode": "tts_local", "text": text}},
+        "state_machine": {
+            "schema_version": 1,
+            "initial": "rules",
+            "states": {
+                "rules": {
+                    "on_enter": [{"action": "speech", "mode": "tts_local", "text": text}],
+                }
+            },
+        },
     }
     path = games_root / "dice" / "manifest.json"
     path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     return games_root, path
 
 
-def _patch_dummy_registry(monkeypatch):
-    """Real components plus the local DummyTts, so no network is touched."""
-    combined = ComponentRegistry()
-    for component_id in server.COMPONENTS.ids():
-        combined.register(
-            server.COMPONENTS.get(component_id),
-            server.COMPONENTS.get_manifest(component_id),
-        )
-    combined.register(DummyTts(), {
-        "id": "tts_dummy", "type": "tts", "name": "Dummy TTS",
-        "version": "1", "enabled": True, "entry": "provider.py:DummyTts",
-    })
-    monkeypatch.setattr(server, "COMPONENTS", combined)
-
-
-def test_speech_manifest_hot_reloads_without_restart(tmp_path, monkeypatch):
-    """Manifest edits take effect on the next request - no service restart."""
-    games_root, manifest_path = _write_hot_reload_games_root(tmp_path, "旧台词 {player_score}")
+def test_state_machine_manifest_hot_reloads_without_restart(tmp_path, monkeypatch):
+    """Manifest edits take effect on the next registry read - no restart."""
+    games_root, manifest_path = _write_hot_reload_games_root(tmp_path, "旧台词")
     _patch_dummy_registry(monkeypatch)
     monkeypatch.setattr(server, "_GAMES_ROOT", games_root)
     monkeypatch.setattr(server, "GAMES", server.load_games(games_root))
     monkeypatch.setattr(server, "_GAMES_MTIMES", server._manifest_mtimes())
 
-    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
-    try:
-        port = httpd.server_address[1]
+    def entry_text():
+        state = server.get_games().get("dice")["state_machine"]["states"]["rules"]
+        return state["on_enter"][0]["text"]
 
-        def speak_line():
-            connection = HTTPConnection("127.0.0.1", port, timeout=5)
-            body = json.dumps({
-                "game": "dice",
-                "key": "result_tie",
-                "values": {"player_score": 1, "agent_score": 1},
-            }).encode("utf-8")
-            connection.request(
-                "POST", "/api/speech/stream", body=body,
-                headers={"Content-Type": "application/json"},
-            )
-            response = connection.getresponse()
-            headers_out = dict(response.getheaders())
-            response.read()
-            connection.close()
-            return response.status, headers_out
+    assert entry_text() == "旧台词"
 
-        status, headers = speak_line()
-        assert status == 200
-        assert headers["X-Dice-TTS-Provider"] == "tts_dummy"
-        dummy = server.COMPONENTS.require("tts_dummy")
-        assert dummy.last_payload["text"] == "旧台词 1"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["state_machine"]["states"]["rules"]["on_enter"][0]["text"] = "热加载台词"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    os.utime(manifest_path, (time.time() + 5, time.time() + 5))
 
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["texts"]["result_tie"]["text"] = "热加载台词 {player_score}"
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
-        os.utime(manifest_path, (time.time() + 5, time.time() + 5))
-
-        status, _ = speak_line()
-        assert status == 200
-        assert dummy.last_payload["text"] == "热加载台词 1"
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-        thread.join(timeout=2)
+    assert entry_text() == "热加载台词"
 
 
 def test_hot_reload_keeps_last_good_config_on_broken_manifest(tmp_path, monkeypatch):
@@ -210,7 +174,23 @@ def test_hot_reload_keeps_last_good_config_on_broken_manifest(tmp_path, monkeypa
     games = server.get_games()
     # The registry keeps serving the last good dice manifest.
     assert "dice" in [m["id"] for m in games.all()]
-    assert games.get("dice")["texts"]["result_tie"]["mode"] == "tts_local"
+    state = games.get("dice")["state_machine"]["states"]["rules"]
+    assert state["on_enter"][0]["mode"] == "tts_local"
+
+
+def _patch_dummy_registry(monkeypatch):
+    """Real components plus the local DummyTts, so no network is touched."""
+    combined = ComponentRegistry()
+    for component_id in server.COMPONENTS.ids():
+        combined.register(
+            server.COMPONENTS.get(component_id),
+            server.COMPONENTS.get_manifest(component_id),
+        )
+    combined.register(DummyTts(), {
+        "id": "tts_dummy", "type": "tts", "name": "Dummy TTS",
+        "version": "1", "enabled": True, "entry": "provider.py:DummyTts",
+    })
+    monkeypatch.setattr(server, "COMPONENTS", combined)
 
 
 class ServerApiTests(unittest.TestCase):
@@ -242,13 +222,6 @@ class ServerApiTests(unittest.TestCase):
             "tts_local": "tts_dummy",
             "tts_remote": "tts_dummy_remote",
             "vision_adjudicator": "vision_dummy",
-        }
-        dice_manifest["texts"] = dict(dice_manifest.get("texts") or {})
-        dice_manifest["texts"]["_test_remote_line"] = {
-            "mode": "tts_remote", "text": "remote hello",
-        }
-        dice_manifest["texts"]["_test_local_line"] = {
-            "mode": "tts_local", "text": "local hello",
         }
         games.register(dice_manifest)
         server.GAMES = games
@@ -290,43 +263,7 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(payload["tts_remote_provider"], "tts_dummy_remote")
         self.assertTrue(payload["tts_remote"]["configured"])
 
-    def test_speech_stream_routes_each_mode_to_its_slot(self):
-        status, headers, _ = self.request(
-            "POST", "/api/speech/stream", {"game": "dice", "key": "_test_remote_line"}
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(headers.get("X-Dice-TTS-Provider"), "tts_dummy_remote")
-
-        status, headers, _ = self.request(
-            "POST", "/api/speech/stream", {"game": "dice", "key": "_test_local_line"}
-        )
-        self.assertEqual(status, 200)
-        self.assertEqual(headers.get("X-Dice-TTS-Provider"), "tts_dummy")
-
-    def test_speech_stream_rejects_remote_line_without_slot(self):
-        games = GameRegistry()
-        dice_manifest = dict(server.GAMES.get("dice"))
-        dice_manifest["providers"] = {
-            "tts_local": "tts_dummy",
-            "vision_adjudicator": "vision_dummy",
-        }
-        dice_manifest["texts"] = dict(dice_manifest.get("texts") or {})
-        dice_manifest["texts"]["_test_unconfigured_remote"] = {
-            "mode": "tts_remote", "text": "no slot",
-        }
-        games.register(dice_manifest)
-        original_games = server.GAMES
-        server.GAMES = games
-        try:
-            status, _, data = self.request(
-                "POST", "/api/speech/stream",
-                {"game": "dice", "key": "_test_unconfigured_remote"},
-            )
-        finally:
-            server.GAMES = original_games
-        self.assertEqual(status, 500)
-        self.assertIn("tts_remote", data.decode("utf-8"))
-
+    def test_tts_endpoints_use_local_slot_provider(self):
         status, headers, data = self.request(
             "POST", "/api/tts/synthesize", {"text": "hello", "game": "dice"}
         )
@@ -419,8 +356,14 @@ class ServerApiTests(unittest.TestCase):
         original_games = server.GAMES
         games = GameRegistry()
         games.register({
-            "id": "dice", "name": "Dice", "enabled": True, "providers": {}, "texts": {},
+            "id": "dice", "name": "Dice", "enabled": True, "providers": {},
             "participants": {"player": "RIGHT", "agent": "LEFT"},
+            "state_machine": {
+                "initial": "rules",
+                "states": {"rules": {"on_enter": [
+                    {"action": "speech", "mode": "tts_local", "text": "PRIVATE LINE"}
+                ]}},
+            },
             "vision_profile": {
                 "game_id": "dice",
                 "llm": {"api_key": "SECRET", "system_prompt": "PRIVATE PROMPT", "model": "secret-model"},
@@ -446,80 +389,8 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(profile["video"], {"enabled": True, "path": "/dice/"})
         self.assertEqual(profile["multi_view"]["views"][0], {"id": "front", "video": {"enabled": True, "path": "/front/"}})
         serialized = json.dumps(payload)
-        for secret in ("PRIVATE PROMPT", "SECRET", "secret-model", "/tmp/private.onnx", "/dev/video1"):
+        for secret in ("PRIVATE PROMPT", "SECRET", "secret-model", "/tmp/private.onnx", "/dev/video1", "PRIVATE LINE"):
             self.assertNotIn(secret, serialized)
-
-    def test_audio_speech_stream_reads_manifest_selected_wav(self):
-        import core.games as games_module
-
-        registry = GameRegistry()
-        registry.register({
-            "id": "dice",
-            "name": "Dice",
-            "enabled": True,
-            "providers": {"tts_local": "tts_dummy"},
-            "texts": {"rules_intro": {"mode": "audio", "audio": "audio/intro.wav"}},
-        })
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            audio_path = root / "dice" / "audio" / "intro.wav"
-            audio_path.parent.mkdir(parents=True)
-            audio_path.write_bytes(WAV)
-            original_games = server.GAMES
-            original_games_root = games_module.GAMES_ROOT
-            server.GAMES = registry
-            games_module.GAMES_ROOT = root
-            try:
-                status, headers, data = self.request(
-                    "POST", "/api/speech/stream", {"game": "dice", "key": "rules_intro"}
-                )
-            finally:
-                server.GAMES = original_games
-                games_module.GAMES_ROOT = original_games_root
-        self.assertEqual(status, 200)
-        self.assertEqual(headers["X-Dice-Speech-Key"], "rules_intro")
-        self.assertEqual(headers["X-Dice-Speech-Mode"], "audio")
-        self.assertEqual(int.from_bytes(data[:4], "big"), len(WAV))
-        self.assertEqual(data[4:-4], WAV)
-        self.assertEqual(data[-4:], b"\0\0\0\0")
-
-    def test_tts_speech_stream_renders_manifest_values(self):
-        original_games = server.GAMES
-        registry = GameRegistry()
-        registry.register({
-            "id": "dice",
-            "name": "Dice",
-            "enabled": True,
-            "providers": {"tts_local": "tts_dummy"},
-            "voice": "announcer",
-            "speed": 1.25,
-            "texts": {
-                "result_player_win": {
-                    "mode": "tts_local",
-                    "text": "玩家 {player_score}，Agent {agent_score}",
-                }
-            },
-        })
-        server.GAMES = registry
-        try:
-            status, headers, data = self.request(
-                "POST",
-                "/api/speech/stream",
-                {
-                    "game": "dice",
-                    "key": "result_player_win",
-                    "values": {"player_score": 18, "agent_score": 12},
-                },
-            )
-        finally:
-            server.GAMES = original_games
-        provider = server.COMPONENTS.require("tts_dummy", expected_type="tts")
-        self.assertEqual(status, 200)
-        self.assertEqual(headers["X-Dice-Speech-Mode"], "tts_local")
-        self.assertEqual(provider.last_payload["text"], "玩家 18，Agent 12")
-        self.assertEqual(provider.last_payload["voice"], "announcer")
-        self.assertEqual(provider.last_payload["speed"], 1.25)
-        self.assertEqual(data[4:-4], WAV)
 
     def test_sse_pushes_structured_job_updates(self):
         def run(_on_log, _cancelled, on_event):

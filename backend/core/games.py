@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from core.errors import GameDisabledError, GameNotFoundError
 from core.participants import normalize_participants
+from core.state_schema import validate_state_machine
 
 ROOT = Path(__file__).resolve().parents[2]
 GAMES_ROOT = ROOT / "backend" / "games"
@@ -17,60 +18,6 @@ _PROVIDER_SLOT_ALIASES = {
     # Migration alias for manifests written before visual roles were explicit.
     "vision_adjudicator": ("vision",),
 }
-
-# Speech-entry synthesizing modes.  The legacy ``tts`` spelling was removed:
-# manifests must use ``tts_local`` or ``tts_remote``.
-_TTS_SPEECH_MODES = {"tts_local", "tts_remote"}
-
-
-def normalize_speech_entry(entry: Any) -> dict[str, str]:
-    """Normalize one manifest speech entry while keeping legacy strings valid.
-
-    Synthesizing modes map to provider slots: ``tts_local`` uses the local
-    slot, ``tts_remote`` the remote slot; an optional ``provider`` field pins
-    one explicit provider id for that single line.  Legacy bare-string
-    entries normalize to ``tts_local``.
-    """
-    if isinstance(entry, str):
-        if not entry.strip():
-            raise ValueError("speech text must not be empty")
-        return {"mode": "tts_local", "text": entry}
-    if not isinstance(entry, dict):
-        raise ValueError("speech entry must be a string or object")
-
-    mode = entry.get("mode", "tts_local")
-    if mode not in {"tts_local", "tts_remote", "audio"}:
-        raise ValueError("speech mode must be tts_local, tts_remote, or audio")
-    normalized: dict[str, str] = {}
-    provider = entry.get("provider")
-    if provider is not None:
-        if not isinstance(provider, str) or not provider.strip():
-            raise ValueError("speech entry provider must be a non-empty provider id")
-        if mode == "audio":
-            raise ValueError("audio speech entries never synthesize; drop the provider field")
-        normalized["provider"] = provider.strip()
-    if mode in _TTS_SPEECH_MODES:
-        text = entry.get("text")
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("tts speech entry requires non-empty text")
-        normalized["mode"] = mode
-        normalized["text"] = text
-        return normalized
-
-    audio = entry.get("audio")
-    if not isinstance(audio, str) or not audio.strip():
-        raise ValueError("audio speech entry requires a relative wav path")
-    audio = audio.strip()
-    audio_path = Path(audio)
-    if audio_path.is_absolute() or ".." in audio_path.parts or audio_path.suffix.lower() != ".wav":
-        raise ValueError("audio speech entry requires a relative .wav path")
-    normalized = {"mode": "audio", "audio": audio}
-    text = entry.get("text")
-    if text is not None:
-        if not isinstance(text, str):
-            raise ValueError("audio speech entry text must be a string")
-        normalized["text"] = text
-    return normalized
 
 
 def resolve_game_audio_path(game_id: str, audio: str) -> Path:
@@ -141,7 +88,7 @@ def public_game_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         key: manifest[key]
         for key in (
             "id", "name", "icon", "description", "enabled", "participants",
-            "voice", "speed", "texts", "providers",
+            "voice", "speed", "providers",
         )
         if key in manifest
     }
@@ -184,15 +131,15 @@ def load_games(root: Path | None = None) -> GameRegistry:
             if not isinstance(manifest.get("enabled"), bool):
                 raise ValueError("missing or invalid enabled")
             manifest["participants"] = normalize_participants(manifest.get("participants"))
-            texts = manifest.get("texts", {})
-            if not isinstance(texts, dict):
-                raise ValueError("texts must be an object")
-            if not all(isinstance(key, str) and key for key in texts):
-                raise ValueError("text keys must be non-empty strings")
-            manifest["texts"] = {
-                key: normalize_speech_entry(value)
-                for key, value in texts.items()
-            }
+            if "texts" in manifest:
+                # The per-key speech table was replaced by inline speech
+                # actions on state-machine states; keeping both would let a
+                # manifest silently drift between two schemas.
+                raise ValueError("legacy 'texts' section removed; inline speech in state_machine")
+            machine = manifest.get("state_machine")
+            if not isinstance(machine, dict):
+                raise ValueError("state_machine must be an object")
+            manifest["state_machine"] = validate_state_machine(machine, game_id)
 
             if "components" in manifest:
                 legacy_components = manifest["components"]

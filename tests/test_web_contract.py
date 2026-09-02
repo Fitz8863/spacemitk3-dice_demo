@@ -6,6 +6,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def dice_manifest():
+    return json.loads(
+        (ROOT / "backend/games/dice/manifest.json").read_text(encoding="utf-8")
+    )
+
+
+def dice_state(name):
+    return dice_manifest()["state_machine"]["states"][name]
+
+
 def test_frontend_has_no_hardcoded_mediamtx_host():
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
@@ -135,9 +145,6 @@ def test_frontend_buttons_match_controller_key_colors():
 def test_frontend_shouts_stop_before_reveal_ready():
     """At shake end the flow shouts 停 first, then speaks the reveal line."""
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
-    manifest = json.loads(
-        (ROOT / "backend/games/dice/manifest.json").read_text(encoding="utf-8")
-    )
 
     stop_shake = js.split("function stopShake", 1)[1].split(
         "function beginRevealCountdown", 1
@@ -151,10 +158,11 @@ def test_frontend_shouts_stop_before_reveal_ready():
     # chained on the spoken promise, not run in parallel.
     assert ".then(startRevealTransition)" in stop_shake
 
-    stop_entry = manifest["texts"]["shake_stop"]
+    stop_entry = dice_state("open_reveal")["on_enter"][0]
     assert stop_entry["mode"] == "audio"
     assert stop_entry["audio"] == "audio/停.wav"
     assert stop_entry["text"].strip() == "停！"
+    assert stop_entry["await"] is True
 
     # speakState (engine, app.js) must expose the playback promise so the
     # chain in stopShake can wait for 停 to finish.
@@ -181,7 +189,6 @@ def test_frontend_renders_structured_diagnosis_and_retry_prompt():
 def test_frontend_blue_button_retries_adjudication_after_diagnosis():
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
-    manifest = json.loads((ROOT / "backend/games/dice/manifest.json").read_text(encoding="utf-8"))
 
     assert 'aria-keyshortcuts="ArrowDown"' in html
     assert "state.phase === 'analysis' && event.key === 'ArrowDown'" in js
@@ -191,7 +198,8 @@ def test_frontend_blue_button_retries_adjudication_after_diagnosis():
     # Announcing the diagnosis tells the player the blue button retries.
     diagnosis = js.split("function showDiagnosis", 1)[1].split("function retryAdjudication", 1)[0]
     assert "analysis_retry_hint" in diagnosis
-    assert manifest["texts"]["analysis_retry_hint"]["mode"] == "tts_local"
+    retry_entry = dice_state("analysis_failed")["on_enter"][0]
+    assert retry_entry["mode"] == "tts_local"
 
 
 def test_frontend_diagnosis_marks_detection_failed_and_shows_evidence():
@@ -261,9 +269,6 @@ def test_frontend_uses_manifest_participant_layout_and_role_result():
 def test_frontend_enters_open_transition_and_starts_countdown_automatically():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
-    manifest = json.loads(
-        (ROOT / "backend/games/dice/manifest.json").read_text(encoding="utf-8")
-    )
     stop_shake = js.split("function stopShake", 1)[1].split(
         "function beginRevealCountdown", 1
     )[0]
@@ -277,9 +282,11 @@ def test_frontend_enters_open_transition_and_starts_countdown_automatically():
     assert "clearTimeout(revealTransitionTimer)" in js
     assert "开盖过场结束后自动进入倒计时" in js
     assert 'id="revealDice"' not in html
-    assert "shake_stopped" not in manifest["texts"]
-    assert manifest["texts"]["reveal_ready"]["mode"] == "tts_local"
-    assert manifest["texts"]["reveal_ready"]["text"]
+    open_reveal = dice_state("open_reveal")
+    assert open_reveal["on_enter"][0].get("await") is True
+    reveal_entry = open_reveal["on_enter"][1]
+    assert reveal_entry["mode"] == "tts_local"
+    assert reveal_entry["text"]
 
 
 def test_frontend_counts_down_after_open_transition_before_adjudication():
