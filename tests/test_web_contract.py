@@ -152,7 +152,8 @@ def test_frontend_shouts_stop_before_reveal_ready():
     assert ".then(startRevealTransition)" in stop_shake
 
     stop_entry = manifest["texts"]["shake_stop"]
-    assert stop_entry["mode"] == "tts_local"
+    assert stop_entry["mode"] == "audio"
+    assert stop_entry["audio"] == "audio/停.wav"
     assert stop_entry["text"].strip() == "停！"
 
     # speakState (engine, app.js) must expose the playback promise so the
