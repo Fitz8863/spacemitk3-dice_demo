@@ -65,9 +65,8 @@ RTF < 1 即快于实时：1 秒音频的推理耗时不到 0.35 秒，麦克风�
 - SpacemiT K3 板，Bianbu 系统（ssh `spacemit@spacemit-k3`）
 - `spacemit-onnxruntime 2.0.6`（含 SpaceMIT EP，库在 `/usr/local/lib`）
 - `libsndfile`、`arecord`（Bianbu 自带）
-- **kaldi-native-fbank 预编译产物**：复用 `../model-zoo-asr/build/lib/`
-  下的 `libkaldi-native-fbank-core.a`、`libkissfft-float.a`（编译过
-  model-zoo-asr 就有；没有的话先编它）
+- 其余第三方依赖（kaldi-native-fbank、kissfft）源码已随仓库分发于
+  `third_party/`，**无外部目录、无网络依赖**，克隆即可编译
 
 ## 快速开始
 
@@ -251,6 +250,9 @@ zipformer-streaming/
 ├── CMakeLists.txt
 ├── README.md
 ├── run_mic.sh                     # 麦克风一键启动（系统默认输入）
+├── third_party/                   # 随仓库分发的第三方源码（编译期静态链入）
+│   ├── kaldi-native-fbank/        # fbank 特征提取（Apache-2.0，csukuangfj/kaldi-native-fbank）
+│   └── kissfft/                   # FFT 库（BSD，mborgerding/kissfft）
 ├── src/
 │   ├── zipformer_streaming.{h,cc} # 流式引擎（fbank + 三模型 + transducer 解码 + VAD 支撑接口）
 │   └── stream_asr_main.cc         # CLI（wav / realtime / pcm 三种模式 + VAD + 字幕显示）
@@ -319,10 +321,6 @@ q.onnx 用了 SpaceMIT 的 DynamicQuantizeMatMul 贡献算子，只能走 EP，�
 加 `--ep-disable-conv`（等价于 `SPACEMIT_EP_DISABLE_OP_TYPE_FILTER=Conv`）。
 当前版本的 q.onnx 不需要，model-zoo-asr 的旧 zipformer 需要。
 
-**Q: 编译报找不到 kaldi-native-fbank？**
-CMake 从 `../model-zoo-asr/build/lib` 找静态库。先编译 model-zoo-asr，
-或手动传 `-DKNF_LIB=... -DKISSFFT_LIB=... -DKNF_INC_DIR=... -DKNF_INC_ROOT=...`。
-
 **Q: 重新下载/解压模型？**
 ```bash
 wget https://archive.spacemit.com/spacemit-ai/model_zoo/asr/zipformer-streaming.tar.gz
@@ -340,4 +338,6 @@ tar -xzf zipformer-streaming.tar.gz
 - 训练代码：[k2-fsa/icefall](https://github.com/k2-fsa/icefall)
   pruned_transducer_stateless7_streaming
 - 特征提取：[kaldi-native-fbank](https://github.com/csukuangfj/kaldi-native-fbank)
+  与 [kissfft](https://github.com/mborgerding/kissfft)（源码已收编于
+  `third_party/`，保留各自许可证）
 - 推理：onnxruntime（spacemit-onnxruntime 2.0.6，含 SpaceMIT EP）
