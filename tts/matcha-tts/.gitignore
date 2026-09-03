@@ -1,0 +1,13 @@
+# Board-only runtime payloads; provision these on the target board.
+# sherpa-onnx shared libraries + headers extracted from the riscv64 wheel
+# (include/ + lib/), and the matcha model directory (ONNX models, lexicon,
+# rule FSTs, espeak-ng-data).
+matcha-model/
+runtime/
+
+# CMake build outputs
+build/
+build-*/
+
+# Generated synthesis output
+*.wav
