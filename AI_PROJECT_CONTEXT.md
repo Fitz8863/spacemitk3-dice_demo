@@ -32,6 +32,19 @@
 时 setsid 的 ASR 子进程可能残留（SIGTERM 路径干净停麦）；ASR EP 线程与主进程同在
 X100 0-7 簇（RTF≈0.24 占用可接受，组件 config 预留 `cpu_affinity` 旋钮）。
 
+2026-09-03（晚）起 **ASR 引擎改为进程级常驻**（上一段"按回合 spawn/停麦"的描述
+以此为准作废）：`asr_zipformer` 的 `_AsrEngine` 常驻 `arecord | stream_asr` 进程对，
+"会话"退化为引擎上的**路由**（`start_session`/`stop_session` = attach/detach 瞬时
+换绑回调，签名不变）。后端启动时与本地 TTS 预热**并行**预热 ASR（`asr_enabled=true`
+且配了 `providers.asr`；实测 zipformer 加载 ~2.6s，双预热并行开机共 ~7s），失败拒绝
+启动；待机唤醒与回合语音的切换是路由换绑不再付模型加载（板上实测 standby listen
+POST 25ms、回合创建 72ms、整局单一 stream_asr 进程）。回合终结由 watcher 摘路由，
+引擎保温；意外死亡自愈（存活 >30s 的死亡后台重启重挂，短命死亡等下次 attach 防
+崩溃循环）。`core/asr_bridge.py` 只改文档语义（桥拥有麦克风路由），播报闸/多候选/
+观测事件不变。**ASR 槽位全局唯一封口**（`arena_config.collect_provider_slot_ids` +
+server 启动/热加载双路校验）：`providers.asr` 解析出两个引擎 id 即拒启/拒换。待机
+监听空闲 CPU 实测 ~0.6 核（VAD 常开，非本次引入——旧会话模式同样烧）。
+
 
 2026-09-03（下午）起新增**本地 TTS 引擎 `tts_matcha`**（第四个 TTS provider）：
 引擎源码与板端资产落位 `tts/matcha-tts/`（cpp 三件套：capi 单发 / interactive
