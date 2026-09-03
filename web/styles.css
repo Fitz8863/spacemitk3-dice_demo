@@ -159,6 +159,8 @@ body[data-phase="standby"] .stage-head { visibility: hidden; }
 .standby-zzz span:nth-child(3) { animation-delay: 2.4s; font-size: 1.75em; }
 .standby-hint { margin: 0; color: var(--muted-2); font-size: 20px; animation: standbyHint 3.6s ease-in-out infinite; }
 .standby-wake-words { margin: 0; color: var(--muted); font-size: 17px; }
+.standby-probe { position: fixed; top: 16px; left: 16px; margin: 0; padding: 8px 14px; border-radius: 10px; background: rgba(29, 41, 57, .82); color: #fff; font-size: 15px; opacity: 0; transition: .2s; pointer-events: none; }
+.standby-probe.show { opacity: 1; }
 
 @keyframes standbyBreath { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.14); } }
 @keyframes standbyRipple { 0% { transform: scale(.55); opacity: .85; } 100% { transform: scale(1.28); opacity: 0; } }

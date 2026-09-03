@@ -161,9 +161,20 @@ function stopStandbyListening() {
 
 // 捕获阶段拦截：待机中的输入只用于唤醒，绝不继续派发给列表/按钮。
 // keydown/click 都是一次性完整事件（click 由点击或触摸 tap 合成）——
-// 唤醒用的这一次事件被吞掉，不会落到列表项上误开一局。
-['keydown', 'click'].forEach((type) => {
+// 唤醒用的这一次事件被吞掉，不会落到列表项上误开一局。keyup 兜底那些
+// 只上报释放事件的按键设备。
+['keydown', 'keyup', 'click'].forEach((type) => {
   window.addEventListener(type, (event) => {
+    if (state.phase === 'standby' && type !== 'click') {
+      // 待机页可见诊断：确认设备按键是否到达页面（按键后屏幕左上角闪现）。
+      const probe = $('standbyProbe');
+      if (probe) {
+        probe.textContent = `收到按键: ${event.key || '?'}`;
+        probe.classList.add('show');
+        clearTimeout(probe.__timer);
+        probe.__timer = setTimeout(() => probe.classList.remove('show'), 1500);
+      }
+    }
     if (wakeFromStandby()) {
       event.stopPropagation();
       event.preventDefault();
