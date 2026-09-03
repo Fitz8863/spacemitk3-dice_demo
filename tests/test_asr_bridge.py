@@ -759,3 +759,126 @@ class ResidentEngineBridgeTests(unittest.TestCase):
         provider.shutdown()
         self.assertEqual(engine.stop_calls, 1)
         self.assertFalse(engine.alive)
+
+
+# ---- result-screen voice control: 再来一局 / 返回 ----
+
+
+def _result_flow_manifest():
+    """analysis -> (stub adjudication) -> result, with the real result-screen
+    intents (new_round/back).  The announcement text deliberately contains
+    "要不再来一局" like the real manifest — the speech gate is what keeps the
+    speaker's own voice from re-triggering it."""
+    return {
+        "id": "dice",
+        "providers": {"tts_local": "tts_dummy", "asr": "asr_dummy"},
+        "asr": {"enabled": True, "phrases": {
+            "new_round": ["再来一局", "下一局"],
+            "back": ["返回", "退出"],
+        }},
+        "state_machine": {
+            "schema_version": 1,
+            "initial": "analysis",
+            "states": {
+                "analysis": {
+                    "ui": {"view": "analysis", "title": "t", "copy": ""},
+                    "on_enter": [{"action": "adjudicate"}],
+                    "on_event": {
+                        "adjudication.result": {"to": "result"},
+                        "adjudication.diagnosis": {"to": "analysis_failed"},
+                    },
+                },
+                "result": {
+                    "ui": {"view": "result", "title": "t", "copy": ""},
+                    "on_enter": [{
+                        "action": "speech", "select_by": "winner_role",
+                        "cases": {
+                            "PLAYER": {"mode": "tts_local",
+                                       "text": "你赢了{player_score}分，要不再来一局？"},
+                            "AGENT": {"mode": "tts_local",
+                                      "text": "你输了{agent_score}分，要不再来一局？"},
+                            "TIE": {"mode": "tts_local",
+                                    "text": "平局{player_score}比{agent_score}，要不再来一局？"},
+                        },
+                    }],
+                    "on_intent": {"new_round": {"to": "ready"}, "back": {"exit": True}},
+                },
+                "analysis_failed": {
+                    "ui": {"view": "analysis", "title": "t", "copy": ""},
+                    "on_intent": {"back": {"exit": True}},
+                },
+                "ready": {
+                    "ui": {"view": "ready", "title": "t", "copy": ""},
+                    "on_intent": {"back": {"exit": True}},
+                },
+            },
+        },
+    }
+
+
+class ResultScreenVoiceTests(unittest.TestCase):
+    def setUp(self):
+        self.provider = FakeAsr()
+        registry = ComponentRegistry()
+        registry.register(self.provider, {
+            "id": "asr_dummy", "type": "asr", "entry": "provider.py:FakeAsr",
+        })
+        self.logs = []
+        self.bridge = AsrIntentBridge(components=registry, log=self.logs.append)
+        round_ = GameRound(
+            game_id="dice",
+            manifest=_result_flow_manifest(),
+            adjudicate_fn=lambda _m, _on_event, _is_cancelled, _on_log: {
+                "winner_role": "PLAYER", "player_score": 13, "agent_score": 10,
+                "diagnosed": False,
+            },
+            log=lambda _line: None,
+        )
+        self.bridge.start_for_round(round_)
+        round_.start()
+        self.round = round_
+        self.addCleanup(round_.cancel)
+
+    def _wait_for(self, predicate, timeout=3.0, message="condition"):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.01)
+        raise AssertionError(f"{message} never became true")
+
+    def _directive(self):
+        return next(
+            (e for e in self.round.snapshot()["events"] if e.get("event") == "speech"),
+            None,
+        )
+
+    def _last_asr_observation(self):
+        events = [e for e in self.round.snapshot()["events"] if e.get("event") == "asr"]
+        return events[-1] if events else None
+
+    def test_result_voice_is_gated_during_announcement_then_works(self):
+        self._wait_for(
+            lambda: self.round.state == "result" and self._directive() is not None,
+            message="result state with its announcement",
+        )
+        directive = self._directive()
+        self.assertTrue(self.round.speech_active)
+
+        # During the announcement 再来一局 is suppressed — the announcement
+        # itself ends with "要不再来一局", so without the gate the speaker's
+        # own voice would immediately start the next round.
+        self.provider.sessions[0]["on_sentence"]("再来一局")
+        self.assertEqual(self.round.state, "result")
+        self.assertEqual(self._last_asr_observation()["status"], "suppressed")
+
+        # The browser acks the playback; the gate releases and voice works.
+        self.round.submit_intent("speech_done", {"directive_id": directive["directive_id"]})
+        self.assertFalse(self.round.speech_active)
+        self.provider.sessions[0]["on_sentence"]("那我就再来一局吧")
+        self._wait_for(lambda: self.round.state == "ready", message="new_round -> ready")
+        self.assertEqual(self._last_asr_observation()["status"], "submitted")
+
+        # 返回 exits the round (back to the game list, select routing takes over).
+        self.provider.sessions[0]["on_sentence"]("返回")
+        self._wait_for(lambda: self.round.status == "exited", message="back -> exited")
