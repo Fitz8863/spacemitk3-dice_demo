@@ -17,6 +17,11 @@
     "enabled": true,
     "idle_seconds": 120,
     "boot_standby": true,
-    "wake_phrases": ["小骰子", "醒醒", "开始游戏"]
+    "wake_phrases": [
+      "游戏",
+      "你好",
+      "在不",
+      "开始游戏"
+    ]
   }
 }
