@@ -269,6 +269,7 @@ int main(int argc, char** argv) {
     std::atomic<uint64_t> dropped_capture{0};
     std::atomic<uint64_t> dropped_prepared{0};
     std::atomic<uint64_t> dropped_result{0};
+    std::atomic<uint64_t> preprocessed_count{0};
     std::atomic<uint64_t> inferred_count{0};
     std::atomic<uint64_t> displayed_count{0};
     std::string stage_error;
@@ -344,6 +345,7 @@ int main(int argc, char** argv) {
                 if (prepared_queue.push(std::move(prepared))) {
                     dropped_prepared.fetch_add(1, std::memory_order_relaxed);
                 }
+                preprocessed_count.fetch_add(1, std::memory_order_relaxed);
             }
         } catch (const std::exception& exception) {
             report_stage_error("Preprocess stage failed", exception);
@@ -387,11 +389,11 @@ int main(int argc, char** argv) {
 
     auto last_result = std::make_shared<InferenceResult>();
     auto last_stats = std::chrono::steady_clock::now();
-    uint64_t last_captured = 0;
+    uint64_t last_preprocessed = 0;
     uint64_t last_inferred = 0;
     uint64_t last_displayed = 0;
     double display_fps = 0.0;
-    double capture_fps = 0.0;
+    double preprocess_fps = 0.0;
     double infer_fps = 0.0;
     std::string status_text = format_pipeline_status(
         0.0, 0.0, 0.0, 0, 0.0, 0.0, config.ep_affinity);
@@ -415,20 +417,20 @@ int main(int argc, char** argv) {
             const auto now = std::chrono::steady_clock::now();
             const double elapsed = std::chrono::duration<double>(now - last_stats).count();
             if (elapsed >= 1.0) {
-                const uint64_t current_captured = captured_count.load(std::memory_order_relaxed);
+                const uint64_t current_preprocessed = preprocessed_count.load(std::memory_order_relaxed);
                 const uint64_t current_inferred = inferred_count.load(std::memory_order_relaxed);
                 const uint64_t current_displayed = displayed_count.load(std::memory_order_relaxed);
-                capture_fps = (current_captured - last_captured) / elapsed;
+                preprocess_fps = (current_preprocessed - last_preprocessed) / elapsed;
                 infer_fps = (current_inferred - last_inferred) / elapsed;
                 display_fps = (current_displayed - last_displayed) / elapsed;
                 status_text = format_pipeline_status(
-                    capture_fps, infer_fps, display_fps, last_result->detections.size(),
+                    preprocess_fps, infer_fps, display_fps, last_result->detections.size(),
                     last_result->preprocess_ms, last_result->infer_ms, config.ep_affinity);
                 std::cout << status_text
                           << " drop(cap/pre/res)=" << dropped_capture.load()
                           << "/" << dropped_prepared.load()
                           << "/" << dropped_result.load() << std::endl;
-                last_captured = current_captured;
+                last_preprocessed = current_preprocessed;
                 last_inferred = current_inferred;
                 last_displayed = current_displayed;
                 last_stats = now;
