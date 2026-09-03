@@ -1,5 +1,6 @@
 #include "config.h"
 #include "gstreamer_camera.h"
+#include "latest_queue.h"
 #include "opencl_preprocess.h"
 #include "overlay.h"
 #include "yolov8_seg_detector.h"
@@ -15,6 +16,9 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
 #include <sstream>
 #include <string>
 
@@ -184,62 +188,253 @@ int main(int argc, char** argv) {
         }
     }
 
-    GstreamerMjpegCamera camera;
-    if (!camera.open(config.camera, config.device, config.width, config.height, config.fps,
-                     config.focus, config.zoom, max_frames > 0 ? max_frames : 0,
-                     config.decoder)) {
-        return 7;
-    }
-    std::cout << "Camera opened: device=" << camera.device() << " decoder=" << camera.decoder()
-              << " negotiated_fps=" << camera.negotiated_fps() << "\n";
+    struct CapturedFrame {
+        uint64_t id = 0;
+        int width = 0;
+        int height = 0;
+        cv::Mat nv12;
+        std::shared_ptr<void> owner;
+    };
+    struct PreparedFrame {
+        uint64_t id = 0;
+        int width = 0;
+        int height = 0;
+        OpenClPreprocessor::Result prepared;
+        std::shared_ptr<CapturedFrame> captured;
+    };
+    struct InferenceResult {
+        uint64_t id = 0;
+        int width = 0;
+        int height = 0;
+        std::vector<SegmentationDetection> detections;
+        std::shared_ptr<CapturedFrame> captured;
+        double preprocess_ms = 0.0;
+        double infer_ms = 0.0;
+        double postprocess_ms = 0.0;
+    };
 
-    uint64_t frames = 0;
-    auto last_stats = std::chrono::steady_clock::now();
-    uint64_t stats_frames = 0;
-    while (!stop_requested && (max_frames == 0 || static_cast<int>(frames) < max_frames)) {
-        GstreamerFrame frame;
-        if (!camera.read(frame, 1000)) {
-            if (!camera.isOpen()) break;
-            continue;
+    LatestQueue<CapturedFrame> display_queue;
+    LatestQueue<CapturedFrame> preprocess_input_queue;
+    std::unique_ptr<GstreamerMjpegCamera> camera;
+    LatestQueue<PreparedFrame> prepared_queue;
+    LatestQueue<InferenceResult> result_queue;
+    std::atomic<bool> stop{false};
+    std::atomic<bool> capture_done{false};
+    std::atomic<bool> inference_done{false};
+    std::atomic<uint64_t> captured_count{0};
+    std::atomic<uint64_t> dropped_capture{0};
+    std::atomic<uint64_t> dropped_prepared{0};
+    std::atomic<uint64_t> dropped_result{0};
+    std::atomic<uint64_t> inferred_count{0};
+    std::atomic<uint64_t> displayed_count{0};
+    std::string stage_error;
+    std::mutex stage_error_mutex;
+    auto report_stage_error = [&](const char* stage, const std::exception& exception) {
+        {
+            std::lock_guard<std::mutex> lock(stage_error_mutex);
+            stage_error = std::string(stage) + ": " + exception.what();
         }
+        std::cerr << stage_error << "\n";
+        stop.store(true, std::memory_order_release);
+    };
+
+    const int requested_frames = max_frames;
+    std::thread capture_thread([&] {
+        uint64_t id = 0;
         try {
-            const auto prepared = preprocessor.preprocess(frame.nv12);
-            const auto detections = detector.infer(prepared.data->data(), prepared.data->size(), config.conf,
-                                                   config.iou, config.max_detections, prepared.scale,
-                                                   prepared.pad_x, prepared.pad_y, config.width, config.height);
-            ++frames;
-            ++stats_frames;
-            std::cout << "Frame " << frames << ": detections=" << detections.size()
-                      << " preprocess_ms=" << prepared.ms << std::endl;
-            if (!no_display && config.display_enabled) {
-                cv::Mat bgr = nv12_to_bgr(frame.nv12);
-                draw_detections(bgr, detections);
-                const auto now = std::chrono::steady_clock::now();
-                const double elapsed = std::chrono::duration<double>(now - last_stats).count();
-                if (elapsed >= 1.0) {
-                    const double fps = stats_frames / elapsed;
-                    std::ostringstream text;
-                    text.setf(std::ios::fixed);
-                    text.precision(1);
-                    text << "FPS " << fps << "  pre " << prepared.ms << " ms  det " << detections.size()
-                         << "  EP " << config.ep_affinity;
-                    cv::putText(bgr, text.str(), {12, 28}, cv::FONT_HERSHEY_SIMPLEX, 0.7,
-                                {0, 255, 0}, 2, cv::LINE_AA);
-                    stats_frames = 0;
-                    last_stats = now;
+            camera = std::make_unique<GstreamerMjpegCamera>();
+            if (!camera->open(config.camera, config.device, config.width, config.height, config.fps,
+                              config.focus, config.zoom, config.decoder)) {
+                throw std::runtime_error("camera open failed");
+            }
+            std::cout << "Camera opened: device=" << camera->device()
+                      << " decoder=" << camera->decoder()
+                      << " negotiated_fps=" << camera->negotiated_fps() << "\n";
+            while (!stop.load(std::memory_order_acquire) && !stop_requested &&
+                   (requested_frames == 0 || static_cast<int>(id) < requested_frames)) {
+                GstreamerFrame frame;
+                if (!camera->read(frame, 1000)) {
+                    if (!camera->isOpen()) break;
+                    continue;
                 }
-                cv::imshow("YOLOv8-seg Camera", bgr);
-                const int key = cv::waitKey(1);
-                if (key == 27 || key == 'q' || key == 'Q') break;
+                auto captured = std::make_shared<CapturedFrame>();
+                captured->id = id++;
+                captured->width = frame.nv12.cols;
+                captured->height = frame.nv12.rows * 2 / 3;
+                captured->nv12 = std::move(frame.nv12);
+                captured->owner = std::move(frame.owner);
+                const bool display_replaced = display_queue.push(captured);
+                const bool preprocess_replaced = preprocess_input_queue.push(std::move(captured));
+                if (display_replaced || preprocess_replaced) {
+                    dropped_capture.fetch_add(1, std::memory_order_relaxed);
+                }
+                captured_count.fetch_add(1, std::memory_order_relaxed);
             }
         } catch (const std::exception& exception) {
-            std::cerr << "Frame " << frames << " failed: " << exception.what() << "\n";
-            camera.close();
-            return 8;
+            report_stage_error("Capture stage failed", exception);
+        }
+        capture_done.store(true, std::memory_order_release);
+        display_queue.close();
+        preprocess_input_queue.close();
+    });
+
+    std::thread preprocess_thread([&] {
+        try {
+            while (!stop.load(std::memory_order_acquire) && !stop_requested) {
+                auto captured = preprocess_input_queue.wait_pop_latest(std::chrono::milliseconds(100));
+                if (!captured) {
+                    if (preprocess_input_queue.closed_and_empty()) break;
+                    continue;
+                }
+                auto prepared = std::make_shared<PreparedFrame>();
+                prepared->id = captured->id;
+                prepared->width = captured->width;
+                prepared->height = captured->height;
+                prepared->captured = std::move(captured);
+                prepared->prepared = preprocessor.preprocess(prepared->captured->nv12);
+                if (prepared_queue.push(std::move(prepared))) {
+                    dropped_prepared.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        } catch (const std::exception& exception) {
+            report_stage_error("Preprocess stage failed", exception);
+        }
+        prepared_queue.close();
+    });
+
+    std::thread inference_thread([&] {
+        try {
+            while (!stop.load(std::memory_order_acquire) && !stop_requested) {
+                auto prepared = prepared_queue.wait_pop_latest(std::chrono::milliseconds(100));
+                if (!prepared) {
+                    if (prepared_queue.closed_and_empty()) break;
+                    continue;
+                }
+                auto result = std::make_shared<InferenceResult>();
+                result->id = prepared->id;
+                result->width = prepared->width;
+                result->height = prepared->height;
+                result->captured = std::move(prepared->captured);
+                result->preprocess_ms = prepared->prepared.ms;
+                const auto infer_start = std::chrono::steady_clock::now();
+                result->detections = detector.infer(
+                    prepared->prepared.data->data(), prepared->prepared.data->size(),
+                    config.conf, config.iou, config.max_detections,
+                    prepared->prepared.scale, prepared->prepared.pad_x,
+                    prepared->prepared.pad_y, prepared->width, prepared->height);
+                result->infer_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - infer_start).count();
+                if (result_queue.push(std::move(result))) {
+                    dropped_result.fetch_add(1, std::memory_order_relaxed);
+                }
+                inferred_count.fetch_add(1, std::memory_order_relaxed);
+            }
+        } catch (const std::exception& exception) {
+            report_stage_error("Inference stage failed", exception);
+        }
+        inference_done.store(true, std::memory_order_release);
+        result_queue.close();
+    });
+
+    auto last_result = std::make_shared<InferenceResult>();
+    auto last_stats = std::chrono::steady_clock::now();
+    uint64_t last_captured = 0;
+    uint64_t last_inferred = 0;
+    uint64_t last_displayed = 0;
+    bool display_initialized = false;
+    if (!no_display && config.display_enabled) {
+        cv::namedWindow("YOLOv8-seg Camera", cv::WINDOW_NORMAL);
+        cv::resizeWindow("YOLOv8-seg Camera", config.width, config.height);
+        display_initialized = true;
+    }
+
+    while (!stop.load(std::memory_order_acquire) && !stop_requested) {
+        if (const auto result = result_queue.try_pop_latest()) {
+            last_result = std::move(result);
+        }
+        if (const auto captured = display_queue.try_pop_latest()) {
+            cv::Mat bgr = nv12_to_bgr(captured->nv12);
+            if (last_result && last_result->captured &&
+                last_result->captured->id <= captured->id) {
+                draw_detections(bgr, last_result->detections);
+            }
+            const auto now = std::chrono::steady_clock::now();
+            const double elapsed = std::chrono::duration<double>(now - last_stats).count();
+            if (elapsed >= 1.0) {
+                const uint64_t current_captured = captured_count.load(std::memory_order_relaxed);
+                const uint64_t current_inferred = inferred_count.load(std::memory_order_relaxed);
+                const uint64_t current_displayed = displayed_count.load(std::memory_order_relaxed);
+                const double capture_fps = (current_captured - last_captured) / elapsed;
+                const double infer_fps = (current_inferred - last_inferred) / elapsed;
+                const double display_fps = (current_displayed - last_displayed) / elapsed;
+                std::ostringstream text;
+                text.setf(std::ios::fixed);
+                text.precision(1);
+                text << "CAP " << capture_fps << "  INF " << infer_fps
+                     << "  DISP " << display_fps << "  det " << last_result->detections.size()
+                     << "  pre " << last_result->preprocess_ms << "ms"
+                     << "  inf " << last_result->infer_ms << "ms"
+                     << "  EP " << config.ep_affinity;
+                if (!bgr.empty()) cv::putText(bgr, text.str(), {12, 28}, cv::FONT_HERSHEY_SIMPLEX,
+                                                0.62, {0, 255, 0}, 2, cv::LINE_AA);
+                std::cout << text.str()
+                          << " drop(cap/pre/res)=" << dropped_capture.load()
+                          << "/" << dropped_prepared.load()
+                          << "/" << dropped_result.load() << std::endl;
+                last_captured = current_captured;
+                last_inferred = current_inferred;
+                last_displayed = current_displayed;
+                last_stats = now;
+            }
+            if (display_initialized) {
+                cv::imshow("YOLOv8-seg Camera", bgr);
+                displayed_count.fetch_add(1, std::memory_order_relaxed);
+                const int key = cv::waitKey(1) & 0xff;
+                if (key == 27 || key == 'q' || key == 'Q') {
+                    stop.store(true, std::memory_order_release);
+                    break;
+                }
+            } else {
+                displayed_count.fetch_add(1, std::memory_order_relaxed);
+            }
+        } else {
+            if (inference_done.load(std::memory_order_acquire) &&
+                capture_done.load(std::memory_order_acquire) &&
+                display_queue.closed_and_empty() && result_queue.closed_and_empty()) {
+                break;
+            }
+            if (display_initialized) {
+                const int key = cv::waitKey(1) & 0xff;
+                if (key == 27 || key == 'q' || key == 'Q') {
+                    stop.store(true, std::memory_order_release);
+                    break;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
-    camera.close();
-    if (!no_display && config.display_enabled) cv::destroyAllWindows();
-    std::cout << "Stopped cleanly after " << frames << " frames\n";
+
+    stop.store(true, std::memory_order_release);
+    display_queue.close();
+    preprocess_input_queue.close();
+    prepared_queue.close();
+    result_queue.close();
+    if (capture_thread.joinable()) capture_thread.join();
+    camera.reset();
+    if (preprocess_thread.joinable()) preprocess_thread.join();
+    if (inference_thread.joinable()) inference_thread.join();
+    if (display_initialized) cv::destroyAllWindows();
+
+    std::cout << "Stopped cleanly: captured=" << captured_count.load()
+              << " inferred=" << inferred_count.load()
+              << " displayed=" << displayed_count.load()
+              << " dropped(cap/pre/res)=" << dropped_capture.load()
+              << "/" << dropped_prepared.load()
+              << "/" << dropped_result.load() << "\n";
+    {
+        std::lock_guard<std::mutex> lock(stage_error_mutex);
+        if (!stage_error.empty()) return 8;
+    }
     return 0;
+
 }

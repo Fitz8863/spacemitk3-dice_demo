@@ -139,8 +139,7 @@ bool GstreamerMjpegCamera::openPipeline(const std::string& decoder, int candidat
     const std::string decoder_pipeline = hardware
         ? "spacemitdec code-type=9 ! " : "jpegdec ! videoconvert ! ";
     pipeline_description_ = "v4l2src device=" + device_ + " io-mode=2" +
-                (max_frames_ > 0 ? " num-buffers=" + std::to_string(max_frames_ + 1) : "") +
-                " ! image/jpeg,width=" + std::to_string(width_) +
+                    " ! image/jpeg,width=" + std::to_string(width_) +
                 ",height=" + std::to_string(height_) +
                 ",framerate=" + std::to_string(candidate_fps) + "/1 ! " +
                 decoder_pipeline +
@@ -305,11 +304,11 @@ bool GstreamerMjpegCamera::switchToSoftware() {
 
 bool GstreamerMjpegCamera::open(int camera_index, const std::string& device,
                                 int width, int height, int fps, int focus, int zoom,
-                                int max_frames, const std::string& decoder) {
+                                const std::string& decoder) {
     close();
     device_ = device.empty() ? ("/dev/video" + std::to_string(camera_index)) : device;
     width_ = width; height_ = height; requested_fps_ = fps;
-    focus_ = focus; zoom_ = zoom; max_frames_ = max_frames;
+    focus_ = focus; zoom_ = zoom;
     requested_decoder_ = decoder;
     if (requested_decoder_ != "auto" && requested_decoder_ != "hw" && requested_decoder_ != "sw") {
         std::cerr << "Invalid decoder selection: " << requested_decoder_ << "\n";
@@ -413,14 +412,13 @@ void GstreamerMjpegCamera::destroyPipeline(bool send_eos) {
     if (!gst_pipeline_) return;
     GstBus* bus = gst_element_get_bus(gst_pipeline_);
     if (send_eos && !eos_) {
+        // Do not wait for a vendor decoder EOS here. Setting the pipeline to
+        // NULL is enough after the capture thread has stopped pulling samples;
+        // a bounded state wait prevents teardown from blocking the UI forever.
         gst_element_send_event(gst_pipeline_, gst_event_new_eos());
-        GstMessage* drained = gst_bus_timed_pop_filtered(
-            bus, 2 * GST_SECOND,
-            static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
-        if (drained) gst_message_unref(drained);
     }
     gst_element_set_state(gst_pipeline_, GST_STATE_NULL);
-    gst_element_get_state(gst_pipeline_, nullptr, nullptr, 2 * GST_SECOND);
+    gst_element_get_state(gst_pipeline_, nullptr, nullptr, 500 * GST_MSECOND);
     gst_object_unref(bus);
     if (appsink_) {
         gst_object_unref(appsink_);

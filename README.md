@@ -3,9 +3,13 @@
 这个项目面向 SpaceMIT K3 板端，使用单路 V4L2 MJPEG 摄像头完成：
 
 ```text
-摄像头 → GStreamer/V4L2 → NV12 → OpenCL 前处理 → SpaceMIT EP
-       → YOLOv8-seg 后处理 → mask/框叠加 → OpenCV 窗口显示
+摄像头 → GStreamer/V4L2 → NV12
+       ├─ latest-only 显示槽 → 主线程 BGR/OSD → OpenCV 窗口
+       └─ latest-only 算法槽 → OpenCL 前处理 → latest-only 推理槽
+                                      → SpaceMIT EP → 最近一次分割结果
 ```
+
+当前实现将采集、前处理、推理、显示拆成独立阶段。每个跨线程槽位最多保留一个最新对象，生产者不会等待消费者；算法落后时丢弃旧帧，避免延迟持续累积。显示使用最新采集帧叠加最近一次可用推理结果，优先保证画面连续性。
 
 当前实现基于两个已经验证过的板端项目：
 
@@ -38,6 +42,8 @@
 ```
 
 `ep_affinity` 通过 SpaceMIT EP 选项 `SPACEMIT_EP_INTRA_THREAD_AFFINITY` 设置。配置中的核数量必须与 `intra_threads` 一致。当前默认是 `intra_threads=2`、`ep_affinity="12;13"`，只绑定 EP 推理线程；不会把整个进程的所有线程都绑定到 12、13。
+
+`queue_depth` 目前保留用于兼容配置，但单路低延迟实现使用固定深度 1 的 latest-only 槽位，不会阻塞等待旧帧完成。
 
 `device` 非空时优先于 `camera`。板上 C920 当前应优先使用：
 

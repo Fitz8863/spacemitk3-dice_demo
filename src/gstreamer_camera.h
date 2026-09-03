@@ -23,7 +23,7 @@ public:
     GstreamerMjpegCamera(const GstreamerMjpegCamera&) = delete;
 
     bool open(int camera_index, const std::string& device, int width, int height,
-              int fps, int focus = 0, int zoom = 181, int max_frames = 0,
+              int fps, int focus = 0, int zoom = 181,
               const std::string& decoder = "auto");
     bool read(GstreamerFrame& frame, int timeout_ms = 1000);
     // Compatibility API: this necessarily makes a detached copy because a
@@ -58,7 +58,6 @@ private:
     int negotiated_fps_ = 0;
     int focus_ = 0;
     int zoom_ = 181;
-    int max_frames_ = 0;
     bool hardware_decoder_ = false;
     std::string requested_decoder_ = "auto";
     bool eos_ = false;

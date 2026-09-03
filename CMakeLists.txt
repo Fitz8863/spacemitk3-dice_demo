@@ -78,4 +78,8 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${OpenCV_INCLUDE_DIRS})
     target_link_libraries(postprocess_test PRIVATE ${OpenCV_LIBS})
     add_test(NAME postprocess_test COMMAND postprocess_test)
+
+    add_executable(latest_queue_test tests/latest_queue_test.cpp)
+    target_include_directories(latest_queue_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME latest_queue_test COMMAND latest_queue_test)
 endif()
