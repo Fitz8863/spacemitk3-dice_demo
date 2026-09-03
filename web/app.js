@@ -121,8 +121,11 @@ function startStandbyListening() {
   requestJson('/api/asr/standby', {
     method: 'POST',
     body: JSON.stringify({ listen: true }),
+  }).then((payload) => {
+    // 事件纪元从本次监听开始：cursor 之前的历史事件（上一段待机期间环境
+    // 人声/幻觉产生的旧唤醒）绝不重放——刷新页面瞬间被"旧唤醒"唤醒过的 bug。
+    standbyEventCursor = Number(payload?.cursor || 0);
   }).catch(() => { /* 后端不可用不阻塞待机画面 */ });
-  standbyEventCursor = 0;
   standbyPollTimer = setInterval(async () => {
     try {
       const payload = await requestJson('/api/asr/standby/events');
@@ -130,11 +133,15 @@ function startStandbyListening() {
         if (event.sequence > standbyEventCursor) {
           standbyEventCursor = event.sequence;
           if (event.status === 'wake') {
-            showAsrFeedback({ status: 'submitted', text: event.text });
-            wakeFromStandby();
-            return;
+            // 保鲜窗：超过 10 秒的唤醒事件视为过期（防御旧事件重放）。
+            if (Date.now() - Number(event.timestamp_ms || 0) <= 10000) {
+              showAsrFeedback({ status: 'submitted', text: event.text });
+              wakeFromStandby();
+              return;
+            }
+          } else {
+            showAsrFeedback({ status: 'unmatched', text: event.text });
           }
-          showAsrFeedback({ status: 'unmatched', text: event.text });
         }
       }
     } catch (_) { /* 轮询失败下次再试 */ }

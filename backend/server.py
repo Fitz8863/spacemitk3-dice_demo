@@ -1042,15 +1042,24 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"listening": False})
                 return
             standby = arena_standby(get_arena_config())
+            # A fresh listening session starts a clean event epoch: events
+            # from earlier standby periods (room noise, an earlier wake) must
+            # never replay into a newly loaded page — that is what made a
+            # page refresh instantly "wake" with a stale word (2026-09-03).
+            with _STANDBY_EVENTS_LOCK:
+                _STANDBY_EVENTS.clear()
             started = ASR_BRIDGE.start_standby_session(
                 wake_phrases=standby["wake_phrases"],
                 asr_enabled=arena_asr_enabled(get_arena_config()),
                 provider_id=arena_slot_value(get_arena_config(), "asr"),
                 on_wake=_standby_wake_broadcast,
             )
+            with _STANDBY_EVENTS_LOCK:
+                cursor = _STANDBY_EVENT_SEQUENCE
             self.send_json({
                 "listening": started,
                 "wake_phrases": standby["wake_phrases"] if started else [],
+                "cursor": cursor,
             })
             return
         if path == "/api/game/rounds":

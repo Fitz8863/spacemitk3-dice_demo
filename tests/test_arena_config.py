@@ -855,14 +855,27 @@ def test_standby_endpoints_and_projection(tmp_path, monkeypatch):
         assert games_payload["standby"]["boot_standby"] is True
         assert games_payload["standby"]["wake_phrases"] == ["醒醒"]
 
-        # Listen on → session starts; a wake word lands on the event bus.
+        # A fresh listening session is a clean event epoch: pre-existing
+        # events (an earlier standby period's room noise) must not replay.
+        monkeypatch.setattr(server, "_STANDBY_EVENT_SEQUENCE", 41)
+        with server._STANDBY_EVENTS_LOCK:
+            server._STANDBY_EVENTS.append({
+                "event": "asr", "status": "wake", "text": "旧唤醒",
+                "timestamp_ms": 1, "sequence": 41,
+            })
         status, payload = post("/api/asr/standby", {"listen": True})
         assert status == 200 and payload["listening"] is True
+        assert payload["cursor"] == 41  # the new epoch starts after history
         assert len(provider.sessions) == 1
+        _, events_payload = get("/api/asr/standby/events")
+        assert events_payload["events"] == []  # history was cleared on listen
+
+        # A wake word lands on the event bus with a sequence after the cursor.
         provider.sessions[0]["on_sentence"]("醒醒啊")
         _, events_payload = get("/api/asr/standby/events")
         wakes = [e for e in events_payload["events"] if e.get("status") == "wake"]
         assert wakes and wakes[-1]["text"] == "醒醒啊"
+        assert wakes[-1]["sequence"] > payload["cursor"]
 
         # Listen off → no session left.
         status, payload = post("/api/asr/standby", {"listen": False})
