@@ -46,8 +46,9 @@ server 启动/热加载双路校验）：`providers.asr` 解析出两个引擎 i
 监听空闲 CPU 实测 ~0.6 核（VAD 常开，非本次引入——旧会话模式同样烧）。
 
 2026-09-03（晚 II）起新增**语音选游戏**：列表页与待机页均可点名游戏直达对局
-（说"我想玩摇骰子游戏"即进 dice，零配置——词表默认用游戏名；manifest
-`asr.select_phrases` 可覆盖/加别名，`[]` 退出）。`start_standby_session`
+（说"我想玩摇骰子游戏"即进 dice；词表在全局配置 `backend/config.json`
+`game_select.phrases` 按游戏 id 显式声明——游戏列表是部署面，词表归全局、
+manifest 不管，未声明的游戏不参与）。`start_standby_session`
 泛化为 bridge 的 `start_select_session`（词表 {key: 触发词}，首命中按表序）；
 待机/列表各自事件总线（`_AsrEventBus` 类，listen:true 清总线开新纪元），
 新端点 `POST/GET /api/asr/select(/events)`。关键规则：**游戏名优先于唤醒词**
