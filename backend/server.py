@@ -50,6 +50,7 @@ from core.arena_config import (
     arena_slot_value,
     arena_standby,
     collect_local_tts_ids,
+    collect_provider_slot_ids,
     load_arena_config,
     resolve_local_tts_pin,
     with_global_defaults,
@@ -113,7 +114,10 @@ def get_games() -> GameRegistry:
         if mtimes != _GAMES_MTIMES:
             candidate = load_games(_GAMES_ROOT)
             missing = {m["id"] for m in GAMES.all()} - {m["id"] for m in candidate.all()}
-            conflict = _single_local_tts_conflict(_ARENA_CONFIG, candidate)
+            conflict = (
+                _single_local_tts_conflict(_ARENA_CONFIG, candidate)
+                or _single_asr_conflict(_ARENA_CONFIG, candidate)
+            )
             if missing:
                 print(
                     f"[games] reload skipped; broken manifest removed {sorted(missing)}, "
@@ -265,6 +269,54 @@ def _prewarm_pinned_local_tts(pin: str | None) -> None:
         print(f"[arena] refusing to start: local TTS {pin} prewarm failed: {exc}", flush=True)
         raise SystemExit(1) from exc
     print(f"[arena] local TTS {pin} prewarmed", flush=True)
+
+
+def _single_asr_conflict(arena: dict[str, Any], registry: GameRegistry) -> str | None:
+    """Return the single-ASR-engine conflict message, or None when consistent.
+
+    The ASR engine owns the microphone for the whole process run, so exactly
+    one engine id may be referenced anywhere (arena slot plus enabled-game
+    overrides) — a second one could never run anyway and must fail loudly.
+    """
+    manifests = [m for m in registry.all() if m.get("enabled", False)]
+    ids = collect_provider_slot_ids("asr", arena, manifests)
+    if len(ids) > 1:
+        return (
+            f"multiple ASR engines referenced: {', '.join(ids)} — "
+            "keep exactly one (the engine owns the microphone)"
+        )
+    return None
+
+
+def _prewarm_resident_asr(arena: dict[str, Any]) -> None:
+    """Warm the resident ASR engine before the server starts serving.
+
+    Raises RuntimeError on a failed warmup (the caller refuses startup);
+    with the breaker off or the slot unconfigured the engine simply stays
+    down and voice input recovers lazily at the next attach.
+    """
+    if not arena_asr_enabled(arena):
+        print("[arena] asr_enabled=false: ASR engine stays down (voice input off)", flush=True)
+        return
+    provider_id = arena_slot_value(arena, "asr")
+    if not provider_id:
+        print("[arena] providers.asr not configured; skipping ASR prewarm", flush=True)
+        return
+    try:
+        provider = COMPONENTS.require(provider_id, expected_type="asr")
+    except DiceArenaError as exc:
+        raise RuntimeError(
+            f"ASR provider {provider_id} unavailable: {exc.message}"
+        ) from exc
+    prewarm = getattr(provider, "prewarm", None)
+    if not callable(prewarm):
+        print(f"[arena] ASR provider {provider_id} has no prewarm hook (per-session engine)", flush=True)
+        return
+    try:
+        prewarm()
+    except Exception as exc:
+        raise RuntimeError(f"ASR engine {provider_id} prewarm failed: {exc}") from exc
+    print(f"[arena] ASR engine {provider_id} prewarmed (resident)", flush=True)
 
 
 def _game_provider_id(game_id: str, provider_slot: str, fallback: str) -> str:
@@ -596,52 +648,16 @@ def create_round(game_id: str) -> GameRound:
     # (curl-driven rounds) is cancelled by the watchdog like any other
     # abandoned round.
     _sse_stream_closed(round_.id)
-    # Hand the microphone to this round (dropping any standby wake-word
-    # session) on a background thread: the zipformer model load measured
-    # ~2.6 s on the board, and paying it inside this POST delayed the first
-    # rules announcement by the same amount (round_id — and therefore the
-    # speech stream — only reaches the browser once the POST returns).
-    _hand_over_round_microphone(round_)
+    # Hand the microphone routing to this round.  The ASR engine is resident
+    # (warmed at startup), so this is an instant callback swap — start_for_
+    # round's own stop() releases any standby wake-word routing first.  Voice
+    # input never gates round creation: a broken ASR provider only means this
+    # round runs on buttons alone.
+    try:
+        ASR_BRIDGE.start_for_round(round_)
+    except Exception as exc:
+        print(f"[asr] failed to start for round {round_.id[:8]}: {exc!r}", flush=True)
     return round_
-
-
-# Microphone handovers serialize here: a rapid refresh would otherwise race
-# two stop/start pairs on the ASR bridge (the loser's session could leak or
-# the mic could end up with a superseded round).
-_ASR_HANDOVER_LOCK = threading.Lock()
-
-
-def _hand_over_round_microphone(round_: GameRound) -> None:
-    """Move the ASR session to ``round_`` without blocking its creator."""
-    threading.Thread(
-        target=_run_round_microphone_handover,
-        args=(round_,),
-        name=f"asr-handover-{round_.id[:8]}",
-        daemon=True,
-    ).start()
-
-
-def _run_round_microphone_handover(round_: GameRound) -> None:
-    with _ASR_HANDOVER_LOCK:
-        # A round that ended before the mic was free again never listens.
-        if round_.status != "running":
-            return
-        # A running round always owns the microphone: drop any standby
-        # wake-word session first (start_for_round's own stop() also covers
-        # this, but the intent deserves being explicit at the ownership
-        # handover).
-        ASR_BRIDGE.stop()
-        # Voice input never gates round creation: a missing or broken ASR
-        # provider only means this round runs on buttons alone.
-        try:
-            started = ASR_BRIDGE.start_for_round(round_)
-        except Exception as exc:
-            print(f"[asr] failed to start for round {round_.id[:8]}: {exc!r}", flush=True)
-            return
-        # The round may have ended while the model loaded; a dead round must
-        # not keep the microphone a standby session could be waiting for.
-        if started and round_.status != "running":
-            ASR_BRIDGE.stop()
 
 
 def _lookup_round(round_id: str) -> GameRound:
@@ -1286,14 +1302,38 @@ def main() -> None:
     # The pin check above covers slots only; per-line speech ``provider``
     # pins must not route around it either (they would drag a second local
     # engine's daemon into RAM via referenced startup).
-    conflict = _single_local_tts_conflict(get_arena_config(), get_games())
+    arena_config = get_arena_config()
+    conflict = _single_local_tts_conflict(arena_config, get_games())
     if conflict is not None:
         print(f"[arena] refusing to start: {conflict}", flush=True)
         raise SystemExit(1)
-    # The pinned local engine must be warm before the first request can
-    # arrive: a failed or missing warmup refuses startup (blocking, ~4 s on
-    # the board for tts_matcha).
+    # The ASR engine owns the microphone for the whole run: exactly one
+    # engine id may be referenced (arena slot plus enabled-game overrides).
+    conflict = _single_asr_conflict(arena_config, get_games())
+    if conflict is not None:
+        print(f"[arena] refusing to start: {conflict}", flush=True)
+        raise SystemExit(1)
+    # Both resident engines warm before the server starts serving: the local
+    # TTS (mandatory, fail-fast) and the ASR engine (when the breaker is on).
+    # They run in parallel — matcha loads on the A100 EP cores, zipformer on
+    # the X100 cores — so boot pays max(~3.5s, ~2.6s), not the sum.
+    asr_prewarm_failure: list[BaseException] = []
+
+    def _run_asr_prewarm() -> None:
+        try:
+            _prewarm_resident_asr(arena_config)
+        except BaseException as exc:  # reported by the main thread below
+            asr_prewarm_failure.append(exc)
+
+    asr_prewarm_thread = threading.Thread(
+        target=_run_asr_prewarm, name="asr-prewarm", daemon=True
+    )
+    asr_prewarm_thread.start()
     _prewarm_pinned_local_tts(_LOCAL_TTS_PIN)
+    asr_prewarm_thread.join()
+    if asr_prewarm_failure:
+        print(f"[arena] refusing to start: {asr_prewarm_failure[0]}", flush=True)
+        raise SystemExit(1)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Dice Arena K3 backend listening on http://{args.host}:{args.port}", flush=True)
     print(f"Local TTS provider: {_LOCAL_TTS_PIN or 'none'}", flush=True)

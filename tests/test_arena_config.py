@@ -27,6 +27,7 @@ from core.arena_config import (  # noqa: E402
     arena_slot_value,
     arena_standby,
     collect_local_tts_ids,
+    collect_provider_slot_ids,
     load_arena_config,
     resolve_local_tts_pin,
     validate_arena_config,
@@ -947,6 +948,19 @@ def test_collect_local_tts_ids_filters_what_is_not_local():
     # A lone local reference is fine — the invariant forbids the *second* one.
     games = [{"id": "dice", "enabled": True, "providers": {"tts_local": "tts_matcha"}}]
     assert collect_local_tts_ids({}, games, lambda pid: pid == "tts_matcha") == ["tts_matcha"]
+
+
+def test_collect_provider_slot_ids_gathers_arena_and_enabled_games():
+    arena = {"providers": {"asr": "asr_a", "tts_remote": "tts_gptsovits"}}
+    games = [
+        {"id": "dice", "enabled": True, "providers": {"asr": "asr_a"}},
+        {"id": "rps", "enabled": True, "providers": {"asr": "asr_b"}},
+        # Disabled games never contribute references.
+        {"id": "off", "enabled": False, "providers": {"asr": "asr_c"}},
+    ]
+    assert collect_provider_slot_ids("asr", arena, games) == ["asr_a", "asr_b"]
+    # An unconfigured slot simply collects nothing.
+    assert collect_provider_slot_ids("tts_remote", {"providers": {}}, games) == []
 
 
 if __name__ == "__main__":

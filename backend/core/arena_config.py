@@ -229,3 +229,36 @@ def collect_local_tts_ids(
             for action in iter_speech_actions(machine):
                 add(action.get("provider"))
     return [provider_id for provider_id in referenced if is_local_tts(provider_id)]
+
+
+def collect_provider_slot_ids(
+    slot: str,
+    arena: Mapping[str, Any] | None,
+    game_manifests: Iterable[Mapping[str, Any]],
+) -> list[str]:
+    """Every distinct provider id referenced for one semantic provider slot.
+
+    Covers the arena default plus every *enabled* game's own override of the
+    slot.  Used to seal single-engine slots (ASR owns the microphone, so two
+    distinct engines can never run together) on both the startup and the
+    manifest hot-reload paths.
+    """
+    referenced: list[str] = []
+
+    def add(provider_id: Any) -> None:
+        if not isinstance(provider_id, str):
+            return
+        provider_id = provider_id.strip()
+        if provider_id and provider_id not in referenced:
+            referenced.append(provider_id)
+
+    arena_value = arena_slot_value(arena, slot)
+    if arena_value:
+        add(arena_value)
+    for manifest in game_manifests:
+        if not isinstance(manifest, Mapping) or not manifest.get("enabled", False):
+            continue
+        providers = manifest.get("providers")
+        if isinstance(providers, Mapping):
+            add(providers.get(slot))
+    return referenced

@@ -948,40 +948,124 @@ def _patch_round_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_LOCAL_TTS_PIN", None)
 
 
-def test_round_creation_does_not_wait_for_asr_model_load(tmp_path, monkeypatch):
-    """The zipformer load (~2.6 s on the board) delayed the first rules
-    announcement because the browser only learns its round_id — and starts
-    pulling speech — once the creation POST returns."""
-    _patch_round_environment(monkeypatch, tmp_path)
-    bridge = _RecordingBridge(start_delay_seconds=1.0)
-    monkeypatch.setattr(server, "ASR_BRIDGE", bridge)
-
-    began = time.monotonic()
-    round_ = server.create_round("dice")
-    elapsed = time.monotonic() - began
-
-    assert round_.state == "rules"
-    assert elapsed < 0.8, f"round creation blocked {elapsed:.2f}s on ASR start"
-    assert bridge.started == []  # handover still running in the background
-
-    deadline = time.monotonic() + 5.0
-    while not bridge.started and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert bridge.started == [round_.id]
-
-
-def test_cancelled_round_never_takes_the_microphone(tmp_path, monkeypatch):
+def test_round_creation_attaches_asr_synchronously(tmp_path, monkeypatch):
+    """With the resident engine, handing the microphone to a round is an
+    instant routing swap completed inside create_round — there is no
+    background handover for the browser to wait for (the 2026-09-03 async
+    handover built for the per-session engine became obsolete)."""
     _patch_round_environment(monkeypatch, tmp_path)
     bridge = _RecordingBridge()
     monkeypatch.setattr(server, "ASR_BRIDGE", bridge)
 
-    # Hold the handover lock so the background thread cannot run yet, then
-    # end the round while the handover is still queued.
-    with server._ASR_HANDOVER_LOCK:
-        round_ = server.create_round("dice")
-        round_.cancel()
+    round_ = server.create_round("dice")
 
-    deadline = time.monotonic() + 5.0
-    while bridge.stop_calls < 1 and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert bridge.started == []  # a dead round never listens
+    assert round_.state == "rules"
+    assert bridge.started == [round_.id]  # attached before the call returned
+
+
+# ---- startup prewarm of the resident ASR engine ----
+
+
+class _PrewarmAsr:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.id = "asr_fake"
+        self.type = "asr"
+        self.role = ""
+        self.calls = 0
+        self._fail = fail
+
+    def prewarm(self) -> None:
+        self.calls += 1
+        if self._fail:
+            raise RuntimeError("zipformer load failed")
+
+
+class _LifecycleAsr:
+    """A per-session ASR provider (no resident prewarm hook)."""
+
+    id = "asr_fake"
+    type = "asr"
+    role = ""
+
+
+class _SingleAsrRegistry:
+    def __init__(self, provider, *, known: bool = True) -> None:
+        self._provider = provider
+        self._known = known
+
+    def require(self, component_id, expected_type=None, expected_role=None):
+        if not self._known or component_id != self._provider.id:
+            from core.errors import ComponentNotFoundError
+
+            raise ComponentNotFoundError(component_id)
+        return self._provider
+
+
+def test_prewarm_resident_asr_warms_the_engine(monkeypatch):
+    provider = _PrewarmAsr()
+    monkeypatch.setattr(server, "COMPONENTS", _SingleAsrRegistry(provider))
+    server._prewarm_resident_asr(
+        {"asr_enabled": True, "providers": {"asr": "asr_fake"}}
+    )
+    assert provider.calls == 1
+
+
+def test_prewarm_resident_asr_failure_raises(monkeypatch):
+    provider = _PrewarmAsr(fail=True)
+    monkeypatch.setattr(server, "COMPONENTS", _SingleAsrRegistry(provider))
+    with pytest.raises(RuntimeError, match="zipformer load failed"):
+        server._prewarm_resident_asr(
+            {"asr_enabled": True, "providers": {"asr": "asr_fake"}}
+        )
+
+
+def test_prewarm_resident_asr_missing_provider_raises(monkeypatch):
+    provider = _PrewarmAsr()
+    monkeypatch.setattr(server, "COMPONENTS", _SingleAsrRegistry(provider, known=False))
+    with pytest.raises(RuntimeError, match="unavailable"):
+        server._prewarm_resident_asr(
+            {"asr_enabled": True, "providers": {"asr": "asr_fake"}}
+        )
+
+
+def test_prewarm_resident_asr_skips_when_breaker_off(monkeypatch):
+    provider = _PrewarmAsr()
+    monkeypatch.setattr(server, "COMPONENTS", _SingleAsrRegistry(provider))
+    server._prewarm_resident_asr({"asr_enabled": False})
+    assert provider.calls == 0
+
+
+def test_prewarm_resident_asr_skips_without_slot(monkeypatch):
+    provider = _PrewarmAsr()
+    monkeypatch.setattr(server, "COMPONENTS", _SingleAsrRegistry(provider))
+    server._prewarm_resident_asr({"asr_enabled": True, "providers": {}})
+    assert provider.calls == 0
+
+
+def test_prewarm_resident_asr_without_hook_is_a_noop(monkeypatch):
+    monkeypatch.setattr(
+        server, "COMPONENTS", _SingleAsrRegistry(_LifecycleAsr())
+    )
+    server._prewarm_resident_asr(
+        {"asr_enabled": True, "providers": {"asr": "asr_fake"}}
+    )  # must not raise
+
+
+# ---- single-ASR-engine invariant ----
+
+
+def test_single_asr_conflict_flags_two_engines():
+    registry = GameRegistry()
+    registry.register({"id": "dice", "enabled": True, "providers": {"asr": "asr_a"}})
+    registry.register({"id": "rps", "enabled": True, "providers": {"asr": "asr_b"}})
+    conflict = server._single_asr_conflict({"providers": {"asr": "asr_a"}}, registry)
+    assert conflict is not None
+    assert "asr_a" in conflict and "asr_b" in conflict
+
+
+def test_single_asr_conflict_allows_matching_and_disabled():
+    registry = GameRegistry()
+    registry.register({"id": "dice", "enabled": True, "providers": {"asr": "asr_a"}})
+    assert server._single_asr_conflict({"providers": {"asr": "asr_a"}}, registry) is None
+    registry.register({"id": "off", "enabled": False, "providers": {"asr": "asr_b"}})
+    assert server._single_asr_conflict({"providers": {"asr": "asr_a"}}, registry) is None
