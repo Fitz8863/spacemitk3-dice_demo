@@ -62,7 +62,6 @@ main/
 ├── tts/                                  # TTS runtime 源码和板端交付资产
 ├── web/                                  # 浏览器 UI 和游戏状态机
 ├── scripts/                              # Web 服务启停（会调 componentctl）
-├── deploy/                               # 可选 systemd 单元
 └── docs/                                 # 当前文档索引、归档和历史设计记录
 ```
 

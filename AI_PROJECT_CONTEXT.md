@@ -171,12 +171,10 @@ main/
 │   └── moss-tts-nano/               # MOSS-TTS-Nano runtime 源码和板端交付目录
 │       ├── include/、src/、licenses/ # 可审查的源码、头文件和许可证
 │       └── models/、python/、voice/  # 板端资产，按 .gitignore 排除
-├── docs/                            # 当前文档索引、归档资料和历史设计记录
-│   ├── README.md
-│   ├── archive/
-│   └── superpowers/plans、specs/
-└── deploy/
-    └── dice-arena-web.service       # 可选 systemd Web 服务
+└── docs/                            # 当前文档索引、归档资料和历史设计记录
+    ├── README.md
+    ├── archive/
+    └── superpowers/plans、specs/
 ```
 
 以下是运行时文件，不应提交：

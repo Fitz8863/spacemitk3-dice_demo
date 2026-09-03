@@ -68,16 +68,6 @@ python3 backend/tts_debug.py <provider_id>
 `--player ffplay`；设置 `DICE_TTS_PLAYER` 可固定默认播放器。调试脚本只会停止
 本次会话自己启动的 TTS，不会停止已由网页或其他服务运行的 provider。
 
-也可以安装 systemd 服务（可选）：
-
-```bash
-sudo cp deploy/dice-arena-web.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now dice-arena-web.service
-systemctl status dice-arena-web.service
-
-```
-
 `web/` 前端和 `backend/server.py` 都只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。网页请求 `/api/adjudicate` 后，bridge 会通过 `vision_yolov8_adjudicator` 启动或复用 `vision/yolov8_adjudicator/build/yolov8_camera`；YOLO runtime 只输出稳定检测证据，LLM 请求由 Python provider 发起。浏览器在板端通过 `127.0.0.1` 访问时，可以正常申请摄像头权限；如果从其他设备通过 HTTP IP 访问，浏览器可能因非安全上下文限制摄像头权限，但实际识别仍使用 K3 板端摄像头。
 
 大模型的 endpoint、model 和 API key 统一配置在 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段。该文件被 Git 跟踪，**仓库必须保持私有**；不要把 key 写进网页或日志。修改后重启 `scripts/start_web.sh` 生效。如果没有配置 key，`/api/health` 会显示 `llm_configured:false`，进入开盖后的视觉裁决阶段会明确提示未配置，而不是使用随机骰子或直接判定胜负。
