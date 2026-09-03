@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <memory>
 #include <thread>
 
 #include <gst/app/gstappsrc.h>
@@ -25,6 +26,9 @@ public:
     bool start(const std::string& host, int port, const std::string& path,
                int width, int height, int fps);
     void publish(const cv::Mat& bgr);
+    // Transfers an already-rendered frame into the asynchronous latest-only
+    // publisher without cloning it. The caller must not use `bgr` afterward.
+    void publish(cv::Mat&& bgr);
     void stop();
     bool running() const { return running_.load(); }
     std::string url() const;
@@ -51,7 +55,7 @@ private:
 
     std::mutex frame_mutex_;
     std::condition_variable frame_cv_;
-    cv::Mat latest_frame_;
+    std::shared_ptr<const cv::Mat> latest_frame_;
     std::uint64_t frame_sequence_ = 0;
     std::chrono::steady_clock::time_point start_time_{};
 };

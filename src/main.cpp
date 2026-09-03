@@ -397,6 +397,7 @@ int main(int argc, char** argv) {
     double infer_fps = 0.0;
     std::string status_text = format_pipeline_status(
         0.0, 0.0, 0.0, 0, config.ep_affinity);
+    cv::Mat reusable_bgr;
     bool display_initialized = false;
     if (!no_display && config.display_enabled) {
         cv::namedWindow("YOLOv8-seg Camera", cv::WINDOW_NORMAL);
@@ -409,7 +410,21 @@ int main(int argc, char** argv) {
             last_result = std::move(result);
         }
         if (const auto captured = display_queue.try_pop_latest()) {
-            cv::Mat bgr = nv12_to_bgr(captured->nv12);
+            const bool render_enabled = display_initialized || rtsp_streamer.running();
+            // In headless/non-RTSP mode the display handoff is only used to
+            // release the latest camera owner; do not spend CPU converting
+            // NV12 to BGR when no consumer can see the result.
+            if (!render_enabled) {
+                displayed_count.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            cv::Mat bgr;
+            if (rtsp_streamer.running()) {
+                bgr = nv12_to_bgr(captured->nv12);
+            } else {
+                cv::cvtColor(captured->nv12, reusable_bgr, cv::COLOR_YUV2BGR_NV12);
+                bgr = reusable_bgr;
+            }
             if (last_result && last_result->captured &&
                 last_result->captured->id <= captured->id) {
                 draw_detections(bgr, last_result->detections);
@@ -440,7 +455,6 @@ int main(int argc, char** argv) {
             // text appeared for one frame and disappeared for the next frames.
             if (!bgr.empty()) cv::putText(bgr, status_text, {12, 28}, cv::FONT_HERSHEY_SIMPLEX,
                                           0.62, {0, 255, 0}, 2, cv::LINE_AA);
-            if (rtsp_streamer.running()) rtsp_streamer.publish(bgr);
             if (display_initialized) {
                 cv::imshow("YOLOv8-seg Camera", bgr);
                 displayed_count.fetch_add(1, std::memory_order_relaxed);
@@ -452,6 +466,7 @@ int main(int argc, char** argv) {
             } else {
                 displayed_count.fetch_add(1, std::memory_order_relaxed);
             }
+            if (rtsp_streamer.running()) rtsp_streamer.publish(std::move(bgr));
         } else {
             if (inference_done.load(std::memory_order_acquire) &&
                 capture_done.load(std::memory_order_acquire) &&

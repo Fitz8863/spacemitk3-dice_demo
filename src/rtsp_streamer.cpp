@@ -3,7 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstring>
+#include <new>
 #include <gst/app/gstappsrc.h>
 #include <iostream>
 #include <opencv2/imgproc.hpp>
@@ -19,11 +19,30 @@ void ensure_gstreamer_initialized() {
     (void)initialized;
 }
 
-
 std::string gst_error_text(GError* error) {
     const std::string text = error && error->message ? error->message : "unknown GStreamer error";
     if (error) g_error_free(error);
     return text;
+}
+
+struct GstFrameOwner {
+    std::shared_ptr<const cv::Mat> frame;
+};
+
+void release_gst_frame_owner(gpointer data) {
+    delete static_cast<GstFrameOwner*>(data);
+}
+
+GstBuffer* wrap_frame_without_copy(const std::shared_ptr<const cv::Mat>& frame) {
+    if (!frame || frame->empty() || !frame->isContinuous()) return nullptr;
+    const gsize bytes = static_cast<gsize>(frame->total() * frame->elemSize());
+    auto* owner = new (std::nothrow) GstFrameOwner{frame};
+    if (!owner) return nullptr;
+    GstBuffer* buffer = gst_buffer_new_wrapped_full(
+        GST_MEMORY_FLAG_READONLY, const_cast<guint8*>(frame->data), bytes,
+        0, bytes, owner, release_gst_frame_owner);
+    if (!buffer) delete owner;
+    return buffer;
 }
 
 }  // namespace
@@ -113,6 +132,17 @@ void RtspStreamer::publish(const cv::Mat& bgr) {
     } else {
         frame = bgr.clone();
     }
+    publish(std::move(frame));
+}
+
+void RtspStreamer::publish(cv::Mat&& bgr) {
+    if (!running_.load() || bgr.empty()) return;
+    auto frame = std::make_shared<cv::Mat>(std::move(bgr));
+    if (frame->cols != width_ || frame->rows != height_) {
+        auto resized = std::make_shared<cv::Mat>();
+        cv::resize(*frame, *resized, cv::Size(width_, height_), 0.0, 0.0, cv::INTER_LINEAR);
+        frame = std::move(resized);
+    }
     {
         std::lock_guard<std::mutex> lock(frame_mutex_);
         latest_frame_ = std::move(frame);
@@ -124,34 +154,29 @@ void RtspStreamer::publish(const cv::Mat& bgr) {
 void RtspStreamer::encoder_loop() {
     std::uint64_t consumed_sequence = 0;
     while (!stopping_.load()) {
-        cv::Mat frame;
+        std::shared_ptr<const cv::Mat> frame;
         {
             std::unique_lock<std::mutex> lock(frame_mutex_);
             frame_cv_.wait_for(lock, std::chrono::milliseconds(50), [&] {
                 return stopping_.load() || frame_sequence_ != consumed_sequence;
             });
             if (stopping_.load()) break;
-            if (frame_sequence_ != consumed_sequence && !latest_frame_.empty()) {
-                frame = latest_frame_.clone();
+            if (frame_sequence_ != consumed_sequence && latest_frame_) {
+                frame = std::move(latest_frame_);
                 consumed_sequence = frame_sequence_;
             }
         }
-        if (frame.empty() || !appsrc_) {
+        if (!frame || frame->empty() || !appsrc_) {
             check_bus();
             continue;
         }
 
-        const std::size_t bytes = frame.total() * frame.elemSize();
-        GstBuffer* buffer = gst_buffer_new_allocate(nullptr, bytes, nullptr);
-        GstMapInfo mapping{};
-        if (!buffer || !gst_buffer_map(buffer, &mapping, GST_MAP_WRITE)) {
-            if (buffer) gst_buffer_unref(buffer);
-            std::cerr << "[RTSP] could not allocate/map an input frame buffer\n";
+        GstBuffer* buffer = wrap_frame_without_copy(frame);
+        if (!buffer) {
+            std::cerr << "[RTSP] frame is not continuous or buffer wrapping failed\n";
             check_bus();
             continue;
         }
-        std::memcpy(mapping.data, frame.data, bytes);
-        gst_buffer_unmap(buffer, &mapping);
 
         const auto elapsed = std::chrono::steady_clock::now() - start_time_;
         GST_BUFFER_PTS(buffer) = static_cast<GstClockTime>(
@@ -211,7 +236,7 @@ void RtspStreamer::stop() {
     destroy_pipeline();
     {
         std::lock_guard<std::mutex> lock(frame_mutex_);
-        latest_frame_.release();
+        latest_frame_.reset();
         frame_sequence_ = 0;
     }
     if (was_running) std::cerr << "[RTSP] publisher stopped\n";

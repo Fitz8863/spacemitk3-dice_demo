@@ -9,6 +9,7 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -91,6 +92,43 @@ LetterboxGeometry calculate_geometry(int src_width, int src_height,
 }
 }  // namespace
 
+struct TensorPoolState : std::enable_shared_from_this<TensorPoolState> {
+    explicit TensorPoolState(size_t elements, size_t initial_slots)
+        : elements(elements) {
+        free_slots.reserve(initial_slots);
+        for (size_t i = 0; i < initial_slots; ++i) {
+            free_slots.push_back(std::make_shared<std::vector<float>>(elements));
+        }
+    }
+
+    std::shared_ptr<std::vector<float>> acquire() {
+        std::shared_ptr<std::vector<float>> storage;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!free_slots.empty()) {
+                storage = std::move(free_slots.back());
+                free_slots.pop_back();
+            }
+        }
+        if (!storage) {
+            // Never block the real-time preprocessing stage waiting for an
+            // output slot. A transient fallback allocation is preferable to
+            // adding latency when inference temporarily holds all slots.
+            storage = std::make_shared<std::vector<float>>(elements);
+        }
+        auto state = shared_from_this();
+        return std::shared_ptr<std::vector<float>>(
+            storage.get(), [state, storage = std::move(storage)](std::vector<float>*) mutable {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->free_slots.push_back(std::move(storage));
+            });
+    }
+
+    size_t elements;
+    std::mutex mutex;
+    std::vector<std::shared_ptr<std::vector<float>>> free_slots;
+};
+
 struct OpenClPreprocessor::Impl {
     cl_platform_id platform = nullptr;
     cl_device_id device = nullptr;
@@ -117,6 +155,7 @@ struct OpenClPreprocessor::Impl {
     cl_mem u_image = nullptr;
     cl_mem v_image = nullptr;
     cl_mem output_buffer = nullptr;
+    std::shared_ptr<TensorPoolState> tensor_pool;
 
     ~Impl() {
         release_io();
@@ -227,6 +266,10 @@ struct OpenClPreprocessor::Impl {
         y_size = static_cast<size_t>(width) * height;
         uv_size = y_size / 4;
         output_size = static_cast<size_t>(3) * out_w * out_h * sizeof(float);
+        if (!tensor_pool) {
+            tensor_pool = std::make_shared<TensorPoolState>(
+                static_cast<size_t>(3) * out_w * out_h, 3);
+        }
         y_host.resize(y_size);
         u_host.resize(uv_size);
         v_host.resize(uv_size);
@@ -309,9 +352,16 @@ OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12) {
     const LetterboxGeometry geometry = calculate_geometry(width, height, impl_->out_w, impl_->out_h);
     impl_->ensure_io(width, height);
 
-    for (int row = 0; row < height; ++row) {
-        std::memcpy(impl_->y_host.data() + static_cast<size_t>(row) * width,
-                    nv12.ptr(row), static_cast<size_t>(width));
+    // GStreamer normally exposes compact NV12 (stride == width). Use one
+    // contiguous Y copy in that case; retain the row-wise path for padded
+    // buffers from other decoders.
+    if (nv12.step == static_cast<size_t>(width)) {
+        std::memcpy(impl_->y_host.data(), nv12.data, impl_->y_size);
+    } else {
+        for (int row = 0; row < height; ++row) {
+            std::memcpy(impl_->y_host.data() + static_cast<size_t>(row) * width,
+                        nv12.ptr(row), static_cast<size_t>(width));
+        }
     }
     const uint8_t* uv_src = nv12.ptr(height);
     for (int row = 0; row < height / 2; ++row) {
@@ -358,8 +408,7 @@ OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12) {
                                        nullptr, 0, nullptr, nullptr),
                 "clEnqueueNDRangeKernel");
 
-    auto output = std::make_shared<std::vector<float>>(
-        static_cast<size_t>(3) * impl_->out_w * impl_->out_h);
+    auto output = impl_->tensor_pool->acquire();
     // A blocking read waits for all earlier commands in this in-order queue;
     // an extra clFinish here only adds synchronization overhead.
     Impl::check(clEnqueueReadBuffer(impl_->queue, impl_->output_buffer, CL_TRUE, 0,
