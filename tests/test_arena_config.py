@@ -635,5 +635,42 @@ def test_round_without_any_participants_is_rejected(tmp_path, monkeypatch):
     assert "participants" in str(excinfo.value)
 
 
+def test_manifest_hot_reload_does_not_deadlock_on_drift_check(tmp_path, monkeypatch):
+    """Regression 2026-09-03: the local-TTS drift check re-entered get_games()
+    while _GAMES_LOCK was held (a non-reentrant lock) — the first manifest
+    hot reload after server start froze the whole process; every request
+    needing get_games() piled up forever.  The check must run outside the
+    lock; this test fails (thread never returns) if it ever regresses.
+    """
+    import os
+
+    games_root = tmp_path / "games"
+    (games_root / "dice").mkdir(parents=True)
+    manifest_path = games_root / "dice" / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "id": "dice", "name": "Dice", "enabled": True,
+        "state_machine": MACHINE,
+    }), encoding="utf-8")
+    arena_path = tmp_path / "config.json"
+    arena_path.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    monkeypatch.setattr(server, "_GAMES_ROOT", games_root)
+    monkeypatch.setattr(server, "GAMES", server.load_games(games_root))
+    monkeypatch.setattr(server, "_GAMES_MTIMES", server._manifest_mtimes())
+    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", arena_path)
+    monkeypatch.setattr(server, "_ARENA_CONFIG", {})
+    monkeypatch.setattr(server, "_ARENA_MTIME", None)
+
+    # The hot-reload trigger: manifest mtime changed since the last read.
+    os.utime(manifest_path, (time.time() + 5, time.time() + 5))
+
+    outcome: dict = {}
+    thread = threading.Thread(target=lambda: outcome.update(
+        games=server.get_games()), daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "get_games() deadlocked on hot reload"
+    assert outcome["games"].get("dice") is not None
+
+
 if __name__ == "__main__":
     unittest.main()

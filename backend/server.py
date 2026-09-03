@@ -10,10 +10,12 @@ the LLM key and never decides the winner itself.
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import mimetypes
 import os
 import signal
+import sys
 import threading
 from http import HTTPStatus
 from urllib.parse import parse_qs, urlsplit
@@ -97,6 +99,7 @@ def get_games() -> GameRegistry:
     service restart.
     """
     global GAMES, _GAMES_MTIMES
+    reloaded = False
     with _GAMES_LOCK:
         mtimes = _manifest_mtimes()
         if mtimes != _GAMES_MTIMES:
@@ -111,8 +114,14 @@ def get_games() -> GameRegistry:
             else:
                 GAMES = candidate
                 _GAMES_MTIMES = mtimes
-                _check_local_tts_drift()
-        return GAMES
+                reloaded = True
+        games = GAMES
+    # The drift check re-enters get_games() and the arena accessors; it must
+    # run OUTSIDE _GAMES_LOCK — _GAMES_LOCK is not reentrant, and calling it
+    # under the lock deadlocked every request thread (2026-09-03 incident).
+    if reloaded:
+        _check_local_tts_drift()
+    return games
 
 
 _GAMES_MTIMES: dict[str, float] = _manifest_mtimes()
@@ -973,6 +982,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="K3 Dice Arena provider bridge")
+    # A whole-process freeze (e.g. a leaked lock) is diagnosable on demand:
+    # kill -USR1 <pid> dumps every thread's Python stack into the web log.
+    faulthandler.register(signal.SIGUSR1, file=sys.stderr)
     parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8080")))
     args = parser.parse_args()
