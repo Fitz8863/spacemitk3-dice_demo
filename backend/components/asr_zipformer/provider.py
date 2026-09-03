@@ -1,17 +1,27 @@
-"""Zipformer streaming ASR provider (board-local subprocess session).
+"""Zipformer streaming ASR provider (board-local resident engine).
 
-Bridges the dice arena to ``asr/zipformer-streaming`` (see that directory's
-AGENTS.md for the JSONL contract).  One listening session spawns an
-``arecord | stream_asr --pcm --jsonl`` pipeline: the reader thread turns
-``sentence``/``final`` events into ``on_sentence`` callbacks, everything else
-becomes diagnostics.  Sessions are created on demand by the round engine, so
-this package has no lifecycle scripts and nothing to pre-start.
+The engine pair (``arecord | stream_asr --pcm --jsonl``) is resident: it is
+spawned once by the backend's startup prewarm (or lazily on the first
+attach) and stays up for the whole process lifetime.  A "session" is a
+logical routing attached to the engine — switching between round intent
+listening and standby wake-word listening is an instant callback swap, so
+the ~2.6 s zipformer model load is paid exactly once per process instead of
+at every round/standby transition.
+
+Failure behaviour: a crashed engine is logged loudly; it respawns in the
+background and re-binds the attached routing only when it had been running
+long enough to count as healthy (``resurrect_min_lifetime``), so a binary
+that crash-loops at startup cannot spin respawn cycles — it recovers at the
+next attach (round/standby switch) instead.  ``prewarm()`` is the one
+blocking entry point (startup, fail-fast); ``shutdown()`` releases the
+engine and the microphone.
 """
 from __future__ import annotations
 
 import json
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,6 +30,10 @@ from core.asr import AsrProvider, AsrSessionError
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 _CAPTURE_FORMATS = {"S16_LE"}
+
+# An engine that died sooner than this after spawning is treated as
+# unhealthy (crash-loop risk): no automatic respawn, recover on next attach.
+_RESURRECT_MIN_LIFETIME_SECONDS = 30.0
 
 
 class AsrConfigError(ValueError):
@@ -48,15 +62,8 @@ def _positive_int(value: Any, field: str) -> int:
 
 
 def load_config(package_dir: Path, project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
-    """Validate asr_zipformer/config.json without touching the filesystem.
-
-    Existence of the binary/model is deliberately NOT checked here: the
-    registry instantiates providers on any machine, while ``health()`` and
-    session startup report board-local readiness.
-    """
-    path = Path(package_dir) / "config.json"
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads((package_dir / "config.json").read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise AsrConfigError("config.json is missing") from exc
     except json.JSONDecodeError as exc:
@@ -111,8 +118,28 @@ def load_config(package_dir: Path, project_root: Path = PROJECT_ROOT) -> dict[st
     return payload
 
 
-class _AsrSession:
-    """One ``arecord | stream_asr --pcm --jsonl`` pipeline plus reader threads."""
+class _Routing:
+    """One attached callback pair; its identity is the detach token."""
+
+    __slots__ = ("on_sentence", "on_log")
+
+    def __init__(
+        self,
+        on_sentence: Callable[[str], None],
+        on_log: Callable[[str], None] | None,
+    ) -> None:
+        self.on_sentence = on_sentence
+        self.on_log = on_log
+
+
+class _AsrEngine:
+    """Resident ``arecord | stream_asr`` pair with one swappable routing.
+
+    Spawning is serialized (``_spawn_lock``) and only ever replaces a dead
+    engine.  Routing attach/detach is an instant callback swap under
+    ``_lock``; sentences already in flight may land on either side of a
+    switch, which is fine — it is one utterance.
+    """
 
     def __init__(
         self,
@@ -121,103 +148,237 @@ class _AsrSession:
         asr_argv: list[str],
         working_dir: Path,
         grace_seconds: int,
-        on_sentence: Callable[[str], None],
+        start_timeout_seconds: float,
         on_log: Callable[[str], None],
         popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+        resurrect_min_lifetime: float = _RESURRECT_MIN_LIFETIME_SECONDS,
     ) -> None:
         self._capture_argv = capture_argv
         self._asr_argv = asr_argv
         self._working_dir = working_dir
         self._grace_seconds = grace_seconds
-        self._on_sentence = on_sentence
+        self._start_timeout = start_timeout_seconds
         self._on_log = on_log
         self._popen = popen
+        self._resurrect_min_lifetime = resurrect_min_lifetime
+        self._lock = threading.Lock()
+        self._spawn_lock = threading.Lock()
+        self._routing: _Routing | None = None
         self._capture: subprocess.Popen | None = None
         self._asr: subprocess.Popen | None = None
-        self._reader: threading.Thread | None = None
-        self._stderr_reader: threading.Thread | None = None
         self._ready = threading.Event()
-        self._stop_lock = threading.Lock()
+        self._events_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
+        self._spawned_at = 0.0
         self._stopped = False
+        self._supervision_enabled = True
+        # Set by a failed prewarm: blocks background spawns until the next
+        # explicit attach/prewarm, so a queued "respawn" cannot undo the
+        # abort (a failed startup must leave the engine down).
+        self._spawn_suppressed = False
+
+    def _log(self, message: str) -> None:
+        self._on_log(message)
 
     @property
-    def running(self) -> bool:
-        return self._reader is not None and self._reader.is_alive()
+    def alive(self) -> bool:
+        with self._lock:
+            asr = self._asr
+        return asr is not None and asr.poll() is None
 
-    def start(self) -> None:
-        self._capture = self._popen(
+    # ---- routing --------------------------------------------------------
+
+    def attach(
+        self,
+        on_sentence: Callable[[str], None],
+        on_log: Callable[[str], None] | None = None,
+    ) -> _Routing:
+        """Bind a new routing, replacing any previous one.  Never blocks."""
+        routing = _Routing(on_sentence, on_log)
+        with self._lock:
+            self._routing = routing
+            # An attach is an explicit intent to hear things: it lifts a
+            # suppression left behind by a failed prewarm.
+            self._spawn_suppressed = False
+            asr = self._asr
+        if asr is None or asr.poll() is not None:
+            self._log("ASR engine is down; respawning in the background")
+            threading.Thread(
+                target=self._spawn_if_dead, name="asr-engine-spawn", daemon=True
+            ).start()
+        return routing
+
+    def detach(self, routing: Any) -> None:
+        """Remove the routing if it is the current one.  Idempotent."""
+        with self._lock:
+            if routing is not None and self._routing is routing:
+                self._routing = None
+
+    # ---- lifecycle ------------------------------------------------------
+
+    def prewarm(self) -> None:
+        """Spawn and wait for the model (blocking; the one slow entry point)."""
+        with self._spawn_lock:
+            with self._lock:
+                self._spawn_suppressed = False
+                stopped = self._stopped
+            if stopped:
+                raise AsrSessionError("ASR engine was shut down")
+            if self.alive:
+                return
+            try:
+                self._spawn_processes()
+            except OSError as exc:
+                raise AsrSessionError(f"failed to spawn the ASR engine: {exc}") from exc
+            if not self._ready.wait(self._start_timeout) or not self.alive:
+                self._abort_processes()
+                raise AsrSessionError(
+                    f"ASR model load did not complete within {self._start_timeout:g}s "
+                    "(engine exited or stalled; see the asr log)"
+                )
+
+    def stop(self) -> None:
+        """Deliberate full teardown: kill the pair; the object is done."""
+        self._teardown(permanent=True)
+
+    def _spawn_if_dead(self) -> None:
+        with self._spawn_lock:
+            with self._lock:
+                if self._stopped or self._spawn_suppressed:
+                    return
+            if self.alive:
+                return
+            try:
+                self._spawn_processes()
+            except OSError as exc:
+                self._log(f"ASR engine respawn failed: {exc}")
+
+    def _spawn_processes(self) -> None:
+        capture = self._popen(
             self._capture_argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        assert self._capture.stdout is not None
-        self._asr = self._popen(
-            self._asr_argv,
-            stdin=self._capture.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=str(self._working_dir),
-            start_new_session=True,
-        )
-        # The parent must drop its copy so only stream_asr reads arecord.
-        self._capture.stdout.close()
-        self._reader = threading.Thread(target=self._read_events, name="asr-jsonl", daemon=True)
-        self._stderr_reader = threading.Thread(target=self._read_stderr, name="asr-stderr", daemon=True)
-        self._reader.start()
-        self._stderr_reader.start()
-
-    def wait_ready(self, timeout_seconds: float) -> bool:
-        """Wait until the engine printed its first stderr line (model loaded)."""
-        return self._ready.wait(timeout_seconds)
-
-    def _read_stderr(self) -> None:
-        assert self._asr is not None and self._asr.stderr is not None
         try:
-            for raw in self._asr.stderr:
-                line = raw.decode("utf-8", errors="replace").strip()
-                if line:
-                    self._ready.set()
-                    self._on_log(f"{line}")
-        except Exception as exc:  # diagnostics only; never kill the backend
-            self._on_log(f"stderr reader error: {exc}")
+            asr = self._popen(
+                self._asr_argv,
+                stdin=capture.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(self._working_dir),
+                start_new_session=True,
+            )
+        except BaseException:
+            # The capture half must not outlive a failed engine spawn.
+            try:
+                capture.terminate()
+                capture.wait(timeout=2)
+            except Exception:
+                pass
+            raise
         finally:
-            self._ready.set()
+            # The parent must drop its copy so only stream_asr reads arecord.
+            capture.stdout.close()
+        ready = threading.Event()
+        events_thread = threading.Thread(
+            target=self._read_events, args=(asr, ready), name="asr-jsonl", daemon=True
+        )
+        stderr_thread = threading.Thread(
+            target=self._read_stderr, args=(asr, ready), name="asr-stderr", daemon=True
+        )
+        with self._lock:
+            self._capture = capture
+            self._asr = asr
+            self._ready = ready
+            self._spawned_at = time.monotonic()
+            self._events_thread = events_thread
+            self._stderr_thread = stderr_thread
+            # Publish and start under the lock: a concurrent teardown must
+            # never observe an assigned-but-unstarted thread (join raises).
+            events_thread.start()
+            stderr_thread.start()
 
-    def _read_events(self) -> None:
-        assert self._asr is not None and self._asr.stdout is not None
+    def _abort_processes(self) -> None:
+        """Tear a failed spawn down; the engine stays down until the next
+        explicit intent (attach/prewarm) — a queued background spawn must
+        not undo the abort."""
+        with self._lock:
+            self._spawn_suppressed = True
+        self._teardown(permanent=False)
+
+    # ---- reader threads -------------------------------------------------
+
+    def _read_events(self, asr: subprocess.Popen, ready: threading.Event) -> None:
         try:
-            for raw in self._asr.stdout:
+            for raw in asr.stdout:
                 line = raw.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
-                    self._on_log(f"non-JSON output ignored: {line[:200]}")
+                    self._log(f"non-JSON output ignored: {line[:200]}")
                     continue
                 if not isinstance(event, dict):
                     continue
                 kind = event.get("type")
                 if kind in ("sentence", "final"):
                     text = str(event.get("text") or "")
-                    if text:
+                    with self._lock:
+                        routing = self._routing
+                    if routing is not None and text:
                         try:
-                            self._on_sentence(text)
+                            routing.on_sentence(text)
                         except Exception as exc:
-                            self._on_log(f"sentence callback error: {exc}")
+                            self._log(f"sentence callback error: {exc}")
                 elif kind == "stats":
-                    rtf = event.get("rtf")
-                    self._on_log(f"stats rtf={rtf}")
+                    self._log(f"stats rtf={event.get('rtf')}")
                 # "partial" events are intentionally dropped: too chatty for
                 # logs and not used for intent matching.
-        except Exception as exc:  # see _read_stderr
-            self._on_log(f"event reader error: {exc}")
+        except Exception as exc:  # diagnostics only; never kill the backend
+            self._log(f"event reader error: {exc}")
         finally:
-            capture_rc = self._returncode(self._capture)
-            asr_rc = self._returncode(self._asr)
-            if not self._stopped:
-                self._on_log(f"session ended unexpectedly (asr rc={asr_rc}, capture rc={capture_rc})")
+            with self._lock:
+                has_routing = self._routing is not None
+                stopped = self._stopped
+                supervision = self._supervision_enabled
+                capture = self._capture
+            ready.set()
+            capture_rc = self._returncode(capture)
+            asr_rc = self._returncode(asr)
+            if stopped:
+                return
+            if not supervision or not has_routing:
+                self._log(f"ASR engine ended (asr rc={asr_rc}, capture rc={capture_rc})")
+                return
+            lifetime = time.monotonic() - self._spawned_at
+            if lifetime < self._resurrect_min_lifetime:
+                self._log(
+                    f"ASR engine died after only {lifetime:.1f}s "
+                    f"(asr rc={asr_rc}); no auto-respawn — recovering at the "
+                    "next attach"
+                )
+                return
+            self._log(
+                f"ASR engine died unexpectedly (asr rc={asr_rc}); "
+                "respawning in the background"
+            )
+            threading.Thread(
+                target=self._spawn_if_dead, name="asr-engine-respawn", daemon=True
+            ).start()
+
+    def _read_stderr(self, asr: subprocess.Popen, ready: threading.Event) -> None:
+        try:
+            for raw in asr.stderr:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if line:
+                    ready.set()
+                    self._log(line)
+        except Exception as exc:
+            self._log(f"stderr reader error: {exc}")
+        finally:
+            ready.set()
 
     @staticmethod
     def _returncode(process: subprocess.Popen | None) -> Any:
@@ -228,45 +389,58 @@ class _AsrSession:
         except subprocess.TimeoutExpired:
             return "running"
 
-    def stop(self) -> None:
-        with self._stop_lock:
-            if self._stopped:
-                return
-            self._stopped = True
+    # ---- teardown -------------------------------------------------------
+
+    def _teardown(self, *, permanent: bool) -> None:
+        with self._lock:
+            self._routing = None
+            if permanent:
+                self._stopped = True
+            else:
+                self._supervision_enabled = False
+            capture, asr = self._capture, self._asr
+            events_thread, stderr_thread = self._events_thread, self._stderr_thread
         # Stop the capture first: stream_asr then sees stdin EOF, flushes its
-        # tail text and exits on its own, so the reader thread drains cleanly.
-        if self._capture is not None and self._capture.poll() is None:
+        # tail text and exits on its own, so the reader threads drain cleanly.
+        if capture is not None and capture.poll() is None:
             try:
-                self._capture.terminate()
+                capture.terminate()
             except OSError:
                 pass
-        if self._asr is not None:
+        if asr is not None:
             try:
-                self._asr.wait(timeout=self._grace_seconds)
+                asr.wait(timeout=self._grace_seconds)
             except subprocess.TimeoutExpired:
                 try:
-                    self._asr.terminate()
-                    self._asr.wait(timeout=2)
+                    asr.terminate()
+                    asr.wait(timeout=2)
                 except (subprocess.TimeoutExpired, OSError):
                     try:
-                        self._asr.kill()
+                        asr.kill()
                     except OSError:
                         pass
-        if self._capture is not None:
+        if capture is not None:
             try:
-                self._capture.wait(timeout=2)
+                capture.wait(timeout=2)
             except (subprocess.TimeoutExpired, OSError):
                 try:
-                    self._capture.kill()
+                    capture.kill()
                 except OSError:
                     pass
-        for thread in (self._reader, self._stderr_reader):
+        for thread in (events_thread, stderr_thread):
             if thread is not None:
                 thread.join(timeout=5)
+        with self._lock:
+            self._capture = None
+            self._asr = None
+            self._events_thread = None
+            self._stderr_thread = None
+            if not permanent:
+                self._supervision_enabled = True
 
 
 class ZipformerAsrProvider(AsrProvider):
-    """Streaming ASR via the board-local zipformer runtime subprocess."""
+    """Streaming ASR via the board-local zipformer resident engine."""
 
     id = "asr_zipformer"
     type = "asr"
@@ -284,31 +458,13 @@ class ZipformerAsrProvider(AsrProvider):
         self._binary = _resolve_repo_path(runtime["binary"], "runtime.binary", root)
         self._working_dir = _resolve_repo_path(runtime["working_dir"], "runtime.working_dir", root)
         self._model_dir = self._working_dir / str(runtime["model_dir"])
-        self._lock = threading.Lock()
-        self._session: _AsrSession | None = None
+        self._engine: _AsrEngine | None = None
+        self._engine_lock = threading.Lock()
 
-    def health(self) -> dict[str, Any]:
-        problems: list[str] = []
-        if not self._binary.is_file():
-            problems.append(f"binary missing: {self._binary}")
-        elif not self._binary.stat().st_mode & 0o111:
-            problems.append(f"binary not executable: {self._binary}")
-        if not self._model_dir.is_dir():
-            problems.append(
-                "model dir missing; download per asr/zipformer-streaming/README.md"
-            )
-        health = {"id": self.id, "type": self.type, "ok": not problems}
-        if problems:
-            health["problems"] = problems
-        return health
+    def _log(self, message: str) -> None:
+        print(f"[asr_zipformer] {message}", flush=True)
 
-    def start_session(
-        self,
-        on_sentence: Callable[[str], None],
-        *,
-        on_log: Callable[[str], None] | None = None,
-    ) -> Any:
-        on_log = on_log if callable(on_log) else (lambda _message: None)
+    def _build_engine(self) -> _AsrEngine:
         runtime = self._config["runtime"]
         capture = runtime.get("capture", {})
         capture_argv = [
@@ -347,33 +503,66 @@ class ZipformerAsrProvider(AsrProvider):
         affinity = str(runtime.get("cpu_affinity", "") or "").strip()
         if affinity:
             asr_argv = ["taskset", "-c", affinity, *asr_argv]
-
-        session = _AsrSession(
+        return _AsrEngine(
             capture_argv=capture_argv,
             asr_argv=asr_argv,
             working_dir=self._working_dir,
             grace_seconds=int(runtime.get("terminate_grace_seconds", 5)),
-            on_sentence=on_sentence,
-            on_log=on_log,
+            start_timeout_seconds=float(runtime.get("start_timeout_seconds", 15)),
+            on_log=self._log,
         )
-        with self._lock:
-            if self._session is not None and self._session.running:
-                raise AsrSessionError("another ASR session is already listening")
-            session.start()
-            self._session = session
-        start_timeout = float(runtime.get("start_timeout_seconds", 15))
-        if not session.wait_ready(start_timeout):
-            if not session.running:
-                raise AsrSessionError("ASR process exited during startup (see asr log)")
-            on_log(
-                f"model load exceeded {start_timeout:g}s; continuing anyway"
-            )
-        return session
+
+    def _ensure_engine(self) -> _AsrEngine:
+        with self._engine_lock:
+            if self._engine is None:
+                self._engine = self._build_engine()
+            return self._engine
+
+    # ---- lifecycle ------------------------------------------------------
+
+    def prewarm(self) -> None:
+        """Spawn and warm the engine (backend startup calls this, blocking)."""
+        self._ensure_engine().prewarm()
+
+    def shutdown(self) -> None:
+        with self._engine_lock:
+            engine = self._engine
+            self._engine = None
+        if engine is not None:
+            engine.stop()
+
+    # ---- sessions (logical routings on the resident engine) --------------
+
+    def start_session(
+        self,
+        on_sentence: Callable[[str], None],
+        *,
+        on_log: Callable[[str], None] | None = None,
+    ) -> Any:
+        return self._ensure_engine().attach(on_sentence, on_log)
 
     def stop_session(self, handle: Any) -> None:
-        if not isinstance(handle, _AsrSession):
-            return
-        with self._lock:
-            if self._session is handle:
-                self._session = None
-        handle.stop()
+        with self._engine_lock:
+            engine = self._engine
+        if engine is not None:
+            engine.detach(handle)
+
+    # ---- health ---------------------------------------------------------
+
+    def health(self) -> dict[str, Any]:
+        problems: list[str] = []
+        if not self._binary.is_file():
+            problems.append(f"binary missing: {self._binary}")
+        elif not self._binary.stat().st_mode & 0o111:
+            problems.append(f"binary not executable: {self._binary}")
+        if not self._model_dir.is_dir():
+            problems.append(
+                "model dir missing; download per asr/zipformer-streaming/README.md"
+            )
+        with self._engine_lock:
+            engine = self._engine
+        running = engine is not None and engine.alive
+        health = {"id": self.id, "type": self.type, "ok": not problems, "running": running}
+        if problems:
+            health["problems"] = problems
+        return health
