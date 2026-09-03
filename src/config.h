@@ -3,10 +3,12 @@
 #include "affinity.h"
 #include <cstddef>
 #include <string>
+#include <vector>
 
 struct AppConfig {
     std::string config_path = "config.json";
     std::string model = "models/yolov8n-seg.q.onnx";
+    std::vector<std::string> class_names;
     int camera = 1;
     std::string device;
     int width = 1280;

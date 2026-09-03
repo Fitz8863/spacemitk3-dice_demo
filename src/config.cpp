@@ -59,6 +59,36 @@ bool read_bool(const cv::FileNode& node, const char* key, bool& value) {
     return false;
 }
 
+bool read_class_names(const cv::FileNode& root, std::vector<std::string>& names,
+                     std::string& error) {
+    const cv::FileNode node = root["class_names"];
+    if (node.empty()) return true;
+    if (!node.isSeq()) {
+        error = "config class_names must be an array of strings";
+        return false;
+    }
+    std::vector<std::string> parsed;
+    for (const auto& item : node) {
+        if (!item.isString()) {
+            error = "config class_names must contain only strings";
+            return false;
+        }
+        std::string name;
+        item >> name;
+        if (name.empty()) {
+            error = "config class_names cannot contain empty names";
+            return false;
+        }
+        parsed.push_back(std::move(name));
+    }
+    if (parsed.empty()) {
+        error = "config class_names cannot be empty";
+        return false;
+    }
+    names = std::move(parsed);
+    return true;
+}
+
 bool read_required_string(const cv::FileNode& node, const char* key,
                           std::string& value, std::string& error) {
     if (!read_string(node, key, value)) {
@@ -101,6 +131,7 @@ bool load_config(const std::string& path, AppConfig& config, std::string& error)
         }
         config.config_path = path;
         if (!read_required_string(root, "model", config.model, error) ||
+            !read_class_names(root, config.class_names, error) ||
             !read_int(root, "width", config.width) ||
             !read_int(root, "height", config.height) ||
             !read_int(root, "fps", config.fps) ||

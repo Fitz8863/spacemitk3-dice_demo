@@ -9,6 +9,7 @@ int main() {
         std::ofstream out(path);
         out << R"({
   "model": "models/test.q.onnx",
+  "class_names": ["one", "two", "three"],
   "camera": "/dev/video1",
   "device": "",
   "width": 1280,
@@ -33,6 +34,9 @@ int main() {
     std::string error;
     assert(load_config(path, config, error));
     assert(config.camera == 1);
+    assert(config.class_names.size() == 3);
+    assert(config.class_names[0] == "one");
+    assert(config.class_names[2] == "three");
     assert(config.device.empty());
     assert(config.width == 1280 && config.height == 720 && config.fps == 25);
     assert(config.rtsp_enabled && config.rtsp_host == "127.0.0.1");

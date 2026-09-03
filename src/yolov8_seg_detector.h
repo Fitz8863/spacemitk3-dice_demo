@@ -14,7 +14,8 @@ public:
     Yolov8SegDetector& operator=(const Yolov8SegDetector&) = delete;
 
     bool init(const std::string& model_path, int intra_threads,
-              const std::string& ep_affinity);
+              const std::string& ep_affinity,
+              const std::vector<std::string>& class_names);
     std::vector<SegmentationDetection> infer(
         const float* input, std::size_t input_count, float conf_threshold,
         float iou_threshold, int max_detections, float scale, int pad_x,

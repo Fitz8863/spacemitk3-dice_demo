@@ -20,18 +20,11 @@ constexpr int kDflBins = 16;
 constexpr int kMaskChannels = 32;
 constexpr int kExpectedOutputs = 13;
 
-const char* label_for_class(int id) {
-    static const std::array<const char*, 80> names = {{
-        "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
-        "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
-        "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
-        "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
-        "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
-        "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed",
-        "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven",
-        "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
-    }};
-    return id >= 0 && id < static_cast<int>(names.size()) ? names[static_cast<size_t>(id)] : "class";
+std::string label_for_class(int id, const std::vector<std::string>& names) {
+    if (id >= 0 && id < static_cast<int>(names.size())) {
+        return names[static_cast<size_t>(id)];
+    }
+    return "class_" + std::to_string(id);
 }
 
 struct Candidate {
@@ -153,15 +146,18 @@ struct Yolov8SegDetector::Impl {
     std::string input_name;
     std::vector<std::string> output_names;
     std::vector<int64_t> input_shape;
+    std::vector<std::string> class_names;
 };
 
 Yolov8SegDetector::Yolov8SegDetector() = default;
 Yolov8SegDetector::~Yolov8SegDetector() = default;
 
 bool Yolov8SegDetector::init(const std::string& model_path, int intra_threads,
-                             const std::string& ep_affinity) {
+                             const std::string& ep_affinity,
+                             const std::vector<std::string>& class_names) {
     try {
         impl_ = std::make_unique<Impl>();
+        impl_->class_names = class_names;
         Ort::SessionOptions options;
         const int threads = std::max(1, intra_threads);
         options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
@@ -197,6 +193,21 @@ bool Yolov8SegDetector::init(const std::string& model_path, int intra_threads,
             throw std::runtime_error("expected input shape [1,3,640,640]");
         }
         std::cout << "SpaceMIT EP affinity: " << (ep_affinity.empty() ? "runtime default" : ep_affinity) << "\n";
+        std::cout << "Configured class names: " << impl_->class_names.size() << "\n";
+        const auto class_count_from_output = [&]() -> int {
+            for (int branch = 0; branch < 3; ++branch) {
+                const auto shape = impl_->session->GetOutputTypeInfo(static_cast<size_t>(branch * 3 + 1))
+                                        .GetTensorTypeAndShapeInfo().GetShape();
+                if (shape.size() == 4 && shape[1] > 0) return static_cast<int>(shape[1]);
+            }
+            return 0;
+        }();
+        if (class_count_from_output > 0 &&
+            static_cast<int>(impl_->class_names.size()) != class_count_from_output) {
+            std::cerr << "Warning: class_names has " << impl_->class_names.size()
+                      << " entries, but model outputs " << class_count_from_output
+                      << " classes; unmatched IDs will use class_<id>\n";
+        }
         return true;
     } catch (const std::exception& exception) {
         std::cerr << "Model init failed: " << exception.what() << "\n";
@@ -319,7 +330,7 @@ std::vector<SegmentationDetection> Yolov8SegDetector::infer(
         detection.y2 = candidate.box.y + candidate.box.height;
         detection.confidence = candidate.score;
         detection.class_id = candidate.class_id;
-        detection.label = label_for_class(candidate.class_id);
+        detection.label = label_for_class(candidate.class_id, impl_->class_names);
         detection.mask_contours = build_contours(candidate, views[12], scale, pad_x, pad_y,
                                                   image_width, image_height);
         detections.push_back(std::move(detection));

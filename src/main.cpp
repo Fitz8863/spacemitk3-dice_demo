@@ -212,7 +212,8 @@ int main(int argc, char** argv) {
     std::cout << "OpenCL preprocess device: " << preprocessor.device_name() << "\n";
 
     Yolov8SegDetector detector;
-    if (!detector.init(config.model, config.intra_threads, config.ep_affinity)) return 5;
+    if (!detector.init(config.model, config.intra_threads, config.ep_affinity,
+                       config.class_names)) return 5;
 
     if (self_test) {
         try {

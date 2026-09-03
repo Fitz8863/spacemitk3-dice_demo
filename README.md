@@ -23,6 +23,16 @@
 ```json
 {
   "model": "models/yolov8n-seg.q.onnx",
+  "class_names": [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+    "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed",
+    "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven",
+    "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
+  ],
   "camera": "/dev/video1",
   "device": "",
   "width": 1280,
@@ -55,6 +65,8 @@
 `ep_affinity` 通过 SpaceMIT EP 选项 `SPACEMIT_EP_INTRA_THREAD_AFFINITY` 设置。配置中的核数量必须与 `intra_threads` 一致。当前默认是 `intra_threads=2`、`ep_affinity="12;13"`，只绑定 EP 推理线程；不会把整个进程的所有线程都绑定到 12、13。
 
 `queue_depth` 目前保留用于兼容配置，但单路低延迟实现使用固定深度 1 的 latest-only 槽位，不会阻塞等待旧帧完成。
+
+`class_names` 是模型类别名称数组，数组下标必须对应模型的 `class_id`。替换模型时同步修改 `model` 和 `class_names`，程序启动时会将配置类别数与模型输出类别数比较；未匹配的类别会显示为 `class_<id>`。
 
 `camera` 可以配置为数字索引或设备路径字符串，例如 `"/dev/video1"`。`device` 非空时优先于 `camera`；命令行 `--camera` 也同时支持数字和路径。
 
