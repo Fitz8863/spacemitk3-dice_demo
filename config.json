@@ -1,0 +1,18 @@
+{
+  "model": "models/yolov8n-seg.q.onnx",
+  "camera": 1,
+  "device": "",
+  "width": 1280,
+  "height": 720,
+  "fps": 24,
+  "intra_threads": 2,
+  "ep_affinity": "12;13",
+  "conf": 0.25,
+  "iou": 0.45,
+  "max_detections": 100,
+  "queue_depth": 2,
+  "display_enabled": true,
+  "decoder": "auto",
+  "focus": -1,
+  "zoom": -1
+}

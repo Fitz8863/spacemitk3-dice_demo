@@ -1,0 +1,10 @@
+build/
+*.log
+*.core
+*.dump
+*.part
+.cache/
+models/*.onnx
+config.local.json
+compile_commands.json
+.shaders/
