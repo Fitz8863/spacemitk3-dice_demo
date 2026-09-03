@@ -45,6 +45,17 @@ POST 25ms、回合创建 72ms、整局单一 stream_asr 进程）。回合终结
 server 启动/热加载双路校验）：`providers.asr` 解析出两个引擎 id 即拒启/拒换。待机
 监听空闲 CPU 实测 ~0.6 核（VAD 常开，非本次引入——旧会话模式同样烧）。
 
+2026-09-03（晚 II）起新增**语音选游戏**：列表页与待机页均可点名游戏直达对局
+（说"我想玩摇骰子游戏"即进 dice，零配置——词表默认用游戏名；manifest
+`asr.select_phrases` 可覆盖/加别名，`[]` 退出）。`start_standby_session`
+泛化为 bridge 的 `start_select_session`（词表 {key: 触发词}，首命中按表序）；
+待机/列表各自事件总线（`_AsrEventBus` 类，listen:true 清总线开新纪元），
+新端点 `POST/GET /api/asr/select(/events)`。关键规则：**游戏名优先于唤醒词**
+（唤醒词"游戏"是"摇骰子游戏"的子串）。前端 selected 事件走与绿色按钮同一
+`enterSelectedGame` 路径；待机页 selected 唤醒+直达。喇叭回声安全：
+create_round 在 POST 返回前已摘 select 路由。板端实测 select listen 26ms、
+词表正确、全程单一 stream_asr。
+
 
 2026-09-03（下午）起新增**本地 TTS 引擎 `tts_matcha`**（第四个 TTS provider）：
 引擎源码与板端资产落位 `tts/matcha-tts/`（cpp 三件套：capi 单发 / interactive
