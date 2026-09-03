@@ -396,7 +396,7 @@ int main(int argc, char** argv) {
     double preprocess_fps = 0.0;
     double infer_fps = 0.0;
     std::string status_text = format_pipeline_status(
-        0.0, 0.0, 0.0, 0, 0.0, 0.0, config.ep_affinity);
+        0.0, 0.0, 0.0, 0, config.ep_affinity);
     bool display_initialized = false;
     if (!no_display && config.display_enabled) {
         cv::namedWindow("YOLOv8-seg Camera", cv::WINDOW_NORMAL);
@@ -425,7 +425,7 @@ int main(int argc, char** argv) {
                 display_fps = (current_displayed - last_displayed) / elapsed;
                 status_text = format_pipeline_status(
                     preprocess_fps, infer_fps, display_fps, last_result->detections.size(),
-                    last_result->preprocess_ms, last_result->infer_ms, config.ep_affinity);
+                    config.ep_affinity);
                 std::cout << status_text
                           << " drop(cap/pre/res)=" << dropped_capture.load()
                           << "/" << dropped_prepared.load()
