@@ -18,6 +18,8 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+import pytest  # noqa: E402
+
 import server  # noqa: E402
 from core.components import ComponentRegistry  # noqa: E402
 from core.games import GameRegistry  # noqa: E402
@@ -771,3 +773,146 @@ def test_round_cancel_drains_body_on_keep_alive_connection(tmp_path, monkeypatch
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=2)
+
+
+# ---- single-local-TTS invariant: per-line pins cannot route around the pin ----
+
+
+def test_single_local_tts_conflict_flags_per_line_local_pins(monkeypatch):
+    _patch_dummy_registry(monkeypatch)
+    registry = GameRegistry()
+    registry.register({
+        "id": "dice", "enabled": True,
+        "providers": {"tts_local": "tts_matcha"},
+        "state_machine": {
+            "schema_version": 1, "initial": "rules",
+            "states": {"rules": {"on_enter": [
+                {"action": "speech", "mode": "tts_local", "text": "a",
+                 "provider": "tts_moss_nano"},
+            ]}},
+        },
+    })
+    conflict = server._single_local_tts_conflict(
+        {"providers": {"tts_local": "tts_matcha"}}, registry
+    )
+    assert conflict is not None
+    assert "tts_matcha" in conflict and "tts_moss_nano" in conflict
+
+
+def test_single_local_tts_conflict_allows_remote_pins(monkeypatch):
+    _patch_dummy_registry(monkeypatch)
+    registry = GameRegistry()
+    registry.register({
+        "id": "dice", "enabled": True,
+        "providers": {"tts_local": "tts_matcha", "tts_remote": "tts_gptsovits"},
+        "state_machine": {
+            "schema_version": 1, "initial": "rules",
+            "states": {"rules": {"on_enter": [
+                {"action": "speech", "mode": "tts_remote", "text": "a",
+                 "provider": "tts_gptsovits"},
+            ]}},
+        },
+    })
+    assert server._single_local_tts_conflict(
+        {"providers": {"tts_local": "tts_matcha"}}, registry
+    ) is None
+
+
+def test_hot_reload_rejects_second_local_tts_reference(tmp_path, monkeypatch):
+    """A swapped-in manifest referencing a second local engine keeps the
+    last good registry — same rule as a broken manifest."""
+    games_root, manifest_path = _write_hot_reload_games_root(tmp_path, "旧台词")
+    _patch_dummy_registry(monkeypatch)
+    monkeypatch.setattr(server, "_GAMES_ROOT", games_root)
+    monkeypatch.setattr(server, "GAMES", server.load_games(games_root))
+    monkeypatch.setattr(server, "_GAMES_MTIMES", server._manifest_mtimes())
+    monkeypatch.setattr(
+        server, "_ARENA_CONFIG", {"providers": {"tts_local": "tts_matcha"}}
+    )
+
+    def reload_with(mutate):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        mutate(manifest)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        os.utime(manifest_path, (time.time() + 5, time.time() + 5))
+        return server.get_games()
+
+    # One local reference (matching the arena pin): the swap applies.
+    games = reload_with(lambda m: m.update(
+        providers={"tts_local": "tts_matcha", "tts_remote": "tts_gptsovits"}
+    ))
+    assert games.get("dice")["providers"]["tts_local"] == "tts_matcha"
+
+    # A per-line pin to a second local engine is rejected; last good stays.
+    games = reload_with(lambda m: m["state_machine"]["states"]["rules"]["on_enter"][0].update(
+        provider="tts_moss_nano"
+    ))
+    entry = games.get("dice")["state_machine"]["states"]["rules"]["on_enter"][0]
+    assert "provider" not in entry
+    assert games.get("dice")["providers"]["tts_local"] == "tts_matcha"
+
+
+# ---- startup prewarm of the pinned local engine ----
+
+
+class _PrewarmEngine:
+    def __init__(self, *, fail=False):
+        self.id = "tts_fake"
+        self.type = "tts"
+        self.role = ""
+        self.calls = 0
+        self._fail = fail
+
+    def prewarm(self):
+        self.calls += 1
+        if self._fail:
+            raise RuntimeError("warmup synthesis failed")
+
+
+class _LifecycleEngine:
+    """An HTTP-bridge engine (moss/qwen3 style): no prewarm hook."""
+
+    id = "tts_fake"
+    type = "tts"
+    role = ""
+
+
+class _SingleProviderRegistry:
+    def __init__(self, provider, known=True):
+        self._provider = provider
+        self._known = known
+
+    def require(self, component_id, expected_type=None, expected_role=None):
+        if not self._known or component_id != self._provider.id:
+            from core.errors import ComponentNotFoundError
+
+            raise ComponentNotFoundError(component_id)
+        return self._provider
+
+
+def test_prewarm_pinned_local_tts_warms_the_engine(monkeypatch):
+    engine = _PrewarmEngine()
+    monkeypatch.setattr(server, "COMPONENTS", _SingleProviderRegistry(engine))
+    server._prewarm_pinned_local_tts("tts_fake")
+    assert engine.calls == 1
+
+
+def test_prewarm_failure_refuses_startup(monkeypatch):
+    engine = _PrewarmEngine(fail=True)
+    monkeypatch.setattr(server, "COMPONENTS", _SingleProviderRegistry(engine))
+    with pytest.raises(SystemExit):
+        server._prewarm_pinned_local_tts("tts_fake")
+
+
+def test_prewarm_missing_provider_refuses_startup(monkeypatch):
+    engine = _PrewarmEngine()
+    monkeypatch.setattr(server, "COMPONENTS", _SingleProviderRegistry(engine, known=False))
+    with pytest.raises(SystemExit):
+        server._prewarm_pinned_local_tts("tts_fake")
+
+
+def test_prewarm_without_hook_is_a_noop_for_lifecycle_engines(monkeypatch):
+    engine = _LifecycleEngine()
+    monkeypatch.setattr(server, "COMPONENTS", _SingleProviderRegistry(engine))
+    server._prewarm_pinned_local_tts("tts_fake")  # must not raise
+    server._prewarm_pinned_local_tts(None)  # no pin at all: also a no-op

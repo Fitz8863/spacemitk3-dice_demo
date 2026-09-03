@@ -26,6 +26,7 @@ from core.arena_config import (  # noqa: E402
     arena_asr_enabled,
     arena_slot_value,
     arena_standby,
+    collect_local_tts_ids,
     load_arena_config,
     resolve_local_tts_pin,
     validate_arena_config,
@@ -887,6 +888,65 @@ def test_standby_endpoints_and_projection(tmp_path, monkeypatch):
         assert len(provider.sessions) == 2
     finally:
         httpd.shutdown()
+
+
+# ---- collect_local_tts_ids: single-local-engine reference collection ----
+
+
+def _machine_with_speech(provider=None):
+    action = {"action": "speech", "mode": "tts_local", "text": "台词"}
+    if provider:
+        action["provider"] = provider
+    return {
+        "schema_version": 1,
+        "initial": "rules",
+        "states": {"rules": {"on_enter": [action]}},
+    }
+
+
+def test_collect_local_tts_ids_gathers_slots_and_per_line_pins():
+    arena = {"providers": {"tts_local": "tts_matcha", "tts_remote": "tts_gptsovits"}}
+    games = [
+        {"id": "dice", "enabled": True,
+         "providers": {"tts_local": "tts_matcha"},
+         "state_machine": _machine_with_speech("tts_moss_nano")},
+        {"id": "rps", "enabled": True,
+         "state_machine": _machine_with_speech("tts_gptsovits")},
+        # Disabled games never contribute references.
+        {"id": "off", "enabled": False,
+         "providers": {"tts_local": "tts_qwen3"}},
+    ]
+    local = {"tts_matcha", "tts_moss_nano", "tts_qwen3"}
+    ids = collect_local_tts_ids(arena, games, lambda pid: pid in local)
+    assert sorted(ids) == ["tts_matcha", "tts_moss_nano"]
+
+
+def test_collect_local_tts_ids_covers_select_by_cases():
+    machine = {
+        "schema_version": 1,
+        "initial": "result",
+        "states": {"result": {"on_enter": [{
+            "action": "speech", "select_by": "winner_role",
+            "cases": {
+                "PLAYER": {"mode": "tts_local", "text": "赢了"},
+                "AGENT": {"mode": "tts_local", "text": "输了", "provider": "tts_moss_nano"},
+            },
+        }]}},
+    }
+    games = [{"id": "dice", "enabled": True, "state_machine": machine}]
+    arena = {"providers": {"tts_local": "tts_matcha"}}
+    local = {"tts_matcha", "tts_moss_nano"}
+    ids = collect_local_tts_ids(arena, games, lambda pid: pid in local)
+    assert sorted(ids) == ["tts_matcha", "tts_moss_nano"]
+
+
+def test_collect_local_tts_ids_filters_what_is_not_local():
+    games = [{"id": "dice", "enabled": True,
+              "state_machine": _machine_with_speech("typo_engine")}]
+    assert collect_local_tts_ids({}, games, lambda _pid: False) == []
+    # A lone local reference is fine — the invariant forbids the *second* one.
+    games = [{"id": "dice", "enabled": True, "providers": {"tts_local": "tts_matcha"}}]
+    assert collect_local_tts_ids({}, games, lambda pid: pid == "tts_matcha") == ["tts_matcha"]
 
 
 if __name__ == "__main__":

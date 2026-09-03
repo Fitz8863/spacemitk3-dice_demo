@@ -49,11 +49,14 @@ from core.arena_config import (
     arena_asr_enabled,
     arena_slot_value,
     arena_standby,
+    collect_local_tts_ids,
     load_arena_config,
     resolve_local_tts_pin,
     with_global_defaults,
 )
 from core.state_machine import GameRound, IntentRejectedError, RoundClosedError
+from core.tts_config import TtsConfigError
+from core.tts_config import load_component_config as load_tts_component_config
 from core.tts_dispatch import TtsDispatcher
 from core.tts_protocol import (
     encode_audio_frame,
@@ -99,7 +102,9 @@ def get_games() -> GameRegistry:
     A reload that would drop a previously loaded game means a broken manifest
     edit; keep serving the last good registry in that case so a typo cannot
     make games vanish from the UI.  Removing a game on purpose needs a
-    service restart.
+    service restart.  A reload that would reference a second local TTS
+    engine (slot or per-line provider pin) is rejected the same way: the
+    process is frozen on the one engine it pinned at startup.
     """
     global GAMES, _GAMES_MTIMES
     reloaded = False
@@ -108,12 +113,15 @@ def get_games() -> GameRegistry:
         if mtimes != _GAMES_MTIMES:
             candidate = load_games(_GAMES_ROOT)
             missing = {m["id"] for m in GAMES.all()} - {m["id"] for m in candidate.all()}
+            conflict = _single_local_tts_conflict(_ARENA_CONFIG, candidate)
             if missing:
                 print(
                     f"[games] reload skipped; broken manifest removed {sorted(missing)}, "
                     "keeping last good config",
                     flush=True,
                 )
+            elif conflict is not None:
+                print(f"[games] reload skipped; {conflict}", flush=True)
             else:
                 GAMES = candidate
                 _GAMES_MTIMES = mtimes
@@ -122,6 +130,8 @@ def get_games() -> GameRegistry:
     # The drift check re-enters get_games() and the arena accessors; it must
     # run OUTSIDE _GAMES_LOCK — _GAMES_LOCK is not reentrant, and calling it
     # under the lock deadlocked every request thread (2026-09-03 incident).
+    # The conflict check above therefore reads the cached _ARENA_CONFIG
+    # instead of get_arena_config(); the drift pass below re-validates.
     if reloaded:
         _check_local_tts_drift()
     return games
@@ -180,6 +190,81 @@ def _check_local_tts_drift() -> None:
             f"is frozen on {_LOCAL_TTS_PIN}; restart to switch engines",
             flush=True,
         )
+
+
+def _is_local_tts(provider_id: str) -> bool:
+    """True when the id names a registered TTS component of local runtime kind.
+
+    Unregistered ids (typos, cloud-only entries without a package) never
+    count: they fail later at request time with the existing not-found error.
+    """
+    get_manifest = getattr(COMPONENTS, "get_manifest", None)
+    if not callable(get_manifest):
+        return False
+    try:
+        manifest = get_manifest(provider_id)
+    except DiceArenaError:
+        return False
+    if not isinstance(manifest, dict) or manifest.get("type") != "tts":
+        return False
+    package_dir = ROOT / "backend" / "components" / provider_id
+    try:
+        # The TTS loader, not the vision-profile one: each package kind
+        # validates its own config schema.
+        config = load_tts_component_config(package_dir)
+    except TtsConfigError:
+        return False  # a broken component config is health's failure to report
+    runtime = config.get("runtime", {})
+    return isinstance(runtime, dict) and runtime.get("kind", "local") == "local"
+
+
+def _single_local_tts_conflict(
+    arena: dict[str, Any], registry: GameRegistry
+) -> str | None:
+    """Return the single-local-TTS conflict message, or None when consistent.
+
+    Checks every routing path — arena slot, enabled-game slots, and per-line
+    speech ``provider`` pins — against the components' runtime kind, so a
+    manifest line cannot route around the pinned local engine either.
+    """
+    manifests = [m for m in registry.all() if m.get("enabled", False)]
+    ids = collect_local_tts_ids(arena, manifests, _is_local_tts)
+    if len(ids) > 1:
+        return (
+            "multiple local TTS engines referenced "
+            f"(slots or per-line provider pins): {', '.join(ids)} — "
+            "keep exactly one local engine; remote/cloud engines may still be "
+            "mixed per line"
+        )
+    return None
+
+
+def _prewarm_pinned_local_tts(pin: str | None) -> None:
+    """Warm the pinned local TTS engine before the server starts serving.
+
+    Local engines are heavy resident processes with mandatory warmup (the
+    demo's first spoken line must not pay the model-load latency).  A missing
+    provider or a failed warmup refuses startup: a silent arena is a broken
+    arena, and the failure belongs at boot, not on stage.
+    """
+    if not pin:
+        return
+    try:
+        provider = COMPONENTS.require(pin, expected_type="tts")
+    except DiceArenaError as exc:
+        print(f"[arena] refusing to start: local TTS {pin} unavailable: {exc.message}", flush=True)
+        raise SystemExit(1) from exc
+    prewarm = getattr(provider, "prewarm", None)
+    if not callable(prewarm):
+        # HTTP-bridge engines (moss/qwen3) warm up in their lifecycle launcher.
+        print(f"[arena] local TTS {pin} has no prewarm hook (lifecycle engine)", flush=True)
+        return
+    try:
+        prewarm()
+    except Exception as exc:
+        print(f"[arena] refusing to start: local TTS {pin} prewarm failed: {exc}", flush=True)
+        raise SystemExit(1) from exc
+    print(f"[arena] local TTS {pin} prewarmed", flush=True)
 
 
 def _game_provider_id(game_id: str, provider_slot: str, fallback: str) -> str:
@@ -1163,6 +1248,17 @@ def main() -> None:
     except ArenaConfigError as exc:
         print(f"[arena] refusing to start: {exc}", flush=True)
         raise SystemExit(1) from exc
+    # The pin check above covers slots only; per-line speech ``provider``
+    # pins must not route around it either (they would drag a second local
+    # engine's daemon into RAM via referenced startup).
+    conflict = _single_local_tts_conflict(get_arena_config(), get_games())
+    if conflict is not None:
+        print(f"[arena] refusing to start: {conflict}", flush=True)
+        raise SystemExit(1)
+    # The pinned local engine must be warm before the first request can
+    # arrive: a failed or missing warmup refuses startup (blocking, ~4 s on
+    # the board for tts_matcha).
+    _prewarm_pinned_local_tts(_LOCAL_TTS_PIN)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Dice Arena K3 backend listening on http://{args.host}:{args.port}", flush=True)
     print(f"Local TTS provider: {_LOCAL_TTS_PIN or 'none'}", flush=True)

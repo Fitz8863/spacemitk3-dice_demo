@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from core.participants import normalize_participants
 
@@ -187,3 +187,45 @@ def resolve_local_tts_pin(
             "plus optional per-game overrides) and restart"
         )
     return distinct[0] if distinct else None
+
+
+def collect_local_tts_ids(
+    arena: Mapping[str, Any] | None,
+    game_manifests: Iterable[Mapping[str, Any]],
+    is_local_tts: Callable[[str], bool],
+) -> list[str]:
+    """Every distinct board-local TTS engine id the configuration references.
+
+    References cover everything that can route synthesis to a local engine:
+    the arena ``tts_local`` slot, *enabled* games' ``providers.tts_local``
+    slots, and per-speech-action ``provider`` pins (including ``select_by``
+    case payloads).  ``is_local_tts`` decides whether an id names a local
+    engine; cloud/remote engines may be referenced freely and never count.
+    Callers use this to enforce the single-local-engine invariant: a process
+    pins exactly one local TTS, and no manifest line may route around it.
+    """
+    referenced: list[str] = []
+
+    def add(provider_id: Any) -> None:
+        if not isinstance(provider_id, str):
+            return
+        provider_id = provider_id.strip()
+        if provider_id and provider_id not in referenced:
+            referenced.append(provider_id)
+
+    arena_value = arena_slot_value(arena, "tts_local")
+    if arena_value:
+        add(arena_value)
+    for manifest in game_manifests:
+        if not isinstance(manifest, Mapping) or not manifest.get("enabled", False):
+            continue
+        providers = manifest.get("providers")
+        if isinstance(providers, Mapping):
+            add(providers.get("tts_local"))
+        machine = manifest.get("state_machine")
+        if isinstance(machine, Mapping):
+            from core.state_schema import iter_speech_actions
+
+            for action in iter_speech_actions(machine):
+                add(action.get("provider"))
+    return [provider_id for provider_id in referenced if is_local_tts(provider_id)]
