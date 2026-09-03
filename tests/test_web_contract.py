@@ -544,8 +544,9 @@ def test_frontend_standby_screen_engine_level():
     assert "stopStandbyListening()" in app
     assert "standbyWakeWords" in html
     # Wake-up swallows the first input at capture time: it must never reach
-    # the game list (no accidental game start while "asleep").
-    assert "['keydown', 'click']" in app
+    # the game list (no accidental game start while "asleep").  keyup is in
+    # the set for devices that only report release events.
+    assert "['keydown', 'keyup', 'click']" in app
     assert "event.stopPropagation();" in app
     # Visuals: brand-neutral, animated, and degradable under reduced motion.
     assert "standby-core" in html and "standby-zzz" in html
