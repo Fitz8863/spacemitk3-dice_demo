@@ -390,6 +390,11 @@ int main(int argc, char** argv) {
     uint64_t last_captured = 0;
     uint64_t last_inferred = 0;
     uint64_t last_displayed = 0;
+    double display_fps = 0.0;
+    double capture_fps = 0.0;
+    double infer_fps = 0.0;
+    std::string status_text = format_pipeline_status(
+        0.0, 0.0, 0.0, 0, 0.0, 0.0, config.ep_affinity);
     bool display_initialized = false;
     if (!no_display && config.display_enabled) {
         cv::namedWindow("YOLOv8-seg Camera", cv::WINDOW_NORMAL);
@@ -413,20 +418,13 @@ int main(int argc, char** argv) {
                 const uint64_t current_captured = captured_count.load(std::memory_order_relaxed);
                 const uint64_t current_inferred = inferred_count.load(std::memory_order_relaxed);
                 const uint64_t current_displayed = displayed_count.load(std::memory_order_relaxed);
-                const double capture_fps = (current_captured - last_captured) / elapsed;
-                const double infer_fps = (current_inferred - last_inferred) / elapsed;
-                const double display_fps = (current_displayed - last_displayed) / elapsed;
-                std::ostringstream text;
-                text.setf(std::ios::fixed);
-                text.precision(1);
-                text << "CAP " << capture_fps << "  INF " << infer_fps
-                     << "  DISP " << display_fps << "  det " << last_result->detections.size()
-                     << "  pre " << last_result->preprocess_ms << "ms"
-                     << "  inf " << last_result->infer_ms << "ms"
-                     << "  EP " << config.ep_affinity;
-                if (!bgr.empty()) cv::putText(bgr, text.str(), {12, 28}, cv::FONT_HERSHEY_SIMPLEX,
-                                                0.62, {0, 255, 0}, 2, cv::LINE_AA);
-                std::cout << text.str()
+                capture_fps = (current_captured - last_captured) / elapsed;
+                infer_fps = (current_inferred - last_inferred) / elapsed;
+                display_fps = (current_displayed - last_displayed) / elapsed;
+                status_text = format_pipeline_status(
+                    capture_fps, infer_fps, display_fps, last_result->detections.size(),
+                    last_result->preprocess_ms, last_result->infer_ms, config.ep_affinity);
+                std::cout << status_text
                           << " drop(cap/pre/res)=" << dropped_capture.load()
                           << "/" << dropped_prepared.load()
                           << "/" << dropped_result.load() << std::endl;
@@ -435,6 +433,11 @@ int main(int argc, char** argv) {
                 last_displayed = current_displayed;
                 last_stats = now;
             }
+            // Draw the cached status on every display frame. Previously this
+            // putText call lived only in the one-second stats branch, so the
+            // text appeared for one frame and disappeared for the next frames.
+            if (!bgr.empty()) cv::putText(bgr, status_text, {12, 28}, cv::FONT_HERSHEY_SIMPLEX,
+                                          0.62, {0, 255, 0}, 2, cv::LINE_AA);
             if (rtsp_streamer.running()) rtsp_streamer.publish(bgr);
             if (display_initialized) {
                 cv::imshow("YOLOv8-seg Camera", bgr);

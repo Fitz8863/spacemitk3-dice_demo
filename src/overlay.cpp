@@ -24,3 +24,18 @@ void draw_detections(cv::Mat& image, const std::vector<SegmentationDetection>& d
                     cv::FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv::LINE_AA);
     }
 }
+
+std::string format_pipeline_status(double capture_fps, double infer_fps,
+                                   double display_fps, std::size_t detection_count,
+                                   double preprocess_ms, double infer_ms,
+                                   const std::string& ep_affinity) {
+    std::ostringstream text;
+    text.setf(std::ios::fixed);
+    text.precision(1);
+    text << "CAP " << capture_fps << "  INF " << infer_fps
+         << "  DISP " << display_fps << "  det " << detection_count
+         << "  pre " << preprocess_ms << "ms"
+         << "  inf " << infer_ms << "ms"
+         << "  EP " << ep_affinity;
+    return text.str();
+}

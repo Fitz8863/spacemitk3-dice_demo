@@ -96,4 +96,10 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${OpenCV_INCLUDE_DIRS})
     target_link_libraries(rtsp_config_test PRIVATE ${OpenCV_LIBS})
     add_test(NAME rtsp_config_test COMMAND rtsp_config_test)
+
+    add_executable(status_overlay_test tests/status_overlay_test.cpp src/overlay.cpp)
+    target_include_directories(status_overlay_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(status_overlay_test PRIVATE ${OpenCV_LIBS})
+    add_test(NAME status_overlay_test COMMAND status_overlay_test)
 endif()
