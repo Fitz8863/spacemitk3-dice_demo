@@ -1,0 +1,35 @@
+{
+  "runtime": {
+    "kind": "local",
+    "root": "tts/moss-tts-nano",
+    "model_dir": "models/MOSS-TTS-Nano-100M-ONNX-xslim-dynq",
+    "host": "127.0.0.1",
+    "port": 18082,
+    "base_url": "http://127.0.0.1:18082"
+  },
+  "voice": {
+    "mode": "clone",
+    "name": "Junhao",
+    "reference_audio": "voice/warm.wav"
+  },
+  "generation": {
+    "max_new_frames": 120,
+    "voice_clone_max_text_tokens": 24,
+    "first_chunk_text_tokens": 16,
+    "seed": 1234
+  },
+  "startup": {
+    "warmup_text": "你好，这是 MOSS TTS Nano 在 K3 上的演示。",
+    "start_timeout_seconds": 300
+  },
+  "limits": {
+    "request_timeout_seconds": 120
+  },
+  "execution_provider": {
+    "name": "spacemit",
+    "intra_thread_num": 4,
+    "inter_thread_num": 1,
+    "intra_thread_affinity": "8;9;10;11",
+    "disable_op_type_filter": ""
+  }
+}

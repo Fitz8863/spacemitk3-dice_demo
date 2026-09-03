@@ -1,0 +1,15 @@
+{
+  "id": "tts_matcha",
+  "type": "tts",
+  "name": "Matcha-TTS (Sherpa-ONNX, SpacemiT EP)",
+  "version": "1.0",
+  "enabled": true,
+  "entry": "provider.py:TtsMatcha",
+  "capabilities": [
+    "tts.non_streaming_wav",
+    "tts.sentence_stream",
+    "tts.spacemit_ep",
+    "tts.speed"
+  ],
+  "config": "config.json"
+}

@@ -4,45 +4,133 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${PORT:-8080}"
 HOST="${HOST:-0.0.0.0}"
-PID_FILE="${PID_FILE:-${ROOT_DIR}/web/.dice-arena-web.pid}"
-LOG_FILE="${LOG_FILE:-${ROOT_DIR}/web/dice-arena-web.log}"
+RUNTIME_DIR="${DICE_RUNTIME_DIR:-${ROOT_DIR}/.runtime}"
+PID_FILE="${PID_FILE:-${RUNTIME_DIR}/web-${PORT}.pid}"
+TTS_PROVIDER_FILE="${TTS_PROVIDER_FILE:-${RUNTIME_DIR}/web-${PORT}.tts-provider}"
+PYTHON_BIN="${DICE_PYTHON:-python3}"
+LOG_FILE="${LOG_FILE:-${RUNTIME_DIR}/web-${PORT}.log}"
+REFERENCED_TTS_PROVIDERS="$("$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" referenced tts --game dice)"
+# The first referenced id is the arena's primary (local-slot) voice.
+SELECTED_TTS_PROVIDER="$(printf '%s\n' "$REFERENCED_TTS_PROVIDERS" | head -n1)"
+TTS_AUTOSTART_ENABLED="${TTS_AUTOSTART:-1}"
 
 mkdir -p "$(dirname "$PID_FILE")"
 
-if [[ -f "$PID_FILE" ]]; then
-    old_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-    if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
-        if [[ "${TTS_AUTOSTART:-1}" != "0" ]] && ! "$ROOT_DIR/scripts/start_tts.sh"; then
+is_expected_web() {
+    local pid="$1"
+    local cwd exe script arg i
+    local -a argv=()
+    local port_matches=0
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    cwd="$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)"
+    exe="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
+    [[ "$cwd" == "$ROOT_DIR" ]] || return 1
+    [[ "$(basename "$exe")" == python* ]] || return 1
+    mapfile -d '' -t argv < "/proc/${pid}/cmdline" 2>/dev/null || return 1
+    [[ "${#argv[@]}" -ge 2 ]] || return 1
+    script="${argv[1]}"
+    if [[ "$script" != /* ]]; then
+        script="$(readlink -f "$cwd/$script" 2>/dev/null || true)"
+    else
+        script="$(readlink -f "$script" 2>/dev/null || true)"
+    fi
+    [[ "$script" == "$ROOT_DIR/backend/server.py" ]] || return 1
+    for ((i = 2; i < ${#argv[@]}; i++)); do
+        arg="${argv[i]}"
+        if [[ "$arg" == "--port=$PORT" ]]; then
+            port_matches=1
+            break
+        fi
+        if [[ "$arg" == "--port" && $((i + 1)) -lt ${#argv[@]} && "${argv[i + 1]}" == "$PORT" ]]; then
+            port_matches=1
+            break
+        fi
+    done
+    [[ "$port_matches" == "1" ]]
+}
+
+find_expected_pid() {
+    local proc pid
+    for proc in /proc/[0-9]*; do
+        [[ -d "$proc" ]] || continue
+        pid="${proc##*/}"
+        if is_expected_web "$pid"; then
+            printf '%s\n' "$pid"
+            return 0
+        fi
+    done
+    return 1
+}
+
+start_selected_tts() {
+    [[ "$TTS_AUTOSTART_ENABLED" != "0" ]] || return 0
+    local id
+    # Every referenced local provider gets started so a manifest may mix
+    # board-local and remote engines per speech line; remote-only providers
+    # have no lifecycle and their start is a no-op.
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        if ! "$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" start "$id"; then
             if [[ "${TTS_REQUIRED:-0}" == "1" ]]; then
-                echo "Qwen3-TTS is required but could not be started" >&2
+                echo "TTS provider $id is required but could not be started" >&2
                 exit 1
             fi
-            echo "Warning: Qwen3-TTS is unavailable; web will use its browser speech fallback" >&2
+            echo "Warning: TTS provider $id is unavailable" >&2
         fi
-        echo "Dice Arena web is already running: pid=$old_pid port=$PORT"
-        exit 0
+    done <<< "$REFERENCED_TTS_PROVIDERS"
+}
+
+pid=""
+if [[ -f "$PID_FILE" ]]; then
+    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if ! is_expected_web "$pid"; then
+        rm -f "$PID_FILE"
+        pid=""
     fi
-    rm -f "$PID_FILE"
+fi
+if [[ -z "$pid" ]]; then
+    pid="$(find_expected_pid || true)"
+    if [[ -n "$pid" ]]; then
+        printf '%s\n' "$pid" > "$PID_FILE"
+    fi
+fi
+if [[ -n "$pid" ]]; then
+    running_tts_provider="$(
+        curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null \
+        | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("tts_provider", ""))' \
+        2>/dev/null || true
+    )"
+    running_tts_provider="${running_tts_provider:-unknown}"
+    if [[ "$running_tts_provider" != "$SELECTED_TTS_PROVIDER" ]]; then
+        echo "Dice Arena web is already running with TTS provider $running_tts_provider." >&2
+        echo "To switch providers, edit backend/config.json providers.tts_local / providers.tts_remote (or the game manifest override), then run scripts/stop_web.sh and scripts/start_web.sh." >&2
+        exit 1
+    fi
+    start_selected_tts
+    printf '%s\n' "$SELECTED_TTS_PROVIDER" > "$TTS_PROVIDER_FILE"
+    echo "Dice Arena web is already running: pid=$pid port=$PORT tts_provider=$running_tts_provider"
+    exit 0
+fi
+
+# Refuse to hide an unrelated process already listening on the requested port.
+if command -v ss >/dev/null 2>&1 && ss -ltn "sport = :${PORT}" 2>/dev/null | grep -q LISTEN; then
+    echo "Port ${PORT} is already in use by a different process" >&2
+    exit 1
 fi
 
 cd "$ROOT_DIR"
-if [[ "${TTS_AUTOSTART:-1}" != "0" ]]; then
-    if ! "$ROOT_DIR/scripts/start_tts.sh"; then
-        if [[ "${TTS_REQUIRED:-0}" == "1" ]]; then
-            echo "Qwen3-TTS is required but could not be started" >&2
-            exit 1
-        fi
-        echo "Warning: Qwen3-TTS is unavailable; web will use its browser speech fallback" >&2
-    fi
-fi
-nohup /usr/bin/python3 backend/server.py --host "$HOST" --port "$PORT" \
+start_selected_tts
+nohup "$PYTHON_BIN" backend/server.py --host "$HOST" --port "$PORT" \
     >>"$LOG_FILE" 2>&1 &
 pid=$!
 printf '%s\n' "$pid" > "$PID_FILE"
+printf '%s\n' "$SELECTED_TTS_PROVIDER" > "$TTS_PROVIDER_FILE"
 
 sleep 0.3
-if ! kill -0 "$pid" 2>/dev/null; then
+if ! is_expected_web "$pid"; then
     rm -f "$PID_FILE"
+    rm -f "$TTS_PROVIDER_FILE"
     echo "Failed to start Dice Arena web. See $LOG_FILE" >&2
     exit 1
 fi

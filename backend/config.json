@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "providers": {
+    "tts_local": "tts_moss_nano",
+    "tts_remote": "tts_gptsovits",
+    "asr": "asr_zipformer",
+    "vision_adjudicator": "vision_yolov8_adjudicator"
+  },
+  "participants": {
+    "player": "LEFT",
+    "agent": "RIGHT"
+  },
+  "voice": "default",
+  "speed": 1.0,
+  "asr_enabled": true,
+  "standby": {
+    "enabled": true,
+    "idle_seconds": 120,
+    "boot_standby": true,
+    "wake_phrases": [
+      "游戏",
+      "你好",
+      "在不",
+      "开始游戏"
+    ]
+  },
+  "game_select": {
+    "phrases": {
+      "dice": ["摇骰子"]
+    }
+  }
+}

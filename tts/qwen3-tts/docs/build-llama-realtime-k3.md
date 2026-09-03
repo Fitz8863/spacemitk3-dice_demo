@@ -87,13 +87,18 @@ preferred core ids: 8,9,10,11
 [qwen3-tts] ggml threadpool poll=50
 ```
 
-使用 `--no-play` 进行 3 次相同文本测速，避免播放器影响 RTF：
+通过 Dice Arena 功能包进行 3 次相同文本测速，避免旧交互式播放器影响 RTF：
 
 ```bash
-QWEN3_TTS_PREFETCH_CONCURRENCY=1 \
-QWEN3_TTS_RUNTIME="$PWD/runtime-realtime-test" \
-./run_interactive.sh --no-play \
-  '实时性基准测试，当前YOLO检查模型同时运行，使用固定的四个A100核。'
+cd /home/spacemit/projects/dice-game/main
+QWEN3_TTS_RUNTIME="$PWD/tts/qwen3-tts/runtime-realtime-test" \
+python3 backend/componentctl.py start tts_qwen3
+for _ in 1 2 3; do
+  curl -fsS http://127.0.0.1:18080/v1/audio/speech \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"qwen3-tts","input":"实时性基准测试，当前YOLO检查模型同时运行。","response_format":"wav"}' \
+    -o /tmp/qwen3-benchmark.wav
+done
 ```
 
 确认：

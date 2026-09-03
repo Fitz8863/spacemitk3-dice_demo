@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#000000" />
+  <meta name="theme-color" content="#f7f9fc" />
   <title>Dice Arena · 双方摇骰子</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
@@ -12,25 +12,38 @@
     <header class="topbar">
       <div class="brand"><span class="brand-dot" aria-hidden="true"></span>DICE ARENA</div>
       <div class="topbar-right">
-        <span class="round-badge">第 <strong id="roundNumber">01</strong> 局</span>
         <button class="icon-button" id="soundToggle" type="button" aria-label="切换语音">🔊</button>
       </div>
     </header>
 
     <main class="stage">
       <header class="stage-head">
-        <p class="kicker" id="phaseKicker">GAME SELECT</p>
         <h1 class="stage-title" id="phaseTitle">选择一场游戏</h1>
         <p class="stage-copy" id="phaseCopy">欢迎来到 Dice Arena，选择游戏后开始。</p>
       </header>
 
       <div class="stage-body" id="stageContent">
 
+        <!-- 待机页（全体游戏之前；select 空闲超时进入，任意输入唤醒） -->
+        <section class="view hidden" data-view="standby" aria-label="待机">
+          <div class="standby-scene">
+            <div class="standby-orb">
+              <span class="standby-ring" aria-hidden="true"></span>
+              <span class="standby-ring standby-ring-2" aria-hidden="true"></span>
+              <span class="standby-core" aria-hidden="true"></span>
+            </div>
+            <div class="standby-zzz" aria-hidden="true"><span>z</span><span>z</span><span>Z</span></div>
+            <p class="standby-hint">按任意键或触摸屏幕开始</p>
+            <p class="standby-wake-words hidden" id="standbyWakeWords"></p>
+            <p class="standby-probe" id="standbyProbe"></p>
+          </div>
+        </section>
+
         <!-- 选择游戏 -->
         <section class="view" data-view="select">
           <div class="game-list" id="gameList" role="listbox" aria-label="游戏列表"></div>
-          <button class="primary-button" id="startGame" type="button">进入游戏 <span>→</span></button>
-          <p class="hint"><span class="keycap">↑</span><span class="keycap">↓</span> 选择 · <span class="keycap">Enter</span> 确认</p>
+          <button class="btn-circle btn-green" id="startGame" type="button">进入游戏</button>
+          <p class="standby-wake-words hidden" id="selectVoiceHint"></p>
         </section>
 
         <!-- 游戏规则 -->
@@ -41,23 +54,23 @@
             <div class="rules-item"><span>03</span><div><strong>视觉判定</strong><p>开盖后保持骰子不动，等待识别和结果播报。</p></div></div>
           </div>
           <div class="view-actions">
-            <button class="secondary-button" id="backFromRules" type="button">← 返回</button>
-            <button class="secondary-button" id="repeatRules" type="button">↻ 再听一次</button>
-            <button class="primary-button" id="confirmRules" type="button">我明白了 <span>→</span></button>
+            <button class="btn-circle btn-red" id="backFromRules" type="button">返回</button>
+            <button class="btn-circle btn-blue" id="repeatRules" type="button" aria-keyshortcuts="ArrowDown">再听一次</button>
+            <button class="btn-circle btn-green" id="confirmRules" type="button" aria-keyshortcuts="Enter">我明白了</button>
           </div>
-          <p class="hint">按 <span class="keycap">Esc</span> 返回游戏列表</p>
         </section>
 
         <!-- 准备 -->
         <section class="view hidden" data-view="ready">
           <h2 class="view-title">请拿起骰盅，准备摇骰</h2>
-          <p class="view-desc">当前由人手代替机械臂操作。点击开始后，跟随倒计时摇动骰盅。</p>
-          <button class="primary-button" id="startShake" type="button">开始摇骰 <span>→</span></button>
+          <div class="view-actions">
+            <button class="btn-circle btn-red" id="readyBack" type="button">返回</button>
+            <button class="btn-circle btn-green" id="startShake" type="button">开始摇骰</button>
+          </div>
         </section>
 
         <!-- 倒计时 -->
         <section class="view hidden" data-view="countdown">
-          <p class="kicker" id="countdownLabel">GET READY</p>
           <div class="countdown-number" id="countdownNumber">3</div>
           <p class="countdown-hint" id="countdownHint">和 Agent 同步</p>
         </section>
@@ -66,29 +79,45 @@
         <section class="view hidden" data-view="shaking">
           <div class="shake-cup" aria-hidden="true">🎲</div>
           <h2 class="view-title">摇起来！</h2>
-          <p class="view-desc">准备好后可以提前点击停止。</p>
-          <div class="shake-timer"><span>剩余</span><strong id="shakeSeconds">08</strong><span>秒</span></div>
-          <button class="stop-button" id="stopShake" type="button">停止摇骰</button>
+          <div class="shake-timer"><span>剩余</span><strong id="shakeSeconds">10</strong><span>秒</span></div>
+          <button class="btn-circle btn-red" id="stopShake" type="button">停止摇骰</button>
         </section>
 
         <!-- 开盖 -->
-        <section class="view hidden" data-view="open">
-          <h2 class="view-title">请同时开盖</h2>
-          <p class="view-desc">把骰盅放回指定区域，点击下方按钮确认双方已经开盖。</p>
-          <button class="primary-button" id="revealDice" type="button">双方已开盖 <span>→</span></button>
-        </section>
+        <section class="view hidden" data-view="open"></section>
 
         <!-- 分析 -->
         <section class="view hidden" data-view="analysis">
           <div class="analysis-spinner" aria-hidden="true"></div>
           <h2 class="view-title" id="analysisTitle">正在识别骰子</h2>
+          <div class="analysis-stream-panel hidden" id="analysisStreamPanel">
+            <div class="analysis-stream-head">
+              <span class="analysis-stream-label"><span class="live-dot" aria-hidden="true"></span>YOLOv8 实时检测</span>
+              <span class="analysis-stream-state" id="analysisStreamState">正在连接画面…</span>
+            </div>
+            <!-- MediaMTX provides this path's WebRTC player page. Keeping it in
+                 an iframe avoids coupling the game UI to a stream protocol. -->
+            <iframe
+              id="analysisStream"
+              title="YOLOv8 实时骰子检测画面"
+              src="about:blank"
+              allow="autoplay; fullscreen; picture-in-picture"
+              allowfullscreen
+              loading="eager"
+              referrerpolicy="no-referrer"
+            ></iframe>
+          </div>
           <div class="analysis-steps">
             <div class="analysis-step active" id="stepCapture"><span>✓</span><div><strong>采集画面</strong></div></div>
             <div class="analysis-step" id="stepDetect"><span>2</span><div><strong>YOLOv8 识别</strong></div></div>
             <div class="analysis-step" id="stepJudge"><span>3</span><div><strong>计算胜负</strong></div></div>
           </div>
           <p class="analysis-status" id="analysisStatus">正在请求 K3 YOLOv8 推理进程…</p>
-          <button class="secondary-button hidden" id="analysisRetry" type="button">重新分析</button>
+          <div class="view-actions analysis-failure-actions hidden" id="analysisFailureActions">
+            <button class="btn-pill btn-red" id="analysisBackToGames" type="button">退出游戏，返回列表</button>
+            <button class="btn-circle btn-blue" id="analysisRetry" type="button" aria-keyshortcuts="ArrowDown">重新识别</button>
+            <button class="btn-circle btn-green" id="analysisNewRound" type="button">再来一局</button>
+          </div>
         </section>
 
         <!-- 结果 -->
@@ -96,42 +125,37 @@
           <div class="result-banner" id="resultBanner">
             <span class="result-emoji" id="resultEmoji">🏆</span>
             <div>
-              <p class="kicker">FINAL RESULT</p>
               <h2 class="view-title" id="resultTitle">玩家获胜</h2>
               <p class="result-subtitle" id="resultSubtitle">点数总和更高！</p>
             </div>
           </div>
           <div class="scoreboard">
-            <div class="score-side player-side">
+            <div class="score-side player-side" id="playerScoreSide">
               <span class="score-label">玩家 · PLAYER</span>
               <div class="score-dice" id="playerDice"></div>
               <strong id="playerScore">24</strong>
             </div>
             <div class="versus">VS</div>
-            <div class="score-side agent-side">
+            <div class="score-side agent-side" id="agentScoreSide">
               <span class="score-label">AGENT</span>
               <div class="score-dice" id="agentDice"></div>
               <strong id="agentScore">18</strong>
             </div>
           </div>
           <div class="view-actions">
-            <button class="secondary-button" id="newRound" type="button">再来一局</button>
-            <button class="primary-button" id="backToGames" type="button">返回游戏列表 <span>→</span></button>
+            <button class="btn-circle btn-green" id="newRound" type="button">再来一局</button>
+            <button class="btn-pill btn-red" id="backToGames" type="button">返回游戏列表</button>
           </div>
         </section>
 
       </div>
 
-      <footer class="stage-foot">
-        <div class="progress" id="progressDots"></div>
-        <span class="stage-foot-text" id="stageFooterText">选择游戏开始体验</span>
-      </footer>
     </main>
 
-    <footer class="app-footer">SPACEMIT K3 · DICE CHALLENGE DEMO</footer>
   </div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="asr-feedback" id="asrFeedback" role="status" aria-live="polite"></div>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

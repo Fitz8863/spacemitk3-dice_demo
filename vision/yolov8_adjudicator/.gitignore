@@ -1,0 +1,18 @@
+# CMake build outputs
+/build/
+/build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Runtime-generated caches and diagnostics
+.shaders/
+*.log
+*.bin
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+*~

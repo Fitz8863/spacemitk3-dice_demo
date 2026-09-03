@@ -1,13 +1,15 @@
 # CMake build outputs
 build/
-vision/yolov8_objdetect/build/
-vision/yolov8_objdetect/build-*/
+vision/yolov8_adjudicator/build/
+vision/yolov8_adjudicator/build-*/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
 
 # Runtime-generated caches and diagnostics
+.runtime/
+.pytest_cache/
 __pycache__/
 *.pyc
 .shaders/
@@ -20,13 +22,18 @@ __pycache__/
 .DS_Store
 *~
 
+# Local AI tool state
+.mimosa/
+.zcode/
+
 # Local runtime secrets / generated media
 .env
-vision/yolov8_objdetect/config.local.json
+vision/yolov8_adjudicator/config.local.json
 web/uploads/
 web/.dice-arena-web.pid
 web/dice-arena-web.log
 .dice-arena.env
+.dice-arena.env.bak
 backend/__pycache__/
 
 # Migrated Qwen3-TTS runtime state and board-local model payloads

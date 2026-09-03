@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "runtime": {
+    "binary": "asr/zipformer-streaming/build/stream_asr",
+    "working_dir": "asr/zipformer-streaming",
+    "model_dir": "sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20",
+    "capture": {
+      "device": "default",
+      "sample_rate": 16000,
+      "channels": 1,
+      "format": "S16_LE"
+    },
+    "vad": {
+      "enabled": true,
+      "rms": 400,
+      "pause_ms": 600,
+      "max_ms": 8000
+    },
+    "cpu_affinity": "",
+    "start_timeout_seconds": 15,
+    "terminate_grace_seconds": 5
+  }
+}

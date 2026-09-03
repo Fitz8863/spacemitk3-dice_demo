@@ -8,7 +8,7 @@ export function register(engine) {
     phases: ['select'],
     progressCount: 1,
     phaseMeta: {
-      select: ['GAME SELECT', '选择一场游戏', '欢迎来到 Dice Arena，选择游戏后按 OK 开始。', '选择游戏开始体验'],
+      select: ['选择一场游戏', '欢迎来到 Dice Arena，选择游戏后按 OK 开始。'],
     },
     enter() {},
     teardown() {},

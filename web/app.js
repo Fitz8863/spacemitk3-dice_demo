@@ -1,5 +1,6 @@
-// Dice Arena 前端引擎：跨游戏通用的视图切换、TTS、网络与游戏选择。
-// 具体游戏（摇骰子 / 猜拳）通过 registerGame 挂载各自的 state machine 与文案。
+// Dice Arena 前端引擎：跨游戏通用的视图切换、语音指令播放、网络与游戏选择。
+// 游戏流程由后端权威状态机驱动：前端通过 RoundClient 创建对局、提交意图、
+// 订阅事件流并渲染；台词以后端下发的 speech 指令播放，await 指令播完回执。
 import { register as registerDice } from './games/dice.js';
 import { register as registerRps } from './games/rps.js';
 
@@ -12,41 +13,281 @@ const state = {
   ttsAbortController: null,
   ttsPlaybackCancel: null,
   ttsRequestId: 0,
-  ttsFallbackNotified: false,
-  ttsConfigErrorNotified: false,
+  speechAudioContext: null,
 };
 
 const $ = (id) => document.getElementById(id);
 const views = [...document.querySelectorAll('[data-view]')];
 
-const SELECT_META = ['GAME SELECT', '选择一场游戏', '欢迎来到 Dice Arena，选择游戏后按 OK 开始。', '选择游戏开始体验'];
+const SELECT_META = ['选择一场游戏', '欢迎来到 Dice Arena，选择游戏后按 OK 开始。'];
 
 const gameModules = {};
-let activeGame = null; // 当前挂载的游戏模块（有 enter/teardown/onKey/phaseMeta）
+let activeGame = null; // 当前挂载的游戏模块（有 enter/teardown/onKey）
 let games = []; // GET /api/games 返回的列表
 
-// ---- 视图切换 ----
-function setPhase(phase) {
-  state.phase = phase;
-  views.forEach((view) => view.classList.toggle('hidden', view.dataset.view !== phase));
-  const meta = (activeGame && activeGame.phaseMeta && activeGame.phaseMeta[phase]) || SELECT_META;
-  $('phaseKicker').textContent = meta[0];
-  $('phaseTitle').textContent = meta[1];
-  $('phaseCopy').textContent = meta[2];
-  $('stageFooterText').textContent = meta[3];
+const CONTROLLER_COPY = {
+  select: `使用 <span class="controller-hint"><span class="controller-key controller-key-yellow" aria-label="黄色按钮"></span><span>黄色 · 向上选择</span></span> 和 <span class="controller-hint"><span class="controller-key controller-key-blue" aria-label="蓝色按钮"></span><span>蓝色 · 向下选择</span></span> 选择游戏，选中后按 <span class="controller-hint"><span class="controller-key controller-key-green" aria-label="绿色按钮"></span><span>绿色 · 确认</span></span>。`,
+  rules: `听完规则后按 <span class="controller-hint"><span class="controller-key controller-key-green" aria-label="绿色按钮"></span><span>绿色 · 确认</span></span>，按 <span class="controller-hint"><span class="controller-key controller-key-blue" aria-label="蓝色按钮"></span><span>蓝色 · 重听</span></span>，按 <span class="controller-hint"><span class="controller-key controller-key-red" aria-label="红色按钮"></span><span>红色 · 返回</span></span>。`,
+  ready: `按 <span class="controller-hint"><span class="controller-key controller-key-green" aria-label="绿色按钮"></span><span>绿色 · 开始摇骰</span></span>，按 <span class="controller-hint"><span class="controller-key controller-key-red" aria-label="红色按钮"></span><span>红色 · 返回</span></span>。`,
+};
 
-  const phases = activeGame ? activeGame.phases : ['select'];
-  const count = activeGame ? activeGame.progressCount : 1;
-  const progressEl = $('progressDots');
-  if (progressEl.children.length !== count) {
-    progressEl.innerHTML = Array.from({ length: count }, () => '<span></span>').join('');
+function renderPhaseCopy(phase, fallback) {
+  const node = $('phaseCopy');
+  const copy = CONTROLLER_COPY[phase];
+  if (copy) {
+    node.innerHTML = copy;
+    node.classList.remove('hidden');
+  } else if (fallback) {
+    node.textContent = fallback;
+    node.classList.remove('hidden');
+  } else {
+    node.textContent = '';
+    node.classList.add('hidden');
   }
-  const index = phases.indexOf(phase);
-  const activeUpTo = Math.max(0, Math.min(count - 1, index));
-  Array.from(progressEl.children).forEach((dot, i) => {
-    dot.classList.toggle('active', i <= activeUpTo);
-  });
 }
+
+// ---- 视图切换 ----
+function setPhase(phase, meta) {
+  state.phase = phase;
+  // Phases style themselves via body[data-phase] (e.g. the open phase lowers
+  // the stage header into mid-screen).
+  document.body.dataset.phase = phase;
+  views.forEach((view) => view.classList.toggle('hidden', view.dataset.view !== phase));
+  const resolved = meta || (activeGame && activeGame.phaseMeta && activeGame.phaseMeta[phase]) || SELECT_META;
+  $('phaseTitle').textContent = resolved[0];
+  renderPhaseCopy(phase, resolved[1]);
+  resetIdleTimer();
+}
+
+// ---- 待机页（全体游戏之前） ----
+// 游戏列表页空闲 idle_seconds（全局配置 standby.idle_seconds，默认 120s）后
+// 进入待机动画；任意输入或语音唤醒词唤醒回列表。boot_standby=true 时页面
+// 加载直接进待机（配置来自 /api/games 的 standby 投影，热加载生效）。
+// 对局页面不待机（对局有自身节奏，玩家离场由服务端 SSE 看门收回合 →
+// round_complete → 回到列表 → 计时自然恢复）。待机中的第一次输入只唤醒
+// 不穿透，防止睡着时误开一局。待机语音监听在服务端（无回合也开麦），
+// 轮询 /api/asr/standby/events：唤醒词回列表；点名游戏（词表 = 游戏名，
+// 优先级高于唤醒词）直达对局。
+const IDLE_ENTER_SECONDS = 120; // /api/games 不可用或未配置时的兜底
+let idleTimer = null;
+let standbySettings = { enabled: true, idle_seconds: IDLE_ENTER_SECONDS, boot_standby: false, wake_phrases: [] };
+let standbyEventCursor = 0;
+let standbyPollTimer = null;
+
+function applyStandbySettings(settings) {
+  if (!settings || typeof settings !== 'object') return;
+  standbySettings = {
+    enabled: settings.enabled !== false,
+    idle_seconds: Number(settings.idle_seconds) > 0 ? Number(settings.idle_seconds) : IDLE_ENTER_SECONDS,
+    boot_standby: settings.boot_standby === true,
+    wake_phrases: Array.isArray(settings.wake_phrases) ? settings.wake_phrases : [],
+  };
+  resetIdleTimer();
+}
+
+function resetIdleTimer() {
+  clearTimeout(idleTimer);
+  if (state.phase !== 'select' || !standbySettings.enabled) return;
+  idleTimer = setTimeout(enterStandby, standbySettings.idle_seconds * 1000);
+}
+
+function enterStandby() {
+  clearTimeout(idleTimer);
+  idleTimer = null;
+  if (state.phase !== 'select' || !standbySettings.enabled) return;
+  stopSelectListening(); // 列表语音选游戏让位给待机唤醒/点名
+  setPhase('standby');
+  const wakeNode = $('standbyWakeWords');
+  if (wakeNode) {
+    if (standbySettings.wake_phrases.length) {
+      wakeNode.textContent = `或对我说：${standbySettings.wake_phrases.join(' / ')}`;
+      wakeNode.classList.remove('hidden');
+    } else {
+      wakeNode.classList.add('hidden');
+    }
+  }
+  startStandbyListening();
+}
+
+function wakeFromStandby() {
+  if (state.phase !== 'standby') return false;
+  setPhase('select');
+  stopStandbyListening();
+  startSelectListening();
+  return true;
+}
+
+// --- 待机语音监听（服务端会话 + 轮询事件） ---
+// 词表在服务端拼：游戏名在前、唤醒词在后（"我想玩摇骰子游戏"选游戏，
+// 即使唤醒词"游戏"也在句中）；所以这里不再前端预判唤醒词是否为空。
+function startStandbyListening() {
+  stopStandbyListening();
+  requestJson('/api/asr/standby', {
+    method: 'POST',
+    body: JSON.stringify({ listen: true }),
+  }).then((payload) => {
+    // 事件纪元从本次监听开始：cursor 之前的历史事件（上一段待机期间环境
+    // 人声/幻觉产生的旧唤醒）绝不重放——刷新页面瞬间被"旧唤醒"唤醒过的 bug。
+    standbyEventCursor = Number(payload?.cursor || 0);
+    renderStandbyVoiceHint(payload?.wake_phrases, payload?.games);
+  }).catch(() => { /* 后端不可用不阻塞待机画面 */ });
+  standbyPollTimer = setInterval(async () => {
+    try {
+      const payload = await requestJson('/api/asr/standby/events');
+      for (const event of (payload.events || [])) {
+        if (event.sequence > standbyEventCursor) {
+          standbyEventCursor = event.sequence;
+          // 保鲜窗：超过 10 秒的事件视为过期（防御旧事件重放）。
+          const fresh = Date.now() - Number(event.timestamp_ms || 0) <= 10000;
+          if (event.status === 'wake') {
+            if (fresh) {
+              showAsrFeedback({ status: 'submitted', text: event.text });
+              wakeFromStandby();
+              return;
+            }
+          } else if (event.status === 'selected' && event.game_id) {
+            // 待机页直接点名游戏：跳过列表直达对局。
+            if (fresh) {
+              showAsrFeedback({ status: 'submitted', text: event.text });
+              wakeFromStandby();
+              enterGameById(event.game_id);
+              return;
+            }
+          } else {
+            showAsrFeedback({ status: 'unmatched', text: event.text });
+          }
+        }
+      }
+    } catch (_) { /* 轮询失败下次再试 */ }
+  }, 1200);
+}
+
+function renderStandbyVoiceHint(wakePhrases, selectGames) {
+  const wakeNode = $('standbyWakeWords');
+  if (!wakeNode) return;
+  const parts = [];
+  if (Array.isArray(wakePhrases) && wakePhrases.length) {
+    parts.push(`对我说：${wakePhrases.join(' / ')}`);
+  }
+  const gameWords = (selectGames || [])
+    .map((game) => (game.phrases || [])[0])
+    .filter(Boolean);
+  if (gameWords.length) {
+    parts.push(`或直接说：${gameWords.join(' / ')}`);
+  }
+  if (parts.length) {
+    wakeNode.textContent = parts.join('，');
+    wakeNode.classList.remove('hidden');
+  } else {
+    wakeNode.classList.add('hidden');
+  }
+}
+
+function stopStandbyListening() {
+  if (standbyPollTimer) {
+    clearInterval(standbyPollTimer);
+    standbyPollTimer = null;
+  }
+  requestJson('/api/asr/standby', {
+    method: 'POST',
+    body: JSON.stringify({ listen: false }),
+  }).catch(() => { /* already stopped */ });
+}
+
+// --- 列表页语音选游戏（与待机层同构：会话 + 纪元 + 轮询 + 保鲜窗） ---
+// 玩家在游戏列表说"我想玩摇骰子游戏"，服务端在常驻引擎上换绑选路
+// 路由（词表 = 各启用游戏名/别名），命中推 selected 事件；前端走与
+// 绿色按钮同一条 enterSelectedGame 路径进对局。进对局/进待机时轮询
+// 停止（服务端路由由回合/待机会话自动顶掉）。
+let selectEventCursor = 0;
+let selectPollTimer = null;
+
+function startSelectListening() {
+  stopSelectListening();
+  requestJson('/api/asr/select', {
+    method: 'POST',
+    body: JSON.stringify({ listen: true }),
+  }).then((payload) => {
+    selectEventCursor = Number(payload?.cursor || 0);
+    renderSelectVoiceHint(payload?.games);
+  }).catch(() => { /* 后端不可用不阻塞列表页 */ });
+  selectPollTimer = setInterval(async () => {
+    try {
+      const payload = await requestJson('/api/asr/select/events');
+      for (const event of (payload.events || [])) {
+        if (event.sequence > selectEventCursor) {
+          selectEventCursor = event.sequence;
+          if (event.status === 'selected' && event.game_id) {
+            // 保鲜窗：超过 10 秒的选择事件视为过期（防御旧事件重放）。
+            if (Date.now() - Number(event.timestamp_ms || 0) <= 10000) {
+              showAsrFeedback({ status: 'submitted', text: event.text });
+              enterGameById(event.game_id);
+              return;
+            }
+          } else {
+            showAsrFeedback({ status: 'unmatched', text: event.text });
+          }
+        }
+      }
+    } catch (_) { /* 轮询失败下次再试 */ }
+  }, 1200);
+}
+
+function stopSelectListening() {
+  if (selectPollTimer) {
+    clearInterval(selectPollTimer);
+    selectPollTimer = null;
+  }
+  requestJson('/api/asr/select', {
+    method: 'POST',
+    body: JSON.stringify({ listen: false }),
+  }).catch(() => { /* already stopped */ });
+}
+
+function renderSelectVoiceHint(selectGames) {
+  const node = $('selectVoiceHint');
+  if (!node) return;
+  const words = (selectGames || [])
+    .map((game) => (game.phrases || [])[0])
+    .filter(Boolean);
+  if (words.length) {
+    node.textContent = `或对我说：${words.join(' / ')}，直接开始`;
+    node.classList.remove('hidden');
+  } else {
+    node.classList.add('hidden');
+  }
+}
+
+function enterGameById(gameId) {
+  const manifest = games.find((game) => game.id === gameId && game.enabled);
+  if (!manifest) return; // 事件指向禁用/未知的游戏：当作没听见
+  selectGame(gameId);
+  enterSelectedGame();
+}
+
+// 捕获阶段拦截：待机中的输入只用于唤醒，绝不继续派发给列表/按钮。
+// 唤醒通道只有两种：语音唤醒词（服务端监听）+ 按键（keydown/keyup，
+// keyup 兜底只上报释放事件的按键设备）。刻意不含 click——鼠标误点不
+// 应唤醒待机。
+['keydown', 'keyup'].forEach((type) => {
+  window.addEventListener(type, (event) => {
+    if (state.phase === 'standby' && type !== 'click') {
+      // 待机页可见诊断：确认设备按键是否到达页面（按键后屏幕左上角闪现）。
+      const probe = $('standbyProbe');
+      if (probe) {
+        probe.textContent = `收到按键: ${event.key || '?'}`;
+        probe.classList.add('show');
+        clearTimeout(probe.__timer);
+        probe.__timer = setTimeout(() => probe.classList.remove('show'), 1500);
+      }
+    }
+    if (wakeFromStandby()) {
+      event.stopPropagation();
+      event.preventDefault();
+    }
+    resetIdleTimer();
+  }, { capture: true });
+});
 
 // ---- 提示 ----
 function toast(message) {
@@ -56,29 +297,37 @@ function toast(message) {
   setTimeout(() => node.classList.remove('show'), 2800);
 }
 
-// ---- TTS 文案（来自当前游戏的 manifest.texts） ----
-function getTtsConfig() {
-  const manifest = games.find((game) => game.id === state.selectedGame);
-  if (!manifest || !manifest.texts || typeof manifest.texts !== 'object') {
-    throw new Error('配置中缺少 texts 对象');
+// ---- ASR 语音反馈 ----
+// 后端把每句识别结果以 asr 观测事件广播（生效/被播报闸暂缓/当前状态
+// 不支持/未匹配触发词）。任何游戏的语音输入都在引擎层统一反馈，游戏
+// 模块不感知；播报中与未匹配也要提示，否则玩家不知道语音通道在工作。
+let asrFeedbackTimer = null;
+function showAsrFeedback(event) {
+  const node = $('asrFeedback');
+  if (!node) return;
+  const heard = `听到「${event.text || ''}」`;
+  let message;
+  let level;
+  if (event.status === 'submitted') {
+    message = `🎤 ${heard}，已生效`;
+    level = 'ok';
+  } else if (event.status === 'suppressed') {
+    message = `🎤 ${heard}——正在播报，暂不生效；不想等可按绿色按钮`;
+    level = 'wait';
+  } else if (event.status === 'rejected') {
+    message = `🎤 ${heard}（当前步骤不支持语音操作，请使用按键）`;
+    level = 'info';
+  } else {
+    message = `🎤 ${heard}（未匹配语音指令）`;
+    level = 'info';
   }
-  const speed = Number(manifest.speed ?? 1.0);
-  if (!Number.isFinite(speed) || speed < 0.25 || speed > 4.0) {
-    throw new Error('speed 必须在 0.25 到 4.0 之间');
-  }
-  return {
-    voice: typeof manifest.voice === 'string' && manifest.voice.trim() ? manifest.voice.trim() : 'default',
-    speed,
-    texts: manifest.texts,
-  };
+  node.textContent = message;
+  node.className = `asr-feedback show level-${level}`;
+  clearTimeout(asrFeedbackTimer);
+  asrFeedbackTimer = setTimeout(() => node.classList.remove('show'), level === 'wait' ? 3600 : 2400);
 }
 
-function renderTtsText(template, values = {}) {
-  return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, name) => (
-    Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : match
-  ));
-}
-
+// ---- 语音播放（后端 speech 指令驱动） ----
 function stopSpeech() {
   state.ttsRequestId += 1;
   state.ttsAbortController?.abort();
@@ -94,12 +343,12 @@ function stopSpeech() {
     URL.revokeObjectURL(state.ttsObjectUrl);
     state.ttsObjectUrl = null;
   }
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel(); // clean up any external/browser utterance
 }
 
 // Deliberately do not call browser speech synthesis. Dice Arena must use the
-// Qwen3-TTS model running on the K3 board; browser speech would hide a broken
-// backend and make the voice sound unrelated to the configured speaker.
+// TTS provider selected by the backend; browser speech would hide a broken
+// provider and make the voice unrelated to the configured model/speaker.
 
 function createTtsFrameQueue() {
   const items = [];
@@ -133,8 +382,8 @@ function createTtsFrameQueue() {
 }
 
 async function* readTtsFrames(reader) {
-  // /api/tts/stream uses a small length-prefixed protocol so a WAV can be
-  // played as soon as it is complete, without waiting for the whole response.
+  // Speech frame endpoints use a small length-prefixed protocol so a WAV can
+  // be played as soon as it is complete, without waiting for the whole response.
   let buffer = new Uint8Array(0);
   let streamDone = false;
 
@@ -191,43 +440,6 @@ async function* readTtsFrames(reader) {
   throw new Error('TTS 流没有结束帧');
 }
 
-async function requestSpeechStream(message, requestId, options, queue) {
-  const controller = new AbortController();
-  state.ttsAbortController = controller;
-  let reader = null;
-  try {
-    const response = await fetch('/api/tts/stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: message, voice: options.voice, speed: options.speed }),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || `HTTP ${response.status}`);
-    }
-    if (!response.body) throw new Error('浏览器不支持 TTS 流式响应');
-    reader = response.body.getReader();
-    for await (const blob of readTtsFrames(reader)) {
-      if (!state.sound || requestId !== state.ttsRequestId) {
-        throw new DOMException('Speech request was cancelled', 'AbortError');
-      }
-      queue.push(blob);
-    }
-    queue.finish();
-  } catch (error) {
-    if (error.name === 'AbortError' || controller.signal.aborted || requestId !== state.ttsRequestId) {
-      queue.finish(new DOMException('Speech request was cancelled', 'AbortError'));
-    } else {
-      queue.finish(error);
-    }
-  } finally {
-    try { await reader?.cancel(); } catch (_) { /* response already ended */ }
-    reader?.releaseLock();
-    if (state.ttsAbortController === controller) state.ttsAbortController = null;
-  }
-}
-
 async function playSpeechBlob(blob, requestId) {
   if (!state.sound || requestId !== state.ttsRequestId) {
     throw new DOMException('Speech playback was cancelled', 'AbortError');
@@ -259,7 +471,7 @@ async function playSpeechBlob(blob, requestId) {
   state.ttsPlaybackCancel = cancelPlayback;
   audio.addEventListener('ended', release, { once: true });
   audio.addEventListener('error', () => {
-    playbackError = new Error('浏览器无法播放 K3 Qwen3-TTS 返回的 WAV');
+    playbackError = new Error('浏览器无法播放当前 TTS provider 返回的 WAV');
     release();
   }, { once: true });
 
@@ -279,47 +491,301 @@ async function playSpeechBlob(blob, requestId) {
   }
 }
 
-async function speak(message, options = { voice: 'default', speed: 1.0 }) {
-  if (!state.sound || !message) return;
+// 无缝播报播放器：流式 TTS 的每个 WAV 帧解码成 AudioBuffer 后，在同一个
+// WebAudio 时间线上背靠背排片，消除逐帧新建 Audio 元素带来的切换间隙。
+// 生成速度远快于实时播放，排片进度本身构成抗抖动缓冲。
+function getSpeechAudioContext() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  if (!state.speechAudioContext) {
+    try {
+      state.speechAudioContext = new Ctx();
+    } catch (_) {
+      return null;
+    }
+  }
+  if (state.speechAudioContext.state === 'suspended') {
+    state.speechAudioContext.resume().catch(() => {});
+  }
+  return state.speechAudioContext;
+}
+
+function createSpeechScheduler(requestId) {
+  const context = getSpeechAudioContext();
+  if (!context) return null;
+  const player = {
+    context,
+    nextAt: 0,
+    sources: [],
+    cancelled: false,
+    resolveDrained: null,
+  };
+  const cancelSource = (source) => {
+    try { source.stop(); } catch (_) { /* already ended */ }
+    source.disconnect();
+  };
+  player.schedule = async (blob) => {
+    if (player.cancelled || requestId !== state.ttsRequestId || !state.sound) {
+      throw new DOMException('Speech playback was cancelled', 'AbortError');
+    }
+    const buffer = await context.decodeAudioData(await blob.arrayBuffer());
+    if (player.cancelled || requestId !== state.ttsRequestId || !state.sound) {
+      throw new DOMException('Speech playback was cancelled', 'AbortError');
+    }
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    // 第一帧留一点起播水位，后续帧紧贴前一帧结尾，形成连续时间线。
+    const startAt = Math.max(player.nextAt, context.currentTime + 0.06);
+    source.start(startAt);
+    player.nextAt = startAt + buffer.duration;
+    player.sources.push(source);
+    source.onended = () => {
+      const index = player.sources.indexOf(source);
+      if (index >= 0) player.sources.splice(index, 1);
+      if (!player.sources.length && player.resolveDrained) {
+        player.resolveDrained();
+        player.resolveDrained = null;
+      }
+    };
+  };
+  player.cancel = () => {
+    player.cancelled = true;
+    for (const source of player.sources.splice(0)) cancelSource(source);
+    player.nextAt = 0;
+    if (player.resolveDrained) {
+      player.resolveDrained();
+      player.resolveDrained = null;
+    }
+  };
+  player.waitDrained = () => {
+    if (player.cancelled || !player.sources.length) return Promise.resolve();
+    return new Promise((resolve) => { player.resolveDrained = resolve; });
+  };
+  return player;
+}
+
+// 播放一条后端 speech 指令：拉帧 → 排片播放 → 回执 speech_done。
+// 回执不再仅限 await 指令：引擎用它清除"播报进行中"登记（ASR 播报闸
+// 依赖该登记），所以每条指令播完/失败/被顶替都要回执，finally 统一出口。
+async function playDirective(round, directive) {
+  const acknowledge = () => {
+    if (round && round.roundId) {
+      round.submitIntent('speech_done', { directive_id: directive.directive_id })
+        .catch(() => { /* round may already be closed; the engine fallback covers it */ });
+    }
+  };
+  if (!state.sound) {
+    acknowledge();
+    return;
+  }
   stopSpeech();
   const requestId = state.ttsRequestId;
   const queue = createTtsFrameQueue();
-  const producer = requestSpeechStream(message, requestId, options, queue);
+  const controller = new AbortController();
+  state.ttsAbortController = controller;
+  let reader = null;
+  const producer = (async () => {
+    try {
+      const response = await fetch(`/api/game/rounds/${round.roundId}/speech`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ directive_id: directive.directive_id }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `语音请求失败：HTTP ${response.status}`);
+      }
+      if (!response.body) throw new Error('浏览器不支持语音流式响应');
+      reader = response.body.getReader();
+      for await (const blob of readTtsFrames(reader)) {
+        if (!state.sound || requestId !== state.ttsRequestId) {
+          throw new DOMException('Speech request was cancelled', 'AbortError');
+        }
+        queue.push(blob);
+      }
+      queue.finish();
+    } catch (error) {
+      if (error.name === 'AbortError' || controller.signal.aborted || requestId !== state.ttsRequestId) {
+        queue.finish(new DOMException('Speech request was cancelled', 'AbortError'));
+      } else {
+        queue.finish(error);
+      }
+    } finally {
+      try { await reader?.cancel(); } catch (_) { /* response already ended */ }
+      reader?.releaseLock();
+      if (state.ttsAbortController === controller) state.ttsAbortController = null;
+    }
+  })();
+  const scheduler = createSpeechScheduler(requestId);
+  if (scheduler) state.ttsPlaybackCancel = scheduler.cancel;
   let playedFrames = 0;
   try {
-    // One HTTP request is made for the complete announcement. The producer
-    // keeps reading later WAV frames while the consumer plays the first one.
+    // One HTTP request per directive. The producer keeps reading later WAV
+    // frames while the consumer plays the first one; the scheduler lines
+    // frames up back-to-back so streaming TTS never gaps between frames.
     while (true) {
       const blob = await queue.next();
       if (blob === null) break;
-      await playSpeechBlob(blob, requestId);
+      if (scheduler) await scheduler.schedule(blob);
+      else await playSpeechBlob(blob, requestId);
       playedFrames += 1;
     }
+    if (scheduler) await scheduler.waitDrained();
     await producer;
   } catch (error) {
     await producer.catch(() => {});
     if (error.name === 'AbortError' || requestId !== state.ttsRequestId || !state.sound) return;
-    console.error(`K3 Qwen3-TTS stream failed after ${playedFrames} frame(s):`, error);
-    toast('K3 Qwen3-TTS 播放失败，未使用浏览器替代语音');
+    console.error(`Speech directive ${directive.directive_id} failed after ${playedFrames} frame(s):`, error);
+    toast('语音播放失败，请检查语音组件');
+  } finally {
+    if (scheduler && state.ttsPlaybackCancel === scheduler.cancel) {
+      state.ttsPlaybackCancel = null;
+    }
+    // 所有退出路径（成功/失败/被新指令顶替）都恰好回执一次：await 的
+    // 唤醒引擎等待者，非 await 的释放播报闸登记。
+    acknowledge();
   }
 }
 
-function speakState(key, values = {}) {
-  if (!state.sound) return;
+// ---- 页面离开保险 ----
+// 关标签/刷新/跳转时尽力取消当前对局（sendBeacon 在页面卸载后仍会送达，
+// /cancel 无请求体，不会毒化 keep-alive 连接）。断网/休眠等 sendBeacon
+// 覆盖不到的断开由服务端 SSE 活性看门兜底：最后一个消费者断开并超过
+// 宽限期后自动取消回合、释放麦克风。
+let activeRound = null;
+window.addEventListener('pagehide', () => {
+  const roundId = activeRound?.roundId;
+  if (!roundId) return;
   try {
-    const config = getTtsConfig();
-    const template = config.texts[key];
-    if (typeof template !== 'string' || !template.trim()) {
-      throw new Error(`未配置 TTS 状态文案：${key}`);
-    }
-    speak(renderTtsText(template, values), config);
-  } catch (error) {
-    console.error(`Failed to load TTS state ${key}:`, error);
-    if (!state.ttsConfigErrorNotified) {
-      state.ttsConfigErrorNotified = true;
-      toast('TTS 文案配置加载失败，请检查后端 /api/games');
+    navigator.sendBeacon?.(`/api/game/rounds/${roundId}/cancel`);
+  } catch (_) { /* best effort: the server watchdog covers the rest */ }
+});
+
+// ---- 权威对局客户端 ----
+// 创建 round、订阅 SSE 事件流、提交意图。事件按 sequence 去重，SSE 断线由
+// EventSource 自动重连，重连快照会重放全部事件，靠 sequence 过滤保持幂等。
+function createRoundClient(gameId, handlers) {
+  let roundId = null;
+  let source = null;
+  let lastSequence = 0;
+  // Set once the round reaches a terminal snapshot or the client cancels:
+  // afterwards every event is stale game state and must not reach the UI,
+  // otherwise a finished view resurrects itself after returnToSelect().
+  let closed = false;
+
+  function dispatch(event, snapshot) {
+    if (event.event === 'state_changed') {
+      handlers.onStateChange?.(event.state, event.ui || {}, snapshot || null);
+    } else if (event.event === 'speech') {
+      handlers.onSpeech?.(event);
+    } else if (event.event === 'tick') {
+      handlers.onTick?.(event);
+    } else if (event.event === 'asr') {
+      showAsrFeedback(event);
+    } else if (event.event === 'round_complete') {
+      handlers.onComplete?.(event, snapshot || null);
+    } else {
+      handlers.onEvent?.(event, snapshot || null);
     }
   }
+
+  function ingest(snapshot) {
+    if (closed) return;
+    for (const item of (snapshot.events || [])) {
+      const sequence = Number(item.sequence || 0);
+      if (sequence > lastSequence) {
+        lastSequence = sequence;
+        dispatch(item, snapshot);
+      }
+    }
+    // A terminal snapshot ends the client: round_complete has just been
+    // dispatched (onComplete navigates or shows the failure), and the
+    // snapshot's top-level state is stale game state — syncing it would
+    // resurrect the finished view on top of the game list.
+    if (snapshot.status && snapshot.status !== 'running') {
+      closed = true;
+      teardownStream();
+      return;
+    }
+    // Top-level state keeps the view aligned even if a state_changed event
+    // slid between two SSE deliveries (or after a reconnect snapshot).
+    if (typeof snapshot.state === 'string' && snapshot.state) {
+      handlers.onSyncState?.(snapshot);
+    }
+  }
+
+  function subscribe() {
+    if (source) source.close();
+    source = new EventSource(`/api/game/rounds/${roundId}/stream`);
+    const handle = (event) => {
+      try {
+        ingest(JSON.parse(event.data));
+      } catch (_) { /* malformed frame: the next snapshot re-aligns state */ }
+    };
+    source.addEventListener('snapshot', handle);
+    source.addEventListener('update', handle);
+    source.addEventListener('complete', (event) => {
+      handle(event);
+      source?.close();
+    });
+    source.onerror = () => { /* EventSource retries; server resends a snapshot */ };
+  }
+
+  async function start() {
+    const payload = await requestJson('/api/game/rounds', {
+      method: 'POST',
+      body: JSON.stringify({ game: gameId }),
+    });
+    roundId = payload.round_id;
+    lastSequence = 0;
+    subscribe();
+    return payload;
+  }
+
+  async function submitIntent(intent, payload = {}) {
+    if (!roundId) throw new Error('对局尚未创建');
+    const snapshot = await requestJson(`/api/game/rounds/${roundId}/intents`, {
+      method: 'POST',
+      body: JSON.stringify({ intent, ...payload }),
+    });
+    // Ingest the response so terminal transitions (e.g. an exit intent)
+    // navigate even when the SSE stream is broken; sequence dedup keeps
+    // this idempotent with the stream.
+    if (snapshot && typeof snapshot === 'object' && 'status' in snapshot) {
+      ingest(snapshot);
+    }
+    return snapshot;
+  }
+
+  async function cancel() {
+    if (!roundId) return;
+    const target = roundId;
+    roundId = null;
+    closed = true;
+    teardownStream();
+    try {
+      // No body: a cancel carries no payload, and an unread body would
+      // corrupt keep-alive connections on the server.
+      await requestJson(`/api/game/rounds/${target}/cancel`, { method: 'POST' });
+    } catch (_) { /* already finished */ }
+  }
+
+  function teardownStream() {
+    if (source) {
+      source.close();
+      source = null;
+    }
+  }
+
+  return {
+    start,
+    submitIntent,
+    cancel,
+    teardownStream,
+    get roundId() { return roundId; },
+  };
 }
 
 // ---- 网络 ----
@@ -333,7 +799,13 @@ async function requestJson(url, options = {}) {
     const errorCode = payload.code || 'UNKNOWN_ERROR';
     const errorMessage = payload.error || `HTTP ${response.status}`;
 
-    // 针对特定错误码做用户友好提示
+    // An intent pressed at the wrong moment is normal gameplay, not an error.
+    if (errorCode === 'ROUND_INTENT_REJECTED' || errorCode === 'ROUND_CLOSED') {
+      const error = new Error(errorMessage);
+      error.code = errorCode;
+      error.silent = true;
+      throw error;
+    }
     if (errorCode === 'GAME_DISABLED') {
       toast('该游戏即将开放，敬请期待');
     } else if (errorCode === 'JOB_ALREADY_EXISTS') {
@@ -361,7 +833,9 @@ function registerGame(module) {
 function returnToSelect() {
   if (activeGame && activeGame.teardown) activeGame.teardown();
   activeGame = null;
+  stopStandbyListening(); // 对局结束回列表：确保没有残留的待机监听/轮询
   setPhase('select');
+  startSelectListening(); // 列表页恢复语音选游戏
 }
 
 // ---- 游戏列表 ----
@@ -425,8 +899,14 @@ function enterSelectedGame() {
     toast(`未注册游戏：${state.selectedGame}`);
     return;
   }
+  const manifest = games.find((game) => game.id === state.selectedGame);
+  if (!manifest) {
+    toast(`缺少游戏配置：${state.selectedGame}`);
+    return;
+  }
+  stopSelectListening(); // 进对局：列表选路轮询停止（服务端路由由回合顶掉）
   activeGame = module;
-  module.enter();
+  module.enter(manifest);
 }
 
 // ---- 启动 ----
@@ -435,12 +915,13 @@ const engine = {
   $,
   setPhase,
   toast,
-  speak,
-  speakState,
   stopSpeech,
   requestJson,
-  renderTtsText,
   returnToSelect,
+  createRoundClient,
+  playDirective,
+  // 游戏模块在 enter/teardown 时登记当前对局客户端，pagehide 保险据此取 roundId
+  setActiveRound(client) { activeRound = client || null; },
 };
 
 registerGame(registerDice(engine));
@@ -452,10 +933,14 @@ $('soundToggle').addEventListener('click', () => {
   state.sound = !state.sound;
   if (!state.sound) stopSpeech();
   $('soundToggle').textContent = state.sound ? '🔊' : '🔇';
-  toast(state.sound ? 'K3 Qwen3-TTS 播报已开启' : '语音播报已关闭');
+  toast(state.sound ? 'TTS 播报已开启' : '语音播报已关闭');
 });
 
 document.addEventListener('keydown', (event) => {
+  const controllerKey = ['Enter', 'Escape', 'ArrowDown', 'ArrowUp'].includes(event.key);
+  if (controllerKey) event.preventDefault();
+  if (event.repeat) return;
+
   if (state.phase === 'select') {
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
       const enabled = games.filter((game) => game.enabled);
@@ -464,8 +949,11 @@ document.addEventListener('keydown', (event) => {
       const index = ids.indexOf(state.selectedGame);
       const next = ids[(index + (event.key === 'ArrowDown' ? 1 : -1) + ids.length) % ids.length];
       selectGame(next);
+    } else if (event.key === 'Enter') {
+      enterSelectedGame();
+    } else if (event.key === 'Escape') {
+      stopSpeech();
     }
-    if (event.key === 'Enter') enterSelectedGame();
     return;
   }
   if (activeGame && activeGame.onKey) activeGame.onKey(event);
@@ -475,6 +963,7 @@ async function loadGames() {
   try {
     const payload = await requestJson('/api/games');
     games = Array.isArray(payload.games) ? payload.games : [];
+    applyStandbySettings(payload.standby);
     renderGameList();
     const firstEnabled = games.find((game) => game.enabled);
     if (firstEnabled) selectGame(firstEnabled.id);
@@ -485,4 +974,9 @@ async function loadGames() {
 }
 
 setPhase('select');
-loadGames();
+loadGames().then(() => {
+  // boot_standby=true：页面加载即待机（设备就绪的舞台状态）；false 停在列表
+  // 并直接开语音选游戏监听。
+  if (standbySettings.boot_standby) enterStandby();
+  else startSelectListening();
+});

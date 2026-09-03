@@ -1,0 +1,24 @@
+{
+  "id": "tts_moss_nano",
+  "type": "tts",
+  "name": "MOSS-TTS-Nano (SpaceMIT EP)",
+  "version": "1.1",
+  "enabled": true,
+  "entry": "provider.py:TtsMossNano",
+  "capabilities": [
+    "tts.non_streaming_wav",
+    "tts.chunk_stream",
+    "tts.spacemit_ep",
+    "tts.builtin_voice",
+    "tts.voice_clone"
+  ],
+  "lifecycle": {
+    "start": [
+      "backend/components/tts_moss_nano/scripts/start_tts.sh"
+    ],
+    "stop": [
+      "backend/components/tts_moss_nano/scripts/stop_tts.sh"
+    ]
+  },
+  "config": "config.json"
+}

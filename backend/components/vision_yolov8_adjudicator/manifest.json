@@ -1,0 +1,11 @@
+{
+  "id": "vision_yolov8_adjudicator",
+  "type": "vision",
+  "role": "adjudicator",
+  "name": "YOLOv8 Vision Adjudicator",
+  "version": "2.0",
+  "enabled": true,
+  "entry": "provider.py:VisionYolov8Adjudicator",
+  "capabilities": ["object_detection", "stable_frame", "multiview", "llm_verification"],
+  "config": "config.json"
+}

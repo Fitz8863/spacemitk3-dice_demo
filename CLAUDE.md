@@ -9,8 +9,9 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
 **关键文档**（接手先读，本文不重复其全部内容）：
 - `README.md` — 运行与接口说明。
 - `AI_PROJECT_CONTEXT.md` — 最完整的技术上下文（架构、状态机、安全约束、未来机械臂演进）。
-- `vision/yolov8_objdetect/AGENTS.md` — YOLOv8 C++ 子工程的构建/测试/编码规范。
+- `vision/yolov8_adjudicator/AGENTS.md` — YOLOv8 C++ 子工程的构建/测试/编码规范。
 - `tts/qwen3-tts/AGENTS.md` — Qwen3-TTS 子工程的运行/验证/核心亲和性约束。
+- `asr/zipformer-streaming/AGENTS.md` — 板端流式 ASR 子工程的构建/验证/JSONL 事件契约。
 
 ## 环境与路径（重要）
 
@@ -23,16 +24,54 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
 
 可以在开发机编辑文件，但**编译、跑摄像头、OpenCL/SpaceMIT EP、算力核验证必须在 K3 板端执行**。不要用开发机编译结果声称板端可用。登录板端：`ssh spacemit@<K3-IP>`。
 
+## 当前组件调度实现（2026-09-01）
+
+- **JSON 配置文件是唯一配置来源（2026-09-01 起）**：环境变量覆盖层（`.dice-arena.env` 与全部 `DICE_*` 输入端变量）已移除。**全局配置 `backend/config.json` 与游戏 manifest 支持热加载**（mtime 检测，保存后下一回合生效；坏配置保留最后可用版本）；**例外：本地 TTS 引擎启动时钉死，运行期改 `tts_local` 不切换**（切换本地引擎、删除游戏需重启）；组件 `config.json` 与 vision runtime `config.json` 改后重启生效。不要建议用户用环境变量调参。
+
+- **全局配置（2026-09-02 起）**：`backend/config.json` 是部署级默认层（引擎槽位/音色语速/语音总闸 `asr_enabled`，字段见 `backend/参数说明.md`），对所有游戏生效。优先级阶梯：台词级钉死 > 游戏 manifest 槽位 > 全局。游戏 manifest 不写槽位即继承全局（骰子已完全依赖全局槽位）。本地 TTS 全局唯一：全局与启用游戏解析出多个本地引擎时拒绝启动。
+
+- `backend/components/<id>/manifest.json` + `provider.py` 是可插拔功能包；`backend/core/components.py` 动态扫描并注册 provider，并校验视觉/TTS 的正式接口。
+- **后端权威状态机（2026-09-02 起）**：游戏流程由 manifest 的 `state_machine` 节点声明
+  （`backend/core/state_schema.py` 校验、`backend/core/state_machine.py` 引擎 `GameRound` 驱动）。
+  前端只提交意图并渲染事件（`web/app.js` 的 `createRoundClient`），不自驱状态、不再有
+  `speakState`/`texts` 台词表。台词内联在状态的 `speech` 动作（mode 仍是
+  `audio`/`tts_local`/`tts_remote` 三种，可按动作钉 `provider`）；`await:true` 台词由前端
+  播完回执 `speech_done` 后状态机才继续；`select_by: winner_role` 按裁决结果选台词。
+  转换是显式命名图（`to` 按状态名引用，悬空引用加载报错、不可达状态告警）。
+  一局 = 一个 round（`/api/game/rounds` 系列 API），新 round 自动取消残留活动 round。
+  **回合与浏览器绑定（2026-09-03 起）**：SSE 流是浏览器的存在信号——最后一个消费者
+  断开（关页/断网/休眠）后 45 秒宽限（容忍 EventSource 自动重连）即自动取消回合并
+  停麦；前端 pagehide 时 sendBeacon 直接取消（快路径）。物理按键不受此机制影响。
+- **语音输入通道（2026-09-02 起）**：游戏 manifest 的 `asr` 节（`enabled` + `phrases`
+  意图→触发词表，热加载）+ `providers.asr` 槽位开启语音确认；`core/asr_bridge.py` 在
+  回合期间持有 ASR 会话，识别句归一化子串匹配后走 `submit_intent` 注入（与按键同路，
+  引擎无改动）。**播报闸**：speech 指令发出即登记、`speech_done` 回执释放（前端对
+  所有指令回执，不再仅 `await:true`；无回执 90s 惰性过期），播报期间语音输入无效，
+  按键不受限。`asr_zipformer` 功能包按需 spawn `arecord | stream_asr --pcm --jsonl`
+  子进程对（无 lifecycle、不进 start_web.sh），麦克风跟随系统默认输入设备。
+- 引擎槽位在**全局配置** `backend/config.json` 选择（当前 `tts_local=tts_moss_nano`、`tts_remote=tts_gptsovits`、`asr=asr_zipformer`、`vision_adjudicator=vision_yolov8_adjudicator`）；游戏 manifest 可按槽位覆盖。`tts_qwen3` 是本地可选 provider。
+- 新 TTS 复制一个功能包并继承 `TtsProvider`，最小实现 `health()`、`synthesize()` 即可接入；需要分段低延迟时再覆盖 `stream()`；切换默认 provider 改全局配置 `providers.tts_local` 后重启，前端请求保持不变。Provider 可用 `manifest.lifecycle.start/stop` 声明本地模型进程管理命令，`componentctl.py`/`start_web.sh` 会按"全局槽位 ∪ 各游戏 ∪ 台词钉死"的引用集调度。
+- 当前 YOLO 包是 `type=vision, role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于目标坐标的 YOLO 包应使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得混入裁决器插槽。算法名不是职责接口。
+- 游戏视觉配置必须内嵌在 `backend/games/<game_id>/manifest.json` 的
+  `vision_profile` 节点；不要新增外置 `vision_profile.json`。视觉 runtime 的硬件、RTSP
+  和 MediaMTX WebRTC 基础地址统一由 `vision/yolov8_adjudicator/config.json` 提供，游戏
+  只声明自己的视频 path。
+- 裁决器通过 `--event-fd` 输出结构化 JSONL 事件，后端从独立管道读取事件；stdout/stderr 只保存诊断日志。2026-08-27 已在 K3 编译并完成结构化事件/SSE/LLM 全链路验证；旧二进制仍兼容 `[RESULT]`。
+- 裁决主接口为 `GET/POST /api/adjudicate...`；`/api/analyze...` 仅作为旧客户端迁移别名。
+- 已在 K3 验证裁决器注册、`/api/adjudicate` 结构化事件、取消与子进程退出；本地回归测试以仓库 `tests/` 为准，板端硬件测试需在 K3 上重新执行。
+
 ## 构建、运行与测试命令
 
 ### 后端 + Web（板端）
 ```bash
 cd /home/spacemit/projects/dice-game/main
-scripts/start_tts.sh   # 先启动 Qwen3-TTS llama-server（web 会自动检查/启动它）
-scripts/start_web.sh   # 启动 backend/server.py，监听 0.0.0.0:8080
+scripts/start_web.sh   # 启动当前游戏选择的 TTS provider，再启动 backend/server.py
 # 停止
 scripts/stop_web.sh
-scripts/stop_tts.sh
+
+# 切换 TTS：修改 backend/games/dice/manifest.json 的 providers.tts 后重启
+scripts/stop_web.sh
+scripts/start_web.sh
 ```
 
 健康检查：
@@ -45,7 +84,7 @@ curl http://127.0.0.1:8080/api/tts/health
 
 ### YOLOv8 C++（板端，riscv64 工具链）
 ```bash
-cd /home/spacemit/projects/dice-game/main/vision/yolov8_objdetect
+cd /home/spacemit/projects/dice-game/main/vision/yolov8_adjudicator
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4
@@ -66,46 +105,44 @@ curl -f http://127.0.0.1:8080/api/tts/synthesize \
 file /tmp/dice-tts.wav   # 期望 RIFF/WAVE, 24 kHz, 16-bit, mono
 ```
 
-同步模型资产（模型约 2 GiB，不进 Git）：
-```bash
-scripts/migrate_qwen3_tts_assets.sh
-```
-
 ## 架构：三个进程 + 一个 HTTP 服务
 
-代码职责分离，但 Web 与后端部署在同一 Python 服务里（同源，无 CORS、无 WebSocket）：
+代码职责分离，但 Web 与后端部署在同一 Python 服务里（同源，无 CORS；分析进度使用 SSE，不是 WebSocket）：
 
-1. **`backend/server.py`** — 轻量 `ThreadingHTTPServer`，同时提供 `web/` 静态文件和 `/api/*`。核心逻辑：`AnalysisJob`（每局一个子进程）、TTS 代理（`TTS_REQUEST_LOCK` 串行）、`configured_llm()` 从 `.dice-arena.env` 或 `config.json` 读 key。
-2. **`vision/.../build/yolov8_camera`** — **非常驻子进程**，只在 `/api/analyze` 触发后按局启动，得到 `verified:true` 结果即退出。空闲时 `pgrep yolov8_camera` 无结果属正常。
+1. **`backend/server.py`** — 轻量 `ThreadingHTTPServer`，同时提供 `web/` 静态文件和 `/api/*`；负责路由、provider 选择和 `ComponentJob` 生命周期，不包含具体 YOLO/TTS 实现。
+2. **`vision/yolov8_adjudicator/build/yolov8_camera`** — resident 通用 YOLO runtime，摄像头和视频链路常驻，control-fd 收到开始命令后执行推理；Python provider 负责游戏规则和云端 LLM。
 3. **`tts/qwen3-tts/runtime/bin/llama-server`** — 独立常驻进程，监听 `127.0.0.1:18080`，后端通过 `/v1/audio/speech` 代理。
 
 数据流（详见 `AI_PROJECT_CONTEXT.md` 的 mermaid 图）：
 
 ```text
-浏览器 <-> backend/server.py (HTTP, 轮询 ~700ms)
-             └─ subprocess -> yolov8_camera (摄像头 -> OpenCL 预处理 -> SpaceMIT EP 推理 -> 5+5 稳定帧 -> LLM 复核 -> JSON)
+浏览器 <-> backend/server.py (HTTP/SSE，轮询仅作兼容回退)
+             └─ resident subprocess -> yolov8_camera (摄像头 -> OpenCL 预处理 -> SpaceMIT EP 推理 -> 稳定 detection/snapshot -> JSONL)
              └─ HTTP -> llama-server (Qwen3-TTS 24kHz mono WAV)
 ```
 
 ### 后端 API
 ```text
 GET  /api/health                      整体状态
-GET  /api/tts/health                  TTS llama-server 是否可达
-POST /api/tts/stream                  整段文本一次请求，按长度前缀 WAV 帧持续返回
+GET  /api/tts/health                  当前 TTS provider 是否可用
+POST /api/speech/stream               按 manifest 台词键选择 TTS 或已有 WAV
+POST /api/tts/stream                  直接提交文本，按长度前缀 WAV 帧持续返回
 POST /api/tts/synthesize              单段文本转一个 WAV（手工调试）
-POST /api/analyze                     启动一轮识别，返回 job_id（同时只允许一个任务）
-GET  /api/analyze/<job_id>            轮询状态/阶段/日志/结果
-POST /api/analyze/<job_id>/cancel     取消
+POST /api/adjudicate                     启动一轮视觉裁决，返回 job_id（同时只允许一个任务）
+GET  /api/adjudicate/<job_id>            兼容查询状态/阶段/日志/事件/结果
+GET  /api/adjudicate/<job_id>/events     查询结构化事件
+GET  /api/adjudicate/<job_id>/stream     SSE 推送任务变化
+POST /api/adjudicate/<job_id>/cancel     取消
 ```
 
 任务状态 `queued → running → success | error`；阶段 `queued → starting → detecting → verifying → complete | error`。
 
 ### TTS 流协议（`/api/tts/stream`）
-长度前缀帧协议，前端 `web/app.js` 的 `readTtsFrames()` 解析：每帧 = 4 字节大端长度 + WAV 字节；结束帧长度 `0`，错误帧长度 `0xffffffff`（后跟 4 字节消息长度 + 消息）。后端复用 `tts/qwen3-tts/qwen3_tts_interactive.py` 的 `split_text()` 按标点切段，逐段生成 WAV 后立即写帧。这是「单请求 + 完整 WAV 分段帧」，**不是**逐 PCM 帧流。
+长度前缀帧协议，前端 `web/app.js` 的 `readTtsFrames()` 解析：每帧 = 4 字节大端长度 + WAV 字节；结束帧长度 `0`，错误帧长度 `0xffffffff`（后跟 4 字节消息长度 + 消息）。普通 TTS provider 可由基类返回一个完整 WAV 帧；Qwen3 provider 在自己的功能包内按标点分段并逐帧返回。这是「单请求 + 完整 WAV 帧」，**不是**逐 PCM 帧流。
 
 ### Qwen3-TTS 启动与调用链
 
-**启动**：`scripts/start_tts.sh` → `tts/qwen3-tts/start_server.sh` → `setsid` 后台拉起 runtime，核心命令：
+**启动**：`scripts/start_web.sh` → `backend/componentctl.py` → 当前选中的 TTS provider 生命周期脚本 → `tts/qwen3-tts/start_server.sh` 或 MOSS daemon，随后启动 Web backend。核心命令：
 
 ```bash
 llama-server --media-backend smt --smt-config-dir qwen3-tts-0.6b \
@@ -120,15 +157,16 @@ llama-server --media-backend smt --smt-config-dir qwen3-tts-0.6b \
 web/app.js speakState()
   → POST /api/tts/stream  {text, voice, speed}
   → backend/server.py stream_tts()
-      ├─ importlib 动态加载 qwen3_tts_interactive.py（复用 split_text/synthesize）
+      ├─ TtsDispatcher 选择 manifest 声明的 provider
       ├─ split_text() 按自然标点切段
       └─ 逐段 POST http://127.0.0.1:18080/v1/audio/speech（TTS_REQUEST_LOCK 串行）
   ← 每段 WAV 以长度前缀帧写回，网页 readTtsFrames() 逐段播放
 ```
 
-backend 不自己实现切分，而是 `importlib.util` 动态加载 `tts/qwen3-tts/qwen3_tts_interactive.py` 并复用它的 `split_text()`/`synthesize()`，因此改 interactive 脚本会同步影响 Web 路径。
-
-**命令行调试入口**：`tts/qwen3-tts/run_interactive.sh '文本'`（或省略文本进交互模式）直接驱动 `qwen3_tts_interactive.py`，不经 backend，解码 WAV 后用长生命周期 `aplay` 播 PCM，不落盘 WAV。
+backend 不再动态加载底层 runtime 的交互脚本。Qwen3 的切分和 HTTP 请求位于
+`backend/components/tts_qwen3/client.py`，MOSS 的 chunk 协议位于
+`backend/core/tts_protocol.py`。底层 `tts/*` 目录只保留模型 runtime 和内部启停脚本，
+不提供用户交互式 CLI；调度统一经 `backend/componentctl.py` 和 `TtsDispatcher`。
 
 ## 前端状态机（`web/app.js`）
 
@@ -136,19 +174,20 @@ backend 不自己实现切分，而是 `importlib.util` 动态加载 `tts/qwen3-
 select → rules → ready → countdown → shaking → open → analysis → result → ready/select
 ```
 
-人手操作按钮 = 未来机械臂 Action 的占位：`startShake` / `stopShake` / `revealDice`（见 `AI_PROJECT_CONTEXT.md` 第 4.3 节映射）。所有播报文案集中在 `web/tts-texts.json`（状态键 + `{player_score}`/`{agent_score}` 占位符），`app.js` 只引用键、不硬编码文案。
+人手操作按钮 = 未来机械臂 Action 的占位：`startShake` / `stopShake` / `revealDice`（见 `AI_PROJECT_CONTEXT.md` 第 4.3 节映射）。所有播报文案集中在 `backend/games/<game_id>/manifest.json`（状态键可选 `mode=tts` 或 `mode=audio`，TTS 支持 `{player_score}`/`{agent_score}` 占位符），`app.js` 通过 `/api/games` 加载，只引用键、不硬编码文案。
 
 ## 必须遵守的约束（非可选）
 
-- **胜负只能由 K3 YOLOv8 + LLM 复核产生**，禁止网页随机骰子兜底。有效结果要求：左右各 5 颗、稳定帧达标、LLM 与 YOLO 结论一致、`verified:true`。
-- **LLM key 不进仓库**：key 从 `.dice-arena.env`（`DICE_LLM_API_KEY=...`，chmod 600）或环境变量提供；`vision/yolov8_objdetect/config.json` 里的 `llm.api_key` 必须保持空字符串。不要把 key 写进 `web/`、API 响应或日志。
-- **不要回滚/覆盖用户本地修改**：`git status` 里 `vision/yolov8_objdetect/config.json` 常处于未提交的本地修改状态（涉及 LLM 配置），操作前重新确认，提交时只提交本次任务相关文件。
+- **胜负只能由 K3 YOLOv8 detection + Python profile/provider 产生**，禁止网页随机结果兜底。具体稳定帧、规则、LLM 一致/覆盖/超时回退策略由游戏 manifest 的 `vision_profile` 声明。
+- **LLM key 存放于** `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm.api_key`。该文件被 Git 跟踪，**仓库必须保持私有**；若将来要公开仓库，先在服务商处轮换 key。不要把 key 写进 `web/`、API 响应或日志；提交推送包含真实 key 的文件前先与用户确认。
+- **不要回滚/覆盖用户本地修改**：`git status` 里 `vision/yolov8_adjudicator/config.json` 常处于未提交的本地修改状态（涉及 LLM 配置），操作前重新确认，提交时只提交本次任务相关文件。
 - **CPU/EP 亲和性不要混用**：TTS 用 preferred cores `8,9,10,11,12,13`；YOLO EP affinity 是 `14;15`（`config.json` 的 `ep_affinity`）。`taskset`/环境变量只证明配置意图，不证明 AI Core 实际利用率。
 - **不要声称未实现的功能**：当前没有机械臂、没有 ROS2、没有 WebSocket、TTS 不是逐 PCM 流式、底层模型支持 voice cloning 但接口未开放参考音频上传。
 - **一次只允许一个 YOLOv8 分析任务**（`create_job()` 里 `active_job_id` 单任务锁），避免争用摄像头/算力。
-- 不提交：`.dice-arena.env`、`*.log`、`*.pid`、`build/`、`*.onnx`、`*.gguf`、speaker `*.bin`（见根 `.gitignore`）。
+- 不提交：`*.log`、`*.pid`、`build/`、`*.onnx`、`*.gguf`、speaker `*.bin`（见根 `.gitignore`）。
 
 ## 子工程规范速查
 
 - **YOLOv8 C++**：C++17，四空格缩进，类 PascalCase、局部/函数 snake_case，RAII 管理 GStreamer/OpenCL/ORT 资源。改动采集或预处理后，必须同时跑 `--self-test --no-display` 和短 `--max-frames` 测试。
-- **Qwen3-TTS**：改动 `qwen3_tts_interactive.py` 后至少验证 `python3 -m py_compile`、`/health` 正常、单段中文直接播放、默认运行不生成 `wav-output/output.wav`、播放结束无残留 `aplay`（详见子工程 `AGENTS.md` 的「修改和验证规则」）。
+- **Qwen3/MOSS TTS**：改动功能包后至少验证 `python3 -m py_compile backend/components/tts_*/*.py`、
+  `python3 -m unittest tests.test_tts_a2 -v` 和已部署板端 `/health`；真实模型合成需在 K3 上执行。

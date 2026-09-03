@@ -1,0 +1,17 @@
+# Board-only runtime payloads; provision these on the target board.
+models/
+python/
+lib/
+
+# User/reference audio and generated synthesis output.
+assets/
+voice/
+outputs/
+
+# Python caches and local tooling state.
+__pycache__/
+*.py[cod]
+.vscode/
+.idea/
+.DS_Store
+*~

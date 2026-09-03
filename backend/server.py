@@ -3,82 +3,773 @@
 
 The bridge owns only HTTP routing, static serving, and per-round job lifecycle.
 Board-local capabilities live in pluggable components
-(``components/vision_yolo.py``, ``components/tts_qwen3.py``) and games declare
+(``components/<id>/provider.py``) and games declare
 which components they orchestrate (``games/*/``). The browser never receives
 the LLM key and never decides the winner itself.
 """
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import mimetypes
 import os
+import signal
+import sys
 import threading
+import time
 from http import HTTPStatus
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from components.tts_qwen3 import (
-    TTS_ENGINE,
-    TTS_ROOT,
-    TTS_SPEAKER_FILE,
-    TTS_URL,
-    stream_tts,
-    synthesize_tts,
-    tts_health,
-    validate_tts_payload,
-)
-from components.vision_yolo import configured_llm, yolo_binary
-from core.env import load_board_env
+from core.components import build_registry
 from core.errors import (
     DiceArenaError,
     InvalidRequestError,
     JobAlreadyExistsError,
     JobNotFoundError,
 )
-from core.games import load_games, require_game, run_game
+from core.games import (
+    GAMES_ROOT,
+    GameRegistry,
+    load_games,
+    require_game,
+    resolve_game_audio_path,
+    resolve_provider_id,
+    resolve_adjudication_timeout,
+    run_game,
+)
 from core.jobs import ComponentJob
+from core.asr_bridge import AsrIntentBridge
+from core.arena_config import (
+    ARENA_CONFIG_PATH,
+    ArenaConfigError,
+    arena_asr_enabled,
+    arena_game_select_phrases,
+    arena_slot_value,
+    arena_standby,
+    collect_local_tts_ids,
+    collect_provider_slot_ids,
+    load_arena_config,
+    resolve_local_tts_pin,
+    with_global_defaults,
+)
+from core.state_machine import GameRound, IntentRejectedError, RoundClosedError
+from core.tts_config import TtsConfigError
+from core.tts_config import load_component_config as load_tts_component_config
+from core.tts_dispatch import TtsDispatcher
+from core.tts_protocol import (
+    encode_audio_frame,
+    encode_end_frame,
+    encode_error_frame,
+)
+from components.vision_yolov8_adjudicator.profile import (
+    compose_video_url,
+    load_component_config,
+    load_runtime_config,
+    resolve_runtime_config_path,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = ROOT / "web"
-TTS_STREAM_END = 0
-TTS_STREAM_ERROR = 0xFFFFFFFF
 
-load_board_env()
-
-# Resolve runtime settings only after loading the board-local env file.
-JOB_TIMEOUT_SECONDS = int(os.environ.get("DICE_JOB_TIMEOUT_SECONDS", "120"))
+# Operational fallback; each game manifest's timeouts.adjudication_seconds owns
+# the per-round budget.
+JOB_TIMEOUT_SECONDS = 120
+COMPONENTS = build_registry()
 GAMES = load_games()
 
+# Manifest hot reload: game manifests are small and reread whenever their
+# mtime changes, so line edits, wav swaps, and speech-mode changes take
+# effect on the next page load or request without a service restart.
+# Engine processes keep their boot-time set: slot ids are expected to keep
+# pointing at the providers that were started (per-line changes between
+# local/remote/audio need no new process).
+_GAMES_ROOT = GAMES_ROOT
+_GAMES_LOCK = threading.Lock()
 
-def _vision_phase_of(line: str) -> str | None:
-    """Map a YOLOv8 stdout line to a coarse job phase label."""
-    if line.startswith("[YOLO]") or "OpenCL GPU" in line or "Model loaded" in line:
-        return "detecting"
-    if line.startswith("[LLM]") or "calling LLM" in line:
-        return "verifying"
+
+def _manifest_mtimes() -> dict[str, float]:
+    return {
+        str(path): path.stat().st_mtime
+        for path in sorted(_GAMES_ROOT.glob("*/manifest.json"))
+    }
+
+
+def get_games() -> GameRegistry:
+    """Return the game registry, reloading manifests when their mtime changes.
+
+    A reload that would drop a previously loaded game means a broken manifest
+    edit; keep serving the last good registry in that case so a typo cannot
+    make games vanish from the UI.  Removing a game on purpose needs a
+    service restart.  A reload that would reference a second local TTS
+    engine (slot or per-line provider pin) is rejected the same way: the
+    process is frozen on the one engine it pinned at startup.
+    """
+    global GAMES, _GAMES_MTIMES
+    reloaded = False
+    with _GAMES_LOCK:
+        mtimes = _manifest_mtimes()
+        if mtimes != _GAMES_MTIMES:
+            candidate = load_games(_GAMES_ROOT)
+            missing = {m["id"] for m in GAMES.all()} - {m["id"] for m in candidate.all()}
+            conflict = (
+                _single_local_tts_conflict(_ARENA_CONFIG, candidate)
+                or _single_asr_conflict(_ARENA_CONFIG, candidate)
+            )
+            if missing:
+                print(
+                    f"[games] reload skipped; broken manifest removed {sorted(missing)}, "
+                    "keeping last good config",
+                    flush=True,
+                )
+            elif conflict is not None:
+                print(f"[games] reload skipped; {conflict}", flush=True)
+            else:
+                GAMES = candidate
+                _GAMES_MTIMES = mtimes
+                reloaded = True
+        games = GAMES
+    # The drift check re-enters get_games() and the arena accessors; it must
+    # run OUTSIDE _GAMES_LOCK — _GAMES_LOCK is not reentrant, and calling it
+    # under the lock deadlocked every request thread (2026-09-03 incident).
+    # The conflict check above therefore reads the cached _ARENA_CONFIG
+    # instead of get_arena_config(); the drift pass below re-validates.
+    if reloaded:
+        _check_local_tts_drift()
+    return games
+
+
+_GAMES_MTIMES: dict[str, float] = _manifest_mtimes()
+
+# Arena (project-wide) config: deployment defaults that follow the process
+# rather than any single game — provider slots, TTS voice/speed defaults,
+# and the global ASR breaker.  Hot-reloaded with the same keep-last-good
+# rule as game manifests; the local TTS selection is additionally pinned at
+# process start (see main) because a running engine cannot be swapped.
+_ARENA_CONFIG: dict[str, Any] = {}
+_ARENA_MTIME: float | None = None
+_LOCAL_TTS_PIN: str | None = None
+
+
+def get_arena_config() -> dict[str, Any]:
+    """Return the arena config, reloading backend/config.json on mtime change."""
+    global _ARENA_CONFIG, _ARENA_MTIME
+    try:
+        mtime = ARENA_CONFIG_PATH.stat().st_mtime
+    except OSError:
+        mtime = None
+    if mtime != _ARENA_MTIME:
+        _ARENA_MTIME = mtime
+        try:
+            _ARENA_CONFIG = load_arena_config(ARENA_CONFIG_PATH)
+            print("[arena] config loaded", flush=True)
+        except ArenaConfigError as exc:
+            print(f"[arena] keep last good config: {exc}", flush=True)
+        _check_local_tts_drift()
+    return _ARENA_CONFIG
+
+
+def _enabled_game_manifests() -> list[dict[str, Any]]:
+    return [m for m in get_games().all() if m.get("enabled", False)]
+
+
+def _check_local_tts_drift() -> None:
+    """A mid-run local-TTS config change must not switch the running engine."""
+    if _LOCAL_TTS_PIN is None:
+        return
+    try:
+        would_pin = resolve_local_tts_pin(get_arena_config(), _enabled_game_manifests())
+    except ArenaConfigError as exc:
+        print(
+            f"[arena] local TTS conflict appeared at runtime "
+            f"(frozen: {_LOCAL_TTS_PIN}): {exc}",
+            flush=True,
+        )
+        return
+    if would_pin and would_pin != _LOCAL_TTS_PIN:
+        print(
+            f"[arena] local TTS config now points at {would_pin} but the process "
+            f"is frozen on {_LOCAL_TTS_PIN}; restart to switch engines",
+            flush=True,
+        )
+
+
+def _is_local_tts(provider_id: str) -> bool:
+    """True when the id names a registered TTS component of local runtime kind.
+
+    Unregistered ids (typos, cloud-only entries without a package) never
+    count: they fail later at request time with the existing not-found error.
+    """
+    get_manifest = getattr(COMPONENTS, "get_manifest", None)
+    if not callable(get_manifest):
+        return False
+    try:
+        manifest = get_manifest(provider_id)
+    except DiceArenaError:
+        return False
+    if not isinstance(manifest, dict) or manifest.get("type") != "tts":
+        return False
+    package_dir = ROOT / "backend" / "components" / provider_id
+    try:
+        # The TTS loader, not the vision-profile one: each package kind
+        # validates its own config schema.
+        config = load_tts_component_config(package_dir)
+    except TtsConfigError:
+        return False  # a broken component config is health's failure to report
+    runtime = config.get("runtime", {})
+    return isinstance(runtime, dict) and runtime.get("kind", "local") == "local"
+
+
+def _single_local_tts_conflict(
+    arena: dict[str, Any], registry: GameRegistry
+) -> str | None:
+    """Return the single-local-TTS conflict message, or None when consistent.
+
+    Checks every routing path — arena slot, enabled-game slots, and per-line
+    speech ``provider`` pins — against the components' runtime kind, so a
+    manifest line cannot route around the pinned local engine either.
+    """
+    manifests = [m for m in registry.all() if m.get("enabled", False)]
+    ids = collect_local_tts_ids(arena, manifests, _is_local_tts)
+    if len(ids) > 1:
+        return (
+            "multiple local TTS engines referenced "
+            f"(slots or per-line provider pins): {', '.join(ids)} — "
+            "keep exactly one local engine; remote/cloud engines may still be "
+            "mixed per line"
+        )
     return None
+
+
+def _prewarm_pinned_local_tts(pin: str | None) -> None:
+    """Warm the pinned local TTS engine before the server starts serving.
+
+    Local engines are heavy resident processes with mandatory warmup (the
+    demo's first spoken line must not pay the model-load latency).  A missing
+    provider or a failed warmup refuses startup: a silent arena is a broken
+    arena, and the failure belongs at boot, not on stage.
+    """
+    if not pin:
+        return
+    try:
+        provider = COMPONENTS.require(pin, expected_type="tts")
+    except DiceArenaError as exc:
+        print(f"[arena] refusing to start: local TTS {pin} unavailable: {exc.message}", flush=True)
+        raise SystemExit(1) from exc
+    prewarm = getattr(provider, "prewarm", None)
+    if not callable(prewarm):
+        # HTTP-bridge engines (moss/qwen3) warm up in their lifecycle launcher.
+        print(f"[arena] local TTS {pin} has no prewarm hook (lifecycle engine)", flush=True)
+        return
+    try:
+        prewarm()
+    except Exception as exc:
+        print(f"[arena] refusing to start: local TTS {pin} prewarm failed: {exc}", flush=True)
+        raise SystemExit(1) from exc
+    print(f"[arena] local TTS {pin} prewarmed", flush=True)
+
+
+def _single_asr_conflict(arena: dict[str, Any], registry: GameRegistry) -> str | None:
+    """Return the single-ASR-engine conflict message, or None when consistent.
+
+    The ASR engine owns the microphone for the whole process run, so exactly
+    one engine id may be referenced anywhere (arena slot plus enabled-game
+    overrides) — a second one could never run anyway and must fail loudly.
+    """
+    manifests = [m for m in registry.all() if m.get("enabled", False)]
+    ids = collect_provider_slot_ids("asr", arena, manifests)
+    if len(ids) > 1:
+        return (
+            f"multiple ASR engines referenced: {', '.join(ids)} — "
+            "keep exactly one (the engine owns the microphone)"
+        )
+    return None
+
+
+def _prewarm_resident_asr(arena: dict[str, Any]) -> None:
+    """Warm the resident ASR engine before the server starts serving.
+
+    Raises RuntimeError on a failed warmup (the caller refuses startup);
+    with the breaker off or the slot unconfigured the engine simply stays
+    down and voice input recovers lazily at the next attach.
+    """
+    if not arena_asr_enabled(arena):
+        print("[arena] asr_enabled=false: ASR engine stays down (voice input off)", flush=True)
+        return
+    provider_id = arena_slot_value(arena, "asr")
+    if not provider_id:
+        print("[arena] providers.asr not configured; skipping ASR prewarm", flush=True)
+        return
+    try:
+        provider = COMPONENTS.require(provider_id, expected_type="asr")
+    except DiceArenaError as exc:
+        raise RuntimeError(
+            f"ASR provider {provider_id} unavailable: {exc.message}"
+        ) from exc
+    prewarm = getattr(provider, "prewarm", None)
+    if not callable(prewarm):
+        print(f"[arena] ASR provider {provider_id} has no prewarm hook (per-session engine)", flush=True)
+        return
+    try:
+        prewarm()
+    except Exception as exc:
+        raise RuntimeError(f"ASR engine {provider_id} prewarm failed: {exc}") from exc
+    print(f"[arena] ASR engine {provider_id} prewarmed (resident)", flush=True)
+
+
+def _game_provider_id(game_id: str, provider_slot: str, fallback: str) -> str:
+    manifest = require_game(get_games(), game_id)
+    provider_id = resolve_provider_id(manifest, provider_slot)
+    if not provider_id:
+        provider_id = arena_slot_value(get_arena_config(), provider_slot)
+    return provider_id or fallback
+
+
+def _provider_health(
+    provider_id: str,
+    provider_type: str,
+    provider_role: str | None = None,
+) -> dict[str, Any]:
+    """Return health without allowing a broken optional provider to break /health."""
+    try:
+        provider = COMPONENTS.require(
+            provider_id,
+            expected_type=provider_type,
+            expected_role=provider_role,
+        )
+    except DiceArenaError as exc:
+        return {
+            "id": provider_id,
+            "type": provider_type,
+            "role": provider_role or "",
+            "ok": False,
+            "error": exc.message,
+        }
+    try:
+        health = provider.health()
+    except Exception as exc:
+        return {
+            "id": provider_id,
+            "type": provider_type,
+            "role": provider_role or "",
+            "ok": False,
+            "error": str(exc),
+        }
+    if not isinstance(health, dict):
+        return {
+            "id": provider_id,
+            "type": provider_type,
+            "role": provider_role or "",
+            "ok": False,
+            "error": "health() must return an object",
+        }
+    normalized = dict(health)
+    normalized.setdefault("id", provider.id)
+    normalized.setdefault("type", provider.type)
+    normalized.setdefault("role", provider.role)
+    return normalized
+
+
+def _selected_provider_id(game_id: str, provider_slot: str, fallback: str) -> str:
+    return _game_provider_id(game_id, provider_slot, fallback)
+
+
+def _selected_tts_id(game_id: str = "dice") -> str:
+    try:
+        return _tts_dispatcher().provider_id(game_id)
+    except DiceArenaError:
+        return "tts_qwen3"
+
+
+def _safe_profile_metadata(profile: dict[str, Any], base_url: str, runtime: dict[str, Any]) -> dict[str, Any]:
+    """Project one profile to public health fields; never recurse into registry metadata."""
+    video = profile.get("video", {})
+    path = video.get("path") if isinstance(video, dict) else ""
+    result: dict[str, Any] = {
+        "profile_id": profile.get("game_id", ""),
+        "video_enabled": bool(video.get("enabled", True)) if isinstance(video, dict) else False,
+        "video_path": path if isinstance(path, str) else "",
+        "mode": runtime.get("mode", ""),
+        "prewarm": bool(runtime.get("prewarm_camera", False)),
+        "runtime_mode": runtime.get("mode", ""),
+        "prewarm_camera": bool(runtime.get("prewarm_camera", False)),
+        "mediamtx_base_url": base_url,
+        "webrtc_base_url": base_url,
+    }
+    if result["video_enabled"] and result["video_path"] and isinstance(base_url, str):
+        try:
+            result["video_url"] = compose_video_url(base_url, result["video_path"])
+        except Exception:
+            pass
+    multi = profile.get("multi_view") if isinstance(profile.get("multi_view"), dict) else {}
+    views: list[dict[str, Any]] = []
+    for view in multi.get("views", []) if isinstance(multi.get("views", []), list) else []:
+        if not isinstance(view, dict) or not isinstance(view.get("id"), str):
+            continue
+        view_video = view.get("video") if isinstance(view.get("video"), dict) else {}
+        view_path = view_video.get("path", "")
+        item = {"id": view["id"], "video_path": view_path if isinstance(view_path, str) else ""}
+        if bool(view_video.get("enabled", True)) and item["video_path"] and isinstance(base_url, str):
+            try:
+                item["video_url"] = compose_video_url(base_url, item["video_path"])
+            except Exception:
+                pass
+        views.append(item)
+    result["multi_view"] = {"enabled": bool(multi.get("enabled", False)), "min_views": int(multi.get("min_views", 1)), "views": views}
+    return result
+
+
+def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
+    """Expose safe, deployment-facing vision metadata without prompts/secrets."""
+    try:
+        manifest = require_game(get_games(), game_id)
+        profile = manifest.get("vision_profile")
+        if not isinstance(profile, dict):
+            return {}
+        package_dir = ROOT / "backend" / "components" / provider_id
+        config = load_component_config(package_dir)
+        video = profile.get("video", {}) if isinstance(profile.get("video"), dict) else {}
+        component_video = config.get("video", {}) if isinstance(config.get("video"), dict) else {}
+        runtime_video = {}
+        try:
+            runtime_config = load_runtime_config(resolve_runtime_config_path(config))
+            runtime_video = runtime_config.get("video", {}) if isinstance(runtime_config.get("video"), dict) else {}
+        except Exception:
+            runtime_video = {}
+        base_url = video.get("webrtc_base_url", "") or runtime_video.get("webrtc_base_url", "") or component_video.get("webrtc_base_url", "")
+        runtime = config.get("runtime", {})
+        runtime = runtime if isinstance(runtime, dict) else {}
+        metadata = _safe_profile_metadata(profile, base_url, runtime)
+        profile_metadata = []
+        for item in get_games().all():
+            item_profile = item.get("vision_profile")
+            if not isinstance(item_profile, dict):
+                continue
+            item_video = item_profile.get("video", {})
+            item_base = (
+                item_video.get("webrtc_base_url", "") if isinstance(item_video, dict) else ""
+            ) or runtime_video.get("webrtc_base_url", "") or component_video.get("webrtc_base_url", "")
+            profile_metadata.append(_safe_profile_metadata(item_profile, item_base, runtime))
+        metadata["profiles"] = profile_metadata
+        return metadata
+    except Exception:
+        # Provider health already reports component/configuration failures;
+        # metadata is optional and must never mask that primary signal.
+        return {}
+
+
+def _tts_provider(payload: dict[str, Any], game_id: str | None = None):
+    """Compatibility wrapper for callers that still import this helper."""
+    return _tts_dispatcher().provider(payload, game_id)
+
+
+def _tts_dispatcher() -> TtsDispatcher:
+    # Resolve on demand so tests and board operators can replace the registry
+    # or environment without restarting this module object.  Arena slots fill
+    # in behind the game manifest; the pinned local TTS engine (frozen at
+    # process start) overrides even later manifest edits.
+    return TtsDispatcher(
+        COMPONENTS,
+        get_games(),
+        slot_fallbacks=lambda slot: arena_slot_value(get_arena_config(), slot),
+        pinned_local_tts=_LOCAL_TTS_PIN,
+    )
 
 
 jobs: dict[str, ComponentJob] = {}
 jobs_lock = threading.Lock()
 active_job_id: str | None = None
 
+# Authoritative game rounds.  One active round at a time mirrors the
+# single-YOLO-job rule; creating a new round cancels a stale one so a
+# browser refresh (which abandons its round) cannot block the next session.
+rounds: dict[str, GameRound] = {}
+rounds_lock = threading.Lock()
 
-def create_job(game_id: str) -> ComponentJob:
+# A running round requires a live browser: its SSE stream doubles as the
+# presence signal.  When the last stream consumer disconnects (tab closed,
+# network lost, device asleep), the round gets a grace window — the browser's
+# EventSource reconnects on its own, so a blip must not cancel the game —
+# after which the round is cancelled, which also stops the ASR microphone.
+# Nothing here gates the physical buttons: they are server-side intents and
+# work with or without a browser.
+SSE_GRACE_SECONDS = 45.0
+_sse_connections: dict[str, int] = {}  # round_id -> live SSE consumer count
+_sse_presence: dict[str, float] = {}  # round_id -> monotonic deadline while detached
+_sse_presence_lock = threading.Lock()
+_sse_watchdog: threading.Thread | None = None
+
+
+def _sse_cancel_stale_rounds() -> None:
+    """Cancel running rounds whose SSE consumer stayed away past the grace."""
+    now = time.monotonic()
+    expired: list[str] = []
+    with _sse_presence_lock:
+        for round_id, deadline in list(_sse_presence.items()):
+            if deadline <= now:
+                expired.append(round_id)
+            elif rounds.get(round_id) is not None and rounds[round_id].status != "running":
+                # Terminal round: keep the presence table bounded.
+                _sse_presence.pop(round_id, None)
+    for round_id in expired:
+        with rounds_lock:
+            round_ = rounds.get(round_id)
+        if round_ is None:
+            with _sse_presence_lock:
+                _sse_presence.pop(round_id, None)
+            continue
+        if round_.status == "running":
+            print(f"[round:{round_id[:8]}] SSE 消费者离开超过 {SSE_GRACE_SECONDS:g}s，自动取消回合", flush=True)
+            round_.cancel()  # terminal → asr bridge watcher stops the mic
+        with _sse_presence_lock:
+            _sse_presence.pop(round_id, None)
+
+
+def _sse_watchdog_loop() -> None:
+    while True:
+        time.sleep(5.0)
+        try:
+            _sse_cancel_stale_rounds()
+        except Exception as exc:  # watchdog must never die silently
+            print(f"[round] sse watchdog error: {exc!r}", flush=True)
+
+
+def _ensure_sse_watchdog() -> None:
+    global _sse_watchdog
+    with _sse_presence_lock:
+        if _sse_watchdog is not None and _sse_watchdog.is_alive():
+            return
+        _sse_watchdog = threading.Thread(
+            target=_sse_watchdog_loop, name="sse-watchdog", daemon=True
+        )
+        _sse_watchdog.start()
+
+
+def _sse_stream_opened(round_id: str) -> None:
+    """One SSE consumer connected: presence is restored immediately."""
+    with _sse_presence_lock:
+        _sse_connections[round_id] = _sse_connections.get(round_id, 0) + 1
+        _sse_presence.pop(round_id, None)
+
+
+def _sse_stream_closed(round_id: str) -> None:
+    """One SSE consumer left: start the grace clock only when it was the last."""
+    with _sse_presence_lock:
+        remaining = _sse_connections.get(round_id, 0) - 1
+        if remaining > 0:
+            _sse_connections[round_id] = remaining
+            return
+        _sse_connections.pop(round_id, None)
+        _sse_presence[round_id] = time.monotonic() + SSE_GRACE_SECONDS
+    _ensure_sse_watchdog()
+
+
+ASR_BRIDGE = AsrIntentBridge(components=COMPONENTS)
+
+# Screen-level ASR events (standby wake / game selection): no round is
+# running on those screens, so there is no per-round SSE stream to ride on.
+# A tiny global event bus serves what the mic heard to the polling frontend
+# endpoints.  Each screen (standby, list) owns its own bus; ``listen:true``
+# clears it, which starts a clean event epoch.
+class _AsrEventBus:
+    def __init__(self) -> None:
+        self._events: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._sequence = 0
+
+    def clear(self) -> int:
+        """Start a new epoch; returns the cursor history ends at."""
+        with self._lock:
+            self._events.clear()
+            return self._sequence
+
+    def push(self, event: dict[str, Any]) -> None:
+        with self._lock:
+            self._sequence += 1
+            self._events.append({
+                **event,
+                "timestamp_ms": int(time.time() * 1000),
+                "sequence": self._sequence,
+            })
+            del self._events[:-30]
+
+    def poll(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._events)
+
+
+_STANDBY_BUS = _AsrEventBus()
+_SELECT_BUS = _AsrEventBus()
+
+
+def _game_select_phrases() -> dict[str, list[str]]:
+    """Voice-selection trigger words per enabled game, in list order.
+
+    The game list is a deployment-level surface, so its vocabulary lives in
+    the arena config (``game_select.phrases``, hot-reloaded) — never in a
+    game manifest.  Games without an entry are not voice-selectable.
+    """
+    configured = arena_game_select_phrases(get_arena_config())
+    if not configured:
+        return {}
+    table: dict[str, list[str]] = {}
+    for manifest in get_games().all():
+        if not manifest.get("enabled", False):
+            continue
+        words = configured.get(str(manifest["id"]))
+        if words:
+            table[str(manifest["id"])] = list(words)
+    return table
+
+
+def _select_broadcast(bus: _AsrEventBus) -> Callable[[str, str], None]:
+    """Dispatch one select-session hit: wake key or a game id."""
+    def on_select(key: str, text: str) -> None:
+        if key == "wake":
+            bus.push({"event": "asr", "status": "wake", "text": text})
+        else:
+            bus.push({
+                "event": "asr", "status": "selected", "game_id": key, "text": text,
+            })
+    return on_select
+
+
+def _unmatched_broadcast(bus: _AsrEventBus) -> Callable[[str], None]:
+    def on_heard(text: str) -> None:
+        bus.push({"event": "asr", "status": "unmatched", "text": text})
+    return on_heard
+
+
+_ROUND_TIMEOUT_FALLBACK_SECONDS = JOB_TIMEOUT_SECONDS
+
+
+def _round_adjudicate_fn(game_id: str):
+    """Bridge a round's adjudicate action onto the shared provider pipeline."""
+
+    def adjudicate(manifest, on_event, is_cancelled, on_log):
+        return run_game(
+            get_games(),
+            game_id,
+            on_log,
+            is_cancelled,
+            on_event,
+            resolve_adjudication_timeout(
+                require_game(get_games(), game_id), _ROUND_TIMEOUT_FALLBACK_SECONDS
+            ),
+            COMPONENTS,
+            defaults=get_arena_config(),
+        )
+
+    return adjudicate
+
+
+def create_round(game_id: str) -> GameRound:
+    manifest = require_game(get_games(), game_id)
+    if not isinstance(manifest.get("state_machine"), dict):
+        raise InvalidRequestError(f"game {game_id} declares no state_machine")
+    # The round snapshots the *effective* manifest: arena defaults underlaid,
+    # the global ASR breaker applied.  Engine and ASR bridge read it as-is.
+    manifest = with_global_defaults(manifest, get_arena_config())
+    if "participants" not in manifest:
+        raise InvalidRequestError(
+            f"game {game_id} declares no participants and the arena config provides none"
+        )
+    with rounds_lock:
+        for existing in list(rounds.values()):
+            if existing.status == "running":
+                existing.cancel()
+        # Finished rounds are dropped once the table grows past a small
+        # watermark; snapshots stay queryable for the current session.
+        finished = [rid for rid, item in rounds.items() if item.status != "running"]
+        for stale_id in finished[: max(0, len(rounds) - 16)]:
+            rounds.pop(stale_id, None)
+        round_ = GameRound(
+            game_id=game_id,
+            manifest=manifest,
+            adjudicate_fn=_round_adjudicate_fn(game_id),
+            log=lambda line: print(f"[round:{round_.id[:8]}] {line}", flush=True),
+        )
+        rounds[round_.id] = round_
+    round_.start()
+    # A fresh round has no SSE consumer yet: it starts inside the presence
+    # grace window.  A browser subscribing clears it; nothing connecting
+    # (curl-driven rounds) is cancelled by the watchdog like any other
+    # abandoned round.
+    _sse_stream_closed(round_.id)
+    # Hand the microphone routing to this round.  The ASR engine is resident
+    # (warmed at startup), so this is an instant callback swap — start_for_
+    # round's own stop() releases any standby wake-word routing first.  Voice
+    # input never gates round creation: a broken ASR provider only means this
+    # round runs on buttons alone.
+    try:
+        ASR_BRIDGE.start_for_round(round_)
+    except Exception as exc:
+        print(f"[asr] failed to start for round {round_.id[:8]}: {exc!r}", flush=True)
+    return round_
+
+
+def _lookup_round(round_id: str) -> GameRound:
+    with rounds_lock:
+        round_ = rounds.get(round_id)
+    if round_ is None:
+        raise JobNotFoundError(round_id)
+    return round_
+
+
+def _shutdown_runtime_components() -> None:
+    """Stop provider-owned resident workers before the backend exits."""
+    try:
+        ASR_BRIDGE.stop()
+    except Exception as exc:
+        print(f"[asr] bridge stop failed: {exc!r}", flush=True)
+    with jobs_lock:
+        active = jobs.get(active_job_id) if active_job_id else None
+    if active is not None and active.status in {"queued", "running"}:
+        active.cancel()
+
+    # Providers own their runtime processes and may expose a provider-specific
+    # shutdown hook.  Keep this seam optional so cloud/fixture providers do
+    # not need lifecycle code just to participate in the registry.
+    for component_id in COMPONENTS.ids():
+        try:
+            component = COMPONENTS.get(component_id)
+            shutdown = getattr(component, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+        except Exception as exc:
+            print(f"[components] shutdown failed for {component_id}: {exc}", flush=True)
+
+_ADJUDICATION_JOB_PREFIXES = ("/api/adjudicate/", "/api/analyze/")
+
+
+def _adjudication_job_remainder(path: str) -> str | None:
+    """Return the job-route suffix for the canonical or legacy endpoint."""
+    for prefix in _ADJUDICATION_JOB_PREFIXES:
+        if path.startswith(prefix):
+            return path[len(prefix):]
+    return None
+
+
+def create_adjudication_job(game_id: str) -> ComponentJob:
     global active_job_id
-    require_game(GAMES, game_id)  # raises GameNotFoundError / GameDisabledError
+    require_game(get_games(), game_id)  # raises GameNotFoundError / GameDisabledError
     with jobs_lock:
         if active_job_id:
             active = jobs.get(active_job_id)
             if active and active.status in {"queued", "running"}:
                 raise JobAlreadyExistsError(active_job_id)
 
-        def run_fn(on_log, is_cancelled):
-            return run_game(GAMES, game_id, on_log, is_cancelled, JOB_TIMEOUT_SECONDS)
+        def run_fn(on_log, is_cancelled, on_event):
+            return run_game(
+                get_games(), game_id, on_log, is_cancelled, on_event,
+                resolve_adjudication_timeout(require_game(get_games(), game_id), JOB_TIMEOUT_SECONDS), COMPONENTS,
+                defaults=get_arena_config(),
+            )
 
-        job = ComponentJob(run_fn=run_fn, phase_of=_vision_phase_of, name=f"{game_id}-job")
+        job = ComponentJob(run_fn=run_fn, name=f"{game_id}-job")
         jobs[job.id] = job
         active_job_id = job.id
         job.start()
@@ -87,6 +778,8 @@ def create_job(game_id: str) -> ComponentJob:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "DiceArenaK3/0.3"
+
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         # Keep the board console readable; analysis logs are exposed per job.
@@ -120,92 +813,392 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise InvalidRequestError(f"invalid JSON: {exc}") from exc
 
-    def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/api/health":
-            binary = yolo_binary()
-            self.send_json({
-                "ok": True,
-                "backend": "k3-local-yolov8-llm-tts-bridge",
-                "yolo_binary": str(binary),
-                "yolo_ready": binary.is_file() and os.access(binary, os.X_OK),
-                "llm_configured": configured_llm(),
-                "tts_url": TTS_URL,
-                "tts_ready": tts_health(),
-                "tts_engine": TTS_ENGINE,
-                "tts_speaker": TTS_SPEAKER_FILE,
-                "tts_root": str(TTS_ROOT),
-                "camera": os.environ.get("DICE_CAMERA", "config.json"),
-            })
-            return
-        if self.path == "/api/tts/health":
-            self.send_json({"ok": tts_health(), "url": TTS_URL, "root": str(TTS_ROOT)})
-            return
-        if self.path == "/api/games":
-            self.send_json({"games": GAMES.all()})
-            return
-        if self.path.startswith("/api/analyze/"):
-            job_id = self.path[len("/api/analyze/"):].split("/", 1)[0]
-            with jobs_lock:
-                job = jobs.get(job_id)
-            if not job:
-                self.send_error_json(JobNotFoundError(job_id))
-            else:
-                self.send_json(job.snapshot())
-            return
-        self.serve_static()
+    def send_sse_snapshot(self, snapshot: dict[str, Any], event: str = "update") -> None:
+        payload = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+        self.wfile.write(f"event: {event}\ndata: {payload}\n\n".encode("utf-8"))
+        self.wfile.flush()
 
-    def do_POST(self) -> None:  # noqa: N802
-        if self.path == "/api/tts/stream":
+    @staticmethod
+    def job_stream_delta(snapshot: dict[str, Any], after_sequence: int) -> dict[str, Any]:
+        """Build a compact SSE update instead of resending logs/event history."""
+        return {
+            "job_id": snapshot["job_id"],
+            "status": snapshot["status"],
+            "phase": snapshot["phase"],
+            "error": snapshot["error"],
+            "cancelled": snapshot["cancelled"],
+            "result": snapshot["result"],
+            "events": [
+                event for event in snapshot["events"]
+                if int(event.get("sequence", 0)) > after_sequence
+            ],
+            "event_sequence": snapshot["event_sequence"],
+            "revision": snapshot["revision"],
+            "started_at": snapshot["started_at"],
+            "finished_at": snapshot["finished_at"],
+        }
+
+    def stream_job_events(self, job: ComponentJob) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        snapshot = job.snapshot()
+        revision = snapshot["revision"]
+        event_sequence = snapshot["event_sequence"]
+        self.send_sse_snapshot(snapshot, "snapshot")
+        try:
+            while snapshot["status"] in {"queued", "running"}:
+                snapshot = job.wait_for_update(revision, timeout=15.0)
+                if snapshot["revision"] <= revision:
+                    self.send_sse_snapshot({
+                        "job_id": job.id,
+                        "revision": revision,
+                        "event_sequence": event_sequence,
+                    }, "heartbeat")
+                    continue
+                delta = self.job_stream_delta(snapshot, event_sequence)
+                revision = snapshot["revision"]
+                event_sequence = snapshot["event_sequence"]
+                if snapshot["status"] in {"success", "error"}:
+                    self.send_sse_snapshot(delta, "complete")
+                    return
+                self.send_sse_snapshot(delta)
+            self.send_sse_snapshot(self.job_stream_delta(snapshot, event_sequence), "complete")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            self.close_connection = True
+
+    @staticmethod
+    def round_stream_delta(snapshot: dict[str, Any], after_sequence: int) -> dict[str, Any]:
+        """Build a compact SSE update for one authoritative round."""
+        return {
+            "round_id": snapshot["round_id"],
+            "game_id": snapshot["game_id"],
+            "status": snapshot["status"],
+            "state": snapshot["state"],
+            "error": snapshot["error"],
+            "result": snapshot["result"],
+            "events": [
+                event for event in snapshot["events"]
+                if int(event.get("sequence", 0)) > after_sequence
+            ],
+            "event_sequence": snapshot["event_sequence"],
+            "revision": snapshot["revision"],
+        }
+
+    def stream_round_events(self, round_: GameRound) -> None:
+        _sse_stream_opened(round_.id)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        snapshot = round_.snapshot()
+        revision = snapshot["revision"]
+        event_sequence = snapshot["event_sequence"]
+        self.send_sse_snapshot(snapshot, "snapshot")
+        try:
+            while snapshot["status"] == "running":
+                snapshot = round_.wait_for_update(revision, timeout=15.0)
+                if snapshot["revision"] <= revision:
+                    self.send_sse_snapshot({
+                        "round_id": round_.id,
+                        "revision": revision,
+                        "event_sequence": event_sequence,
+                    }, "heartbeat")
+                    continue
+                delta = self.round_stream_delta(snapshot, event_sequence)
+                revision = snapshot["revision"]
+                event_sequence = snapshot["event_sequence"]
+                if snapshot["status"] != "running":
+                    self.send_sse_snapshot(delta, "complete")
+                    return
+                self.send_sse_snapshot(delta)
+            self.send_sse_snapshot(self.round_stream_delta(snapshot, event_sequence), "complete")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            # The stream is the browser's presence signal: one consumer left.
+            # A still-running round with zero consumers enters the grace
+            # window (EventSource reconnects on its own, so a blip is
+            # tolerated) after which the watchdog cancels it — releasing the
+            # ASR microphone with it.  Terminal rounds just drop the entry.
+            _sse_stream_closed(round_.id)
+            self.close_connection = True
+
+    def send_round_speech_frames(self, round_: GameRound, directive_id: str) -> None:
+        """Stream one directive's audio: manifest WAV or provider TTS frames."""
+        directive = round_.find_directive(directive_id)
+        if directive is None:
+            self.send_error_json(DiceArenaError(
+                f"speech directive not found: {directive_id}",
+                "SPEECH_DIRECTIVE_NOT_FOUND",
+                404,
+            ))
+            return
+        game_id = round_.game_id
+        provider = None
+        speech_provider_id = None
+        speech_payload: dict[str, Any] | None = None
+        frame: bytes | None = None
+        if directive.get("mode") == "audio":
             try:
-                payload = self.read_json()
-                validate_tts_payload(payload)
+                audio_path = resolve_game_audio_path(game_id, str(directive.get("audio") or ""), root=_GAMES_ROOT)
+                frame = encode_audio_frame(audio_path.read_bytes())
+            except FileNotFoundError as exc:
+                self.send_error_json(DiceArenaError(
+                    f"audio file not found: {exc}", "AUDIO_FILE_NOT_FOUND", 404
+                ))
+                return
+            except (OSError, ValueError) as exc:
+                self.send_error_json(DiceArenaError(str(exc), "AUDIO_CONFIG_ERROR", 400))
+                return
+        else:
+            entry: dict[str, Any] = {"mode": str(directive.get("mode") or "tts_local")}
+            if directive.get("provider"):
+                entry["provider"] = str(directive["provider"])
+            try:
+                dispatcher = _tts_dispatcher()
+                speech_provider_id = dispatcher.provider_id_for_speech_entry(entry, game_id)
+                speech_payload = {
+                    "game": game_id,
+                    "text": str(directive.get("text") or ""),
+                    "voice": str(directive.get("voice") or "default"),
+                    "speed": directive.get("speed", 1.0),
+                }
+                provider = dispatcher.provider(
+                    speech_payload, game_id=game_id, provider_id=speech_provider_id
+                )
+                if not callable(getattr(provider, "stream", None)):
+                    raise InvalidRequestError(
+                        f"TTS provider {provider.id} does not implement stream()"
+                    )
             except DiceArenaError as exc:
                 self.send_error_json(exc)
                 return
 
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-dice-arena-wav-stream")
+        self.send_header("X-Dice-Speech-Directive", directive_id)
+        self.send_header("X-Dice-Speech-Mode", str(directive.get("mode") or "tts_local"))
+        if provider is not None:
+            self.send_header("X-Dice-TTS-Provider", provider.id)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            if provider is not None and speech_payload is not None:
+                def write_frame(audio: bytes) -> None:
+                    self.wfile.write(encode_audio_frame(audio))
+                    self.wfile.flush()
+
+                _tts_dispatcher().stream(
+                    speech_payload,
+                    write_frame,
+                    game_id=game_id,
+                    provider_id=speech_provider_id,
+                )
+            elif frame is not None:
+                self.wfile.write(frame)
+            self.wfile.write(encode_end_frame())
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:
+            print(f"[round] speech stream directive={directive_id} failed: {exc}", flush=True)
+            try:
+                self.wfile.write(encode_error_frame(str(exc)))
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed_url = urlsplit(self.path)
+        path = parsed_url.path
+        if path == "/api/health":
+            component_items = COMPONENTS.all(include_health=True)
+            tts_id = _selected_tts_id()
+            tts_health = _provider_health(tts_id, "tts")
+            remote_id = _selected_provider_id("dice", "tts_remote", "")
+            remote_health = (
+                _provider_health(remote_id, "tts") if remote_id else {
+                    "id": "", "type": "tts", "role": "", "ok": False,
+                    "configured": False,
+                }
+            )
+            adjudicator_id = _selected_provider_id(
+                "dice", "vision_adjudicator", "vision_yolov8_adjudicator"
+            )
+            adjudicator_health = _provider_health(
+                adjudicator_id, "vision", "adjudicator"
+            )
+            adjudicator_health = {
+                **adjudicator_health,
+                **_vision_profile_metadata("dice", adjudicator_id),
+            }
+            self.send_json({
+                "ok": True,
+                "backend": "k3-local-component-bridge",
+                "components": component_items,
+                "adjudicator_provider": adjudicator_id,
+                "adjudicator": adjudicator_health,
+                # Compatibility alias for existing dashboards/clients.
+                "vision": adjudicator_health,
+                "yolo_binary": adjudicator_health.get("binary", ""),
+                "yolo_ready": bool(adjudicator_health.get("ready", False)),
+                "llm_configured": bool(adjudicator_health.get("llm_configured", False)),
+                "tts_provider": tts_id,
+                "tts": tts_health,
+                "tts_url": tts_health.get("url", ""),
+                "tts_ready": bool(tts_health.get("ok", False)),
+                "tts_engine": tts_health.get("engine", ""),
+                "tts_speaker": tts_health.get("speaker", ""),
+                "tts_remote_provider": remote_id,
+                "tts_remote": {**remote_health, "configured": bool(remote_id)},
+                "camera": "config.json",
+            })
+            return
+        if path == "/api/tts/health":
+            requested = parse_qs(parsed_url.query).get("provider", [""])[0]
+            provider_id = requested or _selected_tts_id("dice")
+            health = _provider_health(provider_id, "tts")
+            self.send_json(health, HTTPStatus.OK if health.get("ok") is not False else HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        if path == "/api/components":
+            self.send_json({"components": COMPONENTS.all(include_health=True)})
+            return
+        if path == "/api/games":
+            self.send_json({
+                "games": get_games().public_all(get_arena_config()),
+                "standby": arena_standby(get_arena_config()),
+            })
+            return
+        if path == "/api/asr/standby/events":
+            # Standby-screen wake/selection events (no round → no SSE
+            # stream): the frontend polls this while the standby mic listens.
+            self.send_json({"events": _STANDBY_BUS.poll()})
+            return
+        if path == "/api/asr/select/events":
+            # Game-list selection events, same polling pattern as standby.
+            self.send_json({"events": _SELECT_BUS.poll()})
+            return
+        if path.startswith("/api/game/rounds/"):
+            remainder = path[len("/api/game/rounds/"):]
+            round_id, _, suffix = remainder.partition("/")
+            try:
+                round_ = _lookup_round(round_id)
+            except JobNotFoundError as exc:
+                self.send_error_json(exc)
+                return
+            if suffix == "stream":
+                self.stream_round_events(round_)
+            else:
+                self.send_json(round_.snapshot())
+            return
+        remainder = _adjudication_job_remainder(path)
+        if remainder is not None:
+            job_id, _, suffix = remainder.partition("/")
+            with jobs_lock:
+                job = jobs.get(job_id)
+            if not job:
+                self.send_error_json(JobNotFoundError(job_id))
+            elif suffix == "stream":
+                self.stream_job_events(job)
+            elif suffix == "events":
+                snapshot = job.snapshot()
+                self.send_json({
+                    "job_id": job_id,
+                    "status": snapshot["status"],
+                    "phase": snapshot["phase"],
+                    "events": snapshot["events"],
+                    "event_sequence": snapshot["event_sequence"],
+                    "revision": snapshot["revision"],
+                })
+            else:
+                self.send_json(job.snapshot())
+            return
+        self.serve_static(path)
+
+    def drain_body(self) -> None:
+        """Consume an unread POST body so keep-alive framing stays intact.
+
+        A body left in the socket buffer is parsed as the next pipelined
+        request line on this persistent connection and corrupts it.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length > 0:
+            self.rfile.read(length)
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = urlsplit(self.path).path
+        if path == "/api/tts/stream":
+            try:
+                payload = self.read_json()
+                dispatcher = _tts_dispatcher()
+                provider = dispatcher.provider(payload)
+                if not callable(getattr(provider, "stream", None)):
+                    raise InvalidRequestError(
+                        f"TTS provider {provider.id} does not implement stream()"
+                    )
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
+                return
+            except Exception as exc:
+                self.send_error_json(DiceArenaError(str(exc), "TTS_PROVIDER_ERROR", 502))
+                return
+
+            provider_health = _provider_health(provider.id, "tts")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/x-dice-arena-wav-stream")
-            self.send_header("X-Dice-TTS-Engine", TTS_ENGINE)
-            self.send_header("X-Dice-TTS-Speaker", TTS_SPEAKER_FILE)
-            self.send_header("X-Dice-TTS-Source", "board-local-llama-server")
+            self.send_header("X-Dice-TTS-Provider", provider.id)
+            self.send_header("X-Dice-TTS-Engine", str(provider_health.get("engine", provider.id)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("Connection", "close")
             self.end_headers()
 
             def write_frame(audio: bytes) -> None:
-                self.wfile.write(len(audio).to_bytes(4, "big"))
-                self.wfile.write(audio)
+                self.wfile.write(encode_audio_frame(audio))
                 self.wfile.flush()
 
             try:
-                stream_tts(payload, write_frame)
-                self.wfile.write(TTS_STREAM_END.to_bytes(4, "big"))
+                dispatcher.stream(payload, write_frame)
+                self.wfile.write(encode_end_frame())
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
-                # The browser can cancel the one streaming request when a new
-                # announcement supersedes it.
                 pass
             except Exception as exc:
-                print(f"[tts] stream failed: {exc}", flush=True)
+                print(f"[tts] stream provider={provider.id} failed: {exc}", flush=True)
                 try:
-                    message = str(exc).encode("utf-8")[:2000]
-                    self.wfile.write(TTS_STREAM_ERROR.to_bytes(4, "big"))
-                    self.wfile.write(len(message).to_bytes(4, "big"))
-                    self.wfile.write(message)
+                    self.wfile.write(encode_error_frame(str(exc)))
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     pass
             return
-        if self.path == "/api/tts/synthesize":
+        if path == "/api/tts/synthesize":
             try:
-                audio, headers = synthesize_tts(self.read_json())
+                payload = self.read_json()
+                dispatcher = _tts_dispatcher()
+                provider = dispatcher.provider(payload)
+                audio, headers = dispatcher.synthesize(payload)
             except DiceArenaError as exc:
                 self.send_error_json(exc)
+            except Exception as exc:
+                self.send_error_json(DiceArenaError(str(exc), "TTS_PROVIDER_ERROR", 502))
             else:
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", headers.pop("Content-Type", "audio/wav"))
                 self.send_header("Content-Length", str(len(audio)))
+                self.send_header("X-Dice-TTS-Provider", provider.id)
                 self.send_header("Cache-Control", "no-store")
                 for name, value in headers.items():
                     self.send_header(name, value)
@@ -213,35 +1206,150 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     self.wfile.write(audio)
                 except (BrokenPipeError, ConnectionResetError):
-                    # A browser may cancel an in-flight speech request when a
-                    # newer announcement supersedes it. The synthesis itself
-                    # has completed; do not turn the expected disconnect into
-                    # a noisy server traceback.
                     pass
             return
-        if self.path == "/api/analyze":
+        if path in {"/api/adjudicate", "/api/analyze"}:
             try:
                 payload = self.read_json()
                 game_id = str(payload.get("game") or "dice")
-                job = create_job(game_id)
+                job = create_adjudication_job(game_id)
                 self.send_json(job.snapshot(), HTTPStatus.ACCEPTED)
             except DiceArenaError as exc:
                 self.send_error_json(exc)
             return
-        if self.path.startswith("/api/analyze/") and self.path.endswith("/cancel"):
-            job_id = self.path[len("/api/analyze/"):-len("/cancel")].rstrip("/")
+        if path == "/api/asr/standby":
+            # The frontend asks for wake-word listening while the screen is
+            # in standby, and releases it on wake/round start.  Round sessions
+            # always win: create_round stops the standby routing first.  The
+            # phrase table also carries the game names: game keys come BEFORE
+            # the wake key so "我想玩摇骰子游戏" selects the dice game even
+            # though the wake word "游戏" occurs in it too.
+            try:
+                payload = self.read_json()
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
+                return
+            if payload.get("listen") is not True:
+                ASR_BRIDGE.stop()
+                self.send_json({"listening": False})
+                return
+            standby = arena_standby(get_arena_config())
+            # A fresh listening session starts a clean event epoch: events
+            # from earlier standby periods (room noise, an earlier wake) must
+            # never replay into a newly loaded page — that is what made a
+            # page refresh instantly "wake" with a stale word (2026-09-03).
+            cursor = _STANDBY_BUS.clear()
+            game_phrases = _game_select_phrases()
+            phrases = {**game_phrases, "wake": list(standby["wake_phrases"])}
+            started = ASR_BRIDGE.start_select_session(
+                phrases=phrases,
+                asr_enabled=arena_asr_enabled(get_arena_config()),
+                provider_id=arena_slot_value(get_arena_config(), "asr"),
+                on_select=_select_broadcast(_STANDBY_BUS),
+                on_heard=_unmatched_broadcast(_STANDBY_BUS),
+            )
+            self.send_json({
+                "listening": started,
+                "wake_phrases": standby["wake_phrases"] if started else [],
+                "games": [
+                    {"id": game_id, "phrases": words}
+                    for game_id, words in game_phrases.items()
+                ] if started else [],
+                "cursor": cursor,
+            })
+            return
+        if path == "/api/asr/select":
+            # Game-list voice selection: same routing pattern as standby,
+            # but the phrase table holds game names only (wake words mean
+            # nothing once the list is already on screen).
+            try:
+                payload = self.read_json()
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
+                return
+            if payload.get("listen") is not True:
+                ASR_BRIDGE.stop()
+                self.send_json({"listening": False})
+                return
+            cursor = _SELECT_BUS.clear()
+            game_phrases = _game_select_phrases()
+            started = ASR_BRIDGE.start_select_session(
+                phrases=game_phrases,
+                asr_enabled=arena_asr_enabled(get_arena_config()),
+                provider_id=arena_slot_value(get_arena_config(), "asr"),
+                on_select=_select_broadcast(_SELECT_BUS),
+                on_heard=_unmatched_broadcast(_SELECT_BUS),
+            )
+            self.send_json({
+                "listening": started,
+                "games": [
+                    {"id": game_id, "phrases": words}
+                    for game_id, words in game_phrases.items()
+                ] if started else [],
+                "cursor": cursor,
+            })
+            return
+        if path == "/api/game/rounds":
+            try:
+                payload = self.read_json()
+                game_id = str(payload.get("game") or "dice")
+                round_ = create_round(game_id)
+                self.send_json(round_.snapshot(), HTTPStatus.CREATED)
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
+            return
+        if path.startswith("/api/game/rounds/"):
+            remainder = path[len("/api/game/rounds/"):]
+            round_id, _, suffix = remainder.partition("/")
+            if suffix in {"intents", "cancel", "speech"}:
+                try:
+                    round_ = _lookup_round(round_id)
+                except JobNotFoundError as exc:
+                    self.send_error_json(exc)
+                    return
+                if suffix == "speech":
+                    try:
+                        payload = self.read_json()
+                        directive_id = str(payload.get("directive_id") or "").strip()
+                        if not directive_id:
+                            raise InvalidRequestError("directive_id is required")
+                    except DiceArenaError as exc:
+                        self.send_error_json(exc)
+                        return
+                    self.send_round_speech_frames(round_, directive_id)
+                    return
+                if suffix == "cancel":
+                    self.drain_body()
+                    round_.cancel()
+                    self.send_json(round_.snapshot())
+                    return
+                # intents
+                try:
+                    payload = self.read_json()
+                    intent = str(payload.get("intent") or "").strip()
+                    if not intent:
+                        raise InvalidRequestError("intent is required")
+                    self.send_json(round_.submit_intent(intent, payload))
+                except DiceArenaError as exc:
+                    self.send_error_json(exc)
+                except Exception as exc:
+                    self.send_error_json(DiceArenaError(str(exc), "ROUND_INTENT_ERROR", 500))
+                return
+        remainder = _adjudication_job_remainder(path)
+        if remainder is not None and remainder.endswith("/cancel"):
+            job_id = remainder[:-len("/cancel")].rstrip("/")
             with jobs_lock:
                 job = jobs.get(job_id)
             if not job:
                 self.send_error_json(JobNotFoundError(job_id))
             else:
+                self.drain_body()
                 job.cancel()
                 self.send_json(job.snapshot())
             return
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
-    def serve_static(self) -> None:
-        path = self.path.split("?", 1)[0]
+    def serve_static(self, path: str) -> None:
         relative = path.lstrip("/") or "index.html"
         candidate = (WEB_ROOT / relative).resolve()
         try:
@@ -263,18 +1371,91 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="K3 Dice Arena YOLOv8 + LLM HTTP bridge")
+    parser = argparse.ArgumentParser(description="K3 Dice Arena provider bridge")
+    # A whole-process freeze (e.g. a leaked lock) is diagnosable on demand:
+    # kill -USR1 <pid> dumps every thread's Python stack into the web log.
+    faulthandler.register(signal.SIGUSR1, file=sys.stderr)
     parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8080")))
     args = parser.parse_args()
+    # The local TTS engine is chosen exactly once per process: startup pins
+    # it and later config edits cannot switch it (a resident engine cannot
+    # be swapped mid-run).  A configuration naming two engines refuses to
+    # start rather than silently picking one.
+    global _LOCAL_TTS_PIN
+    try:
+        _LOCAL_TTS_PIN = resolve_local_tts_pin(
+            get_arena_config(), _enabled_game_manifests()
+        )
+    except ArenaConfigError as exc:
+        print(f"[arena] refusing to start: {exc}", flush=True)
+        raise SystemExit(1) from exc
+    # The pin check above covers slots only; per-line speech ``provider``
+    # pins must not route around it either (they would drag a second local
+    # engine's daemon into RAM via referenced startup).
+    arena_config = get_arena_config()
+    conflict = _single_local_tts_conflict(arena_config, get_games())
+    if conflict is not None:
+        print(f"[arena] refusing to start: {conflict}", flush=True)
+        raise SystemExit(1)
+    # The ASR engine owns the microphone for the whole run: exactly one
+    # engine id may be referenced (arena slot plus enabled-game overrides).
+    conflict = _single_asr_conflict(arena_config, get_games())
+    if conflict is not None:
+        print(f"[arena] refusing to start: {conflict}", flush=True)
+        raise SystemExit(1)
+    # Both resident engines warm before the server starts serving: the local
+    # TTS (mandatory, fail-fast) and the ASR engine (when the breaker is on).
+    # They run in parallel — matcha loads on the A100 EP cores, zipformer on
+    # the X100 cores — so boot pays max(~3.5s, ~2.6s), not the sum.
+    asr_prewarm_failure: list[BaseException] = []
+
+    def _run_asr_prewarm() -> None:
+        try:
+            _prewarm_resident_asr(arena_config)
+        except BaseException as exc:  # reported by the main thread below
+            asr_prewarm_failure.append(exc)
+
+    asr_prewarm_thread = threading.Thread(
+        target=_run_asr_prewarm, name="asr-prewarm", daemon=True
+    )
+    asr_prewarm_thread.start()
+    _prewarm_pinned_local_tts(_LOCAL_TTS_PIN)
+    asr_prewarm_thread.join()
+    if asr_prewarm_failure:
+        print(f"[arena] refusing to start: {asr_prewarm_failure[0]}", flush=True)
+        raise SystemExit(1)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Dice Arena K3 backend listening on http://{args.host}:{args.port}", flush=True)
-    print(f"YOLOv8 binary: {yolo_binary()}", flush=True)
-    print(f"LLM configured: {configured_llm()}", flush=True)
+    print(f"Local TTS provider: {_LOCAL_TTS_PIN or 'none'}", flush=True)
+    adjudicator = next((item for item in COMPONENTS.all(include_health=True)
+                        if item["type"] == "vision" and item["role"] == "adjudicator"), None)
+    print(
+        f"Vision adjudicator provider: {adjudicator.get('id') if adjudicator else 'none'}",
+        flush=True,
+    )
+    print(f"Components: {', '.join(COMPONENTS.ids()) or 'none'}", flush=True)
+    shutdown_requested = threading.Event()
+
+    def request_shutdown(signum: int, _frame: Any) -> None:
+        if shutdown_requested.is_set():
+            return
+        shutdown_requested.set()
+        print(f"Received signal {signum}; shutting down runtime components", flush=True)
+        _shutdown_runtime_components()
+        # ``serve_forever`` must be stopped from another thread when called
+        # by a signal handler on the serving thread.
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGINT, request_shutdown)
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass
+    finally:
+        _shutdown_runtime_components()
+        server.server_close()
 
 
 if __name__ == "__main__":

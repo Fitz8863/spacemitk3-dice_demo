@@ -1,0 +1,15 @@
+{
+  "id": "tts_gptsovits",
+  "type": "tts",
+  "name": "GPT-SoVITS v2ProPlus (streaming)",
+  "version": "1.0",
+  "enabled": true,
+  "entry": "provider.py:TtsGptSovits",
+  "capabilities": [
+    "tts.non_streaming_wav",
+    "tts.chunk_stream",
+    "tts.voice_clone",
+    "tts.external_service"
+  ],
+  "config": "config.json"
+}
