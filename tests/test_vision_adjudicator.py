@@ -51,12 +51,12 @@ def test_profile_loads_dice_and_composes_mediamtx_url():
     profile = manifest["vision_profile"]
     assert profile["game_id"] == "dice"
     assert profile["llm"]["context_mode"] == "single_turn_no_history"
-    assert profile["video"]["path"] == "/dice/"
+    assert profile["video"]["path"] == "/dice/det"
     assert profile["vision"]["divider_detection"] is True
     component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
     runtime = load_runtime_config(resolve_runtime_config_path(component))
     assert compose_video_url(runtime["video"]["webrtc_base_url"], profile["video"]["path"]) == (
-        "http://100.118.229.28:8889/dice/"
+        "http://100.118.229.28:8889/dice/det"
     )
 
 

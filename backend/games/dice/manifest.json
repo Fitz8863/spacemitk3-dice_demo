@@ -11,7 +11,8 @@
 				"确认",
 				"确定",
 				"OK",
-				"明白了"
+				"明白了",
+				"准备好了"
 			],
 			"start_shake": [
 				"开始",
@@ -41,7 +42,6 @@
 			]
 		}
 	},
-
 	"vision_profile": {
 		"schema_version": 1,
 		"game_id": "dice",
@@ -103,11 +103,11 @@
 		"video": {
 			"enabled": true,
 			"protocol": "webrtc",
-			"path": "/dice/"
+			"path": "/dice/det"
 		},
 		"lifecycle": {
-			"pre_adjudication_wait_seconds": 4,
-			"post_result_hold_seconds": 3
+			"pre_adjudication_wait_seconds": 3,
+			"post_result_hold_seconds": 2
 		},
 		"timeouts": {
 			"yolo_detection_seconds": 4,
