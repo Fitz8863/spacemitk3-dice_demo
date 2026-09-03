@@ -1,11 +1,14 @@
 """Voice input channel: map recognized sentences onto round intents.
 
-The bridge owns one ASR listening session for the active round.  Every
-finalized sentence is matched against the game manifest's ``asr.phrases``
-map; a hit submits the intent exactly like a button press.  Sentences are
+The bridge owns the microphone *routing* on the ASR engine: every finalized
+sentence flows to whichever callback is currently attached — the active
+round's intent matcher, or the standby wake-word matcher.  With a resident
+engine (see ``asr_zipformer``) attaching and detaching are instant callback
+swaps: the model load is paid once at process startup, and switching between
+round and standby listening never re-spawns the engine.  Sentences are
 dropped while a speech directive may still be playing (the speech gate) so
-the round's own announcements cannot trigger themselves — skipping a
-playing announcement stays a button-only action.
+the round's own announcements cannot trigger themselves — skipping a playing
+announcement stays a button-only action.
 """
 from __future__ import annotations
 
@@ -54,12 +57,13 @@ def match_phrase_intents(phrases: dict[str, list[str]], text: str) -> list[str]:
 
 
 class AsrIntentBridge:
-    """One ASR session bound to the currently active round.
+    """Routes the ASR engine's sentences to the active consumer.
 
-    Sessions are round-scoped: creating a round starts listening (when the
-    game manifest enables ASR), the round ending stops it.  Nothing here
-    blocks round creation — a broken ASR provider must never take down the
-    button-driven flow.
+    Attachments are exclusive and instant: starting a round (when the game
+    manifest enables ASR) swaps the routing to the round's intent matcher,
+    and the round ending detaches it — the resident engine itself stays
+    warm for the next consumer.  Nothing here blocks round creation — a
+    broken ASR provider must never take down the button-driven flow.
     """
 
     def __init__(
@@ -163,7 +167,8 @@ class AsrIntentBridge:
         })
 
     def _watch_round(self, round_: Any, session: Any) -> None:
-        """Stop the session once its round reaches a terminal status."""
+        """Detach the round's routing once its round reaches a terminal
+        status (the resident engine stays warm for the next consumer)."""
         while True:
             time.sleep(_WATCHER_POLL_SECONDS)
             with self._lock:

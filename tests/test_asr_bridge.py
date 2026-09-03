@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -597,3 +598,111 @@ def test_round_with_asr_disabled_starts_no_session(tmp_path, monkeypatch):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---- resident-engine integration: the bridge routes, it never kills --------
+
+
+class RoutingFakeEngine:
+    """_AsrEngine double: attach/detach swap a dict routing; stop kills."""
+
+    instances: list["RoutingFakeEngine"] = []
+
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.current: dict | None = None
+        self.stop_calls = 0
+        self.alive = False
+        RoutingFakeEngine.instances.append(self)
+
+    def attach(self, on_sentence, on_log=None) -> dict:
+        routing = {"on_sentence": on_sentence, "on_log": on_log}
+        self.current = routing
+        return routing
+
+    def detach(self, routing) -> None:
+        if self.current is routing:
+            self.current = None
+
+    def prewarm(self) -> None:
+        self.alive = True
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        self.alive = False
+
+
+class ResidentEngineBridgeTests(unittest.TestCase):
+    """A real ZipformerAsrProvider (engine faked) driven through the bridge:
+    round end detaches the routing, the engine stays warm for standby, and
+    only the provider's shutdown ever kills it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def _make_provider_and_bridge(self):
+        import components.asr_zipformer.provider as asr_provider_module
+        from components.asr_zipformer.provider import ZipformerAsrProvider
+
+        engine_patch = patch.object(asr_provider_module, "_AsrEngine", RoutingFakeEngine)
+        engine_patch.start()
+        self.addCleanup(engine_patch.stop)
+        provider = ZipformerAsrProvider(project_root=self.root)
+        provider.prewarm()
+        engine = RoutingFakeEngine.instances[-1]
+        registry = ComponentRegistry()
+        registry.register(provider, {
+            "id": "asr_zipformer", "type": "asr",
+            "entry": "provider.py:ZipformerAsrProvider",
+        })
+        bridge = AsrIntentBridge(components=registry, log=lambda _line: None)
+        return provider, engine, bridge
+
+    @staticmethod
+    def _asr_manifest():
+        manifest = _round_manifest(asr={
+            "enabled": True,
+            "phrases": {"confirm": ["确认", "确定"], "back": ["返回"]},
+        })
+        manifest["providers"]["asr"] = "asr_zipformer"
+        return manifest
+
+    def test_round_lifecycle_detaches_but_never_kills_the_engine(self):
+        RoutingFakeEngine.instances = []
+        provider, engine, bridge = self._make_provider_and_bridge()
+
+        round_ = FakeRound(self._asr_manifest())
+        self.assertTrue(bridge.start_for_round(round_))
+        self.assertIsNotNone(engine.current)
+
+        # Round ends: the watcher detaches the routing within its poll.
+        round_.status = "cancelled"
+        deadline = time.monotonic() + 4.0
+        while engine.current is not None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIsNone(engine.current)
+        self.assertEqual(engine.stop_calls, 0)
+        self.assertTrue(engine.alive)
+
+        # Standby takes over the same warm engine, instantly.
+        woke: list[str] = []
+        self.assertTrue(bridge.start_standby_session(
+            wake_phrases=["游戏", "醒醒"], asr_enabled=True,
+            provider_id="asr_zipformer", on_wake=woke.append,
+        ))
+        self.assertIsNotNone(engine.current)
+        engine.current["on_sentence"]("开始游戏吧")
+        self.assertEqual(woke, ["开始游戏吧"])
+
+        # Releasing standby listening detaches; the engine survives that too.
+        bridge.stop()
+        self.assertIsNone(engine.current)
+        self.assertEqual(engine.stop_calls, 0)
+        self.assertTrue(engine.alive)
+
+        # Only the provider's shutdown (backend exit) kills the engine.
+        provider.shutdown()
+        self.assertEqual(engine.stop_calls, 1)
+        self.assertFalse(engine.alive)
