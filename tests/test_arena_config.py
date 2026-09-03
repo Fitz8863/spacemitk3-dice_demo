@@ -32,6 +32,7 @@ from core.arena_config import (  # noqa: E402
 )
 from core.components import ComponentRegistry  # noqa: E402
 from core.games import GameRegistry, run_game  # noqa: E402
+from core.state_machine import GameRound  # noqa: E402
 from core.tts import TtsProvider  # noqa: E402
 from core.tts_dispatch import TtsDispatcher  # noqa: E402
 
@@ -670,6 +671,94 @@ def test_manifest_hot_reload_does_not_deadlock_on_drift_check(tmp_path, monkeypa
     thread.join(timeout=10)
     assert not thread.is_alive(), "get_games() deadlocked on hot reload"
     assert outcome["games"].get("dice") is not None
+
+
+# ---- SSE presence: a running round needs a live browser (B+A plan) ----
+
+def _presence_round_manifest():
+    return {
+        "id": "dice",
+        "providers": {"tts_local": "tts_dummy"},
+        "state_machine": {
+            "schema_version": 1,
+            "initial": "rules",
+            "states": {
+                "rules": {
+                    "on_enter": [{"action": "speech", "mode": "tts_local", "text": "规则"}],
+                    "on_intent": {"confirm": {"to": "ready"}},
+                },
+                "ready": {"on_intent": {"back": {"exit": True}}},
+            },
+        },
+    }
+
+
+class SsePresenceTests(unittest.TestCase):
+    def setUp(self):
+        server._sse_connections.clear()
+        server._sse_presence.clear()
+        server.rounds.clear()
+
+    def _round(self):
+        round_ = GameRound(
+            game_id="dice", manifest=_presence_round_manifest(), log=lambda _l: None,
+        )
+        round_.start()
+        server.rounds[round_.id] = round_  # 生产路径都经 create_round 注册
+        return round_
+
+    def tearDown(self):
+        server._sse_connections.clear()
+        server._sse_presence.clear()
+        server.rounds.clear()
+
+    def test_fresh_round_without_consumer_enters_grace(self):
+        """create_round 登记宽限：无人连接 SSE 的回合（curl 场景）会被看门收回。"""
+        round_ = self._round()
+        server._sse_stream_closed(round_.id)  # create_round 的初始登记
+        self.assertIn(round_.id, server._sse_presence)
+        self.assertEqual(server._sse_connections.get(round_.id), None)
+
+    def test_open_stream_clears_grace_and_counts(self):
+        round_ = self._round()
+        server._sse_stream_closed(round_.id)
+        server._sse_stream_opened(round_.id)
+        self.assertNotIn(round_.id, server._sse_presence)  # 重连撤销宽限
+        self.assertEqual(server._sse_connections[round_.id], 1)
+
+    def test_grace_expires_cancels_round_and_mic_follows(self):
+        round_ = self._round()
+        server._sse_stream_closed(round_.id)
+        # 把宽限线拨到过去（watchdog 线程之外直接驱动看门函数）
+        server._sse_presence[round_.id] = time.monotonic() - 1.0
+        server._sse_cancel_stale_rounds()
+        self.assertEqual(round_.status, "cancelled")
+        self.assertNotIn(round_.id, server._sse_presence)
+        # 取消即终态 → asr 桥接看门会停麦（桥接由 create_round 挂，这里验证终态语义）
+
+    def test_grace_not_expired_leaves_round_alone(self):
+        round_ = self._round()
+        server._sse_stream_closed(round_.id)
+        server._sse_cancel_stale_rounds()
+        self.assertEqual(round_.status, "running")
+
+    def test_second_consumer_keeps_round_alive_after_first_leaves(self):
+        round_ = self._round()
+        server._sse_stream_opened(round_.id)
+        server._sse_stream_opened(round_.id)
+        server._sse_stream_closed(round_.id)  # 第一个离开
+        self.assertEqual(server._sse_connections[round_.id], 1)
+        self.assertNotIn(round_.id, server._sse_presence)  # 仍有消费者，不进入宽限
+        # 最后一个也离开才开始计时
+        server._sse_stream_closed(round_.id)
+        self.assertIn(round_.id, server._sse_presence)
+
+    def test_terminal_rounds_are_pruned_from_presence(self):
+        round_ = self._round()
+        server._sse_stream_closed(round_.id)
+        round_.cancel()
+        server._sse_cancel_stale_rounds()
+        self.assertNotIn(round_.id, server._sse_presence)
 
 
 if __name__ == "__main__":

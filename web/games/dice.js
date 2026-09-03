@@ -5,7 +5,7 @@
 export function register(engine) {
   const {
     state, $, setPhase, toast, stopSpeech, requestJson,
-    returnToSelect, createRoundClient, playDirective,
+    returnToSelect, createRoundClient, playDirective, setActiveRound,
   } = engine;
 
   const dicePips = {
@@ -465,6 +465,7 @@ export function register(engine) {
 
     try {
       await round.start();
+      setActiveRound(round); // 登记给 pagehide 保险：离开页面即取消对局
     } catch (error) {
       console.error('Failed to start round:', error);
       toast('对局创建失败，请检查后端服务');
@@ -477,6 +478,7 @@ export function register(engine) {
     participantSides = null;
     Object.entries(handlers).forEach(([id, fn]) => $(id).removeEventListener('click', fn));
     stopSpeech();
+    setActiveRound(null);
     if (round) {
       round.cancel();
       round = null;

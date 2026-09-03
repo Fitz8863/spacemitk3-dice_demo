@@ -502,6 +502,22 @@ def test_manifest_voice_phrases_cover_every_state_intent():
     assert "确定" in phrases["start_shake"]
 
 
+def test_frontend_cancels_the_round_when_the_page_is_hidden():
+    """pagehide 保险（方案A）：关标签/刷新即 sendBeacon 取消对局。"""
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    dice = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+
+    # The beacon fires on pagehide with the live round id; /cancel carries no
+    # body (an unread body would poison keep-alive connections).
+    assert "addEventListener('pagehide'" in app
+    assert "navigator.sendBeacon?.(`/api/game/rounds/${roundId}/cancel`)" in app
+    # The engine tracks the live round client; dice registers on start and
+    # clears on teardown (rps has no rounds and never touches it).
+    assert "setActiveRound(client) { activeRound = client || null; }" in app
+    assert "setActiveRound(round);" in dice
+    assert "setActiveRound(null);" in dice
+
+
 def test_manifest_state_machine_declares_the_full_graph():
     manifest = dice_manifest()
     machine = manifest["state_machine"]

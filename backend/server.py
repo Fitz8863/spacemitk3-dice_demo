@@ -17,6 +17,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from http import HTTPStatus
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -348,6 +349,86 @@ active_job_id: str | None = None
 rounds: dict[str, GameRound] = {}
 rounds_lock = threading.Lock()
 
+# A running round requires a live browser: its SSE stream doubles as the
+# presence signal.  When the last stream consumer disconnects (tab closed,
+# network lost, device asleep), the round gets a grace window — the browser's
+# EventSource reconnects on its own, so a blip must not cancel the game —
+# after which the round is cancelled, which also stops the ASR microphone.
+# Nothing here gates the physical buttons: they are server-side intents and
+# work with or without a browser.
+SSE_GRACE_SECONDS = 45.0
+_sse_connections: dict[str, int] = {}  # round_id -> live SSE consumer count
+_sse_presence: dict[str, float] = {}  # round_id -> monotonic deadline while detached
+_sse_presence_lock = threading.Lock()
+_sse_watchdog: threading.Thread | None = None
+
+
+def _sse_cancel_stale_rounds() -> None:
+    """Cancel running rounds whose SSE consumer stayed away past the grace."""
+    now = time.monotonic()
+    expired: list[str] = []
+    with _sse_presence_lock:
+        for round_id, deadline in list(_sse_presence.items()):
+            if deadline <= now:
+                expired.append(round_id)
+            elif rounds.get(round_id) is not None and rounds[round_id].status != "running":
+                # Terminal round: keep the presence table bounded.
+                _sse_presence.pop(round_id, None)
+    for round_id in expired:
+        with rounds_lock:
+            round_ = rounds.get(round_id)
+        if round_ is None:
+            with _sse_presence_lock:
+                _sse_presence.pop(round_id, None)
+            continue
+        if round_.status == "running":
+            print(f"[round:{round_id[:8]}] SSE 消费者离开超过 {SSE_GRACE_SECONDS:g}s，自动取消回合", flush=True)
+            round_.cancel()  # terminal → asr bridge watcher stops the mic
+        with _sse_presence_lock:
+            _sse_presence.pop(round_id, None)
+
+
+def _sse_watchdog_loop() -> None:
+    while True:
+        time.sleep(5.0)
+        try:
+            _sse_cancel_stale_rounds()
+        except Exception as exc:  # watchdog must never die silently
+            print(f"[round] sse watchdog error: {exc!r}", flush=True)
+
+
+def _ensure_sse_watchdog() -> None:
+    global _sse_watchdog
+    with _sse_presence_lock:
+        if _sse_watchdog is not None and _sse_watchdog.is_alive():
+            return
+        _sse_watchdog = threading.Thread(
+            target=_sse_watchdog_loop, name="sse-watchdog", daemon=True
+        )
+        _sse_watchdog.start()
+
+
+def _sse_stream_opened(round_id: str) -> None:
+    """One SSE consumer connected: presence is restored immediately."""
+    with _sse_presence_lock:
+        _sse_connections[round_id] = _sse_connections.get(round_id, 0) + 1
+        _sse_presence.pop(round_id, None)
+
+
+def _sse_stream_closed(round_id: str) -> None:
+    """One SSE consumer left: start the grace clock only when it was the last."""
+    with _sse_presence_lock:
+        remaining = _sse_connections.get(round_id, 0) - 1
+        if remaining > 0:
+            _sse_connections[round_id] = remaining
+            return
+        _sse_connections.pop(round_id, None)
+        _sse_presence[round_id] = time.monotonic() + SSE_GRACE_SECONDS
+    _ensure_sse_watchdog()
+
+
+ASR_BRIDGE = AsrIntentBridge(components=COMPONENTS)
+
 # Voice input channel: round-scoped ASR sessions that submit intents exactly
 # like button presses.  Games opt in via the manifest ``asr`` section.
 ASR_BRIDGE = AsrIntentBridge(components=COMPONENTS)
@@ -403,6 +484,11 @@ def create_round(game_id: str) -> GameRound:
         )
         rounds[round_.id] = round_
     round_.start()
+    # A fresh round has no SSE consumer yet: it starts inside the presence
+    # grace window.  A browser subscribing clears it; nothing connecting
+    # (curl-driven rounds) is cancelled by the watchdog like any other
+    # abandoned round.
+    _sse_stream_closed(round_.id)
     # Voice input never gates round creation: a missing or broken ASR
     # provider only means this round runs on buttons alone.
     try:
@@ -592,6 +678,7 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def stream_round_events(self, round_: GameRound) -> None:
+        _sse_stream_opened(round_.id)
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache, no-store")
@@ -623,6 +710,12 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
+            # The stream is the browser's presence signal: one consumer left.
+            # A still-running round with zero consumers enters the grace
+            # window (EventSource reconnects on its own, so a blip is
+            # tolerated) after which the watchdog cancels it — releasing the
+            # ASR microphone with it.  Terminal rounds just drop the entry.
+            _sse_stream_closed(round_.id)
             self.close_connection = True
 
     def send_round_speech_frames(self, round_: GameRound, directive_id: str) -> None:

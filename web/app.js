@@ -418,6 +418,20 @@ async function playDirective(round, directive) {
   }
 }
 
+// ---- 页面离开保险 ----
+// 关标签/刷新/跳转时尽力取消当前对局（sendBeacon 在页面卸载后仍会送达，
+// /cancel 无请求体，不会毒化 keep-alive 连接）。断网/休眠等 sendBeacon
+// 覆盖不到的断开由服务端 SSE 活性看门兜底：最后一个消费者断开并超过
+// 宽限期后自动取消回合、释放麦克风。
+let activeRound = null;
+window.addEventListener('pagehide', () => {
+  const roundId = activeRound?.roundId;
+  if (!roundId) return;
+  try {
+    navigator.sendBeacon?.(`/api/game/rounds/${roundId}/cancel`);
+  } catch (_) { /* best effort: the server watchdog covers the rest */ }
+});
+
 // ---- 权威对局客户端 ----
 // 创建 round、订阅 SSE 事件流、提交意图。事件按 sequence 去重，SSE 断线由
 // EventSource 自动重连，重连快照会重放全部事件，靠 sequence 过滤保持幂等。
@@ -672,6 +686,8 @@ const engine = {
   returnToSelect,
   createRoundClient,
   playDirective,
+  // 游戏模块在 enter/teardown 时登记当前对局客户端，pagehide 保险据此取 roundId
+  setActiveRound(client) { activeRound = client || null; },
 };
 
 registerGame(registerDice(engine));

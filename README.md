@@ -188,7 +188,7 @@ POST /api/game/rounds/<id>/intents     提交意图（按键动作与 speech_don
 GET  /api/game/rounds/<id>             查询对局快照（状态、事件、结果）
 GET  /api/game/rounds/<id>/stream      SSE 推送对局事件（state_changed/speech/tick/裁决透传）
 POST /api/game/rounds/<id>/speech      按指令 id 拉取台词音频帧（audio 读 WAV / TTS 流式）
-POST /api/game/rounds/<id>/cancel      取消对局（浏览器刷新即放弃，新对局自动取消旧对局）
+POST /api/game/rounds/<id>/cancel      取消对局（浏览器刷新/关闭即取消；断开超过 45s 也自动取消，新对局自动取消旧对局）
 POST /api/adjudicate                   调试入口：直接启动一轮视觉裁决，返回 job_id
 GET  /api/adjudicate/<job_id>          兼容查询任务快照（旧客户端可轮询）
 GET  /api/adjudicate/<job_id>/events   查询结构化裁决事件

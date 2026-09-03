@@ -39,6 +39,9 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
   播完回执 `speech_done` 后状态机才继续；`select_by: winner_role` 按裁决结果选台词。
   转换是显式命名图（`to` 按状态名引用，悬空引用加载报错、不可达状态告警）。
   一局 = 一个 round（`/api/game/rounds` 系列 API），新 round 自动取消残留活动 round。
+  **回合与浏览器绑定（2026-09-03 起）**：SSE 流是浏览器的存在信号——最后一个消费者
+  断开（关页/断网/休眠）后 45 秒宽限（容忍 EventSource 自动重连）即自动取消回合并
+  停麦；前端 pagehide 时 sendBeacon 直接取消（快路径）。物理按键不受此机制影响。
 - **语音输入通道（2026-09-02 起）**：游戏 manifest 的 `asr` 节（`enabled` + `phrases`
   意图→触发词表，热加载）+ `providers.asr` 槽位开启语音确认；`core/asr_bridge.py` 在
   回合期间持有 ASR 会话，识别句归一化子串匹配后走 `submit_intent` 注入（与按键同路，
