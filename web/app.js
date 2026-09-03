@@ -60,30 +60,96 @@ function setPhase(phase, meta) {
 }
 
 // ---- 待机页（全体游戏之前） ----
-// 游戏列表页空闲 IDLE_ENTER_SECONDS 后进入待机动画；任意输入唤醒回列表。
+// 游戏列表页空闲 idle_seconds（全局配置 standby.idle_seconds，默认 120s）后
+// 进入待机动画；任意输入或语音唤醒词唤醒回列表。boot_standby=true 时页面
+// 加载直接进待机（配置来自 /api/games 的 standby 投影，热加载生效）。
 // 对局页面不待机（对局有自身节奏，玩家离场由服务端 SSE 看门收回合 →
 // round_complete → 回到列表 → 计时自然恢复）。待机中的第一次输入只唤醒
-// 不穿透，防止睡着时误开一局。
-const IDLE_ENTER_SECONDS = 120;
+// 不穿透，防止睡着时误开一局。唤醒词监听在服务端（无回合也开麦），轮询
+// /api/asr/standby/events 拿唤醒事件；唤醒同样不穿透——只回列表不进游戏。
+const IDLE_ENTER_SECONDS = 120; // /api/games 不可用或未配置时的兜底
 let idleTimer = null;
+let standbySettings = { enabled: true, idle_seconds: IDLE_ENTER_SECONDS, boot_standby: false, wake_phrases: [] };
+let standbyEventCursor = 0;
+let standbyPollTimer = null;
+
+function applyStandbySettings(settings) {
+  if (!settings || typeof settings !== 'object') return;
+  standbySettings = {
+    enabled: settings.enabled !== false,
+    idle_seconds: Number(settings.idle_seconds) > 0 ? Number(settings.idle_seconds) : IDLE_ENTER_SECONDS,
+    boot_standby: settings.boot_standby === true,
+    wake_phrases: Array.isArray(settings.wake_phrases) ? settings.wake_phrases : [],
+  };
+  resetIdleTimer();
+}
 
 function resetIdleTimer() {
   clearTimeout(idleTimer);
-  if (state.phase !== 'select') return;
-  idleTimer = setTimeout(enterStandby, IDLE_ENTER_SECONDS * 1000);
+  if (state.phase !== 'select' || !standbySettings.enabled) return;
+  idleTimer = setTimeout(enterStandby, standbySettings.idle_seconds * 1000);
 }
 
 function enterStandby() {
   clearTimeout(idleTimer);
   idleTimer = null;
-  if (state.phase !== 'select') return;
+  if (state.phase !== 'select' || !standbySettings.enabled) return;
   setPhase('standby');
+  const wakeNode = $('standbyWakeWords');
+  if (wakeNode) {
+    if (standbySettings.wake_phrases.length) {
+      wakeNode.textContent = `或对我说：${standbySettings.wake_phrases.join(' / ')}`;
+      wakeNode.classList.remove('hidden');
+    } else {
+      wakeNode.classList.add('hidden');
+    }
+  }
+  startStandbyListening();
 }
 
 function wakeFromStandby() {
   if (state.phase !== 'standby') return false;
   setPhase('select');
+  stopStandbyListening();
   return true;
+}
+
+// --- 待机语音监听（服务端会话 + 轮询唤醒事件） ---
+function startStandbyListening() {
+  stopStandbyListening();
+  if (!standbySettings.wake_phrases.length) return; // 没配唤醒词就纯按键/触摸唤醒
+  requestJson('/api/asr/standby', {
+    method: 'POST',
+    body: JSON.stringify({ listen: true }),
+  }).catch(() => { /* 后端不可用不阻塞待机画面 */ });
+  standbyEventCursor = 0;
+  standbyPollTimer = setInterval(async () => {
+    try {
+      const payload = await requestJson('/api/asr/standby/events');
+      for (const event of (payload.events || [])) {
+        if (event.sequence > standbyEventCursor) {
+          standbyEventCursor = event.sequence;
+          if (event.status === 'wake') {
+            showAsrFeedback({ status: 'submitted', text: event.text });
+            wakeFromStandby();
+            return;
+          }
+          showAsrFeedback({ status: 'unmatched', text: event.text });
+        }
+      }
+    } catch (_) { /* 轮询失败下次再试 */ }
+  }, 1200);
+}
+
+function stopStandbyListening() {
+  if (standbyPollTimer) {
+    clearInterval(standbyPollTimer);
+    standbyPollTimer = null;
+  }
+  requestJson('/api/asr/standby', {
+    method: 'POST',
+    body: JSON.stringify({ listen: false }),
+  }).catch(() => { /* already stopped */ });
 }
 
 // 捕获阶段拦截：待机中的输入只用于唤醒，绝不继续派发给列表/按钮。
@@ -643,6 +709,7 @@ function registerGame(module) {
 function returnToSelect() {
   if (activeGame && activeGame.teardown) activeGame.teardown();
   activeGame = null;
+  stopStandbyListening(); // 对局结束回列表：确保没有残留的待机监听/轮询
   setPhase('select');
 }
 
@@ -770,6 +837,7 @@ async function loadGames() {
   try {
     const payload = await requestJson('/api/games');
     games = Array.isArray(payload.games) ? payload.games : [];
+    applyStandbySettings(payload.standby);
     renderGameList();
     const firstEnabled = games.find((game) => game.enabled);
     if (firstEnabled) selectGame(firstEnabled.id);
@@ -780,4 +848,7 @@ async function loadGames() {
 }
 
 setPhase('select');
-loadGames();
+loadGames().then(() => {
+  // boot_standby=true：页面加载即待机（设备就绪的舞台状态）；false 停在列表。
+  if (standbySettings.boot_standby) enterStandby();
+});

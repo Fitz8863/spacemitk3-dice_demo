@@ -173,6 +173,71 @@ class AsrIntentBridge:
                 self.stop()
                 return
 
+    # ---- 待机监听（页面级第四层：无回合时的唤醒词会话）----
+
+    def start_standby_session(
+        self,
+        *,
+        wake_phrases: list[str],
+        asr_enabled: bool,
+        provider_id: str,
+        on_wake: Callable[[str], None],
+        on_heard: Callable[[str], None] | None = None,
+    ) -> bool:
+        """Listen for wake words while no round is running.
+
+        The standby session is mutually exclusive with round sessions: a
+        round starting stops it, and it stays stopped until the frontend
+        asks for it again (when the screen goes back to standby).  A wake
+        word only wakes the screen — it never starts a game.
+        """
+        if not asr_enabled or not wake_phrases:
+            return False
+        try:
+            provider = self._components.require(provider_id, expected_type="asr")
+        except DiceArenaError as exc:
+            self._log(f"ASR provider {provider_id} unavailable for standby: {exc.message}")
+            return False
+        self.stop()
+        phrases = {"wake": list(wake_phrases)}
+        try:
+            session = provider.start_session(
+                lambda text: self._on_standby_sentence(phrases, on_wake, on_heard, text),
+                on_log=self._log,
+            )
+        except AsrSessionError as exc:
+            self._log(f"standby ASR session failed to start: {exc}")
+            return False
+        except Exception as exc:
+            self._log(f"standby ASR session raised: {exc!r}")
+            return False
+        with self._lock:
+            self._provider = provider
+            self._session = session
+        self._log(f"standby listening for wake words {wake_phrases}")
+        return True
+
+    def _on_standby_sentence(
+        self,
+        phrases: dict[str, list[str]],
+        on_wake: Callable[[str], None],
+        on_heard: Callable[[str], None] | None,
+        text: str,
+    ) -> None:
+        if match_phrase_intent(phrases, text):
+            self._log(f"standby heard {text!r} -> waking")
+            try:
+                on_wake(text)
+            except Exception as exc:
+                self._log(f"standby wake callback error: {exc}")
+            return
+        self._log(f"standby heard {text!r}: not a wake word")
+        if on_heard is not None:
+            try:
+                on_heard(text)
+            except Exception:
+                pass
+
     def stop(self) -> None:
         with self._lock:
             session = self._session

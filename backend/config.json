@@ -12,5 +12,11 @@
   },
   "voice": "default",
   "speed": 1.0,
-  "asr_enabled": true
+  "asr_enabled": true,
+  "standby": {
+    "enabled": true,
+    "idle_seconds": 120,
+    "boot_standby": true,
+    "wake_phrases": ["小骰子", "醒醒", "开始游戏"]
+  }
 }

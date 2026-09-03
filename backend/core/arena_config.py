@@ -50,7 +50,43 @@ def validate_arena_config(payload: Any) -> dict[str, Any]:
     asr_enabled = payload.get("asr_enabled", True)
     if not isinstance(asr_enabled, bool):
         raise ArenaConfigError("asr_enabled must be boolean")
+    standby = payload.get("standby", {})
+    if not isinstance(standby, dict):
+        raise ArenaConfigError("standby must be an object")
+    if standby.get("enabled", True) is True and "wake_phrases" in standby:
+        phrases = standby["wake_phrases"]
+        if (
+            not isinstance(phrases, list)
+            or not phrases
+            or not all(isinstance(word, str) and word.strip() for word in phrases)
+        ):
+            raise ArenaConfigError("standby.wake_phrases must be a non-empty list of words")
+    idle_seconds = standby.get("idle_seconds", 120)
+    if (
+        not isinstance(idle_seconds, (int, float))
+        or isinstance(idle_seconds, bool)
+        or not (5 <= idle_seconds <= 3600)
+    ):
+        raise ArenaConfigError("standby.idle_seconds must be between 5 and 3600 seconds")
+    for field in ("enabled", "boot_standby"):
+        if field in standby and not isinstance(standby[field], bool):
+            raise ArenaConfigError(f"standby.{field} must be boolean")
     return payload
+
+
+def arena_standby(arena: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Normalized standby screen settings (browser-safe defaults included)."""
+    standby = (arena or {}).get("standby")
+    if not isinstance(standby, Mapping):
+        standby = {}
+    enabled = standby.get("enabled", True)
+    boot = standby.get("boot_standby", False)
+    return {
+        "enabled": enabled if isinstance(enabled, bool) else True,
+        "idle_seconds": standby.get("idle_seconds", 120),
+        "boot_standby": boot if isinstance(boot, bool) else False,
+        "wake_phrases": list(standby.get("wake_phrases") or []),
+    }
 
 
 def load_arena_config(path: Path | str | None = None) -> dict[str, Any]:

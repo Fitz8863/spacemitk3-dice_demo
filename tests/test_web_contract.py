@@ -519,7 +519,7 @@ def test_frontend_cancels_the_round_when_the_page_is_hidden():
 
 
 def test_frontend_standby_screen_engine_level():
-    """待机页：select 空闲 120s 进入，任意输入唤醒且第一次输入不穿透。"""
+    """待机页：select 空闲超时进入（阈值来自全局配置），任意输入唤醒且不穿透。"""
     app = (ROOT / "web/app.js").read_text(encoding="utf-8")
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
     css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
@@ -528,13 +528,25 @@ def test_frontend_standby_screen_engine_level():
     # game symbols), so every future game inherits it.
     assert 'data-view="standby"' in html
     assert html.find('data-view="standby"') < html.find('data-view="select"')
-    # Idle entry from the select phase only, with the agreed threshold.
+    # Idle entry from the select phase only; the threshold comes from the
+    # arena config (backend/config.json standby.idle_seconds), with the
+    # builtin constant as offline fallback.
     assert "IDLE_ENTER_SECONDS = 120" in app
+    assert "standbySettings.idle_seconds" in app
     assert "state.phase !== 'select'" in app
+    # boot_standby=true: the page loads straight into standby.
+    assert "if (standbySettings.boot_standby) enterStandby();" in app
+    # Wake words: the standby screen asks the server to listen, polls the
+    # wake events, and stops listening on wake / round start / teardown.
+    assert "startStandbyListening()" in app
+    assert "'/api/asr/standby'" in app
+    assert "'/api/asr/standby/events'" in app
+    assert "stopStandbyListening()" in app
+    assert "standbyWakeWords" in html
     # Wake-up swallows the first input at capture time: it must never reach
     # the game list (no accidental game start while "asleep").
-    assert "addEventListener(type, (event) => {\n    if (wakeFromStandby()) {\n      event.stopPropagation();\n      event.preventDefault();" in app
     assert "['keydown', 'click']" in app
+    assert "event.stopPropagation();" in app
     # Visuals: brand-neutral, animated, and degradable under reduced motion.
     assert "standby-core" in html and "standby-zzz" in html
     assert "standbyRipple" in css and "standbyBreath" in css

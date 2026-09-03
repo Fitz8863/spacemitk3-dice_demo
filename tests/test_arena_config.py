@@ -25,6 +25,7 @@ from core.arena_config import (  # noqa: E402
     ArenaConfigError,
     arena_asr_enabled,
     arena_slot_value,
+    arena_standby,
     load_arena_config,
     resolve_local_tts_pin,
     validate_arena_config,
@@ -47,9 +48,16 @@ VALID_ARENA = {
         "asr": "asr_zipformer",
         "vision_adjudicator": "vision_yolov8_adjudicator",
     },
+    "participants": {"player": "LEFT", "agent": "RIGHT"},
     "voice": "default",
     "speed": 1.0,
     "asr_enabled": True,
+    "standby": {
+        "enabled": True,
+        "idle_seconds": 120,
+        "boot_standby": True,
+        "wake_phrases": ["小骰子", "醒醒"],
+    },
 }
 
 
@@ -76,6 +84,26 @@ class ValidationTests(unittest.TestCase):
     def test_asr_enabled_must_be_boolean(self):
         with self.assertRaises(ArenaConfigError):
             validate_arena_config({**VALID_ARENA, "asr_enabled": "yes"})
+
+    def test_standby_validation_and_defaults(self):
+        # Validation: bad types rejected.
+        with self.assertRaises(ArenaConfigError):
+            validate_arena_config({**VALID_ARENA, "standby": {"idle_seconds": 1}})
+        with self.assertRaises(ArenaConfigError):
+            validate_arena_config({**VALID_ARENA, "standby": {"boot_standby": "yes"}})
+        with self.assertRaises(ArenaConfigError):
+            validate_arena_config({
+                **VALID_ARENA, "standby": {"wake_phrases": ["  "]},
+            })
+        # Normalization: absent section falls back to browser-safe defaults.
+        normalized = arena_standby(None)
+        self.assertTrue(normalized["enabled"])
+        self.assertEqual(normalized["idle_seconds"], 120)
+        self.assertFalse(normalized["boot_standby"])
+        self.assertEqual(normalized["wake_phrases"], [])
+        normalized = arena_standby(VALID_ARENA)
+        self.assertTrue(normalized["boot_standby"])
+        self.assertEqual(normalized["wake_phrases"], ["小骰子", "醒醒"])
 
 
 class LoadTests(unittest.TestCase):
@@ -759,6 +787,93 @@ class SsePresenceTests(unittest.TestCase):
         round_.cancel()
         server._sse_cancel_stale_rounds()
         self.assertNotIn(round_.id, server._sse_presence)
+
+
+def test_standby_endpoints_and_projection(tmp_path, monkeypatch):
+    """待机端点：开启/停止语音监听，唤醒事件进轮询总线，/api/games 带 standby 节。"""
+    games_root = tmp_path / "games"
+    (games_root / "dice").mkdir(parents=True)
+    (games_root / "dice" / "manifest.json").write_text(json.dumps({
+        "id": "dice", "name": "Dice", "enabled": True,
+        "participants": {"player": "LEFT", "agent": "RIGHT"},
+        "state_machine": MACHINE,
+    }), encoding="utf-8")
+    arena_path = tmp_path / "config.json"
+    arena_path.write_text(json.dumps({
+        "schema_version": 1,
+        "providers": {"tts_local": "tts_dummy", "asr": "asr_dummy"},
+        "standby": {"boot_standby": True, "wake_phrases": ["醒醒"]},
+    }), encoding="utf-8")
+
+    provider = DummyAsrForArena()
+    registry = ComponentRegistry()
+    registry.register(DummyTts(), {
+        "id": "tts_dummy", "type": "tts", "entry": "provider.py:DummyTts",
+    })
+    registry.register(provider, {
+        "id": "asr_dummy", "type": "asr", "entry": "provider.py:DummyAsrForArena",
+    })
+    monkeypatch.setattr(server, "COMPONENTS", registry)
+    monkeypatch.setattr(server, "_GAMES_ROOT", games_root)
+    monkeypatch.setattr(server, "GAMES", server.load_games(games_root))
+    monkeypatch.setattr(server, "_GAMES_MTIMES", server._manifest_mtimes())
+    monkeypatch.setattr(server, "rounds", {})
+    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", arena_path)
+    monkeypatch.setattr(server, "_ARENA_CONFIG", {})
+    monkeypatch.setattr(server, "_ARENA_MTIME", None)
+    monkeypatch.setattr(
+        server, "ASR_BRIDGE",
+        __import__("core.asr_bridge", fromlist=["AsrIntentBridge"]).AsrIntentBridge(
+            components=registry, log=lambda _l: None,
+        ),
+    )
+    monkeypatch.setattr(server, "_STANDBY_EVENTS", [])
+    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    port = httpd.server_address[1]
+
+    def post(path, body):
+        connection = HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request("POST", path, body=json.dumps(body).encode("utf-8"),
+                            headers={"Content-Type": "application/json"})
+        response = connection.getresponse()
+        data = json.loads(response.read())
+        connection.close()
+        return response.status, data
+
+    def get(path):
+        connection = HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request("GET", path)
+        response = connection.getresponse()
+        data = json.loads(response.read())
+        connection.close()
+        return response.status, data
+
+    try:
+        # The projection carries the browser-safe standby settings.
+        _, games_payload = get("/api/games")
+        assert games_payload["standby"]["boot_standby"] is True
+        assert games_payload["standby"]["wake_phrases"] == ["醒醒"]
+
+        # Listen on → session starts; a wake word lands on the event bus.
+        status, payload = post("/api/asr/standby", {"listen": True})
+        assert status == 200 and payload["listening"] is True
+        assert len(provider.sessions) == 1
+        provider.sessions[0]["on_sentence"]("醒醒啊")
+        _, events_payload = get("/api/asr/standby/events")
+        wakes = [e for e in events_payload["events"] if e.get("status") == "wake"]
+        assert wakes and wakes[-1]["text"] == "醒醒啊"
+
+        # Listen off → no session left.
+        status, payload = post("/api/asr/standby", {"listen": False})
+        assert status == 200 and payload["listening"] is False
+        # The bridge stop path runs through the provider; the next listen
+        # would create a fresh session.
+        status, payload = post("/api/asr/standby", {"listen": True})
+        assert payload["listening"] is True
+        assert len(provider.sessions) == 2
+    finally:
+        httpd.shutdown()
 
 
 if __name__ == "__main__":

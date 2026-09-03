@@ -317,6 +317,49 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(len(self.provider.stopped), 1)
         self.assertEqual(len(self.provider.sessions), 2)
 
+    def test_standby_session_wakes_on_phrase_and_ignores_others(self):
+        wakes = []
+        heard = []
+        self.bridge.start_standby_session(
+            wake_phrases=["小骰子", "醒醒"],
+            asr_enabled=True,
+            provider_id="asr_dummy",
+            on_wake=wakes.append,
+            on_heard=heard.append,
+        )
+        self.assertEqual(len(self.provider.sessions), 1)
+        self.provider.sessions[0]["on_sentence"]("今天天气不错")
+        self.provider.sessions[0]["on_sentence"]("小骰子 醒醒吧")
+        self.assertEqual(wakes, ["小骰子 醒醒吧"])
+        self.assertEqual(heard, ["今天天气不错"])
+
+    def test_standby_session_respects_breaker_and_requires_phrases(self):
+        self.assertFalse(self.bridge.start_standby_session(
+            wake_phrases=["醒醒"], asr_enabled=False, provider_id="asr_dummy",
+            on_wake=lambda _t: None,
+        ))
+        self.assertFalse(self.bridge.start_standby_session(
+            wake_phrases=[], asr_enabled=True, provider_id="asr_dummy",
+            on_wake=lambda _t: None,
+        ))
+        self.assertEqual(self.provider.sessions, [])
+
+    def test_standby_session_is_mutually_exclusive_with_rounds(self):
+        round_ = FakeRound(self._enabled_manifest())
+        self.bridge.start_for_round(round_)
+        self.bridge.start_standby_session(
+            wake_phrases=["醒醒"], asr_enabled=True, provider_id="asr_dummy",
+            on_wake=lambda _t: None,
+        )
+        # The round session was replaced by the standby session.
+        self.assertEqual(len(self.provider.stopped), 1)
+        self.assertEqual(len(self.provider.sessions), 2)
+        wakes = []
+        self.provider.sessions[1]["on_sentence"]("醒醒")
+        # A standby wake never touches round intents.
+        self.assertEqual(round_.submitted, [])
+        self.assertEqual(len(wakes), 0)
+
 
 class ValidateAsrSectionTests(unittest.TestCase):
     def _machine(self):

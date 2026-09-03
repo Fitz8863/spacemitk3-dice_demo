@@ -46,7 +46,9 @@ from core.asr_bridge import AsrIntentBridge
 from core.arena_config import (
     ARENA_CONFIG_PATH,
     ArenaConfigError,
+    arena_asr_enabled,
     arena_slot_value,
+    arena_standby,
     load_arena_config,
     resolve_local_tts_pin,
     with_global_defaults,
@@ -429,9 +431,29 @@ def _sse_stream_closed(round_id: str) -> None:
 
 ASR_BRIDGE = AsrIntentBridge(components=COMPONENTS)
 
-# Voice input channel: round-scoped ASR sessions that submit intents exactly
-# like button presses.  Games opt in via the manifest ``asr`` section.
-ASR_BRIDGE = AsrIntentBridge(components=COMPONENTS)
+# Standby wake events: no round is running on the standby screen, so there is
+# no per-round SSE stream to ride on.  A tiny global event bus serves the
+# wake-up (and what the mic heard) to the polling frontend endpoint below.
+_STANDBY_EVENTS: list[dict[str, Any]] = []
+_STANDBY_EVENTS_LOCK = threading.Lock()
+_STANDBY_EVENT_SEQUENCE = 0
+
+
+def _standby_push_event(event: dict[str, Any]) -> None:
+    global _STANDBY_EVENT_SEQUENCE
+    with _STANDBY_EVENTS_LOCK:
+        _STANDBY_EVENT_SEQUENCE += 1
+        _STANDBY_EVENTS.append({
+            **event,
+            "timestamp_ms": int(time.time() * 1000),
+            "sequence": _STANDBY_EVENT_SEQUENCE,
+        })
+        del _STANDBY_EVENTS[:-30]
+
+
+def _standby_wake_broadcast(text: str) -> None:
+    _standby_push_event({"event": "asr", "status": "wake", "text": text})
+
 
 _ROUND_TIMEOUT_FALLBACK_SECONDS = JOB_TIMEOUT_SECONDS
 
@@ -489,6 +511,10 @@ def create_round(game_id: str) -> GameRound:
     # (curl-driven rounds) is cancelled by the watchdog like any other
     # abandoned round.
     _sse_stream_closed(round_.id)
+    # A running round always owns the microphone: drop any standby wake-word
+    # session first (start_for_round's own stop() also covers this, but the
+    # intent deserves being explicit at the ownership handover).
+    ASR_BRIDGE.stop()
     # Voice input never gates round creation: a missing or broken ASR
     # provider only means this round runs on buttons alone.
     try:
@@ -861,7 +887,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"components": COMPONENTS.all(include_health=True)})
             return
         if path == "/api/games":
-            self.send_json({"games": get_games().public_all(get_arena_config())})
+            self.send_json({
+                "games": get_games().public_all(get_arena_config()),
+                "standby": arena_standby(get_arena_config()),
+            })
+            return
+        if path == "/api/asr/standby/events":
+            # Standby-screen wake events (no round → no SSE stream): the
+            # frontend polls this while the standby mic is listening.
+            with _STANDBY_EVENTS_LOCK:
+                events = list(_STANDBY_EVENTS)
+            self.send_json({"events": events})
             return
         if path.startswith("/api/game/rounds/"):
             remainder = path[len("/api/game/rounds/"):]
@@ -991,6 +1027,31 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(job.snapshot(), HTTPStatus.ACCEPTED)
             except DiceArenaError as exc:
                 self.send_error_json(exc)
+            return
+        if path == "/api/asr/standby":
+            # The frontend asks for wake-word listening while the screen is in
+            # standby, and releases it on wake/round start.  Round sessions
+            # always win: create_round stops the standby session first.
+            try:
+                payload = self.read_json()
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
+                return
+            if payload.get("listen") is not True:
+                ASR_BRIDGE.stop()
+                self.send_json({"listening": False})
+                return
+            standby = arena_standby(get_arena_config())
+            started = ASR_BRIDGE.start_standby_session(
+                wake_phrases=standby["wake_phrases"],
+                asr_enabled=arena_asr_enabled(get_arena_config()),
+                provider_id=arena_slot_value(get_arena_config(), "asr"),
+                on_wake=_standby_wake_broadcast,
+            )
+            self.send_json({
+                "listening": started,
+                "wake_phrases": standby["wake_phrases"] if started else [],
+            })
             return
         if path == "/api/game/rounds":
             try:
