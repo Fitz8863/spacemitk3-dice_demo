@@ -33,6 +33,24 @@
 X100 0-7 簇（RTF≈0.24 占用可接受，组件 config 预留 `cpu_affinity` 旋钮）。
 
 
+2026-09-03（下午）起新增**本地 TTS 引擎 `tts_matcha`**（第四个 TTS provider）：
+引擎源码与板端资产落位 `tts/matcha-tts/`（cpp 三件套：capi 单发 / interactive
+调试 / **service 常驻服务模式**；模型与 sherpa-onnx riscv64 库为板端资产按
+.gitignore 排除）。服务模式 = stdin TSV 请求行 → stdout JSONL 事件（每句一帧
+完整 WAV 的 base64），预热强制且失败退出非 0，内置 getppid 看门狗防孤儿。
+组件包 `backend/components/tts_matcha`：provider 自持子进程（无 lifecycle、无
+HTTP 端口），`prewarm()` 供启动预热、`shutdown()` 随后端退出、崩溃自动重启；
+voice 参数即音色 id（单说话人，仅 `"0"`/`"default"`），speed 真实透传；参数见
+组件 `参数说明.md`，切换与混用规则见根目录 `TTS配置与切换指南.md` 第 4.4 节。
+**本地 TTS 不变量已全面封口**：引用面（全局槽位 + 启用游戏槽位 + 台词级
+`provider` 钉死含 select_by cases）出现第二个本地引擎 → 启动拒绝、热加载拒换
+（`core/arena_config.collect_local_tts_ids` + server 两级校验）；**被 pin 的本地
+引擎开机强制预热**（`server._prewarm_pinned_local_tts`，失败拒绝启动；moss/qwen3
+无 prewarm hook，仍走 lifecycle launcher 预热语义不变）。板端实测：常驻 RSS
+≈240–360 MB（MOSS daemon 对照 ≈4 GB）、EP 2 线程绑 8;9 核、预热后 RTF≈0.16。
+全局 `providers.tts_local` 切到 `tts_matcha` 由 heweijie 听感验收后执行（2026-09-03
+时尚未切换，仍是 tts_moss_nano）。
+
 2026-09-02（晚）起新增**全局配置层**：`backend/config.json`（校验器 `core/arena_config.py`）
 持有部署级默认——四个引擎槽位（tts_local/tts_remote/asr/vision_adjudicator）、默认
 voice/speed、语音总闸 `asr_enabled`（与游戏级 `asr.enabled` AND）。优先级阶梯：台词级

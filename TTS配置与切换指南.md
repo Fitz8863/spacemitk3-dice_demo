@@ -1,6 +1,6 @@
 # TTS 配置与切换指南
 
-> 更新日期：2026-09-02 | 适用版本：`asr-voice-input` 分支
+> 更新日期：2026-09-03 | 适用版本：`codex/vision-yolov8-adjudicator` 分支
 > 本文回答两个问题：**怎么切换 TTS**、**每个参数在哪里改、是什么意思**。
 > GPT-SoVITS 服务端自身的部署与接口细节见 [`TTS接口文档.md`](TTS接口文档.md)。
 
@@ -30,18 +30,19 @@ scripts/start_web.sh
 
 ---
 
-## 1. 三个 TTS Provider 总览
+## 1. 四个 TTS Provider 总览
 
-| | `tts_moss_nano`（当前默认） | `tts_qwen3` | `tts_gptsovits` |
-|---|---|---|---|
-| 引擎 | MOSS-TTS-Nano 100M | Qwen3-TTS 0.6B | GPT-SoVITS v2ProPlus |
-| 运行位置 | **K3 板端**（SpaceMIT EP 加速） | **K3 板端**（llama-server） | **另一台 GPU 主机**（Tailscale 内） |
-| K3 端口/地址 | 127.0.0.1:18082 | 127.0.0.1:18080 | http://100.95.19.17:9873 |
-| 音色 | 克隆音色 `Junhao`（参考 `voice/warm.wav`） | 内置 `anke.spk.bin`，不支持换声 | 服务端注册表音色（当前 `demo_female_zh`） |
-| 语速 | 不支持（固定 1.0） | 支持 | 支持 0.5~2.0 |
-| 流式 | chunk 级 WAV 帧 | 按标点分段的完整 WAV 帧 | 真流式 PCM 实时包帧（首包最快） |
-| 服务管理 | K3 随 Web 自启自停 | K3 随 Web 自启自停 | 对端 `start.sh`/`stop.sh`，K3 侧无生命周期 |
-| 配置文件 | `backend/components/tts_moss_nano/config.json` | `backend/components/tts_qwen3/config.json` | `backend/components/tts_gptsovits/config.json` |
+| | `tts_matcha`（轻量本地） | `tts_moss_nano`（当前默认） | `tts_qwen3` | `tts_gptsovits` |
+|---|---|---|---|---|
+| 引擎 | Matcha-TTS（sherpa-onnx, zh-en） | MOSS-TTS-Nano 100M | Qwen3-TTS 0.6B | GPT-SoVITS v2ProPlus |
+| 运行位置 | **K3 板端**（SpaceMIT EP 2 线程 @ 8;9 核） | **K3 板端**（SpaceMIT EP 加速） | **K3 板端**（llama-server） | **另一台 GPU 主机**（Tailscale 内） |
+| K3 端口/地址 | 无端口（后端直接持有子进程 stdio） | 127.0.0.1:18082 | 127.0.0.1:18080 | http://100.95.19.17:9873 |
+| 音色 | 单说话人，音色 id `0`（换模型才能换声） | 克隆音色 `Junhao`（参考 `voice/warm.wav`） | 内置 `anke.spk.bin`，不支持换声 | 服务端注册表音色（当前 `demo_female_zh`） |
+| 语速 | 支持 | 不支持（固定 1.0） | 支持 | 支持 0.5~2.0 |
+| 流式 | 句级 WAV 帧（每句合成完立即出帧） | chunk 级 WAV 帧 | 按标点分段的完整 WAV 帧 | 真流式 PCM 实时包帧（首包最快） |
+| 常驻内存 | **≈240–360 MB** | ≈4 GB | ≈1 GB 级 | 0（K3 侧） |
+| 服务管理 | 后端启动即拉起并预热、退出即收（无 lifecycle 脚本） | K3 随 Web 自启自停 | K3 随 Web 自启自停 | 对端 `start.sh`/`stop.sh`，K3 侧无生命周期 |
+| 配置文件 | `backend/components/tts_matcha/config.json` | `backend/components/tts_moss_nano/config.json` | `backend/components/tts_qwen3/config.json` | `backend/components/tts_gptsovits/config.json` |
 
 ---
 
@@ -60,11 +61,16 @@ scripts/start_web.sh
 }
 ```
 
-- `tts_local`（本地槽）：板端引擎，合法值 `tts_moss_nano` / `tts_qwen3`
+- `tts_local`（本地槽）：板端引擎，合法值 `tts_matcha` / `tts_moss_nano` / `tts_qwen3`
 - `tts_remote`（远程槽）：云端/远程引擎，合法值 `tts_gptsovits` 或未来新增的远程 provider
 - "默认 provider" 指 `tts_local` 槽位，`/api/health` 的 `tts_provider` 字段显示它
-- **唯一性约束**：全局与各启用游戏若解析出多个不同的本地引擎，后端拒绝启动（一台演示机只跑一个本地引擎）
-- 个别游戏想用不同引擎时，在该游戏 manifest 的 `providers` 里覆盖对应槽位（例如未来的猜拳游戏可用不同声音）
+- **唯一性约束（已全面封口）**：全局槽位、各启用游戏槽位、**以及台词级 `provider` 钉死**，
+  三处引用面里只要出现两个不同的本地引擎，后端就拒绝启动；manifest 热加载时同样拒换
+  （保留最后可用配置）。远程引擎（`tts_gptsovits`）可随意按句混用，不受此限。
+- **本地引擎开机强制预热**：被 pin 的本地引擎在 HTTP 服务开监听之前完成拉起+预热
+  （tts_matcha 实测约 3.5 秒），预热失败=拒绝启动。换引擎的唯一路径：停服 → 改
+  `tts_local` → 重启。
+- 个别游戏想用不同引擎时，在该游戏 manifest 的 `providers` 里覆盖对应槽位（例如未来的猜拳游戏可用不同声音；本地引擎的覆盖值必须与全局一致，否则触发上面的唯一性拒启）
 
 2. 重启：
 
@@ -221,6 +227,35 @@ curl -s http://127.0.0.1:8080/api/health | python3 -c "import json,sys; d=json.l
 > 音质类参数（`top_k` 及以下）均为可选：从 config 里**删除该键**即回退服务端默认；
 > `media_type` 与流式 `streaming_mode` 属于帧协议固定值，由代码决定，不作为配置暴露。
 
+### 4.4 tts_matcha（板端 Matcha-TTS，轻量本地引擎）
+
+```json
+{
+  "runtime":    { "kind": "local", "root": "tts/matcha-tts",
+                  "binary": "build-cpp/matcha_tts_service", "model_dir": "matcha-model",
+                  "sherpa_lib_dir": "runtime/sherpa_onnx/lib",
+                  "ep_threads": 2, "ep_affinity": "8;9", "enable_affinity": true,
+                  "start_timeout_seconds": 60, "terminate_grace_seconds": 5,
+                  "request_timeout_seconds": 120 },
+  "startup":    { "warmup_text": "你好。" },
+  "generation": { "chunk_target": 40, "chunk_max": 90 },
+  "voice":      { "speaker_id": 0 }
+}
+```
+
+| 参数 | 作用 | 调整建议 |
+|---|---|---|
+| `runtime.root` / `binary` / `model_dir` / `sherpa_lib_dir` | 引擎目录与三件资产路径（均相对 `root`） | 模型与 sherpa 库是板端资产（`.gitignore`），缺失时 health 会列出问题；编译见 `tts/matcha-tts/README.md` |
+| `runtime.ep_threads` / `ep_affinity` | EP 线程数与绑核 | 核数必须等于 `ep_threads`；当前 2 线程 @ 8;9 已绰绰有余（RTF≈0.16），注意与 YOLO 的 14;15、ASR 的 X100 0-7 错开 |
+| `runtime.start_timeout_seconds` | 拉起+预热超时 | 实测约 3.5 秒，60 秒很宽裕；超时=拒绝启动 |
+| `startup.warmup_text` | 预热文本 | 换成常用台词效果更稳 |
+| `generation.chunk_target` / `chunk_max` | 切句目标/上限（UTF-8 字符） | **首帧出声慢就调小 chunk_target**（骰子台词 28–40 较合适）；越小切得越碎 |
+| `voice.speaker_id` | 音色 id | 单说话人模型，只允许 `0`；请求层 `voice` 传 `"0"` 或 `"default"` 等价 |
+
+> 该引擎无 lifecycle 脚本、无 HTTP 端口：后端启动时直接拉起 `matcha_tts_service`
+> 子进程并阻塞预热（失败拒绝启动），退出时自动收掉（另有 getppid 看门狗兜底
+> SIGKILL 场景）。语音请求走句级流式：每句合成完立即出一帧完整 WAV（16 kHz 单声道）。
+
 ---
 
 ## 5. 单独验证某个 provider（不动游戏）
@@ -250,6 +285,9 @@ python3 backend/tts_debug.py tts_gptsovits   # 任意已注册 provider id
 # 或板端各组件自带脚本：
 backend/components/tts_moss_nano/scripts/debug_tts.sh
 backend/components/tts_qwen3/scripts/debug_tts.sh
+# matcha 引擎级直调（不经 Python 组件，走引擎自己的交互工具，板端扬声器播放）：
+tts/matcha-tts/run_interactive.sh            # 句级流式试听
+tts/matcha-tts/run_cpp.sh /tmp/t.wav "试一句" 1.0   # 单发写文件
 ```
 
 输入一行文字回车即板端播放；`/quit` 退出。调试脚本只停自己拉起的进程，不影响网页正在用的 provider。
