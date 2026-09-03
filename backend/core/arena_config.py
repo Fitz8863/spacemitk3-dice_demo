@@ -71,6 +71,25 @@ def validate_arena_config(payload: Any) -> dict[str, Any]:
     for field in ("enabled", "boot_standby"):
         if field in standby and not isinstance(standby[field], bool):
             raise ArenaConfigError(f"standby.{field} must be boolean")
+    game_select = payload.get("game_select", {})
+    if not isinstance(game_select, dict):
+        raise ArenaConfigError("game_select must be an object")
+    select_phrases = game_select.get("phrases", {})
+    if not isinstance(select_phrases, dict):
+        raise ArenaConfigError("game_select.phrases must map game ids to trigger-word lists")
+    for game_id, words in select_phrases.items():
+        if (
+            not isinstance(game_id, str)
+            or not game_id.strip()
+            or not isinstance(words, list)
+            or not words
+            or not all(isinstance(word, str) and word.strip() for word in words)
+            or len(words) != len(set(words))
+        ):
+            raise ArenaConfigError(
+                f"game_select.phrases.{game_id!r} must be a non-empty duplicate-free "
+                "list of trigger words"
+            )
     return payload
 
 
@@ -117,6 +136,29 @@ def arena_slot_value(arena: Mapping[str, Any] | None, slot: str) -> str:
 def arena_asr_enabled(arena: Mapping[str, Any] | None) -> bool:
     value = (arena or {}).get("asr_enabled", True)
     return value if isinstance(value, bool) else True
+
+
+def arena_game_select_phrases(arena: Mapping[str, Any] | None) -> dict[str, list[str]]:
+    """Voice-selection trigger words per game id, from the global config.
+
+    The game list is a deployment-level surface (like the standby screen),
+    so its vocabulary lives in ``game_select.phrases`` — not in any game
+    manifest.  Games without an entry are simply not voice-selectable.
+    """
+    game_select = (arena or {}).get("game_select")
+    if not isinstance(game_select, Mapping):
+        return {}
+    phrases = game_select.get("phrases")
+    if not isinstance(phrases, Mapping):
+        return {}
+    table: dict[str, list[str]] = {}
+    for game_id, words in phrases.items():
+        if not isinstance(game_id, str) or not isinstance(words, list):
+            continue
+        cleaned = [str(word).strip() for word in words if isinstance(word, str) and word.strip()]
+        if cleaned:
+            table[game_id.strip()] = cleaned
+    return table
 
 
 def with_global_defaults(

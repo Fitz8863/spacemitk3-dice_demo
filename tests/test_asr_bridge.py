@@ -415,39 +415,6 @@ class ValidateAsrSectionTests(unittest.TestCase):
                 {"enabled": "yes", "phrases": {"confirm": ["确认"]}}, self._machine()
             )
 
-    def test_select_phrases_optional_and_validated(self):
-        result = validate_asr_section(
-            {"enabled": True, "phrases": {"confirm": ["确认"]},
-             "select_phrases": ["摇骰子", "骰子"]},
-            self._machine(),
-        )
-        self.assertEqual(result["select_phrases"], ["摇骰子", "骰子"])
-        # Absent stays absent (the game name becomes the default elsewhere);
-        # an empty list is the explicit "not voice-selectable" opt-out.
-        self.assertNotIn("select_phrases", validate_asr_section(
-            {"enabled": True, "phrases": {"confirm": ["确认"]}}, self._machine()
-        ))
-        validate_asr_section(
-            {"enabled": True, "phrases": {"confirm": ["确认"]}, "select_phrases": []},
-            self._machine(),
-        )
-        with self.assertRaises(ValueError):
-            validate_asr_section(
-                {"enabled": True, "phrases": {"confirm": ["确认"]},
-                 "select_phrases": ["骰子", "骰子"]},
-                self._machine(),
-            )
-        with self.assertRaises(ValueError):
-            validate_asr_section(
-                {"enabled": True, "phrases": {"confirm": ["确认"]}, "select_phrases": "骰子"},
-                self._machine(),
-            )
-        with self.assertRaises(ValueError):
-            validate_asr_section(
-                {"enabled": True, "phrases": {"confirm": ["确认"]}, "select_phrases": [" "]},
-                self._machine(),
-            )
-
     def test_public_projection_exposes_only_enabled(self):
         manifest = _round_manifest(asr={"enabled": True, "phrases": {"confirm": ["确认"]}})
         public = public_game_manifest(manifest)

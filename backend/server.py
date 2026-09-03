@@ -47,6 +47,7 @@ from core.arena_config import (
     ARENA_CONFIG_PATH,
     ArenaConfigError,
     arena_asr_enabled,
+    arena_game_select_phrases,
     arena_slot_value,
     arena_standby,
     collect_local_tts_ids,
@@ -607,22 +608,20 @@ _SELECT_BUS = _AsrEventBus()
 def _game_select_phrases() -> dict[str, list[str]]:
     """Voice-selection trigger words per enabled game, in list order.
 
-    The game manifest's ``asr.select_phrases`` overrides; absent means the
-    game's own ``name`` (so "我想玩摇骰子游戏" works out of the box); an
-    empty list opts the game out of voice selection.
+    The game list is a deployment-level surface, so its vocabulary lives in
+    the arena config (``game_select.phrases``, hot-reloaded) — never in a
+    game manifest.  Games without an entry are not voice-selectable.
     """
+    configured = arena_game_select_phrases(get_arena_config())
+    if not configured:
+        return {}
     table: dict[str, list[str]] = {}
     for manifest in get_games().all():
         if not manifest.get("enabled", False):
             continue
-        asr = manifest.get("asr") if isinstance(manifest.get("asr"), dict) else {}
-        select = asr.get("select_phrases")
-        if select is None:
-            select = [str(manifest.get("name") or "")]
-        words = [str(word).strip() for word in select or []]
-        words = [word for word in words if word]
+        words = configured.get(str(manifest["id"]))
         if words:
-            table[str(manifest["id"])] = words
+            table[str(manifest["id"])] = list(words)
     return table
 
 

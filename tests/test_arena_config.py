@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -24,6 +25,7 @@ from core.asr_bridge import AsrIntentBridge  # noqa: E402
 from core.arena_config import (  # noqa: E402
     ArenaConfigError,
     arena_asr_enabled,
+    arena_game_select_phrases,
     arena_slot_value,
     arena_standby,
     collect_local_tts_ids,
@@ -983,6 +985,9 @@ def test_select_endpoints_and_standby_game_selection(tmp_path, monkeypatch):
         "schema_version": 1,
         "providers": {"tts_local": "tts_dummy", "asr": "asr_dummy"},
         "standby": {"enabled": True, "wake_phrases": ["游戏", "醒醒"]},
+        # The game list is a deployment surface: its voice vocabulary lives
+        # here, not in any game manifest.
+        "game_select": {"phrases": {"dice": ["摇骰子", "骰子"]}},
     }), encoding="utf-8")
 
     provider = DummyAsrForArena()
@@ -1031,10 +1036,11 @@ def test_select_endpoints_and_standby_game_selection(tmp_path, monkeypatch):
         return response.status, data
 
     try:
-        # List-screen listening: the phrase table defaults to the game name.
+        # List-screen listening: the phrase table comes from the arena
+        # config's game_select node (manifest name is NOT used).
         status, payload = post("/api/asr/select", {"listen": True})
         assert status == 200 and payload["listening"] is True
-        assert payload["games"] == [{"id": "dice", "phrases": ["摇骰子"]}]
+        assert payload["games"] == [{"id": "dice", "phrases": ["摇骰子", "骰子"]}]
         assert len(provider.sessions) == 1
 
         provider.sessions[0]["on_sentence"]("我想玩摇骰子游戏")
@@ -1056,7 +1062,7 @@ def test_select_endpoints_and_standby_game_selection(tmp_path, monkeypatch):
         status, payload = post("/api/asr/standby", {"listen": True})
         assert status == 200 and payload["listening"] is True
         assert payload["wake_phrases"] == ["游戏", "醒醒"]
-        assert payload["games"] == [{"id": "dice", "phrases": ["摇骰子"]}]
+        assert payload["games"] == [{"id": "dice", "phrases": ["摇骰子", "骰子"]}]
 
         provider.sessions[1]["on_sentence"]("我想玩摇骰子游戏")
         provider.sessions[1]["on_sentence"]("游戏")
@@ -1066,3 +1072,66 @@ def test_select_endpoints_and_standby_game_selection(tmp_path, monkeypatch):
         assert ("wake", None) in statuses
     finally:
         httpd.shutdown()
+
+
+# ---- game_select: voice-selection vocabulary lives in the arena config ----
+
+
+def test_game_select_node_validated_and_normalized():
+    base = {
+        "schema_version": 1,
+        "providers": {"tts_local": "t", "tts_remote": "r"},
+    }
+    assert validate_arena_config({
+        **base, "game_select": {"phrases": {"dice": ["摇骰子", "骰子"]}},
+    })
+    with pytest.raises(ArenaConfigError):
+        validate_arena_config({**base, "game_select": {"phrases": {"dice": []}}})
+    with pytest.raises(ArenaConfigError):
+        validate_arena_config({**base, "game_select": {"phrases": {"dice": ["骰子", "骰子"]}}})
+    with pytest.raises(ArenaConfigError):
+        validate_arena_config({**base, "game_select": {"phrases": {"dice": "骰子"}}})
+    with pytest.raises(ArenaConfigError):
+        validate_arena_config({**base, "game_select": ["dice"]})
+
+    assert arena_game_select_phrases({
+        "game_select": {"phrases": {"dice": ["摇骰子", " 骰子 "], "rps": None, "x": []}}
+    }) == {"dice": ["摇骰子", "骰子"]}
+    # Missing / malformed nodes degrade to "no voice selection".
+    assert arena_game_select_phrases({}) == {}
+    assert arena_game_select_phrases(None) == {}
+
+
+def test_game_select_phrases_ignore_unknown_or_disabled_games(monkeypatch):
+    """The server-side collector intersects the config table with enabled games."""
+    games_root = Path(tempfile.mkdtemp())
+    try:
+        (games_root / "dice").mkdir()
+        (games_root / "dice" / "manifest.json").write_text(json.dumps({
+            "id": "dice", "name": "摇骰子", "enabled": True,
+            "state_machine": MACHINE,
+        }), encoding="utf-8")
+        (games_root / "off").mkdir()
+        (games_root / "off" / "manifest.json").write_text(json.dumps({
+            "id": "off", "name": "禁用的游戏", "enabled": False,
+            "state_machine": MACHINE,
+        }), encoding="utf-8")
+        monkeypatch.setattr(server, "_GAMES_ROOT", games_root)
+        monkeypatch.setattr(server, "GAMES", server.load_games(games_root))
+        monkeypatch.setattr(server, "_GAMES_MTIMES", server._manifest_mtimes())
+        # Pin the arena accessors so get_arena_config() cannot reload the
+        # real repo config over the fixture (mtime would differ).
+        monkeypatch.setattr(server, "ARENA_CONFIG_PATH", games_root / "missing.json")
+        monkeypatch.setattr(server, "_ARENA_MTIME", None)
+        monkeypatch.setattr(
+            server, "_ARENA_CONFIG",
+            {"game_select": {"phrases": {
+                "dice": ["摇骰子"],       # enabled -> kept
+                "off": ["禁用的游戏"],     # disabled -> dropped
+                "ghost": ["幽灵"],        # unknown id -> dropped
+            }}},
+        )
+        assert server._game_select_phrases() == {"dice": ["摇骰子"]}
+    finally:
+        import shutil
+        shutil.rmtree(games_root, ignore_errors=True)
