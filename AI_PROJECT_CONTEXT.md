@@ -48,7 +48,23 @@ server 启动/热加载双路校验）：`providers.asr` 解析出两个引擎 i
 2026-09-03（晚 II）起新增**语音选游戏**：列表页与待机页均可点名游戏直达对局
 （说"我想玩摇骰子游戏"即进 dice；词表在全局配置 `backend/config.json`
 `game_select.phrases` 按游戏 id 显式声明——游戏列表是部署面，词表归全局、
-manifest 不管，未声明的游戏不参与）。`start_standby_session`
+manifest 不管，未声明的游戏不参与）。
+
+2026-09-03（深夜）**AEC（回声消除）调研与试做：结论为暂不启用，播报闸仍是主防线**。
+动因是"ASR 会听到 TTS 相同语句"。实测链路：TTS 由浏览器播放——平时演示浏览器在
+笔记本上（日志证实全部 /speech 拉取来自 100.113.182.54），AEC 参考信号在笔记本侧，
+板端架构上无法消除；全板子演示形态（板载屏幕+Chromium+本地喇叭+板载麦克风）下，
+参考信号可得。试做了两条路线：① gst webrtcdsp/echoprobe 双分支管线（WAP 1.3 已装，
+管线能 PLAYING，但 dsp 无 probe 配对握手时完全不吐数据，黑盒调不通）；② PipeWire
+原生 module-echo-cancel（板上 spa-0.2/aec/libspa-aec-webrtc.so 后端齐全，配置
+~/.config/pipewire/pipewire.conf.d/99-echo-cancel.conf 加载成功、虚拟 aec_source/
+aec_sink 建立并切默认，但实测 AEC 输出比原始麦更响更噪——后端疑似静默劣化，且无
+日志线索，需源码级排查后才能用）。两条路线均已回退（板端音频恢复 MCHOSE 直采直放、
+仓库无 AEC 代码改动）。关键实测数据：板载出声口是内置 3.5mm 模拟（platform-soc_
+sound-card_1），播放时麦克风 RMS 33→112~5388（随音量/摆位波动），且**回声在多数
+运行中不可被 ASR 转写**（0 token，仅最大音量一次 1 句）——播报闸 + 低可转写性已
+双重覆盖当前风险。若未来实测出现误触发：优先降喇叭音量/改摆位，其次重启 AEC 排查
+（PipeWire 配置模板与全部坑记录在项目记忆 asr-voice-input 的 AEC 节）。`start_standby_session`
 泛化为 bridge 的 `start_select_session`（词表 {key: 触发词}，首命中按表序）；
 待机/列表各自事件总线（`_AsrEventBus` 类，listen:true 清总线开新纪元），
 新端点 `POST/GET /api/asr/select(/events)`。关键规则：**游戏名优先于唤醒词**
