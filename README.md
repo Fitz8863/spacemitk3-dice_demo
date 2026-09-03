@@ -24,7 +24,7 @@
 
 ```json
 {
-  "model": "models/yolov8n-seg.q.onnx",
+  "model": "models/yolov8s-seg.q.onnx",
   "class_names": [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
     "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
@@ -42,11 +42,11 @@
   "fps": 25,
   "intra_threads": 2,
   "ep_affinity": "12;13",
-  "conf": 0.5,
+  "conf": 0.25,
   "iou": 0.45,
   "max_detections": 100,
   "queue_depth": 2,
-  "display_enabled": true,
+  "display_enabled": false,
   "decoder": "auto",
   "focus": 0,
   "zoom": 160,
@@ -56,10 +56,10 @@
   "dump_input": "",
   "yolov8_enabled": true,
   "rtsp": {
-    "enabled": false,
+    "enabled": true,
     "host": "127.0.0.1",
     "port": 8554,
-    "path": "/dice"
+    "path": "/dice/seg"
   }
 }
 ```
@@ -93,7 +93,7 @@ ctest --test-dir build --output-on-failure
 
 ## 运行
 
-模型文件已放在 `models/yolov8n-seg.q.onnx` 时：
+模型文件已放在 `models/yolov8s-seg.q.onnx` 时：
 
 ```bash
 ./build/yolov8_seg_camera --config config.json
@@ -119,7 +119,7 @@ ctest --test-dir build --output-on-failure
 ```bash
 ./build/yolov8_seg_camera \
   --config config.json \
-  --model models/yolov8n-seg.q.onnx \
+  --model models/yolov8s-seg.q.onnx \
   --camera /dev/video1 \
   --ep-affinity '12;13'
 ```
@@ -182,3 +182,5 @@ rtsp://127.0.0.1:8554/dice
 - 是否仍有 CPU fallback。
 
 模型二进制被 `.gitignore` 忽略；Git 只保存源码、配置、README 和模型说明。
+
+当前默认模型为 `models/yolov8s-seg.q.onnx`，这是 SpaceMIT 13 输出格式，当前程序可以直接加载。官方标准 FP32 `models/yolov8s-seg.fp32.onnx` 也可以放在 `models/` 下用于后续对比，但它是 2 输出格式，当前程序会明确拒绝加载，详见 `models/README.md`。
