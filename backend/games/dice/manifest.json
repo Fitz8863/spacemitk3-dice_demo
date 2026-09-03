@@ -165,7 +165,7 @@
 						"to": "shake_countdown"
 					},
 					"back": {
-						"exit": true
+						"to": "rules"
 					}
 				}
 			},
