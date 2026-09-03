@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "runtime": {
+    "kind": "local",
+    "root": "tts/matcha-tts",
+    "binary": "build-cpp/matcha_tts_service",
+    "model_dir": "matcha-model",
+    "sherpa_lib_dir": "runtime/sherpa_onnx/lib",
+    "ep_threads": 2,
+    "ep_affinity": "8;9",
+    "enable_affinity": true,
+    "start_timeout_seconds": 60,
+    "terminate_grace_seconds": 5,
+    "request_timeout_seconds": 120
+  },
+  "startup": {
+    "warmup_text": "你好。"
+  },
+  "generation": {
+    "chunk_target": 40,
+    "chunk_max": 90
+  },
+  "voice": {
+    "speaker_id": 0
+  }
+}

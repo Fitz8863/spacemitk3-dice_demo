@@ -163,7 +163,7 @@ class ComponentTests(unittest.TestCase):
         self.assertEqual(registry.provider_ids("vision", "localizer"), [])
         self.assertEqual(
             registry.provider_ids("tts"),
-            ["tts_gptsovits", "tts_moss_nano", "tts_qwen3"],
+            ["tts_gptsovits", "tts_matcha", "tts_moss_nano", "tts_qwen3"],
         )
         self.assertEqual(registry.provider_ids("asr"), ["asr_zipformer"])
         self.assertEqual(
