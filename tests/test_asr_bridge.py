@@ -318,48 +318,67 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(len(self.provider.stopped), 1)
         self.assertEqual(len(self.provider.sessions), 2)
 
-    def test_standby_session_wakes_on_phrase_and_ignores_others(self):
-        wakes = []
+    def test_select_session_hits_first_key_and_ignores_others(self):
+        selected = []
         heard = []
-        self.bridge.start_standby_session(
-            wake_phrases=["小骰子", "醒醒"],
+        self.bridge.start_select_session(
+            phrases={"dice": ["摇骰子"], "wake": ["醒醒"]},
             asr_enabled=True,
             provider_id="asr_dummy",
-            on_wake=wakes.append,
+            on_select=lambda key, text: selected.append((key, text)),
             on_heard=heard.append,
         )
         self.assertEqual(len(self.provider.sessions), 1)
         self.provider.sessions[0]["on_sentence"]("今天天气不错")
-        self.provider.sessions[0]["on_sentence"]("小骰子 醒醒吧")
-        self.assertEqual(wakes, ["小骰子 醒醒吧"])
+        self.provider.sessions[0]["on_sentence"]("我想玩摇骰子游戏")
+        self.assertEqual(selected, [("dice", "我想玩摇骰子游戏")])
         self.assertEqual(heard, ["今天天气不错"])
 
-    def test_standby_session_respects_breaker_and_requires_phrases(self):
-        self.assertFalse(self.bridge.start_standby_session(
-            wake_phrases=["醒醒"], asr_enabled=False, provider_id="asr_dummy",
-            on_wake=lambda _t: None,
-        ))
-        self.assertFalse(self.bridge.start_standby_session(
-            wake_phrases=[], asr_enabled=True, provider_id="asr_dummy",
-            on_wake=lambda _t: None,
-        ))
-        self.assertEqual(self.provider.sessions, [])
+    def test_select_session_gives_games_priority_over_wake_words(self):
+        # The wake word "游戏" is a substring of "我想玩摇骰子游戏": the
+        # phrase-table order (games first, wake last) must make the game win.
+        selected = []
+        self.bridge.start_select_session(
+            phrases={"dice": ["摇骰子"], "wake": ["游戏", "醒醒"]},
+            asr_enabled=True,
+            provider_id="asr_dummy",
+            on_select=lambda key, text: selected.append(key),
+        )
+        self.provider.sessions[0]["on_sentence"]("我想玩摇骰子游戏")
+        self.provider.sessions[0]["on_sentence"]("游戏")
+        self.assertEqual(selected, ["dice", "wake"])
 
-    def test_standby_session_is_mutually_exclusive_with_rounds(self):
+    def test_select_session_respects_breaker_and_requires_phrases(self):
+        self.assertFalse(self.bridge.start_select_session(
+            phrases={"wake": ["醒醒"]}, asr_enabled=False, provider_id="asr_dummy",
+            on_select=lambda _k, _t: None,
+        ))
+        self.assertFalse(self.bridge.start_select_session(
+            phrases={}, asr_enabled=True, provider_id="asr_dummy",
+            on_select=lambda _k, _t: None,
+        ))
+        self.assertFalse(self.bridge.start_select_session(
+            phrases={"wake": []}, asr_enabled=True, provider_id="asr_dummy",
+            on_select=lambda _k, _t: None,
+        ))
+
+    def test_select_session_is_mutually_exclusive_with_rounds(self):
         round_ = FakeRound(self._enabled_manifest())
         self.bridge.start_for_round(round_)
-        self.bridge.start_standby_session(
-            wake_phrases=["醒醒"], asr_enabled=True, provider_id="asr_dummy",
-            on_wake=lambda _t: None,
+        self.bridge.start_select_session(
+            phrases={"wake": ["醒醒"]}, asr_enabled=True, provider_id="asr_dummy",
+            on_select=lambda _k, _t: None,
         )
-        # The round session was replaced by the standby session.
+        # The round routing was replaced by the select routing.
         self.assertEqual(len(self.provider.stopped), 1)
         self.assertEqual(len(self.provider.sessions), 2)
-        wakes = []
+        selected = []
         self.provider.sessions[1]["on_sentence"]("醒醒")
-        # A standby wake never touches round intents.
+        # A select hit never touches round intents.
         self.assertEqual(round_.submitted, [])
-        self.assertEqual(len(wakes), 0)
+        self.assertEqual(len(selected), 0)
+
+
 
 
 class ValidateAsrSectionTests(unittest.TestCase):
@@ -394,6 +413,39 @@ class ValidateAsrSectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_asr_section(
                 {"enabled": "yes", "phrases": {"confirm": ["确认"]}}, self._machine()
+            )
+
+    def test_select_phrases_optional_and_validated(self):
+        result = validate_asr_section(
+            {"enabled": True, "phrases": {"confirm": ["确认"]},
+             "select_phrases": ["摇骰子", "骰子"]},
+            self._machine(),
+        )
+        self.assertEqual(result["select_phrases"], ["摇骰子", "骰子"])
+        # Absent stays absent (the game name becomes the default elsewhere);
+        # an empty list is the explicit "not voice-selectable" opt-out.
+        self.assertNotIn("select_phrases", validate_asr_section(
+            {"enabled": True, "phrases": {"confirm": ["确认"]}}, self._machine()
+        ))
+        validate_asr_section(
+            {"enabled": True, "phrases": {"confirm": ["确认"]}, "select_phrases": []},
+            self._machine(),
+        )
+        with self.assertRaises(ValueError):
+            validate_asr_section(
+                {"enabled": True, "phrases": {"confirm": ["确认"]},
+                 "select_phrases": ["骰子", "骰子"]},
+                self._machine(),
+            )
+        with self.assertRaises(ValueError):
+            validate_asr_section(
+                {"enabled": True, "phrases": {"confirm": ["确认"]}, "select_phrases": "骰子"},
+                self._machine(),
+            )
+        with self.assertRaises(ValueError):
+            validate_asr_section(
+                {"enabled": True, "phrases": {"confirm": ["确认"]}, "select_phrases": [" "]},
+                self._machine(),
             )
 
     def test_public_projection_exposes_only_enabled(self):
@@ -687,14 +739,15 @@ class ResidentEngineBridgeTests(unittest.TestCase):
         self.assertTrue(engine.alive)
 
         # Standby takes over the same warm engine, instantly.
-        woke: list[str] = []
-        self.assertTrue(bridge.start_standby_session(
-            wake_phrases=["游戏", "醒醒"], asr_enabled=True,
-            provider_id="asr_zipformer", on_wake=woke.append,
+        woke: list[tuple[str, str]] = []
+        self.assertTrue(bridge.start_select_session(
+            phrases={"wake": ["游戏", "醒醒"]}, asr_enabled=True,
+            provider_id="asr_zipformer",
+            on_select=lambda key, text: woke.append((key, text)),
         ))
         self.assertIsNotNone(engine.current)
         engine.current["on_sentence"]("开始游戏吧")
-        self.assertEqual(woke, ["开始游戏吧"])
+        self.assertEqual(woke, [("wake", "开始游戏吧")])
 
         # Releasing standby listening detaches; the engine survives that too.
         bridge.stop()

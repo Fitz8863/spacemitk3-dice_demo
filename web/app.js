@@ -65,8 +65,9 @@ function setPhase(phase, meta) {
 // 加载直接进待机（配置来自 /api/games 的 standby 投影，热加载生效）。
 // 对局页面不待机（对局有自身节奏，玩家离场由服务端 SSE 看门收回合 →
 // round_complete → 回到列表 → 计时自然恢复）。待机中的第一次输入只唤醒
-// 不穿透，防止睡着时误开一局。唤醒词监听在服务端（无回合也开麦），轮询
-// /api/asr/standby/events 拿唤醒事件；唤醒同样不穿透——只回列表不进游戏。
+// 不穿透，防止睡着时误开一局。待机语音监听在服务端（无回合也开麦），
+// 轮询 /api/asr/standby/events：唤醒词回列表；点名游戏（词表 = 游戏名，
+// 优先级高于唤醒词）直达对局。
 const IDLE_ENTER_SECONDS = 120; // /api/games 不可用或未配置时的兜底
 let idleTimer = null;
 let standbySettings = { enabled: true, idle_seconds: IDLE_ENTER_SECONDS, boot_standby: false, wake_phrases: [] };
@@ -94,6 +95,7 @@ function enterStandby() {
   clearTimeout(idleTimer);
   idleTimer = null;
   if (state.phase !== 'select' || !standbySettings.enabled) return;
+  stopSelectListening(); // 列表语音选游戏让位给待机唤醒/点名
   setPhase('standby');
   const wakeNode = $('standbyWakeWords');
   if (wakeNode) {
@@ -111,13 +113,15 @@ function wakeFromStandby() {
   if (state.phase !== 'standby') return false;
   setPhase('select');
   stopStandbyListening();
+  startSelectListening();
   return true;
 }
 
-// --- 待机语音监听（服务端会话 + 轮询唤醒事件） ---
+// --- 待机语音监听（服务端会话 + 轮询事件） ---
+// 词表在服务端拼：游戏名在前、唤醒词在后（"我想玩摇骰子游戏"选游戏，
+// 即使唤醒词"游戏"也在句中）；所以这里不再前端预判唤醒词是否为空。
 function startStandbyListening() {
   stopStandbyListening();
-  if (!standbySettings.wake_phrases.length) return; // 没配唤醒词就纯按键/触摸唤醒
   requestJson('/api/asr/standby', {
     method: 'POST',
     body: JSON.stringify({ listen: true }),
@@ -125,6 +129,7 @@ function startStandbyListening() {
     // 事件纪元从本次监听开始：cursor 之前的历史事件（上一段待机期间环境
     // 人声/幻觉产生的旧唤醒）绝不重放——刷新页面瞬间被"旧唤醒"唤醒过的 bug。
     standbyEventCursor = Number(payload?.cursor || 0);
+    renderStandbyVoiceHint(payload?.wake_phrases, payload?.games);
   }).catch(() => { /* 后端不可用不阻塞待机画面 */ });
   standbyPollTimer = setInterval(async () => {
     try {
@@ -132,11 +137,20 @@ function startStandbyListening() {
       for (const event of (payload.events || [])) {
         if (event.sequence > standbyEventCursor) {
           standbyEventCursor = event.sequence;
+          // 保鲜窗：超过 10 秒的事件视为过期（防御旧事件重放）。
+          const fresh = Date.now() - Number(event.timestamp_ms || 0) <= 10000;
           if (event.status === 'wake') {
-            // 保鲜窗：超过 10 秒的唤醒事件视为过期（防御旧事件重放）。
-            if (Date.now() - Number(event.timestamp_ms || 0) <= 10000) {
+            if (fresh) {
               showAsrFeedback({ status: 'submitted', text: event.text });
               wakeFromStandby();
+              return;
+            }
+          } else if (event.status === 'selected' && event.game_id) {
+            // 待机页直接点名游戏：跳过列表直达对局。
+            if (fresh) {
+              showAsrFeedback({ status: 'submitted', text: event.text });
+              wakeFromStandby();
+              enterGameById(event.game_id);
               return;
             }
           } else {
@@ -148,6 +162,27 @@ function startStandbyListening() {
   }, 1200);
 }
 
+function renderStandbyVoiceHint(wakePhrases, selectGames) {
+  const wakeNode = $('standbyWakeWords');
+  if (!wakeNode) return;
+  const parts = [];
+  if (Array.isArray(wakePhrases) && wakePhrases.length) {
+    parts.push(`对我说：${wakePhrases.join(' / ')}`);
+  }
+  const gameWords = (selectGames || [])
+    .map((game) => (game.phrases || [])[0])
+    .filter(Boolean);
+  if (gameWords.length) {
+    parts.push(`或直接说：${gameWords.join(' / ')}`);
+  }
+  if (parts.length) {
+    wakeNode.textContent = parts.join('，');
+    wakeNode.classList.remove('hidden');
+  } else {
+    wakeNode.classList.add('hidden');
+  }
+}
+
 function stopStandbyListening() {
   if (standbyPollTimer) {
     clearInterval(standbyPollTimer);
@@ -157,6 +192,77 @@ function stopStandbyListening() {
     method: 'POST',
     body: JSON.stringify({ listen: false }),
   }).catch(() => { /* already stopped */ });
+}
+
+// --- 列表页语音选游戏（与待机层同构：会话 + 纪元 + 轮询 + 保鲜窗） ---
+// 玩家在游戏列表说"我想玩摇骰子游戏"，服务端在常驻引擎上换绑选路
+// 路由（词表 = 各启用游戏名/别名），命中推 selected 事件；前端走与
+// 绿色按钮同一条 enterSelectedGame 路径进对局。进对局/进待机时轮询
+// 停止（服务端路由由回合/待机会话自动顶掉）。
+let selectEventCursor = 0;
+let selectPollTimer = null;
+
+function startSelectListening() {
+  stopSelectListening();
+  requestJson('/api/asr/select', {
+    method: 'POST',
+    body: JSON.stringify({ listen: true }),
+  }).then((payload) => {
+    selectEventCursor = Number(payload?.cursor || 0);
+    renderSelectVoiceHint(payload?.games);
+  }).catch(() => { /* 后端不可用不阻塞列表页 */ });
+  selectPollTimer = setInterval(async () => {
+    try {
+      const payload = await requestJson('/api/asr/select/events');
+      for (const event of (payload.events || [])) {
+        if (event.sequence > selectEventCursor) {
+          selectEventCursor = event.sequence;
+          if (event.status === 'selected' && event.game_id) {
+            // 保鲜窗：超过 10 秒的选择事件视为过期（防御旧事件重放）。
+            if (Date.now() - Number(event.timestamp_ms || 0) <= 10000) {
+              showAsrFeedback({ status: 'submitted', text: event.text });
+              enterGameById(event.game_id);
+              return;
+            }
+          } else {
+            showAsrFeedback({ status: 'unmatched', text: event.text });
+          }
+        }
+      }
+    } catch (_) { /* 轮询失败下次再试 */ }
+  }, 1200);
+}
+
+function stopSelectListening() {
+  if (selectPollTimer) {
+    clearInterval(selectPollTimer);
+    selectPollTimer = null;
+  }
+  requestJson('/api/asr/select', {
+    method: 'POST',
+    body: JSON.stringify({ listen: false }),
+  }).catch(() => { /* already stopped */ });
+}
+
+function renderSelectVoiceHint(selectGames) {
+  const node = $('selectVoiceHint');
+  if (!node) return;
+  const words = (selectGames || [])
+    .map((game) => (game.phrases || [])[0])
+    .filter(Boolean);
+  if (words.length) {
+    node.textContent = `或对我说：${words.join(' / ')}，直接开始`;
+    node.classList.remove('hidden');
+  } else {
+    node.classList.add('hidden');
+  }
+}
+
+function enterGameById(gameId) {
+  const manifest = games.find((game) => game.id === gameId && game.enabled);
+  if (!manifest) return; // 事件指向禁用/未知的游戏：当作没听见
+  selectGame(gameId);
+  enterSelectedGame();
 }
 
 // 捕获阶段拦截：待机中的输入只用于唤醒，绝不继续派发给列表/按钮。
@@ -729,6 +835,7 @@ function returnToSelect() {
   activeGame = null;
   stopStandbyListening(); // 对局结束回列表：确保没有残留的待机监听/轮询
   setPhase('select');
+  startSelectListening(); // 列表页恢复语音选游戏
 }
 
 // ---- 游戏列表 ----
@@ -797,6 +904,7 @@ function enterSelectedGame() {
     toast(`缺少游戏配置：${state.selectedGame}`);
     return;
   }
+  stopSelectListening(); // 进对局：列表选路轮询停止（服务端路由由回合顶掉）
   activeGame = module;
   module.enter(manifest);
 }
@@ -867,6 +975,8 @@ async function loadGames() {
 
 setPhase('select');
 loadGames().then(() => {
-  // boot_standby=true：页面加载即待机（设备就绪的舞台状态）；false 停在列表。
+  // boot_standby=true：页面加载即待机（设备就绪的舞台状态）；false 停在列表
+  // 并直接开语音选游戏监听。
   if (standbySettings.boot_standby) enterStandby();
+  else startSelectListening();
 });

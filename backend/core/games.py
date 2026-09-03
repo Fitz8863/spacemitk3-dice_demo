@@ -63,6 +63,9 @@ def validate_asr_section(asr: Any, machine: dict[str, Any]) -> dict[str, Any]:
     in the state machine's ``on_intent`` tables so a typo cannot silently
     disable voice control; the built-in ``speech_done`` intent is not
     remappable because it belongs to the speech acknowledgement protocol.
+    ``select_phrases`` (optional) lists the trigger words by which players
+    can voice-select this game on the list/standby screens; absent means the
+    game's ``name`` is used, an empty list opts the game out.
     """
     if not isinstance(asr, dict):
         raise ValueError("asr must be an object")
@@ -89,7 +92,20 @@ def validate_asr_section(asr: Any, machine: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"asr.phrases.{intent} must be a non-empty list of trigger words")
         if len(words) != len(set(words)):
             raise ValueError(f"asr.phrases.{intent} must not contain duplicate trigger words")
-    return {"enabled": enabled, "phrases": phrases}
+    result = {"enabled": enabled, "phrases": phrases}
+    select_phrases = asr.get("select_phrases")
+    if select_phrases is not None:
+        if (
+            not isinstance(select_phrases, list)
+            or not all(isinstance(word, str) and word.strip() for word in select_phrases)
+            or len(select_phrases) != len(set(select_phrases))
+        ):
+            raise ValueError(
+                "asr.select_phrases must be a duplicate-free list of trigger words "
+                "(empty list = this game is not voice-selectable)"
+            )
+        result["select_phrases"] = select_phrases
+    return result
 
 
 class GameRegistry:

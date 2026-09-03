@@ -178,65 +178,74 @@ class AsrIntentBridge:
                 self.stop()
                 return
 
-    # ---- 待机监听（页面级第四层：无回合时的唤醒词会话）----
+    # ---- 选路会话（无回合屏幕：待机页与游戏列表共用）----
 
-    def start_standby_session(
+    def start_select_session(
         self,
         *,
-        wake_phrases: list[str],
+        phrases: dict[str, list[str]],
         asr_enabled: bool,
         provider_id: str,
-        on_wake: Callable[[str], None],
+        on_select: Callable[[str, str], None],
         on_heard: Callable[[str], None] | None = None,
     ) -> bool:
-        """Listen for wake words while no round is running.
+        """Route sentences to whichever key's trigger words they contain.
 
-        The standby session is mutually exclusive with round sessions: a
-        round starting stops it, and it stays stopped until the frontend
-        asks for it again (when the screen goes back to standby).  A wake
-        word only wakes the screen — it never starts a game.
+        Used by the screens outside a round: the caller builds the phrase
+        table (``{key: [trigger words]}`` — game ids and/or the ``"wake"``
+        key) and owns the dispatch.  A hit calls ``on_select(key, text)``
+        with the *first* matching key in table order, so the caller controls
+        priority — the standby screen declares game keys before ``"wake"``
+        so "我想玩摇骰子游戏" selects the dice game even though the wake
+        word "游戏" also occurs in it.  Mutually exclusive with round
+        sessions and with previous select sessions (last start wins).
         """
-        if not asr_enabled or not wake_phrases:
+        table = {
+            str(key): [str(word) for word in words if str(word).strip()]
+            for key, words in (phrases or {}).items()
+            if words
+        }
+        if not asr_enabled or not table:
             return False
         try:
             provider = self._components.require(provider_id, expected_type="asr")
         except DiceArenaError as exc:
-            self._log(f"ASR provider {provider_id} unavailable for standby: {exc.message}")
+            self._log(f"ASR provider {provider_id} unavailable for select: {exc.message}")
             return False
         self.stop()
-        phrases = {"wake": list(wake_phrases)}
         try:
             session = provider.start_session(
-                lambda text: self._on_standby_sentence(phrases, on_wake, on_heard, text),
+                lambda text: self._on_select_sentence(table, on_select, on_heard, text),
                 on_log=self._log,
             )
         except AsrSessionError as exc:
-            self._log(f"standby ASR session failed to start: {exc}")
+            self._log(f"select ASR session failed to start: {exc}")
             return False
-        except Exception as exc:
-            self._log(f"standby ASR session raised: {exc!r}")
+        except Exception as exc:  # provider bug must not break the caller
+            self._log(f"select ASR session raised: {exc!r}")
             return False
         with self._lock:
             self._provider = provider
             self._session = session
-        self._log(f"standby listening for wake words {wake_phrases}")
+        self._log(f"select listening for {sorted(table)}")
         return True
 
-    def _on_standby_sentence(
+    def _on_select_sentence(
         self,
         phrases: dict[str, list[str]],
-        on_wake: Callable[[str], None],
+        on_select: Callable[[str, str], None],
         on_heard: Callable[[str], None] | None,
         text: str,
     ) -> None:
-        if match_phrase_intent(phrases, text):
-            self._log(f"standby heard {text!r} -> waking")
+        key = match_phrase_intent(phrases, text)
+        if key:
+            self._log(f"select heard {text!r} -> {key}")
             try:
-                on_wake(text)
+                on_select(key, text)
             except Exception as exc:
-                self._log(f"standby wake callback error: {exc}")
+                self._log(f"select callback error: {exc}")
             return
-        self._log(f"standby heard {text!r}: not a wake word")
+        self._log(f"select heard {text!r}: no match")
         if on_heard is not None:
             try:
                 on_heard(text)

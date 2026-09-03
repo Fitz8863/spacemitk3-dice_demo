@@ -568,28 +568,80 @@ def _sse_stream_closed(round_id: str) -> None:
 
 ASR_BRIDGE = AsrIntentBridge(components=COMPONENTS)
 
-# Standby wake events: no round is running on the standby screen, so there is
-# no per-round SSE stream to ride on.  A tiny global event bus serves the
-# wake-up (and what the mic heard) to the polling frontend endpoint below.
-_STANDBY_EVENTS: list[dict[str, Any]] = []
-_STANDBY_EVENTS_LOCK = threading.Lock()
-_STANDBY_EVENT_SEQUENCE = 0
+# Screen-level ASR events (standby wake / game selection): no round is
+# running on those screens, so there is no per-round SSE stream to ride on.
+# A tiny global event bus serves what the mic heard to the polling frontend
+# endpoints.  Each screen (standby, list) owns its own bus; ``listen:true``
+# clears it, which starts a clean event epoch.
+class _AsrEventBus:
+    def __init__(self) -> None:
+        self._events: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._sequence = 0
+
+    def clear(self) -> int:
+        """Start a new epoch; returns the cursor history ends at."""
+        with self._lock:
+            self._events.clear()
+            return self._sequence
+
+    def push(self, event: dict[str, Any]) -> None:
+        with self._lock:
+            self._sequence += 1
+            self._events.append({
+                **event,
+                "timestamp_ms": int(time.time() * 1000),
+                "sequence": self._sequence,
+            })
+            del self._events[:-30]
+
+    def poll(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._events)
 
 
-def _standby_push_event(event: dict[str, Any]) -> None:
-    global _STANDBY_EVENT_SEQUENCE
-    with _STANDBY_EVENTS_LOCK:
-        _STANDBY_EVENT_SEQUENCE += 1
-        _STANDBY_EVENTS.append({
-            **event,
-            "timestamp_ms": int(time.time() * 1000),
-            "sequence": _STANDBY_EVENT_SEQUENCE,
-        })
-        del _STANDBY_EVENTS[:-30]
+_STANDBY_BUS = _AsrEventBus()
+_SELECT_BUS = _AsrEventBus()
 
 
-def _standby_wake_broadcast(text: str) -> None:
-    _standby_push_event({"event": "asr", "status": "wake", "text": text})
+def _game_select_phrases() -> dict[str, list[str]]:
+    """Voice-selection trigger words per enabled game, in list order.
+
+    The game manifest's ``asr.select_phrases`` overrides; absent means the
+    game's own ``name`` (so "我想玩摇骰子游戏" works out of the box); an
+    empty list opts the game out of voice selection.
+    """
+    table: dict[str, list[str]] = {}
+    for manifest in get_games().all():
+        if not manifest.get("enabled", False):
+            continue
+        asr = manifest.get("asr") if isinstance(manifest.get("asr"), dict) else {}
+        select = asr.get("select_phrases")
+        if select is None:
+            select = [str(manifest.get("name") or "")]
+        words = [str(word).strip() for word in select or []]
+        words = [word for word in words if word]
+        if words:
+            table[str(manifest["id"])] = words
+    return table
+
+
+def _select_broadcast(bus: _AsrEventBus) -> Callable[[str, str], None]:
+    """Dispatch one select-session hit: wake key or a game id."""
+    def on_select(key: str, text: str) -> None:
+        if key == "wake":
+            bus.push({"event": "asr", "status": "wake", "text": text})
+        else:
+            bus.push({
+                "event": "asr", "status": "selected", "game_id": key, "text": text,
+            })
+    return on_select
+
+
+def _unmatched_broadcast(bus: _AsrEventBus) -> Callable[[str], None]:
+    def on_heard(text: str) -> None:
+        bus.push({"event": "asr", "status": "unmatched", "text": text})
+    return on_heard
 
 
 _ROUND_TIMEOUT_FALLBACK_SECONDS = JOB_TIMEOUT_SECONDS
@@ -1029,11 +1081,13 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
         if path == "/api/asr/standby/events":
-            # Standby-screen wake events (no round → no SSE stream): the
-            # frontend polls this while the standby mic is listening.
-            with _STANDBY_EVENTS_LOCK:
-                events = list(_STANDBY_EVENTS)
-            self.send_json({"events": events})
+            # Standby-screen wake/selection events (no round → no SSE
+            # stream): the frontend polls this while the standby mic listens.
+            self.send_json({"events": _STANDBY_BUS.poll()})
+            return
+        if path == "/api/asr/select/events":
+            # Game-list selection events, same polling pattern as standby.
+            self.send_json({"events": _SELECT_BUS.poll()})
             return
         if path.startswith("/api/game/rounds/"):
             remainder = path[len("/api/game/rounds/"):]
@@ -1165,9 +1219,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error_json(exc)
             return
         if path == "/api/asr/standby":
-            # The frontend asks for wake-word listening while the screen is in
-            # standby, and releases it on wake/round start.  Round sessions
-            # always win: create_round stops the standby session first.
+            # The frontend asks for wake-word listening while the screen is
+            # in standby, and releases it on wake/round start.  Round sessions
+            # always win: create_round stops the standby routing first.  The
+            # phrase table also carries the game names: game keys come BEFORE
+            # the wake key so "我想玩摇骰子游戏" selects the dice game even
+            # though the wake word "游戏" occurs in it too.
             try:
                 payload = self.read_json()
             except DiceArenaError as exc:
@@ -1182,19 +1239,54 @@ class Handler(BaseHTTPRequestHandler):
             # from earlier standby periods (room noise, an earlier wake) must
             # never replay into a newly loaded page — that is what made a
             # page refresh instantly "wake" with a stale word (2026-09-03).
-            with _STANDBY_EVENTS_LOCK:
-                _STANDBY_EVENTS.clear()
-            started = ASR_BRIDGE.start_standby_session(
-                wake_phrases=standby["wake_phrases"],
+            cursor = _STANDBY_BUS.clear()
+            game_phrases = _game_select_phrases()
+            phrases = {**game_phrases, "wake": list(standby["wake_phrases"])}
+            started = ASR_BRIDGE.start_select_session(
+                phrases=phrases,
                 asr_enabled=arena_asr_enabled(get_arena_config()),
                 provider_id=arena_slot_value(get_arena_config(), "asr"),
-                on_wake=_standby_wake_broadcast,
+                on_select=_select_broadcast(_STANDBY_BUS),
+                on_heard=_unmatched_broadcast(_STANDBY_BUS),
             )
-            with _STANDBY_EVENTS_LOCK:
-                cursor = _STANDBY_EVENT_SEQUENCE
             self.send_json({
                 "listening": started,
                 "wake_phrases": standby["wake_phrases"] if started else [],
+                "games": [
+                    {"id": game_id, "phrases": words}
+                    for game_id, words in game_phrases.items()
+                ] if started else [],
+                "cursor": cursor,
+            })
+            return
+        if path == "/api/asr/select":
+            # Game-list voice selection: same routing pattern as standby,
+            # but the phrase table holds game names only (wake words mean
+            # nothing once the list is already on screen).
+            try:
+                payload = self.read_json()
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
+                return
+            if payload.get("listen") is not True:
+                ASR_BRIDGE.stop()
+                self.send_json({"listening": False})
+                return
+            cursor = _SELECT_BUS.clear()
+            game_phrases = _game_select_phrases()
+            started = ASR_BRIDGE.start_select_session(
+                phrases=game_phrases,
+                asr_enabled=arena_asr_enabled(get_arena_config()),
+                provider_id=arena_slot_value(get_arena_config(), "asr"),
+                on_select=_select_broadcast(_SELECT_BUS),
+                on_heard=_unmatched_broadcast(_SELECT_BUS),
+            )
+            self.send_json({
+                "listening": started,
+                "games": [
+                    {"id": game_id, "phrases": words}
+                    for game_id, words in game_phrases.items()
+                ] if started else [],
                 "cursor": cursor,
             })
             return

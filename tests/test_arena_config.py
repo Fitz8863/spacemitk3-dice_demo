@@ -829,7 +829,8 @@ def test_standby_endpoints_and_projection(tmp_path, monkeypatch):
             components=registry, log=lambda _l: None,
         ),
     )
-    monkeypatch.setattr(server, "_STANDBY_EVENTS", [])
+    monkeypatch.setattr(server, "_STANDBY_BUS", server._AsrEventBus())
+    monkeypatch.setattr(server, "_SELECT_BUS", server._AsrEventBus())
     httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     port = httpd.server_address[1]
@@ -859,15 +860,15 @@ def test_standby_endpoints_and_projection(tmp_path, monkeypatch):
 
         # A fresh listening session is a clean event epoch: pre-existing
         # events (an earlier standby period's room noise) must not replay.
-        monkeypatch.setattr(server, "_STANDBY_EVENT_SEQUENCE", 41)
-        with server._STANDBY_EVENTS_LOCK:
-            server._STANDBY_EVENTS.append({
-                "event": "asr", "status": "wake", "text": "旧唤醒",
-                "timestamp_ms": 1, "sequence": 41,
-            })
+        # Pre-seed history the new epoch must hide (an earlier standby
+        # period's stale wake).
+        server._STANDBY_BUS.push({
+            "event": "asr", "status": "wake", "text": "旧唤醒",
+        })
+        stale_sequence = server._STANDBY_BUS.poll()[-1]["sequence"]
         status, payload = post("/api/asr/standby", {"listen": True})
         assert status == 200 and payload["listening"] is True
-        assert payload["cursor"] == 41  # the new epoch starts after history
+        assert payload["cursor"] == stale_sequence  # epoch starts after history
         assert len(provider.sessions) == 1
         _, events_payload = get("/api/asr/standby/events")
         assert events_payload["events"] == []  # history was cleared on listen
@@ -965,3 +966,103 @@ def test_collect_provider_slot_ids_gathers_arena_and_enabled_games():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_select_endpoints_and_standby_game_selection(tmp_path, monkeypatch):
+    """列表页语音选游戏端点 + 待机页点名游戏直达（游戏名优先于唤醒词）。"""
+    games_root = tmp_path / "games"
+    (games_root / "dice").mkdir(parents=True)
+    (games_root / "dice" / "manifest.json").write_text(json.dumps({
+        "id": "dice", "name": "摇骰子", "enabled": True,
+        "participants": {"player": "LEFT", "agent": "RIGHT"},
+        "state_machine": MACHINE,
+        "asr": {"enabled": True, "phrases": {"confirm": ["确认"]}},
+    }), encoding="utf-8")
+    arena_path = tmp_path / "config.json"
+    arena_path.write_text(json.dumps({
+        "schema_version": 1,
+        "providers": {"tts_local": "tts_dummy", "asr": "asr_dummy"},
+        "standby": {"enabled": True, "wake_phrases": ["游戏", "醒醒"]},
+    }), encoding="utf-8")
+
+    provider = DummyAsrForArena()
+    registry = ComponentRegistry()
+    registry.register(DummyTts(), {
+        "id": "tts_dummy", "type": "tts", "entry": "provider.py:DummyTts",
+    })
+    registry.register(provider, {
+        "id": "asr_dummy", "type": "asr", "entry": "provider.py:DummyAsrForArena",
+    })
+    monkeypatch.setattr(server, "COMPONENTS", registry)
+    monkeypatch.setattr(server, "_GAMES_ROOT", games_root)
+    monkeypatch.setattr(server, "GAMES", server.load_games(games_root))
+    monkeypatch.setattr(server, "_GAMES_MTIMES", server._manifest_mtimes())
+    monkeypatch.setattr(server, "rounds", {})
+    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", arena_path)
+    monkeypatch.setattr(server, "_ARENA_CONFIG", {})
+    monkeypatch.setattr(server, "_ARENA_MTIME", None)
+    monkeypatch.setattr(
+        server, "ASR_BRIDGE",
+        __import__("core.asr_bridge", fromlist=["AsrIntentBridge"]).AsrIntentBridge(
+            components=registry, log=lambda _l: None,
+        ),
+    )
+    monkeypatch.setattr(server, "_STANDBY_BUS", server._AsrEventBus())
+    monkeypatch.setattr(server, "_SELECT_BUS", server._AsrEventBus())
+    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    port = httpd.server_address[1]
+
+    def post(path, body):
+        connection = HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request("POST", path, body=json.dumps(body).encode("utf-8"),
+                            headers={"Content-Type": "application/json"})
+        response = connection.getresponse()
+        data = json.loads(response.read())
+        connection.close()
+        return response.status, data
+
+    def get(path):
+        connection = HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request("GET", path)
+        response = connection.getresponse()
+        data = json.loads(response.read())
+        connection.close()
+        return response.status, data
+
+    try:
+        # List-screen listening: the phrase table defaults to the game name.
+        status, payload = post("/api/asr/select", {"listen": True})
+        assert status == 200 and payload["listening"] is True
+        assert payload["games"] == [{"id": "dice", "phrases": ["摇骰子"]}]
+        assert len(provider.sessions) == 1
+
+        provider.sessions[0]["on_sentence"]("我想玩摇骰子游戏")
+        provider.sessions[0]["on_sentence"]("今天天气不错")
+        _, events_payload = get("/api/asr/select/events")
+        selected = [e for e in events_payload["events"] if e.get("status") == "selected"]
+        unmatched = [e for e in events_payload["events"] if e.get("status") == "unmatched"]
+        assert selected == [{
+            "event": "asr", "status": "selected", "game_id": "dice",
+            "text": "我想玩摇骰子游戏",
+            "timestamp_ms": selected[0]["timestamp_ms"],
+            "sequence": selected[0]["sequence"],
+        }]
+        assert unmatched and unmatched[-1]["text"] == "今天天气不错"
+
+        # Standby listening carries wake words AND the game names; the game
+        # keys come first so "我想玩摇骰子游戏" selects the game even though
+        # the wake word "游戏" also occurs in it.
+        status, payload = post("/api/asr/standby", {"listen": True})
+        assert status == 200 and payload["listening"] is True
+        assert payload["wake_phrases"] == ["游戏", "醒醒"]
+        assert payload["games"] == [{"id": "dice", "phrases": ["摇骰子"]}]
+
+        provider.sessions[1]["on_sentence"]("我想玩摇骰子游戏")
+        provider.sessions[1]["on_sentence"]("游戏")
+        _, events_payload = get("/api/asr/standby/events")
+        statuses = [(e.get("status"), e.get("game_id")) for e in events_payload["events"]]
+        assert ("selected", "dice") in statuses
+        assert ("wake", None) in statuses
+    finally:
+        httpd.shutdown()
