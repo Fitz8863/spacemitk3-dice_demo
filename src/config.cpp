@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cctype>
 #include <sstream>
-#include <vector>
 
 namespace {
 
@@ -33,6 +32,13 @@ bool read_float(const cv::FileNode& node, const char* key, float& value) {
     return true;
 }
 
+bool read_size(const cv::FileNode& node, const char* key, std::size_t& value) {
+    int parsed = 0;
+    if (!read_int(node, key, parsed) || parsed < 0) return false;
+    value = static_cast<std::size_t>(parsed);
+    return true;
+}
+
 bool read_bool(const cv::FileNode& node, const char* key, bool& value) {
     const cv::FileNode child = node[key];
     if (child.empty()) return true;
@@ -53,6 +59,32 @@ bool read_bool(const cv::FileNode& node, const char* key, bool& value) {
     return false;
 }
 
+bool read_required_string(const cv::FileNode& node, const char* key,
+                          std::string& value, std::string& error) {
+    if (!read_string(node, key, value)) {
+        error = std::string("config ") + key + " must be a string";
+        return false;
+    }
+    return true;
+}
+
+bool read_rtsp(const cv::FileNode& root, AppConfig& config, std::string& error) {
+    const cv::FileNode node = root["rtsp"];
+    if (node.empty()) return true;
+    if (!node.isMap()) {
+        error = "config rtsp must be an object";
+        return false;
+    }
+    if (!read_bool(node, "enabled", config.rtsp_enabled) ||
+        !read_required_string(node, "host", config.rtsp_host, error) ||
+        !read_int(node, "port", config.rtsp_port) ||
+        !read_required_string(node, "path", config.rtsp_path, error)) {
+        if (error.empty()) error = "invalid rtsp configuration";
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 bool load_config(const std::string& path, AppConfig& config, std::string& error) {
@@ -67,38 +99,53 @@ bool load_config(const std::string& path, AppConfig& config, std::string& error)
             error = "config root must be a JSON object";
             return false;
         }
-#define READ_STRING(key, field) \
-        if (!read_string(root, key, config.field)) { error = std::string("config ") + key + " must be a string"; return false; }
-#define READ_INT(key, field) \
-        if (!read_int(root, key, config.field)) { error = std::string("config ") + key + " must be numeric"; return false; }
-#define READ_FLOAT(key, field) \
-        if (!read_float(root, key, config.field)) { error = std::string("config ") + key + " must be numeric"; return false; }
-#define READ_BOOL(key, field) \
-        if (!read_bool(root, key, config.field)) { error = std::string("config ") + key + " must be boolean"; return false; }
-        READ_STRING("model", model)
-        READ_INT("camera", camera)
-        READ_STRING("device", device)
-        READ_INT("width", width)
-        READ_INT("height", height)
-        READ_INT("fps", fps)
-        READ_INT("intra_threads", intra_threads)
-        READ_STRING("ep_affinity", ep_affinity)
-        READ_FLOAT("conf", conf)
-        READ_FLOAT("iou", iou)
-        READ_INT("max_detections", max_detections)
-        READ_INT("queue_depth", queue_depth)
-        READ_BOOL("display_enabled", display_enabled)
-        READ_STRING("decoder", decoder)
-        READ_INT("focus", focus)
-        READ_INT("zoom", zoom)
-#undef READ_STRING
-#undef READ_INT
-#undef READ_FLOAT
-#undef READ_BOOL
+        config.config_path = path;
+        if (!read_required_string(root, "model", config.model, error) ||
+            !read_int(root, "width", config.width) ||
+            !read_int(root, "height", config.height) ||
+            !read_int(root, "fps", config.fps) ||
+            !read_int(root, "intra_threads", config.intra_threads) ||
+            !read_required_string(root, "ep_affinity", config.ep_affinity, error) ||
+            !read_size(root, "queue_depth", config.queue_depth) ||
+            !read_float(root, "conf", config.conf) ||
+            !read_float(root, "iou", config.iou) ||
+            !read_int(root, "max_detections", config.max_detections) ||
+            !read_int(root, "focus", config.focus) ||
+            !read_int(root, "zoom", config.zoom) ||
+            !read_bool(root, "display_enabled", config.display_enabled) ||
+            !read_bool(root, "yolov8_enabled", config.yolov8_enabled) ||
+            !read_bool(root, "self_test", config.self_test) ||
+            !read_bool(root, "no_display", config.no_display) ||
+            !read_int(root, "max_frames", config.max_frames) ||
+            !read_required_string(root, "dump_input", config.dump_input, error) ||
+            !read_required_string(root, "decoder", config.decoder, error)) {
+            if (error.empty()) error = "invalid config value";
+            return false;
+        }
+
+        const cv::FileNode camera = root["camera"];
+        if (!camera.empty()) {
+            if (camera.isString()) {
+                camera >> config.device;
+            } else if (camera.isInt() || camera.isReal()) {
+                camera >> config.camera;
+                config.device.clear();
+            } else {
+                error = "config camera must be a device path string or numeric index";
+                return false;
+            }
+        }
+        std::string configured_device;
+        if (!read_required_string(root, "device", configured_device, error)) return false;
+        if (!configured_device.empty()) config.device = configured_device;
+
+        if (!read_rtsp(root, config, error)) return false;
         if (!validate_ep_affinity(config.ep_affinity, config.intra_threads, error)) return false;
+        config.queue_depth = std::max<std::size_t>(1, config.queue_depth);
         if (config.model.empty() || config.width <= 0 || config.height <= 0 || config.fps <= 0 ||
-            config.conf < 0.0f || config.conf > 1.0f || config.iou < 0.0f || config.iou > 1.0f ||
-            config.max_detections < 1 || config.queue_depth < 1) {
+            config.intra_threads < 1 || config.conf < 0.0f || config.conf > 1.0f ||
+            config.iou < 0.0f || config.iou > 1.0f || config.max_detections < 1 ||
+            config.max_frames < 0 || config.rtsp_port < 1 || config.rtsp_port > 65535) {
             error = "invalid numeric config value";
             return false;
         }
@@ -111,4 +158,16 @@ bool load_config(const std::string& path, AppConfig& config, std::string& error)
         error = "failed to parse config: " + std::string(exception.what());
         return false;
     }
+}
+
+std::string normalize_rtsp_host(std::string host) {
+    if (host.empty() || host == "0.0.0.0" || host == "*") return "127.0.0.1";
+    return host;
+}
+
+std::string normalize_rtsp_path(std::string path) {
+    if (path.empty()) return "/dice";
+    if (path.front() != '/') path.insert(path.begin(), '/');
+    while (path.size() > 1 && path.back() == '/') path.pop_back();
+    return path;
 }

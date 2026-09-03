@@ -2,6 +2,7 @@
 #include "gstreamer_camera.h"
 #include "latest_queue.h"
 #include "opencl_preprocess.h"
+#include "rtsp_streamer.h"
 #include "overlay.h"
 #include "yolov8_seg_detector.h"
 
@@ -30,14 +31,21 @@ void usage(const char* executable) {
     std::cout << "Usage: " << executable << " [--config PATH] [options]\n"
               << "  --config PATH       JSON config, default config.json\n"
               << "  --model PATH        override model path\n"
-              << "  --camera N          override camera index\n"
-              << "  --device PATH       override V4L2 device\n"
+              << "  --camera VALUE      V4L2 index or device path, e.g. /dev/video1\n"
+              << "  --device PATH       explicit V4L2 node, overrides --camera\n"
               << "  --width N --height N --fps N\n"
               << "  --intra-threads N   SpaceMIT EP intra threads\n"
               << "  --ep-affinity LIST  SpaceMIT EP cores, e.g. 12;13\n"
               << "  --conf FLOAT --iou FLOAT\n"
+              << "  --queue-depth N     compatibility queue depth setting\n"
+              << "  --focus N --zoom N  optional V4L2 controls (-1=unchanged)\n"
               << "  --no-display        run inference without a window\n"
               << "  --max-frames N      stop after N frames (0=unlimited)\n"
+              << "  --rtsp              enable RTSP publishing\n"
+              << "  --no-rtsp           disable RTSP publishing\n"
+              << "  --rtsp-host HOST    RTSP server host\n"
+              << "  --rtsp-port N       RTSP server port\n"
+              << "  --rtsp-path PATH    RTSP path\n"
               << "  --self-test         initialize OpenCL and run one model inference\n"
               << "  --help              show this help\n";
 }
@@ -67,14 +75,22 @@ bool parse_args(int argc, char** argv, AppConfig& config,
             if (!need_value(i, argc, argv, config.ep_affinity)) return false;
         } else if (key == "--decoder") {
             if (!need_value(i, argc, argv, config.decoder)) return false;
-        } else if (key == "--camera" || key == "--width" || key == "--height" || key == "--fps" ||
+        } else if (key == "--camera") {
+            if (!need_value(i, argc, argv, value)) return false;
+            if (!value.empty() && value.find_first_not_of("0123456789") == std::string::npos) {
+                config.camera = std::stoi(value);
+                config.device.clear();
+            } else {
+                config.device = value;
+            }
+        } else if (key == "--width" || key == "--height" || key == "--fps" ||
                    key == "--intra-threads" || key == "--max-detections" || key == "--queue-depth" ||
                    key == "--focus" || key == "--zoom" || key == "--max-frames") {
             if (!need_value(i, argc, argv, value)) return false;
             try {
                 int parsed = std::stoi(value);
-                if (key == "--camera") config.camera = parsed;
-                else if (key == "--width") config.width = parsed;
+                if (key == "--width") config.width = parsed;
+                else if (key == "--height") config.height = parsed;
                 else if (key == "--height") config.height = parsed;
                 else if (key == "--fps") config.fps = parsed;
                 else if (key == "--intra-threads") config.intra_threads = parsed;
@@ -96,10 +112,28 @@ bool parse_args(int argc, char** argv, AppConfig& config,
                 std::cerr << key << " requires a number\n";
                 return false;
             }
+        } else if (key == "--rtsp") {
+            config.rtsp_enabled = true;
+        } else if (key == "--no-rtsp") {
+            config.rtsp_enabled = false;
+        } else if (key == "--rtsp-host") {
+            if (!need_value(i, argc, argv, config.rtsp_host)) return false;
+        } else if (key == "--rtsp-path") {
+            if (!need_value(i, argc, argv, config.rtsp_path)) return false;
+        } else if (key == "--rtsp-port") {
+            if (!need_value(i, argc, argv, value)) return false;
+            try {
+                config.rtsp_port = std::stoi(value);
+            } catch (const std::exception&) {
+                std::cerr << "--rtsp-port requires an integer\n";
+                return false;
+            }
         } else if (key == "--self-test") {
             self_test = true;
         } else if (key == "--no-display") {
             no_display = true;
+        } else if (key == "--no-yolov8") {
+            config.yolov8_enabled = false;
         } else {
             std::cerr << "Unknown option: " << key << "\n";
             usage(argv[0]);
@@ -113,7 +147,8 @@ bool parse_args(int argc, char** argv, AppConfig& config,
     }
     if (config.width <= 0 || config.height <= 0 || config.fps <= 0 || config.intra_threads < 1 ||
         config.conf < 0.0f || config.conf > 1.0f || config.iou < 0.0f || config.iou > 1.0f ||
-        config.max_detections < 1 || max_frames < 0) {
+        config.max_detections < 1 || max_frames < 0 ||
+        config.rtsp_port < 1 || config.rtsp_port > 65535) {
         std::cerr << "Invalid numeric argument\n";
         return false;
     }
@@ -151,6 +186,9 @@ int main(int argc, char** argv) {
         std::cerr << error << "\n";
         return 2;
     }
+    self_test = config.self_test;
+    no_display = config.no_display || !config.display_enabled;
+    max_frames = config.max_frames;
     if (!parse_args(argc, argv, config, self_test, no_display, max_frames)) return 2;
 
     std::cout << "Configuration: model=" << config.model
@@ -160,6 +198,10 @@ int main(int argc, char** argv) {
               << " intra_threads=" << config.intra_threads
               << " ep_affinity=" << (config.ep_affinity.empty() ? "<runtime default>" : config.ep_affinity)
               << "\n";
+    if (!config.yolov8_enabled) {
+        std::cerr << "yolov8_enabled=false is not supported by this segmentation executable\n";
+        return 2;
+    }
     if (!std::filesystem::exists(config.model)) {
         std::cerr << "Model not found: " << config.model << "\n";
         return 3;
@@ -216,6 +258,7 @@ int main(int argc, char** argv) {
     LatestQueue<CapturedFrame> display_queue;
     LatestQueue<CapturedFrame> preprocess_input_queue;
     std::unique_ptr<GstreamerMjpegCamera> camera;
+    RtspStreamer rtsp_streamer;
     LatestQueue<PreparedFrame> prepared_queue;
     LatestQueue<InferenceResult> result_queue;
     std::atomic<bool> stop{false};
@@ -250,6 +293,11 @@ int main(int argc, char** argv) {
             std::cout << "Camera opened: device=" << camera->device()
                       << " decoder=" << camera->decoder()
                       << " negotiated_fps=" << camera->negotiated_fps() << "\n";
+            if (config.rtsp_enabled && !rtsp_streamer.start(
+                    config.rtsp_host, config.rtsp_port, config.rtsp_path,
+                    config.width, config.height, camera->negotiated_fps())) {
+                throw std::runtime_error("RTSP publisher start failed");
+            }
             while (!stop.load(std::memory_order_acquire) && !stop_requested &&
                    (requested_frames == 0 || static_cast<int>(id) < requested_frames)) {
                 GstreamerFrame frame;
@@ -386,6 +434,7 @@ int main(int argc, char** argv) {
                 last_displayed = current_displayed;
                 last_stats = now;
             }
+            if (rtsp_streamer.running()) rtsp_streamer.publish(bgr);
             if (display_initialized) {
                 cv::imshow("YOLOv8-seg Camera", bgr);
                 displayed_count.fetch_add(1, std::memory_order_relaxed);
@@ -420,6 +469,7 @@ int main(int argc, char** argv) {
     prepared_queue.close();
     result_queue.close();
     if (capture_thread.joinable()) capture_thread.join();
+    rtsp_streamer.stop();
     camera.reset();
     if (preprocess_thread.joinable()) preprocess_thread.join();
     if (inference_thread.joinable()) inference_thread.join();

@@ -1,18 +1,29 @@
 {
   "model": "models/yolov8n-seg.q.onnx",
-  "camera": 1,
+  "camera": "/dev/video1",
   "device": "",
   "width": 1280,
   "height": 720,
-  "fps": 24,
+  "fps": 25,
   "intra_threads": 2,
   "ep_affinity": "12;13",
-  "conf": 0.25,
+  "conf": 0.5,
   "iou": 0.45,
   "max_detections": 100,
   "queue_depth": 2,
   "display_enabled": true,
   "decoder": "auto",
-  "focus": -1,
-  "zoom": -1
+  "focus": 0,
+  "zoom": 160,
+  "self_test": false,
+  "no_display": false,
+  "max_frames": 0,
+  "dump_input": "",
+  "yolov8_enabled": true,
+  "rtsp": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 8554,
+    "path": "/dice"
+  }
 }

@@ -47,6 +47,7 @@ add_executable(${PROJECT_NAME}
     src/affinity.cpp
     src/gstreamer_camera.cpp
     src/opencl_preprocess.cpp
+    src/rtsp_streamer.cpp
     src/yolov8_seg_detector.cpp
     src/overlay.cpp)
 
@@ -82,4 +83,17 @@ if(BUILD_TESTING)
     add_executable(latest_queue_test tests/latest_queue_test.cpp)
     target_include_directories(latest_queue_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     add_test(NAME latest_queue_test COMMAND latest_queue_test)
+
+    add_executable(config_contract_test tests/config_contract_test.cpp
+        src/config.cpp src/affinity.cpp)
+    target_include_directories(config_contract_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(config_contract_test PRIVATE ${OpenCV_LIBS})
+    add_test(NAME config_contract_test COMMAND config_contract_test)
+
+    add_executable(rtsp_config_test tests/rtsp_config_test.cpp src/config.cpp src/affinity.cpp)
+    target_include_directories(rtsp_config_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(rtsp_config_test PRIVATE ${OpenCV_LIBS})
+    add_test(NAME rtsp_config_test COMMAND rtsp_config_test)
 endif()

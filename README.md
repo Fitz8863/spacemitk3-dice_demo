@@ -23,21 +23,32 @@
 ```json
 {
   "model": "models/yolov8n-seg.q.onnx",
-  "camera": 1,
+  "camera": "/dev/video1",
   "device": "",
   "width": 1280,
   "height": 720,
-  "fps": 24,
+  "fps": 25,
   "intra_threads": 2,
   "ep_affinity": "12;13",
-  "conf": 0.25,
+  "conf": 0.5,
   "iou": 0.45,
   "max_detections": 100,
   "queue_depth": 2,
   "display_enabled": true,
   "decoder": "auto",
-  "focus": -1,
-  "zoom": -1
+  "focus": 0,
+  "zoom": 160,
+  "self_test": false,
+  "no_display": false,
+  "max_frames": 0,
+  "dump_input": "",
+  "yolov8_enabled": true,
+  "rtsp": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 8554,
+    "path": "/dice"
+  }
 }
 ```
 
@@ -45,7 +56,11 @@
 
 `queue_depth` 目前保留用于兼容配置，但单路低延迟实现使用固定深度 1 的 latest-only 槽位，不会阻塞等待旧帧完成。
 
-`device` 非空时优先于 `camera`。板上 C920 当前应优先使用：
+`camera` 可以配置为数字索引或设备路径字符串，例如 `"/dev/video1"`。`device` 非空时优先于 `camera`；命令行 `--camera` 也同时支持数字和路径。
+
+`self_test`、`no_display`、`max_frames`、`dump_input`、`yolov8_enabled` 与兄弟项目保持兼容；当前分割程序要求 `yolov8_enabled=true`，`dump_input` 作为兼容字段保留。
+
+板上 C920 当前应优先使用：
 
 ```text
 /dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_9395301F-video-index0
@@ -91,8 +106,43 @@ ctest --test-dir build --output-on-failure
 ./build/yolov8_seg_camera \
   --config config.json \
   --model models/yolov8n-seg.q.onnx \
-  --camera 1 \
+  --camera /dev/video1 \
   --ep-affinity '12;13'
+```
+
+### RTSP 推流
+
+开启配置：
+
+```json
+"rtsp": {
+  "enabled": true,
+  "host": "127.0.0.1",
+  "port": 8554,
+  "path": "/dice"
+}
+```
+
+程序会把最新的已渲染 BGR 帧异步送入：
+
+```text
+appsrc → leaky queue → videoconvert → NV12 → spacemith264enc
+       → h264parse → rtspclientsink → MediaMTX
+```
+
+推流线程使用 latest-only 策略，网络或编码变慢时只丢弃旧帧，不阻塞摄像头、前处理、推理和本地显示。板端需要先运行 MediaMTX，并确保 `rtspclientsink`、`spacemith264enc` 可用。
+
+命令行也可以覆盖推流配置：
+
+```bash
+./build/yolov8_seg_camera --config config.json \
+  --rtsp --rtsp-host 127.0.0.1 --rtsp-port 8554 --rtsp-path /dice
+```
+
+默认播放地址：
+
+```text
+rtsp://127.0.0.1:8554/dice
 ```
 
 解码器策略：
