@@ -24,6 +24,19 @@
 
       <div class="stage-body" id="stageContent">
 
+        <!-- 待机页（全体游戏之前；select 空闲超时进入，任意输入唤醒） -->
+        <section class="view hidden" data-view="standby" aria-label="待机">
+          <div class="standby-scene">
+            <div class="standby-orb">
+              <span class="standby-ring" aria-hidden="true"></span>
+              <span class="standby-ring standby-ring-2" aria-hidden="true"></span>
+              <span class="standby-core" aria-hidden="true"></span>
+            </div>
+            <div class="standby-zzz" aria-hidden="true"><span>z</span><span>z</span><span>Z</span></div>
+            <p class="standby-hint">按任意键或触摸屏幕开始</p>
+          </div>
+        </section>
+
         <!-- 选择游戏 -->
         <section class="view" data-view="select">
           <div class="game-list" id="gameList" role="listbox" aria-label="游戏列表"></div>

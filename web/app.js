@@ -56,7 +56,48 @@ function setPhase(phase, meta) {
   const resolved = meta || (activeGame && activeGame.phaseMeta && activeGame.phaseMeta[phase]) || SELECT_META;
   $('phaseTitle').textContent = resolved[0];
   renderPhaseCopy(phase, resolved[1]);
+  resetIdleTimer();
 }
+
+// ---- 待机页（全体游戏之前） ----
+// 游戏列表页空闲 IDLE_ENTER_SECONDS 后进入待机动画；任意输入唤醒回列表。
+// 对局页面不待机（对局有自身节奏，玩家离场由服务端 SSE 看门收回合 →
+// round_complete → 回到列表 → 计时自然恢复）。待机中的第一次输入只唤醒
+// 不穿透，防止睡着时误开一局。
+const IDLE_ENTER_SECONDS = 120;
+let idleTimer = null;
+
+function resetIdleTimer() {
+  clearTimeout(idleTimer);
+  if (state.phase !== 'select') return;
+  idleTimer = setTimeout(enterStandby, IDLE_ENTER_SECONDS * 1000);
+}
+
+function enterStandby() {
+  clearTimeout(idleTimer);
+  idleTimer = null;
+  if (state.phase !== 'select') return;
+  setPhase('standby');
+}
+
+function wakeFromStandby() {
+  if (state.phase !== 'standby') return false;
+  setPhase('select');
+  return true;
+}
+
+// 捕获阶段拦截：待机中的输入只用于唤醒，绝不继续派发给列表/按钮。
+// keydown/click 都是一次性完整事件（click 由点击或触摸 tap 合成）——
+// 唤醒用的这一次事件被吞掉，不会落到列表项上误开一局。
+['keydown', 'click'].forEach((type) => {
+  window.addEventListener(type, (event) => {
+    if (wakeFromStandby()) {
+      event.stopPropagation();
+      event.preventDefault();
+    }
+    resetIdleTimer();
+  }, { capture: true });
+});
 
 // ---- 提示 ----
 function toast(message) {

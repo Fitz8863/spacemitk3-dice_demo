@@ -146,6 +146,24 @@ body[data-phase="open"] .stage-body { flex: 0; padding: 0; }
 .asr-feedback.level-wait { border-color: rgba(217, 119, 6, .5); color: #b54708; background: rgba(255, 214, 130, .16); }
 .asr-feedback.level-info { color: var(--muted-2); }
 
+/* 待机页：全体游戏之前的空闲画面（中性品牌元素，不含任何游戏符号） */
+body[data-phase="standby"] .stage-head { visibility: hidden; }
+.standby-scene { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px; min-height: 70vh; }
+.standby-orb { position: relative; width: 180px; height: 180px; display: grid; place-items: center; }
+.standby-core { width: 46px; height: 46px; border-radius: 14px; background: var(--accent); box-shadow: 0 10px 34px rgba(37, 99, 235, .35); animation: standbyBreath 3.6s ease-in-out infinite; }
+.standby-ring { position: absolute; inset: 0; border: 2px solid rgba(37, 99, 235, .35); border-radius: 50%; animation: standbyRipple 3.6s ease-out infinite; }
+.standby-ring-2 { animation-delay: 1.8s; }
+.standby-zzz { position: absolute; top: 8px; right: calc(50% - 130px); display: flex; gap: 6px; color: var(--muted); font-weight: 800; }
+.standby-zzz span { opacity: 0; animation: standbyZ 5.4s ease-in-out infinite; }
+.standby-zzz span:nth-child(2) { animation-delay: 1.2s; font-size: 1.35em; }
+.standby-zzz span:nth-child(3) { animation-delay: 2.4s; font-size: 1.75em; }
+.standby-hint { margin: 0; color: var(--muted-2); font-size: 20px; animation: standbyHint 3.6s ease-in-out infinite; }
+
+@keyframes standbyBreath { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.14); } }
+@keyframes standbyRipple { 0% { transform: scale(.55); opacity: .85; } 100% { transform: scale(1.28); opacity: 0; } }
+@keyframes standbyZ { 0%, 100% { transform: translateY(6px); opacity: 0; } 30%, 60% { opacity: .9; } 50% { transform: translateY(-10px); } }
+@keyframes standbyHint { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes countPop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 @keyframes shake { 0%, 100% { transform: rotate(-12deg) translate(-6px, 0); } 50% { transform: rotate(12deg) translate(6px, -8px); } }
@@ -159,6 +177,10 @@ body[data-phase="open"] .stage-body { flex: 0; padding: 0; }
     animation-iteration-count: 1 !important;
     transition-duration: .01ms !important;
   }
+  /* 待机核心元素降级为静态呼吸态：动画被禁后仍保持可见的待机标识 */
+  .standby-core { transform: scale(1.06); }
+  .standby-zzz span { opacity: .8; }
+  .standby-hint { opacity: 1; }
 }
 
 @media (max-width: 720px) {

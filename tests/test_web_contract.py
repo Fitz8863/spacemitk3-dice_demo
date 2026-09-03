@@ -518,6 +518,29 @@ def test_frontend_cancels_the_round_when_the_page_is_hidden():
     assert "setActiveRound(null);" in dice
 
 
+def test_frontend_standby_screen_engine_level():
+    """待机页：select 空闲 120s 进入，任意输入唤醒且第一次输入不穿透。"""
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+
+    # The standby view sits before the game list and is engine-owned (no
+    # game symbols), so every future game inherits it.
+    assert 'data-view="standby"' in html
+    assert html.find('data-view="standby"') < html.find('data-view="select"')
+    # Idle entry from the select phase only, with the agreed threshold.
+    assert "IDLE_ENTER_SECONDS = 120" in app
+    assert "state.phase !== 'select'" in app
+    # Wake-up swallows the first input at capture time: it must never reach
+    # the game list (no accidental game start while "asleep").
+    assert "addEventListener(type, (event) => {\n    if (wakeFromStandby()) {\n      event.stopPropagation();\n      event.preventDefault();" in app
+    assert "['keydown', 'click']" in app
+    # Visuals: brand-neutral, animated, and degradable under reduced motion.
+    assert "standby-core" in html and "standby-zzz" in html
+    assert "standbyRipple" in css and "standbyBreath" in css
+    assert "standby" in css.split("@media (prefers-reduced-motion: reduce)", 1)[1]
+
+
 def test_manifest_state_machine_declares_the_full_graph():
     manifest = dice_manifest()
     machine = manifest["state_machine"]
