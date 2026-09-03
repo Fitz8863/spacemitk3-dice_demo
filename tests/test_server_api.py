@@ -916,3 +916,72 @@ def test_prewarm_without_hook_is_a_noop_for_lifecycle_engines(monkeypatch):
     monkeypatch.setattr(server, "COMPONENTS", _SingleProviderRegistry(engine))
     server._prewarm_pinned_local_tts("tts_fake")  # must not raise
     server._prewarm_pinned_local_tts(None)  # no pin at all: also a no-op
+
+
+# ---- round creation must not wait for the ASR model load ----
+
+
+class _RecordingBridge:
+    """ASR bridge double: start_for_round takes a configurable delay."""
+
+    def __init__(self, start_delay_seconds: float = 0.0) -> None:
+        self.start_delay = start_delay_seconds
+        self.started: list[str] = []
+        self.stop_calls = 0
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+    def start_for_round(self, round_) -> bool:
+        time.sleep(self.start_delay)
+        self.started.append(round_.id)
+        return True
+
+
+def _patch_round_environment(monkeypatch, tmp_path):
+    """A minimal enabled dice game wired to a fresh rounds table."""
+    games_root, _ = _write_hot_reload_games_root(tmp_path, "规则台词")
+    monkeypatch.setattr(server, "_GAMES_ROOT", games_root)
+    monkeypatch.setattr(server, "GAMES", server.load_games(games_root))
+    monkeypatch.setattr(server, "_GAMES_MTIMES", server._manifest_mtimes())
+    monkeypatch.setattr(server, "rounds", {})
+    monkeypatch.setattr(server, "_LOCAL_TTS_PIN", None)
+
+
+def test_round_creation_does_not_wait_for_asr_model_load(tmp_path, monkeypatch):
+    """The zipformer load (~2.6 s on the board) delayed the first rules
+    announcement because the browser only learns its round_id — and starts
+    pulling speech — once the creation POST returns."""
+    _patch_round_environment(monkeypatch, tmp_path)
+    bridge = _RecordingBridge(start_delay_seconds=1.0)
+    monkeypatch.setattr(server, "ASR_BRIDGE", bridge)
+
+    began = time.monotonic()
+    round_ = server.create_round("dice")
+    elapsed = time.monotonic() - began
+
+    assert round_.state == "rules"
+    assert elapsed < 0.8, f"round creation blocked {elapsed:.2f}s on ASR start"
+    assert bridge.started == []  # handover still running in the background
+
+    deadline = time.monotonic() + 5.0
+    while not bridge.started and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert bridge.started == [round_.id]
+
+
+def test_cancelled_round_never_takes_the_microphone(tmp_path, monkeypatch):
+    _patch_round_environment(monkeypatch, tmp_path)
+    bridge = _RecordingBridge()
+    monkeypatch.setattr(server, "ASR_BRIDGE", bridge)
+
+    # Hold the handover lock so the background thread cannot run yet, then
+    # end the round while the handover is still queued.
+    with server._ASR_HANDOVER_LOCK:
+        round_ = server.create_round("dice")
+        round_.cancel()
+
+    deadline = time.monotonic() + 5.0
+    while bridge.stop_calls < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert bridge.started == []  # a dead round never listens

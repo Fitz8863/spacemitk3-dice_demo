@@ -596,17 +596,52 @@ def create_round(game_id: str) -> GameRound:
     # (curl-driven rounds) is cancelled by the watchdog like any other
     # abandoned round.
     _sse_stream_closed(round_.id)
-    # A running round always owns the microphone: drop any standby wake-word
-    # session first (start_for_round's own stop() also covers this, but the
-    # intent deserves being explicit at the ownership handover).
-    ASR_BRIDGE.stop()
-    # Voice input never gates round creation: a missing or broken ASR
-    # provider only means this round runs on buttons alone.
-    try:
-        ASR_BRIDGE.start_for_round(round_)
-    except Exception as exc:
-        print(f"[asr] failed to start for round {round_.id[:8]}: {exc!r}", flush=True)
+    # Hand the microphone to this round (dropping any standby wake-word
+    # session) on a background thread: the zipformer model load measured
+    # ~2.6 s on the board, and paying it inside this POST delayed the first
+    # rules announcement by the same amount (round_id — and therefore the
+    # speech stream — only reaches the browser once the POST returns).
+    _hand_over_round_microphone(round_)
     return round_
+
+
+# Microphone handovers serialize here: a rapid refresh would otherwise race
+# two stop/start pairs on the ASR bridge (the loser's session could leak or
+# the mic could end up with a superseded round).
+_ASR_HANDOVER_LOCK = threading.Lock()
+
+
+def _hand_over_round_microphone(round_: GameRound) -> None:
+    """Move the ASR session to ``round_`` without blocking its creator."""
+    threading.Thread(
+        target=_run_round_microphone_handover,
+        args=(round_,),
+        name=f"asr-handover-{round_.id[:8]}",
+        daemon=True,
+    ).start()
+
+
+def _run_round_microphone_handover(round_: GameRound) -> None:
+    with _ASR_HANDOVER_LOCK:
+        # A round that ended before the mic was free again never listens.
+        if round_.status != "running":
+            return
+        # A running round always owns the microphone: drop any standby
+        # wake-word session first (start_for_round's own stop() also covers
+        # this, but the intent deserves being explicit at the ownership
+        # handover).
+        ASR_BRIDGE.stop()
+        # Voice input never gates round creation: a missing or broken ASR
+        # provider only means this round runs on buttons alone.
+        try:
+            started = ASR_BRIDGE.start_for_round(round_)
+        except Exception as exc:
+            print(f"[asr] failed to start for round {round_.id[:8]}: {exc!r}", flush=True)
+            return
+        # The round may have ended while the model loaded; a dead round must
+        # not keep the microphone a standby session could be waiting for.
+        if started and round_.status != "running":
+            ASR_BRIDGE.stop()
 
 
 def _lookup_round(round_id: str) -> GameRound:
