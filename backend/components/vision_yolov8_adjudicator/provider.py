@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from core.vision import VisionAdjudicationRequest, VisionAdjudicatorProvider
-from components.vision_yolov8_adjudicator.llm import OpenAICompatibleVisionVerifier
 from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess, _snapshot_path
 from components.vision_yolov8_adjudicator.rules import (
     diagnose_detection_failure,
@@ -200,7 +199,11 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
     def __init__(self, manifest: dict[str, Any] | None = None, *, runtime_factory: Callable[..., Any] | None = None, verifier: Any | None = None) -> None:
         super().__init__(manifest)
         self.runtime_factory = runtime_factory or (lambda view_id="default": YoloRuntimeProcess())
-        self.verifier = verifier or OpenAICompatibleVisionVerifier()
+        # LLM engines arrive per round on the request (``llm_provider``,
+        # resolved by the pipeline from the global ``llm`` slot).  This
+        # attribute remains the test-injection seam for verifier doubles and
+        # doubles as the fallback when a round carries no provider.
+        self.verifier = verifier
         self._runtime_cache: dict[str, Any] = {}
         # A resident process receives its snapshot root at process creation;
         # subsequent rounds reuse the same camera process.  Keep one private
@@ -210,15 +213,23 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         self._runtime_signatures: dict[str, str] = {}
 
     def health(self) -> dict[str, Any]:
-        """Report deployment readiness without exposing transport secrets."""
-        transport = self._llm_transport_config({})
+        """Report readiness; LLM configuration lives on the llm component."""
         return {
             "id": self.id,
             "type": self.type,
             "role": self.role,
             "ok": True,
-            "llm_configured": bool(transport["endpoint"] and transport["api_key"]),
         }
+
+    def _round_llm(self, request: VisionAdjudicationRequest) -> Any:
+        """The LLM engine for one round: request-injected provider first.
+
+        Production rounds carry the provider resolved from the global
+        ``llm`` slot; the constructor ``verifier`` seam (test doubles, or a
+        provider injected some other way) is the fallback.
+        """
+        provider = getattr(request, "llm_provider", None)
+        return provider if provider is not None else self.verifier
 
     def shutdown(self) -> None:
         """Stop all resident runtimes owned by this provider instance.
@@ -364,27 +375,6 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         return float(fallback)
 
     @staticmethod
-    def _llm_transport_config(profile: Mapping[str, Any]) -> dict[str, Any]:
-        """Resolve the deployment LLM endpoint/key separately from game prompts.
-
-        Profiles carry only game-level prompt and output rules.  Endpoint and
-        credentials are deployment concerns and come from the component
-        ``config.json``; they are never included in a result or health payload.
-        """
-        component = load_component_config(Path(__file__).parent)
-        configured = component.get("llm", {})
-        configured = configured if isinstance(configured, Mapping) else {}
-        game_llm = profile.get("llm", {})
-        game_llm = game_llm if isinstance(game_llm, Mapping) else {}
-        endpoint = str(configured.get("endpoint", configured.get("url", "")) or "").strip()
-        key = str(configured.get("api_key", "") or "").strip()
-        # ``model`` is harmless metadata, and allowing a profile value keeps
-        # existing game profiles source-compatible while deployments can set a
-        # common default in component config.
-        model = str(game_llm.get("model") or configured.get("model") or "").strip() or None
-        return {"endpoint": endpoint, "api_key": key or None, "model": model}
-
-    @staticmethod
     def _resident_mode(profile: Mapping[str, Any]) -> bool:
         """Return whether the deployment keeps camera/runtime processes warm."""
         configured: Mapping[str, Any] = {}
@@ -444,7 +434,8 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 paths.append(path)
                 cleanup_paths.add(path)
         remaining = max(0.0, deadline - time.monotonic())
-        diagnosis_available = paths and hasattr(self.verifier, "diagnose")
+        verifier = self._round_llm(request)
+        diagnosis_available = paths and verifier is not None and hasattr(verifier, "diagnose")
         if cfg.get("enabled", True) and diagnosis_available and remaining > 0:
             summary = json.dumps(
                 {"detected_counts": local.get("detected_counts", {}), "reason_code": local.get("reason_code")},
@@ -460,25 +451,18 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     "INCOMPLETE_OBJECTS", "OVERLAPPING_OBJECTS", "LOW_LIGHT", "OCCLUDED",
                     "NO_OBJECTS_DETECTED", "UNSTABLE_DETECTION", "SCENE_GEOMETRY_UNCLEAR", "UNKNOWN",
                 ]
-            transport = self._llm_transport_config(profile)
             llm_timeout = min(
                 self._llm_timeout(profile, 3.0),
                 remaining,
             )
-            verifier = self.verifier
             try:
-                if isinstance(verifier, OpenAICompatibleVisionVerifier):
-                    endpoint = transport["endpoint"]
-                    if endpoint and not endpoint.rstrip("/").endswith("chat/completions"):
-                        endpoint = endpoint.rstrip("/") + "/chat/completions"
-                    verifier = OpenAICompatibleVisionVerifier(endpoint, model=transport["model"], api_key=transport["api_key"])
                 result = verifier.diagnose(
                     image_paths=paths,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     allowed_reason_codes=allowed,
                     timeout_seconds=llm_timeout,
-                    model=transport["model"],
+                    model=str(cfg.get("model") or "").strip() or None,
                 )
                 llm_status = str(getattr(result, "status", "failure"))
                 if llm_status == "success" and getattr(result, "reason_code", None) and getattr(result, "message", None):
@@ -817,20 +801,20 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                         raise ValueError("snapshot.path must reference an existing JPEG or PNG")
                     paths.append(path)
                     cleanup_paths.add(path)
-                verifier = self.verifier
-                transport = self._llm_transport_config(profile)
+                verifier = self._round_llm(request)
+                model_override = str(cfg.get("model") or "").strip() or None
                 remaining = max(0.0, deadline - time.monotonic())
-                if remaining > 0:
+                if verifier is None:
+                    # The profile asks for verification but the deployment
+                    # resolved no LLM: same semantics as profile-level
+                    # disabled — detector-only result, never a round failure.
+                    status, out = "disabled", None
+                    on_log("[vision] no LLM provider attached; verification disabled")
+                elif remaining > 0:
                     llm_timeout = min(
                         self._llm_timeout(profile, fallback_timeout), remaining
                     )
-                    if not isinstance(verifier, OpenAICompatibleVisionVerifier):
-                        vr = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=llm_timeout, model=transport["model"])
-                    else:
-                        endpoint = transport["endpoint"]
-                        if endpoint and not endpoint.rstrip("/").endswith("chat/completions"): endpoint = endpoint.rstrip("/") + "/chat/completions"
-                        verifier = OpenAICompatibleVisionVerifier(endpoint, model=transport["model"], api_key=transport["api_key"])
-                        vr = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=llm_timeout, model=transport["model"])
+                    vr = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=llm_timeout, model=model_override)
                     status, out = vr.status, vr.outcome
                     # A lone dissent from the verifier is re-asked once within
                     # the same budget: an answer corroborated by the re-ask may
@@ -847,7 +831,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                             reask_timeout = min(
                                 self._llm_timeout(profile, fallback_timeout), reask_remaining
                             )
-                            vr2 = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=reask_timeout, model=transport["model"])
+                            vr2 = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=reask_timeout, model=model_override)
                             reask = {"outcome": vr2.outcome, "status": vr2.status}
                         else:
                             reask = {"outcome": None, "status": "timeout"}

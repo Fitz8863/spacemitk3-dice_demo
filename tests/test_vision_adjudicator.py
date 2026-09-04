@@ -31,9 +31,6 @@ from components.vision_yolov8_adjudicator.rules import (  # noqa: E402
     fuse_yolo_outcomes,
     project_result,
 )
-from components.vision_yolov8_adjudicator.llm import (  # noqa: E402
-    OpenAICompatibleVisionVerifier,
-)
 from components.vision_yolov8_adjudicator.process import (  # noqa: E402
     SnapshotError,
     build_rtsp_args,
@@ -194,32 +191,6 @@ def test_local_diagnosis_reports_incomplete_dice_from_yolo_evidence():
     assert "LEFT" in diagnosis["message"]
     assert diagnosis["detected_counts"] == {"LEFT": 4, "RIGHT": 5}
     assert diagnosis["retry"] is True
-
-
-def test_llm_diagnosis_parses_reason_code_and_message(tmp_path: Path):
-    image = tmp_path / "diagnostic.jpg"
-    image.write_bytes(b"jpeg-bytes")
-
-    def fake_post(url, payload, headers, timeout):
-        assert "detector summary" in payload["messages"][1]["content"][0]["text"].lower()
-        return {
-            "choices": [{"message": {"content":
-                '{"reason_code":"OVERLAPPING_OBJECTS","message":"骰子可能叠放。","retry":true}'
-            }}]
-        }
-
-    verifier = OpenAICompatibleVisionVerifier(post=fake_post)
-    result = verifier.diagnose(
-        image_path=image,
-        system_prompt="Diagnose only.",
-        user_prompt="Detector summary: LEFT=4; RIGHT=5",
-        allowed_reason_codes=["OVERLAPPING_OBJECTS", "UNKNOWN"],
-        timeout_seconds=1,
-    )
-    assert result.status == "success"
-    assert result.reason_code == "OVERLAPPING_OBJECTS"
-    assert result.message == "骰子可能叠放。"
-    assert result.retry is True
 
 
 def test_provider_yolo_timeout_calls_diagnosis_and_returns_retry_result(tmp_path: Path):
@@ -415,6 +386,84 @@ def test_dice_pipeline_preserves_diagnosis_without_projecting_winner():
     assert result["diagnosed"] is True
 
 
+class _SlotComponents:
+    """Registry double: hands out a capturing adjudicator plus a fake LLM."""
+
+    def __init__(self, llm=None, llm_error: Exception | None = None):
+        self.llm = llm
+        self.llm_error = llm_error
+        self.llm_resolved: list[str] = []
+        self.adjudicator = self._Adjudicator()
+
+    class _Adjudicator:
+        def __init__(self):
+            self.request = None
+
+        def adjudicate(self, request, **kwargs):
+            self.request = request
+            return {
+                "adjudicated": False,
+                "diagnosed": True,
+                "retry_required": True,
+                "diagnosis": {"reason_code": "NO_OBJECTS_DETECTED", "message": "未检测到骰子。"},
+            }
+
+    def require(self, provider_id, expected_type=None, expected_role=None):
+        if expected_type == "llm":
+            self.llm_resolved.append(provider_id)
+            if self.llm_error is not None:
+                raise self.llm_error
+            return self.llm
+        return self.adjudicator
+
+
+_SLOT_MANIFEST = {
+    "participants": {"player": "LEFT", "agent": "RIGHT"},
+    "providers": {"vision_adjudicator": "vision_yolov8_adjudicator"},
+    "vision_profile": {"game_id": "dice"},
+}
+
+
+def test_dice_pipeline_resolves_llm_slot_onto_request():
+    llm = object()
+    components = _SlotComponents(llm=llm)
+    dice_pipeline.run(
+        lambda _: None, lambda: False, 1.0,
+        components=components,
+        manifest={**_SLOT_MANIFEST, "providers": {**_SLOT_MANIFEST["providers"], "llm": "llm_openai_compat"}},
+        on_event=lambda _: None,
+    )
+    assert components.llm_resolved == ["llm_openai_compat"]
+    assert components.adjudicator.request.llm_provider is llm
+
+
+def test_dice_pipeline_missing_llm_slot_leaves_request_without_provider():
+    components = _SlotComponents(llm=object())
+    dice_pipeline.run(
+        lambda _: None, lambda: False, 1.0,
+        components=components, manifest=_SLOT_MANIFEST, on_event=lambda _: None,
+    )
+    assert components.llm_resolved == []
+    assert components.adjudicator.request.llm_provider is None
+
+
+def test_dice_pipeline_broken_llm_slot_degrades_to_yolo_only():
+    from core.errors import ComponentNotFoundError
+
+    components = _SlotComponents(llm_error=ComponentNotFoundError("llm_broken"))
+    logs: list[str] = []
+    result = dice_pipeline.run(
+        logs.append, lambda: False, 1.0,
+        components=components,
+        manifest={**_SLOT_MANIFEST, "providers": {**_SLOT_MANIFEST["providers"], "llm": "llm_broken"}},
+        on_event=lambda _: None,
+    )
+    # The round survives: verification is disabled, detector result stands.
+    assert result["diagnosed"] is True
+    assert components.adjudicator.request.llm_provider is None
+    assert any("llm_broken" in line and "YOLO-only" in line for line in logs)
+
+
 def test_adjudication_request_is_immutable_and_contains_profile():
     request = VisionAdjudicationRequest(
         game_id="dice", profile={"game_id": "dice"}, request_id="abc", timeout_seconds=2.0
@@ -495,19 +544,11 @@ def test_runtime_config_exposes_mediamtx_base_and_component_has_no_duplicate_vid
     assert "rtsp" not in config
 
 
-def test_provider_health_reports_active_llm_credentials(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(
-        VisionYolov8Adjudicator,
-        "_llm_transport_config",
-        staticmethod(lambda _profile: {"endpoint": "https://llm.test/v1", "api_key": "test-only-key", "model": "vision-test"}),
-    )
-    assert VisionYolov8Adjudicator().health()["llm_configured"] is True
-    monkeypatch.setattr(
-        VisionYolov8Adjudicator,
-        "_llm_transport_config",
-        staticmethod(lambda _profile: {"endpoint": "https://llm.test/v1", "api_key": None, "model": "vision-test"}),
-    )
-    assert VisionYolov8Adjudicator().health()["llm_configured"] is False
+def test_provider_health_no_longer_reports_llm_state():
+    """LLM configuration moved to the llm component; vision health is silent about it."""
+    health = VisionYolov8Adjudicator().health()
+    assert health["ok"] is True
+    assert "llm_configured" not in health
 
 
 def test_rtsp_args_emit_one_profile_owned_path():
@@ -677,51 +718,6 @@ def test_project_result_preserves_frontend_result_contract():
     assert result["winner"] == "RIGHT"
     assert result["source"] == "llm_override"
     assert result["llm_winner"] == "RIGHT"
-
-
-def test_llm_request_is_single_turn_with_image(tmp_path: Path):
-    image = tmp_path / "stable.jpg"
-    image.write_bytes(b"jpeg-bytes")
-    captured = {}
-
-    def fake_post(url, payload, headers, timeout):
-        captured.update(payload)
-        return {"choices": [{"message": {"content": '{"winner":"LEFT"}'}}]}
-
-    verifier = OpenAICompatibleVisionVerifier(post=fake_post)
-    result = verifier.verify(
-        image_path=image,
-        system_prompt="Judge the image.",
-        user_prompt="Return JSON.",
-        allowed_outcomes=["LEFT", "RIGHT", "TIE"],
-        timeout_seconds=3,
-    )
-    assert result.outcome == "LEFT"
-    assert result.status == "success"
-    assert len(captured["messages"]) == 2
-    assert captured["messages"][0] == {"role": "system", "content": "Judge the image."}
-    user_content = captured["messages"][1]["content"]
-    assert user_content[0] == {"type": "text", "text": "Return JSON."}
-    assert user_content[1]["type"] == "image_url"
-    assert user_content[1]["image_url"]["url"] == "data:image/jpeg;base64,anBlZy1ieXRlcw=="
-
-
-def test_llm_timeout_is_distinguished_from_failure(tmp_path: Path):
-    image = tmp_path / "stable.png"
-    image.write_bytes(b"png-bytes")
-
-    def timeout_post(url, payload, headers, timeout):
-        raise TimeoutError("deadline exceeded")
-
-    result = OpenAICompatibleVisionVerifier(post=timeout_post).verify(
-        image_path=image,
-        system_prompt="Judge.",
-        user_prompt="Return JSON.",
-        allowed_outcomes=["LEFT"],
-        timeout_seconds=0.1,
-    )
-    assert result.status == "timeout"
-    assert result.outcome is None
 
 
 def test_provider_runs_one_round_and_holds_result(tmp_path: Path):
@@ -1054,25 +1050,6 @@ def test_provider_applies_vision_expected_count_to_rule():
     assert [command["command"] for command in runtime.commands] == [
         "START_ADJUDICATION", "STOP_ADJUDICATION",
     ]
-
-
-@pytest.mark.parametrize("content", ["not-json", '{"winner":"UNKNOWN"}', '{"winner":1}'])
-def test_llm_invalid_or_unknown_response_is_failure(tmp_path: Path, content: str):
-    image = tmp_path / "stable.jpg"
-    image.write_bytes(b"jpeg-bytes")
-
-    def fake_post(url, payload, headers, timeout):
-        return {"choices": [{"message": {"content": content}}]}
-
-    result = OpenAICompatibleVisionVerifier(post=fake_post).verify(
-        image_path=image,
-        system_prompt="Judge.",
-        user_prompt="Return JSON.",
-        allowed_outcomes=["LEFT", "RIGHT", "TIE"],
-        timeout_seconds=1,
-    )
-    assert result.status == "failure"
-    assert result.outcome is None
 
 
 def test_snapshot_is_read_and_removed_after_verification(tmp_path: Path):
@@ -1792,3 +1769,84 @@ def test_provider_marks_disabled_llm_as_yolo_only_not_timeout(tmp_path: Path):
         "reask_outcome": None,
         "reask_status": "not_needed",
     }
+
+
+def test_round_llm_arrives_on_the_request_not_the_constructor(tmp_path: Path):
+    """Production LLM engines ride the request; the constructor seam is fallback."""
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"jpeg")
+
+    class Runtime:
+        def start(self, *args, **kwargs):
+            self.events_data = iter([{
+                "event": "observation",
+                "stable": True,
+                "yolo_outcome": "LEFT",
+                "snapshot": {"path": str(image)},
+            }])
+        def send(self, command):
+            pass
+        def events(self):
+            return self.events_data
+
+    class RequestLlm:
+        def __init__(self):
+            self.verify_calls = 0
+        def verify(self, **kwargs):
+            self.verify_calls += 1
+            return type("R", (), {"status": "success", "outcome": "LEFT", "error": None})()
+
+    class ConstructorVerifier:
+        def verify(self, **kwargs):
+            raise AssertionError("request provider must take precedence over the constructor seam")
+
+    request_llm = RequestLlm()
+    profile = {
+        "game_id": "x",
+        "vision": {"participants": ["LEFT", "RIGHT"], "stable_frames": 1},
+        "llm": {"enabled": True, "allowed_outcomes": ["LEFT", "RIGHT"]},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    result = VisionYolov8Adjudicator(
+        runtime_factory=lambda vid: Runtime(), verifier=ConstructorVerifier()
+    ).adjudicate(
+        VisionAdjudicationRequest("x", profile, "request-llm", 2, llm_provider=request_llm),
+        on_log=lambda _: None, on_event=lambda _: None, is_cancelled=lambda: False,
+    )
+    assert request_llm.verify_calls == 1
+    assert result["outcome"]["value"] == "LEFT"
+
+
+def test_missing_llm_provider_disables_verification_not_the_round(tmp_path: Path):
+    """Profile enabled + deployment resolved no LLM → yolo_only, never a failure."""
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"jpeg")
+
+    class Runtime:
+        def start(self, *args, **kwargs):
+            self.events_data = iter([{
+                "event": "observation",
+                "stable": True,
+                "yolo_outcome": "LEFT",
+                "snapshot": {"path": str(image)},
+            }])
+        def send(self, command):
+            pass
+        def events(self):
+            return self.events_data
+
+    profile = {
+        "game_id": "x",
+        "vision": {"participants": ["LEFT", "RIGHT"], "stable_frames": 1},
+        "llm": {"enabled": True, "allowed_outcomes": ["LEFT", "RIGHT"]},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    logs: list[str] = []
+    result = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime()).adjudicate(
+        VisionAdjudicationRequest("x", profile, "no-llm", 2),
+        on_log=logs.append, on_event=lambda _: None, is_cancelled=lambda: False,
+    )
+    assert result["outcome"]["value"] == "LEFT"
+    assert result["decision_source"] == "yolo_only"
+    assert result["verification"]["status"] == "disabled"
+    assert any("no LLM provider attached" in line for line in logs)

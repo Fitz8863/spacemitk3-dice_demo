@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Callable
 import uuid
 
+from core.errors import DiceArenaError
 from core.games import resolve_provider_id
 from core.vision import VisionAdjudicationRequest
 from games.dice.result import project_participant_result
@@ -34,11 +35,24 @@ def run(
         raise RuntimeError(
             f"vision adjudicator {provider_id} does not implement adjudicate()"
         )
+    # The LLM engine for verification/diagnosis is resolved per round from the
+    # ``llm`` slot (game manifest override > arena default, hot-reloaded).
+    # A missing slot means YOLO-only rounds; a broken slot id must not kill
+    # the round either — verification disables itself and the detector-only
+    # result stands.
+    llm_id = resolve_provider_id(manifest, "llm", "")
+    llm_provider = None
+    if llm_id:
+        try:
+            llm_provider = components.require(llm_id, expected_type="llm")
+        except DiceArenaError as exc:
+            on_log(f"[dice] llm provider {llm_id} unavailable: {exc.message}; round runs YOLO-only")
     request = VisionAdjudicationRequest(
         game_id=GAME_ID,
         profile=profile,
         request_id=uuid.uuid4().hex,
         timeout_seconds=timeout_seconds,
+        llm_provider=llm_provider,
     )
     try:
         physical_result = adjudicate(

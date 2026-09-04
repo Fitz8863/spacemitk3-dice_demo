@@ -12,7 +12,7 @@ import os
 import subprocess
 import threading
 
-from components.vision_yolov8_adjudicator.llm import OpenAICompatibleVisionVerifier, VerificationResult
+from core.llm import LlmProvider, VerificationResult
 from components.vision_yolov8_adjudicator.profile import (
     load_component_config,
     load_runtime_config,
@@ -341,7 +341,7 @@ def verify_snapshot(
     observation: Mapping[str, Any],
     *,
     task_dir: Path,
-    verifier: OpenAICompatibleVisionVerifier,
+    verifier: LlmProvider,
     system_prompt: str,
     user_prompt: str,
     allowed_outcomes: Sequence[str],

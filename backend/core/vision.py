@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from core.components import Component
+from core.llm import LlmProvider
 
 
 class VisionProvider(Component):
@@ -33,6 +34,12 @@ class VisionAdjudicationRequest:
     profile: Mapping[str, Any]
     request_id: str
     timeout_seconds: float
+    # LLM engine for this round's verification/diagnosis, resolved by the
+    # pipeline from the ``llm`` provider slot (game manifest override >
+    # arena default; hot-reloaded per round).  ``None`` means the deployment
+    # resolved no LLM — providers treat that as "verification disabled" and
+    # fall back to detector-only results, never as a round failure.
+    llm_provider: LlmProvider | None = None
 
 
 class VisionAdjudicatorProvider(VisionProvider):

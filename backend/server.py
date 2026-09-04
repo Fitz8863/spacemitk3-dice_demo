@@ -657,6 +657,38 @@ def _unmatched_broadcast(bus: _AsrEventBus) -> Callable[[str], None]:
 _ROUND_TIMEOUT_FALLBACK_SECONDS = JOB_TIMEOUT_SECONDS
 
 
+def _probe_selected_llm(arena: dict[str, Any]) -> None:
+    """Advisory connectivity check for the selected LLM provider.
+
+    Deliberately soft: a failed probe (network down, bad key) never refuses
+    startup — verification retries per request and the YOLO fallback covers
+    the round.  A broken slot id is reported here loudly and per round.
+    """
+    llm_id = arena_slot_value(arena, "llm")
+    if not llm_id:
+        print("LLM provider: none (vision verification runs YOLO-only)", flush=True)
+        return
+    try:
+        provider = COMPONENTS.require(llm_id, expected_type="llm")
+    except DiceArenaError as exc:
+        print(
+            f"[arena] LLM provider {llm_id} unusable: {exc.message} — "
+            "verification disabled, YOLO fallback",
+            flush=True,
+        )
+        return
+    probe = getattr(provider, "probe", None)
+    result = probe(5.0) if callable(probe) else {"ok": True}
+    if result.get("ok"):
+        print(f"LLM provider: {llm_id} (probe ok)", flush=True)
+    else:
+        print(
+            f"[arena] LLM probe failed for {llm_id}: {result.get('error')} — "
+            "verification stays enabled and retries per request",
+            flush=True,
+        )
+
+
 def _round_adjudicate_fn(game_id: str):
     """Bridge a round's adjudicate action onto the shared provider pipeline."""
 
@@ -1053,6 +1085,13 @@ class Handler(BaseHTTPRequestHandler):
                 **adjudicator_health,
                 **_vision_profile_metadata("dice", adjudicator_id),
             }
+            llm_id = _selected_provider_id("dice", "llm", "")
+            llm_health = (
+                _provider_health(llm_id, "llm") if llm_id else {
+                    "id": "", "type": "llm", "role": "", "ok": False,
+                    "configured": False,
+                }
+            )
             self.send_json({
                 "ok": True,
                 "backend": "k3-local-component-bridge",
@@ -1063,7 +1102,9 @@ class Handler(BaseHTTPRequestHandler):
                 "vision": adjudicator_health,
                 "yolo_binary": adjudicator_health.get("binary", ""),
                 "yolo_ready": bool(adjudicator_health.get("ready", False)),
-                "llm_configured": bool(adjudicator_health.get("llm_configured", False)),
+                "llm_provider": llm_id,
+                "llm": llm_health,
+                "llm_configured": bool(llm_health.get("configured", False)),
                 "tts_provider": tts_id,
                 "tts": tts_health,
                 "tts_url": tts_health.get("url", ""),
@@ -1446,6 +1487,7 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Dice Arena K3 backend listening on http://{args.host}:{args.port}", flush=True)
     print(f"Local TTS provider: {_LOCAL_TTS_PIN or 'none'}", flush=True)
+    _probe_selected_llm(arena_config)
     adjudicator = next((item for item in COMPONENTS.all(include_health=True)
                         if item["type"] == "vision" and item["role"] == "adjudicator"), None)
     print(

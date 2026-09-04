@@ -8,10 +8,7 @@
     "prewarm_camera": true,
     "terminate_grace_seconds": 5
   },
-  "llm": {
-    "endpoint": "https://api.deepseek.com/v1",
-    "model": "deepseek-v4-flash-vision-exp",
-    "api_key": "sk-86c1f6eacf2e4bd69b2c071f8bde9c82"
-  },
-  "events": {"protocol": "jsonl-events-v1"}
+  "events": {
+    "protocol": "jsonl-events-v1"
+  }
 }
