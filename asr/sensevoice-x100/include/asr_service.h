@@ -40,6 +40,8 @@ struct AsrConfig {
     //   "a100" = A100 算力核 (CPU 8-15), 即 EP 默认行为
     //   "auto" = 不干预, 同 "a100"
     std::string core_arch = "x100";
+    // 推理线程数 (EP: SPACEMIT_EP_INTRA_THREAD_NUM; CPU 模式: ORT intra_op)
+    int num_threads = 2;
 
     // Hotword configuration
     std::vector<std::string> hotwords;

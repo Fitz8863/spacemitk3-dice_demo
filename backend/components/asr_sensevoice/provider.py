@@ -22,6 +22,7 @@ and ``shutdown()`` releases the engine and the microphone.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -66,6 +67,32 @@ def _positive_int(value: Any, field: str) -> int:
     return value
 
 
+def _parse_affinity(value: str) -> tuple[str, list[int]]:
+    """Split a cpu_affinity value into ("", []), ("x100", cores) or
+    ("a100", cores).  Raises AsrConfigError on malformed or mixed lists."""
+    cores = [part.strip() for part in value.split(",")]
+    if not cores or not all(core.isdigit() and core for core in cores):
+        raise AsrConfigError(
+            "runtime.cpu_affinity must be a comma-separated core list like '6,7', or 'none'"
+        )
+    numbers = [int(core) for core in cores]
+    if any(not (0 <= core <= 15) for core in numbers):
+        raise AsrConfigError("runtime.cpu_affinity cores must be within 0-15")
+    x100 = [core for core in numbers if core <= 7]
+    a100 = [core for core in numbers if core >= 8]
+    if x100 and a100:
+        raise AsrConfigError(
+            "runtime.cpu_affinity must stay within one cluster: X100 (0-7) or A100 (8-15)"
+        )
+    if a100:
+        if not (1 <= len(a100) <= 2):
+            raise AsrConfigError(
+                "A100 affinity allows 1 or 2 cores (EP inference threads = cores)"
+            )
+        return "a100", numbers
+    return "x100", numbers
+
+
 def load_config(package_dir: Path, project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     try:
         payload = json.loads((package_dir / "config.json").read_text(encoding="utf-8"))
@@ -86,8 +113,19 @@ def load_config(package_dir: Path, project_root: Path = PROJECT_ROOT) -> dict[st
         raise AsrConfigError("runtime.engine must be 'sensevoice' (other engines have their own components)")
     if runtime.get("language", "auto") not in _LANGUAGES:
         raise AsrConfigError(f"runtime.language must be one of {sorted(_LANGUAGES)}")
-    if runtime.get("core_arch", "x100") not in _CORE_ARCHS:
+    core_arch = runtime.get("core_arch", "x100")
+    if core_arch not in _CORE_ARCHS:
         raise AsrConfigError(f"runtime.core_arch must be one of {sorted(_CORE_ARCHS)}")
+    _positive_int(runtime.get("num_threads", 2), "runtime.num_threads")
+
+    affinity = str(runtime.get("cpu_affinity", "") or "").strip()
+    if affinity and affinity != "none":
+        cluster, _cores = _parse_affinity(affinity)
+        if cluster == "a100" and core_arch == "x100":
+            raise AsrConfigError(
+                "cpu_affinity selects A100 cores but core_arch is x100; set "
+                "core_arch to a100 (or auto) or pick X100 cores (0-7)"
+            )
 
     capture = runtime.get("capture", {})
     if not isinstance(capture, dict):
@@ -113,12 +151,6 @@ def load_config(package_dir: Path, project_root: Path = PROJECT_ROOT) -> dict[st
     _positive_int(vad.get("rms", 400), "vad.rms")
     _positive_int(vad.get("pause_ms", 600), "vad.pause_ms")
     _positive_int(vad.get("max_ms", 8000), "vad.max_ms")
-
-    affinity = str(runtime.get("cpu_affinity", "") or "")
-    if affinity:
-        cores = [part.strip() for part in affinity.split(",")]
-        if not cores or not all(core.isdigit() and core for core in cores):
-            raise AsrConfigError("runtime.cpu_affinity must be a comma-separated core list like '0,3'")
 
     _positive_int(runtime.get("start_timeout_seconds", 30), "runtime.start_timeout_seconds")
     _positive_int(runtime.get("terminate_grace_seconds", 5), "runtime.terminate_grace_seconds")
@@ -159,6 +191,7 @@ class _AsrEngine:
         on_log: Callable[[str], None],
         popen: Callable[..., subprocess.Popen] = subprocess.Popen,
         resurrect_min_lifetime: float = _RESURRECT_MIN_LIFETIME_SECONDS,
+        spawn_env: dict[str, str] | None = None,
     ) -> None:
         self._capture_argv = capture_argv
         self._asr_argv = asr_argv
@@ -168,6 +201,10 @@ class _AsrEngine:
         self._on_log = on_log
         self._popen = popen
         self._resurrect_min_lifetime = resurrect_min_lifetime
+        # Extra environment for the engine process only (inherited
+        # os.environ plus these overrides) — used to hand the EP its
+        # precise A100 thread-affinity list.
+        self._spawn_env = dict(spawn_env) if spawn_env else None
         self._lock = threading.Lock()
         self._spawn_lock = threading.Lock()
         self._routing: _Routing | None = None
@@ -276,6 +313,11 @@ class _AsrEngine:
                 stderr=subprocess.PIPE,
                 cwd=str(self._working_dir),
                 start_new_session=True,
+                **(
+                    {"env": {**os.environ, **self._spawn_env}}
+                    if self._spawn_env
+                    else {}
+                ),
             )
         except BaseException:
             # The capture half must not outlive a failed engine spawn.
@@ -503,8 +545,6 @@ class SensevoiceAsrProvider(AsrProvider):
             str(self._model_dir),
             "--language",
             str(runtime.get("language", "auto")),
-            "--core-arch",
-            str(runtime.get("core_arch", "x100")),
             "--vad-thresh",
             str(int(vad.get("rms", 400))),
             "--pause",
@@ -512,9 +552,29 @@ class SensevoiceAsrProvider(AsrProvider):
             "--max-utt",
             str(int(vad.get("max_ms", 8000)) / 1000.0),
         ]
+        # Core placement (mirrors the engine repo's run_mic_asr.sh model):
+        #   X100 list (0-7)  -> taskset the whole process onto those cores
+        #   A100 list (8-15, 1-2 cores) -> hand the EP a precise
+        #       one-thread-per-core affinity via the environment (taskset
+        #       cannot reach the A100 cluster); thread count = core count
+        #   none             -> no pinning; EP threads float per core_arch
+        threads = int(runtime.get("num_threads", 2))
+        spawn_env: dict[str, str] | None = None
         affinity = str(runtime.get("cpu_affinity", "") or "").strip()
-        if affinity:
-            asr_argv = ["taskset", "-c", affinity, *asr_argv]
+        if affinity and affinity != "none":
+            cluster, cores = _parse_affinity(affinity)
+            if cluster == "a100":
+                spawn_env = {
+                    "SPACEMIT_EP_INTRA_THREAD_AFFINITY": ";".join(str(core) for core in cores)
+                }
+                asr_argv += ["--core-arch", "a100", "--threads", str(len(cores))]
+            else:
+                asr_argv = ["taskset", "-c", affinity, *asr_argv]
+                asr_argv += ["--core-arch", str(runtime.get("core_arch", "x100"))]
+                asr_argv += ["--threads", str(threads)]
+        else:
+            asr_argv += ["--core-arch", str(runtime.get("core_arch", "x100"))]
+            asr_argv += ["--threads", str(threads)]
         return _AsrEngine(
             capture_argv=capture_argv,
             asr_argv=asr_argv,
@@ -522,6 +582,7 @@ class SensevoiceAsrProvider(AsrProvider):
             grace_seconds=int(runtime.get("terminate_grace_seconds", 5)),
             start_timeout_seconds=float(runtime.get("start_timeout_seconds", 30)),
             on_log=self._log,
+            spawn_env=spawn_env,
         )
 
     def _ensure_engine(self) -> _AsrEngine:

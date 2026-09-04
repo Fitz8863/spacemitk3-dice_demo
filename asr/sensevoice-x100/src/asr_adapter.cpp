@@ -441,6 +441,9 @@ AsrEngine::AsrEngine(const AsrConfig& config)
     internal_config.punctuation_enabled = config.punctuation;
     internal_config.enable_emotion = config.enable_emotion;
     internal_config.sample_rate = config.sample_rate;
+    if (config.num_threads > 0) {
+        internal_config.num_threads = config.num_threads;
+    }
     if (!config.provider.empty()) {
         internal_config.extra_params["provider"] = config.provider;
     }

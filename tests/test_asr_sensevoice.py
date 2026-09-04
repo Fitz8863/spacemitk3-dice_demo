@@ -37,9 +37,10 @@ VALID_CONFIG = {
         "model_dir": "asr/sensevoice-x100/model",
         "language": "auto",
         "core_arch": "x100",
+        "num_threads": 2,
+        "cpu_affinity": "",
         "capture": {"device": "default", "sample_rate": 16000, "channels": 1, "format": "S16_LE"},
         "vad": {"enabled": True, "rms": 400, "pause_ms": 600, "max_ms": 8000},
-        "cpu_affinity": "",
         "start_timeout_seconds": 30,
         "terminate_grace_seconds": 5,
     },
@@ -133,6 +134,34 @@ class ConfigTests(unittest.TestCase):
     def test_rejects_non_sensevoice_engine(self):
         with self.assertRaises(AsrConfigError):
             self._load(_mutated(engine="zipformer"))
+
+    def test_rejects_bad_num_threads(self):
+        with self.assertRaises(AsrConfigError):
+            self._load(_mutated(num_threads=0))
+
+    def test_accepts_x100_affinity_and_none(self):
+        self._load(_mutated(cpu_affinity="6,7"))
+        self._load(_mutated(cpu_affinity="none"))
+
+    def test_rejects_mixed_cluster_affinity(self):
+        with self.assertRaises(AsrConfigError):
+            self._load(_mutated(cpu_affinity="0,9"))
+
+    def test_rejects_out_of_range_core(self):
+        with self.assertRaises(AsrConfigError):
+            self._load(_mutated(cpu_affinity="16"))
+
+    def test_rejects_three_a100_cores(self):
+        with self.assertRaises(AsrConfigError):
+            self._load(_mutated(cpu_affinity="8,9,10", core_arch="a100"))
+
+    def test_rejects_a100_affinity_with_x100_arch(self):
+        with self.assertRaises(AsrConfigError):
+            self._load(_mutated(cpu_affinity="8,9"))
+
+    def test_accepts_a100_affinity_with_matching_arch(self):
+        self._load(_mutated(cpu_affinity="8,9", core_arch="a100"))
+        self._load(_mutated(cpu_affinity="10", core_arch="auto"))
 
 
 class GatedStdout:
@@ -534,15 +563,20 @@ class ProviderTests(unittest.TestCase):
         provider.start_session(lambda _text: None)
         engine = FakeEngine.instances[0]
         asr_argv = engine.kwargs["asr_argv"]
-        self.assertEqual(asr_argv[0], str(provider._binary))
+        # The packaged deployment default: whole-process taskset onto the
+        # dedicated X100 cores 6,7.
+        self.assertEqual(asr_argv[:3], ["taskset", "-c", "6,7"])
+        self.assertEqual(asr_argv[3], str(provider._binary))
         self.assertIn("--vad", asr_argv)
         self.assertIn("--jsonl", asr_argv)
         self.assertEqual(asr_argv[asr_argv.index("--model-dir") + 1], str(provider._model_dir))
         self.assertEqual(asr_argv[asr_argv.index("--language") + 1], "auto")
         self.assertEqual(asr_argv[asr_argv.index("--core-arch") + 1], "x100")
+        self.assertEqual(asr_argv[asr_argv.index("--threads") + 1], "2")
         self.assertEqual(asr_argv[asr_argv.index("--vad-thresh") + 1], "400")
         self.assertEqual(asr_argv[asr_argv.index("--pause") + 1], "0.6")
         self.assertEqual(asr_argv[asr_argv.index("--max-utt") + 1], "8.0")
+        self.assertIsNone(engine.kwargs["spawn_env"])
         capture_argv = engine.kwargs["capture_argv"]
         self.assertEqual(capture_argv[0], "arecord")
         self.assertIn("default", capture_argv)
@@ -550,6 +584,52 @@ class ProviderTests(unittest.TestCase):
         # are logical attaches on the resident engine.
         handle = provider.start_session(lambda _text: None)
         self.assertIs(engine.current, handle)
+
+    @patch.object(asr_provider_module, "_AsrEngine", FakeEngine)
+    def test_no_affinity_passes_threads_and_arch(self):
+        FakeEngine.instances = []
+        self._make_board_tree()
+        provider = SensevoiceAsrProvider(project_root=self.root)
+        provider._config["runtime"]["cpu_affinity"] = ""
+        provider.start_session(lambda _text: None)
+        engine = FakeEngine.instances[0]
+        asr_argv = engine.kwargs["asr_argv"]
+        self.assertEqual(asr_argv[0], str(provider._binary))
+        self.assertEqual(asr_argv[asr_argv.index("--threads") + 1], "2")
+        self.assertIsNone(engine.kwargs["spawn_env"])
+
+    @patch.object(asr_provider_module, "_AsrEngine", FakeEngine)
+    def test_a100_affinity_binds_ep_threads_via_env(self):
+        FakeEngine.instances = []
+        self._make_board_tree()
+        provider = SensevoiceAsrProvider(project_root=self.root)
+        provider._config["runtime"]["cpu_affinity"] = "8,9"
+        provider._config["runtime"]["core_arch"] = "a100"
+        provider.start_session(lambda _text: None)
+        engine = FakeEngine.instances[0]
+        asr_argv = engine.kwargs["asr_argv"]
+        # A100 cores cannot be taskset; the EP gets a precise one-thread-per-
+        # core affinity via the environment, thread count = core count.
+        self.assertEqual(asr_argv[0], str(provider._binary))
+        self.assertNotIn("taskset", asr_argv)
+        self.assertEqual(asr_argv[asr_argv.index("--core-arch") + 1], "a100")
+        self.assertEqual(asr_argv[asr_argv.index("--threads") + 1], "2")
+        self.assertEqual(
+            engine.kwargs["spawn_env"],
+            {"SPACEMIT_EP_INTRA_THREAD_AFFINITY": "8;9"},
+        )
+
+    @patch.object(asr_provider_module, "_AsrEngine", FakeEngine)
+    def test_single_a100_core_runs_one_thread(self):
+        FakeEngine.instances = []
+        self._make_board_tree()
+        provider = SensevoiceAsrProvider(project_root=self.root)
+        provider._config["runtime"]["cpu_affinity"] = "10"
+        provider._config["runtime"]["core_arch"] = "auto"
+        provider.start_session(lambda _text: None)
+        engine = FakeEngine.instances[0]
+        self.assertEqual(engine.kwargs["asr_argv"][engine.kwargs["asr_argv"].index("--threads") + 1], "1")
+        self.assertEqual(engine.kwargs["spawn_env"], {"SPACEMIT_EP_INTRA_THREAD_AFFINITY": "10"})
 
     @patch.object(asr_provider_module, "_AsrEngine", FakeEngine)
     def test_stop_session_detaches_current_routing(self):

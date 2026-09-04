@@ -315,6 +315,7 @@ void printUsage(const char* program) {
     std::cout << "  --pause <N>        停顿多少秒判定一句话结束 (默认 0.5)" << std::endl;
     std::cout << "  --max-utt <N>      单句最长秒数, 超过强制断句 (默认 6)" << std::endl;
     std::cout << "  --engine <name>    sensevoice | zipformer (默认 sensevoice)" << std::endl;
+    std::cout << "  --threads <N>      推理线程数 (默认 2)" << std::endl;
     std::cout << "  --jsonl            stdout 输出 JSON Lines 事件 (ready/partial/sentence)," << std::endl;
     std::cout << "                    banner 转 stderr, 供下游程序解析" << std::endl;
     std::cout << "  --model-dir <DIR>  模型目录 (默认 ~/.cache/models/asr/sensevoice/)" << std::endl;
@@ -341,6 +342,7 @@ int main(int argc, char* argv[]) {
     std::string wake_words;
     bool wake_exit = false;
     std::string model_dir;
+    int threads = 2;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -357,6 +359,9 @@ int main(int argc, char* argv[]) {
             engine = argv[++i];
         } else if (arg == "--model-dir" && i + 1 < argc) {
             model_dir = argv[++i];
+        } else if (arg == "--threads" && i + 1 < argc) {
+            threads = std::atoi(argv[++i]);
+            if (threads < 1) threads = 1;
         } else if (arg == "--jsonl") {
             g_jsonl = true;
         } else if (arg == "--flush" && i + 1 < argc) {
@@ -428,6 +433,7 @@ int main(int argc, char* argv[]) {
     config.provider = provider;
     config.core_arch = core_arch;
     config.enable_emotion = enable_emotion;
+    config.num_threads = threads;
     if (!model_dir.empty()) {
         config.model_dir = model_dir;
     }

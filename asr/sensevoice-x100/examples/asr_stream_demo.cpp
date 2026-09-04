@@ -175,6 +175,7 @@ void printUsage(const char* program) {
     std::cout << "  -l, --list         列出可用音频设备" << std::endl;
     std::cout << "  -p, --provider <EP> EP: cpu | spacemit (默认 spacemit)" << std::endl;
     std::cout << "  --core-arch <A>    核架构: x100 | a100 (默认 x100)" << std::endl;
+    std::cout << "  --threads <N>      推理线程数 (默认 2)" << std::endl;
     std::cout << "  --enable-emotion   启用 SenseVoice 情绪识别 (默认关闭)" << std::endl;
     std::cout << "  -h, --help         显示帮助" << std::endl;
     std::cout << std::endl;
@@ -316,6 +317,7 @@ int main(int argc, char* argv[]) {
     int flush_interval = 3;  // 每 3 秒 flush 一次
     std::string provider = "spacemit";
     std::string core_arch = "x100";
+    int threads = 2;
     bool enable_emotion = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -339,6 +341,9 @@ int main(int argc, char* argv[]) {
             provider = argv[++i];
         } else if (arg == "--core-arch" && i + 1 < argc) {
             core_arch = argv[++i];
+        } else if (arg == "--threads" && i + 1 < argc) {
+            threads = std::atoi(argv[++i]);
+            if (threads < 1) threads = 1;
         } else if (arg == "--enable-emotion") {
             enable_emotion = true;
         }
@@ -371,6 +376,7 @@ int main(int argc, char* argv[]) {
     config.punctuation = true;
     config.provider = provider;
     config.core_arch = core_arch;
+    config.num_threads = threads;
     config.enable_emotion = enable_emotion;
 
     auto asrEngine = std::make_shared<SpacemiT::AsrEngine>(config);

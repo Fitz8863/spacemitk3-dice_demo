@@ -71,6 +71,7 @@ void printUsage(const char* program) {
     std::cout << "  --rounds N    Run N rounds of recognition (default: 1)" << std::endl;
     std::cout << "  --provider    EP: cpu | spacemit (default: spacemit)" << std::endl;
     std::cout << "  --core-arch   Core arch: x100 | a100 (default: x100)" << std::endl;
+    std::cout << "  --threads     Inference threads (default: 2)" << std::endl;
     std::cout << "  --hotwords    Comma-separated hotwords (e.g. \"SpacemiT,进迭时空\")" << std::endl;
     std::cout << "  --hotword-boost  Hotword boost weight (default: 2.0)" << std::endl;
     std::cout << "  --enable-emotion  Enable SenseVoice emotion recognition (default: off)" << std::endl;
@@ -118,6 +119,7 @@ int main(int argc, char* argv[]) {
     bool model_dir_set = false;
     std::string provider = "spacemit";
     std::string core_arch = "x100";
+    int threads = 2;
     std::string hotwords_str;
     float hotword_boost = 2.0f;
     std::string endpoint;
@@ -143,6 +145,9 @@ int main(int argc, char* argv[]) {
             provider = argv[++i];
         } else if (arg == "--core-arch" && i + 1 < argc) {
             core_arch = argv[++i];
+        } else if (arg == "--threads" && i + 1 < argc) {
+            threads = std::atoi(argv[++i]);
+            if (threads < 1) threads = 1;
         } else if (arg == "--hotwords" && i + 1 < argc) {
             hotwords_str = argv[++i];
         } else if (arg == "--hotword-boost" && i + 1 < argc) {
@@ -204,6 +209,7 @@ int main(int argc, char* argv[]) {
         }
         config.provider = provider;
         config.core_arch = core_arch;
+        config.num_threads = threads;
     }
 
     // 解析热词

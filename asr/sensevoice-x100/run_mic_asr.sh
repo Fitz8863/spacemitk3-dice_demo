@@ -13,11 +13,13 @@
 #   ./run_mic_asr.sh --wake 小美 --wake-exit # 唤醒后退出, 供脚本衔接 LLM/TTS
 #   ./run_mic_asr.sh --zipformer            # 模式5: Zipformer (无标点)
 #
-# 绑核:
-#   ./run_mic_asr.sh --cpu 8,9              # 指定 A100 能效核 (8-15, 必须恰好2个, EP推理线程精确绑定)
-#   ./run_mic_asr.sh --cpu 0,1              # 指定 X100 性能核 (0-7, 全进程绑定, 性能最佳)
-#   ./run_mic_asr.sh --cpu 4-6              # 范围写法
-#   不指定时: 引擎默认 core_arch=x100, EP 推理线程绑 X100 通用核 (0-7)
+# 绑核 (专用核模式, 资源利用最优):
+#   ./run_mic_asr.sh                        # 默认: ASR 独占 X100 核 6,7 (taskset),
+#                                           #   其余 6 个 X100 + 8 个 A100 全留给应用
+#   ./run_mic_asr.sh --cpu 0,1              # 换其他 X100 核 (全进程 taskset)
+#   ./run_mic_asr.sh --cpu 8,9              # A100 算力核 (恰好 2 个, EP 线程精确绑定, 推理最快)
+#   ./run_mic_asr.sh --cpu 10               # A100 单核 (自动 --threads 1, 最省资源)
+#   ./run_mic_asr.sh --cpu none             # 不绑核 (推理线程在 X100 0-7 浮动)
 #
 # 音频输入: 默认设备跟随 PipeWire (板子设置界面里的输入设备), -i N 可指定
 #
@@ -28,7 +30,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
 
 MODE=default
-CPU_LIST=""
+CPU_LIST="${ASR_CPUS:-6,7}"   # 默认专用核 6,7; 环境变量 ASR_CPUS 可改默认值
 WAKE_WORDS=""
 PASS_ARGS=()
 while [ $# -gt 0 ]; do
@@ -41,6 +43,9 @@ while [ $# -gt 0 ]; do
         *) PASS_ARGS+=("$1"); shift ;;  # 其余参数透传给底层 demo
     esac
 done
+
+# --cpu none: 显式关闭绑核
+[ "$CPU_LIST" = "none" ] && CPU_LIST=""
 
 # 展开 CPU 列表: 支持 "8,9" "4-6" "0,2-3" 混合写法
 expand_cpu() {
@@ -58,11 +63,11 @@ expand_cpu() {
 }
 
 # 根据 CPU 列表设置绑定方式:
-#   A100 核 (8-15): EP 的 SPACEMIT_EP_INTRA_THREAD_AFFINITY (分号分隔, 每线程一个核,
-#                   EP 固定 2 个推理线程, 因此必须恰好 2 个核; taskset 无法绑到 8-15);
-#                   同时传 --core-arch a100 把引擎从默认 x100 切回 A100
+#   A100 核 (8-15): EP 的 SPACEMIT_EP_INTRA_THREAD_AFFINITY (每线程绑一个核,
+#                   核数必须等于线程数, 故只允许 1 或 2 个核, 并自动透传 --threads N;
+#                   taskset 无法绑到 8-15)
 #   X100 核 (0-7):  taskset 全进程绑定; 引擎内 core_arch=x100 已让 EP 推理线程
-#                   绑定 X100, taskset 只是把非推理线程也限制在指定核上
+#                   绑定 X100, taskset 把整个进程限制在指定核上
 setup_cpu() {
     local cores c
     cores=$(expand_cpu "$CPU_LIST")
@@ -84,17 +89,19 @@ setup_cpu() {
     fi
 
     if [ "$n_a100" -gt 0 ]; then
-        if [ "$n_a100" -ne 2 ]; then
-            echo "错误: A100 核必须恰好选 2 个 (EP 固定 2 个推理线程), 例如 --cpu 8,9 或 --cpu 8,10" >&2
+        if [ "$n_a100" -ne 1 ] && [ "$n_a100" -ne 2 ]; then
+            echo "错误: A100 核必须选 1 或 2 个 (EP 线程数=核数), 例如 --cpu 8,9 或 --cpu 10" >&2
             exit 1
         fi
-        local first second
-        set -- $cores; first=$1; second=$2
-        export SPACEMIT_EP_INTRA_THREAD_AFFINITY="${first};${second}"
-        PASS_ARGS+=(--core-arch a100)   # 引擎默认 x100, 选 A100 时需显式切回
-        echo ">>> 绑核: A100 能效核 ${first} 和 ${second} (EP 推理线程)"
+        export SPACEMIT_EP_INTRA_THREAD_AFFINITY="${cores// /;}"
+        PASS_ARGS+=(--core-arch a100 --threads "$n_a100")   # 切回 A100; 线程数=核数
+        echo ">>> 绑核: A100 算力核 ${cores// /,} (EP 线程精确绑定, threads=$n_a100)"
     else
         TASKSET="taskset -c ${cores// /,}"
+        # X100 上 EP 线程数不影响 RTF (实测 1/2 线程均 ~0.41), 默认单线程少占线程位
+        if ! printf "%s\n" "${PASS_ARGS[@]}" | grep -qx -- --threads; then
+            PASS_ARGS+=(--threads 1)
+        fi
         echo ">>> 绑核: X100 通用核 ${cores// /,} (全进程 taskset)"
     fi
 }

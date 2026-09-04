@@ -231,6 +231,7 @@ void printUsage(const char* program) {
     std::cout << "  --language <L>     zh | en | ja | ko | yue | auto (默认 auto)" << std::endl;
     std::cout << "  --provider <EP>    cpu | spacemit (默认 spacemit)" << std::endl;
     std::cout << "  --core-arch <A>    核架构: x100 | a100 (默认 x100)" << std::endl;
+    std::cout << "  --threads <N>      推理线程数 (默认 2)" << std::endl;
     std::cout << "  --flush <N>        定时断句: 每 N 秒识别一次 (默认 3)" << std::endl;
     std::cout << "  --vad              VAD 断句: 说完一句立即出字幕" << std::endl;
     std::cout << "  --vad-thresh <N>   语音判定 RMS 阈值 (默认 400)" << std::endl;
@@ -254,6 +255,7 @@ int main(int argc, char* argv[]) {
     std::string language = "auto";
     std::string provider = "spacemit";
     std::string core_arch = "x100";
+    int threads = 2;
     std::string engine = "sensevoice";
     float flush_seconds = 3.0f;
     bool enable_emotion = false;
@@ -281,6 +283,9 @@ int main(int argc, char* argv[]) {
             provider = argv[++i];
         } else if (arg == "--core-arch" && i + 1 < argc) {
             core_arch = argv[++i];
+        } else if (arg == "--threads" && i + 1 < argc) {
+            threads = std::atoi(argv[++i]);
+            if (threads < 1) threads = 1;
         } else if ((arg == "--engine" || arg == "-e") && i + 1 < argc) {
             engine = argv[++i];
         } else if (arg == "--flush" && i + 1 < argc) {
@@ -356,6 +361,7 @@ int main(int argc, char* argv[]) {
     config.punctuation = true;
     config.provider = provider;
     config.core_arch = core_arch;
+    config.num_threads = threads;
     config.enable_emotion = enable_emotion;
 
     auto asrEngine = std::make_shared<SpacemiT::AsrEngine>(config);
