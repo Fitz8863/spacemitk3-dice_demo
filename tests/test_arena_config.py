@@ -25,6 +25,7 @@ from core.asr_bridge import AsrIntentBridge  # noqa: E402
 from core.arena_config import (  # noqa: E402
     ArenaConfigError,
     arena_asr_enabled,
+    arena_game_select_confirm_phrases,
     arena_game_select_phrases,
     arena_slot_value,
     arena_standby,
@@ -986,8 +987,12 @@ def test_select_endpoints_and_standby_game_selection(tmp_path, monkeypatch):
         "providers": {"tts_local": "tts_dummy", "asr": "asr_dummy"},
         "standby": {"enabled": True, "wake_phrases": ["游戏", "醒醒"]},
         # The game list is a deployment surface: its voice vocabulary lives
-        # here, not in any game manifest.
-        "game_select": {"phrases": {"dice": ["摇骰子", "骰子"]}},
+        # here, not in any game manifest.  confirm_phrases enters whatever
+        # game the screen currently highlights (up/down keys / click).
+        "game_select": {
+            "phrases": {"dice": ["摇骰子", "骰子"]},
+            "confirm_phrases": ["进入游戏", "玩这个游戏"],
+        },
     }), encoding="utf-8")
 
     provider = DummyAsrForArena()
@@ -1041,6 +1046,7 @@ def test_select_endpoints_and_standby_game_selection(tmp_path, monkeypatch):
         status, payload = post("/api/asr/select", {"listen": True})
         assert status == 200 and payload["listening"] is True
         assert payload["games"] == [{"id": "dice", "phrases": ["摇骰子", "骰子"]}]
+        assert payload["confirm_phrases"] == ["进入游戏", "玩这个游戏"]
         assert len(provider.sessions) == 1
 
         provider.sessions[0]["on_sentence"]("我想玩摇骰子游戏")
@@ -1055,6 +1061,24 @@ def test_select_endpoints_and_standby_game_selection(tmp_path, monkeypatch):
             "sequence": selected[0]["sequence"],
         }]
         assert unmatched and unmatched[-1]["text"] == "今天天气不错"
+
+        # "enter the highlighted game" words ride the same select table
+        # under the reserved "confirm" key; the frontend then walks the
+        # green-button path on whatever game the keys highlighted.
+        provider.sessions[0]["on_sentence"]("那就玩这个游戏吧")
+        _, events_payload = get("/api/asr/select/events")
+        confirmed = [e for e in events_payload["events"] if e.get("status") == "confirm"]
+        assert confirmed == [{
+            "event": "asr", "status": "confirm", "text": "那就玩这个游戏吧",
+            "timestamp_ms": confirmed[0]["timestamp_ms"],
+            "sequence": confirmed[0]["sequence"],
+        }]
+
+        # Table order is priority: a named game beats the generic confirm.
+        provider.sessions[0]["on_sentence"]("摇骰子，进入游戏")
+        _, events_payload = get("/api/asr/select/events")
+        statuses = [(e.get("status"), e.get("game_id")) for e in events_payload["events"]]
+        assert ("selected", "dice") in statuses
 
         # Standby listening carries wake words AND the game names; the game
         # keys come first so "我想玩摇骰子游戏" selects the game even though
@@ -1100,6 +1124,29 @@ def test_game_select_node_validated_and_normalized():
     # Missing / malformed nodes degrade to "no voice selection".
     assert arena_game_select_phrases({}) == {}
     assert arena_game_select_phrases(None) == {}
+
+    # confirm_phrases: optional "enter the highlighted game" words; empty
+    # list is a legitimate "affordance off", malformed shapes are refused.
+    assert validate_arena_config({
+        **base,
+        "game_select": {"phrases": {}, "confirm_phrases": ["进入游戏", "玩这个游戏"]},
+    })
+    assert validate_arena_config({**base, "game_select": {"confirm_phrases": []}})
+    with pytest.raises(ArenaConfigError):
+        validate_arena_config({
+            **base, "game_select": {"confirm_phrases": ["进入游戏", "进入游戏"]},
+        })
+    with pytest.raises(ArenaConfigError):
+        validate_arena_config({**base, "game_select": {"confirm_phrases": "进入游戏"}})
+    with pytest.raises(ArenaConfigError):
+        validate_arena_config({**base, "game_select": {"confirm_phrases": [" "]}})
+
+    assert arena_game_select_confirm_phrases({
+        "game_select": {"confirm_phrases": [" 进入游戏 ", "玩这个游戏", ""]}
+    }) == ["进入游戏", "玩这个游戏"]
+    assert arena_game_select_confirm_phrases({}) == []
+    assert arena_game_select_confirm_phrases({"game_select": {}}) == []
+    assert arena_game_select_confirm_phrases({"game_select": {"confirm_phrases": "x"}}) == []
 
 
 def test_game_select_phrases_ignore_unknown_or_disabled_games(monkeypatch):
