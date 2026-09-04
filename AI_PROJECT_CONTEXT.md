@@ -53,6 +53,22 @@ manifest 不管，未声明的游戏不参与）。2026-09-04 补**语音确认�
 `game_select.confirm_phrases`，保留路由键 `confirm` → 前端走绿色按钮同一条
 `enterSelectedGame` 路径；匹配优先级游戏名 > 确认词；待机页无选中态故不生效）。
 
+2026-09-04（晚）**SenseVoice 本地 ASR 入仓并切换为默认引擎**：第二套 ASR 引擎
+`asr/sensevoice-x100/`（源码快照入库含 core_arch=X100 绑核改动，模型 232MB 在
+`model/` gitignore）。**非流式引擎融入流式契约**：引擎对
+`arecord | asr_pipe_demo --vad --jsonl` 常驻，能量 VAD 断句→逐句识别→JSONL
+sentence 事件；"会话"仍是瞬时路由切换，与 asr_zipformer 完全同构（_AsrEngine
+复用）。为此给 asr_pipe_demo 打了补丁（47f0898）：`--jsonl`（ready/sentence
+事件，库层 34 处诊断输出 cout→cerr）、`--model-dir`、批量断句合并修复。协议
+差异：**ready 判定 = 显式 `{"type":"ready"}` 事件**（stderr 诊断在模型加载前
+就打印，不能当就绪信号）。组件 `asr_sensevoice`（0071e04，34 项测试，全量
+468 绿）：config 与 zipformer 字段同名同义 + language/core_arch（默认 X100
+通用核，不与 moss/yolo 抢 A100）；vad.enabled 必须 true。**已切换
+`providers.asr` 为 asr_sensevoice 并板端验证**（预热/待机/列表/回合三会话/单
+引擎/回合自动回收全通过）。实测：RTF 0.40-0.44（X100 8 线程），端到端命令延
+迟 ≈ 停顿 0.6s + RTF×句长（比 zipformer 慢 ~0.5s），**待机 CPU 0.7%（zipformer
+~60%，降约 85 倍——全天演示的实质性优势）**。切回 zipformer = 改槽值+重启。
+
 2026-09-04 **LLM 大模型模块化**（第四类组件，与前三类同构）：`core/llm.py` 定义
 `LlmProvider` 契约（`verify`/`diagnose` 两个有界结构化多模态请求——纯传输适配器，
 不知道任何游戏规则；提示词/allowed_outcomes/超时是游戏语义，随每次调用传入）。
