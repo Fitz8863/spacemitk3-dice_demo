@@ -53,6 +53,22 @@ manifest 不管，未声明的游戏不参与）。2026-09-04 补**语音确认�
 `game_select.confirm_phrases`，保留路由键 `confirm` → 前端走绿色按钮同一条
 `enterSelectedGame` 路径；匹配优先级游戏名 > 确认词；待机页无选中态故不生效）。
 
+2026-09-04 **LLM 大模型模块化**（第四类组件，与前三类同构）：`core/llm.py` 定义
+`LlmProvider` 契约（`verify`/`diagnose` 两个有界结构化多模态请求——纯传输适配器，
+不知道任何游戏规则；提示词/allowed_outcomes/超时是游戏语义，随每次调用传入）。
+首个实现 `llm_openai_compat`：纯 HTTP OpenAI 兼容客户端（endpoint/model/api_key 在
+其组件 config，原视觉组件 llm 节三件套迁移至此；客户端代码原为视觉组件的 llm.py，
+整体平移）。接线：全局 `providers.llm` **单责任槽**（heweijie 拍板，与 asr/
+vision_adjudicator 同形而非 TTS 双槽——LLM 复核每局只用一个引擎，本地 llamacpp
+落地后同槽切换即可）→ dice pipeline **每回合**解析（manifest 覆盖 > 全局，热加载，
+改槽值下一回合生效免重启）→ 引擎经 `VisionAdjudicationRequest.llm_provider` 新字段
+送进裁决器（构造 `verifier` 保留为测试注入缝，请求携带者优先）。槽缺失/坏槽位/
+启动探测失败（GET /models 软探测）一律**软降级**：复核自动 disabled、YOLO 兜底、
+绝不拒启不杀回合（`llm_status: disabled` 与 profile 级禁用同语义）。`/api/health`
+的 `llm_configured` 改由 llm 槽位+组件配置回答（adjudicator 健康不再携带 LLM 状态）。
+`vision_yolov8_adjudicator` 就此只管 YOLO 检测与裁决流程。将来 `llm_llamacpp`
+（常驻 llama-server + 预热）实现同契约即可接入。
+
 2026-09-03（深夜）**AEC（回声消除）调研与试做：结论为暂不启用，播报闸仍是主防线**。
 动因是"ASR 会听到 TTS 相同语句"。实测链路：TTS 由浏览器播放——平时演示浏览器在
 笔记本上（日志证实全部 /speech 拉取来自 100.113.182.54），AEC 参考信号在笔记本侧，

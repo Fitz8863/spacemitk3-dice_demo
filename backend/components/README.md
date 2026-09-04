@@ -119,6 +119,13 @@ not decide which side is the human player or the agent. That mapping belongs
 to `backend/games/<game_id>/manifest.json` and is projected by the game
 pipeline.
 
+LLM verification/diagnosis engines are no longer configured inside the vision
+package: the game pipeline resolves the global `llm` provider slot per round
+and hands the engine to the adjudicator on the request object
+(`VisionAdjudicationRequest.llm_provider`). `None` means "verification
+disabled" — the detector-only result stands and the round never fails because
+of a missing LLM.
+
 Current package manifest:
 
 ```json
@@ -134,6 +141,20 @@ Current package manifest:
   ]
 }
 ```
+
+## LLM interface
+
+LLM packages use `type=llm`, inherit `core.llm.LlmProvider`, and implement
+the two bounded structured multimodal requests `verify(...)` and
+`diagnose(...)`. Prompts, allowed outcomes and timeouts arrive with each
+call from the game's vision profile — a provider is a pure transport adapter
+(cloud API, vLLM/llama.cpp server, or a local resident engine) and knows
+nothing about any game's rules.
+
+The vision adjudicator is currently the only consumer; the pipeline resolves
+the engine from the `llm` slot (game manifest override > arena default,
+hot-reloaded per round). A deployment without an `llm` slot simply runs
+detector-only rounds.
 
 ### Visual localizer
 
