@@ -1,0 +1,38 @@
+module: components/model_zoo/asr
+
+tests:
+  - name: asr-config-contract
+    description: Verifies ASR presets, config builders, validation, and audio chunk metadata without loading models.
+    category: functional
+    scopes: [pr]
+    timeout_s: 120
+    workdir: sdk
+    command: |
+      bash components/model_zoo/asr/tests/test_config_contract.sh
+
+  - name: asr-invalid-config-error-path
+    description: Verifies unknown presets and invalid ASR configs fail with explicit errors.
+    category: functional
+    scopes: [pr]
+    timeout_s: 120
+    workdir: sdk
+    command: |
+      bash components/model_zoo/asr/tests/test_invalid_config_error_path.sh
+
+  - name: asr-python-api-contract
+    description: Verifies Python backend selection wrappers stay aligned with native ASR backends.
+    category: functional
+    scopes: [pr]
+    timeout_s: 120
+    workdir: sdk
+    command: |
+      bash components/model_zoo/asr/tests/test_python_api_contract.sh
+
+  - name: asr-funasr-backend-contract
+    description: Verifies FunASR multipart requests, audio normalization, response parsing, and HTTP error mapping against a local mock server.
+    category: functional
+    scopes: [pr]
+    timeout_s: 120
+    workdir: sdk
+    command: |
+      bash components/model_zoo/asr/tests/test_funasr_backend_contract.sh
