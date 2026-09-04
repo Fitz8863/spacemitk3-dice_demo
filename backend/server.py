@@ -47,6 +47,7 @@ from core.arena_config import (
     ARENA_CONFIG_PATH,
     ArenaConfigError,
     arena_asr_enabled,
+    arena_game_select_confirm_phrases,
     arena_game_select_phrases,
     arena_slot_value,
     arena_standby,
@@ -604,6 +605,11 @@ class _AsrEventBus:
 _STANDBY_BUS = _AsrEventBus()
 _SELECT_BUS = _AsrEventBus()
 
+# Reserved select-table key for "enter the currently highlighted game"
+# (the green button / Enter affordance, spoken).  Its trigger words come
+# from the global config's ``game_select.confirm_phrases``.
+_SELECT_CONFIRM_KEY = "confirm"
+
 
 def _game_select_phrases() -> dict[str, list[str]]:
     """Voice-selection trigger words per enabled game, in list order.
@@ -619,17 +625,22 @@ def _game_select_phrases() -> dict[str, list[str]]:
     for manifest in get_games().all():
         if not manifest.get("enabled", False):
             continue
-        words = configured.get(str(manifest["id"]))
+        game_id = str(manifest["id"])
+        if game_id == _SELECT_CONFIRM_KEY:
+            continue  # reserved key: cannot double as a game id
+        words = configured.get(game_id)
         if words:
-            table[str(manifest["id"])] = list(words)
+            table[game_id] = list(words)
     return table
 
 
 def _select_broadcast(bus: _AsrEventBus) -> Callable[[str, str], None]:
-    """Dispatch one select-session hit: wake key or a game id."""
+    """Dispatch one select-session hit: wake key, confirm key, or a game id."""
     def on_select(key: str, text: str) -> None:
         if key == "wake":
             bus.push({"event": "asr", "status": "wake", "text": text})
+        elif key == _SELECT_CONFIRM_KEY:
+            bus.push({"event": "asr", "status": "confirm", "text": text})
         else:
             bus.push({
                 "event": "asr", "status": "selected", "game_id": key, "text": text,
@@ -1260,8 +1271,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/asr/select":
             # Game-list voice selection: same routing pattern as standby,
-            # but the phrase table holds game names only (wake words mean
-            # nothing once the list is already on screen).
+            # but the phrase table holds game names plus the optional
+            # "enter the selected game" confirm words (wake words mean
+            # nothing once the list is already on screen).  Table order is
+            # priority: a named game beats the generic confirm command.
             try:
                 payload = self.read_json()
             except DiceArenaError as exc:
@@ -1273,8 +1286,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             cursor = _SELECT_BUS.clear()
             game_phrases = _game_select_phrases()
+            confirm_phrases = arena_game_select_confirm_phrases(get_arena_config())
+            phrases = dict(game_phrases)
+            if confirm_phrases:
+                phrases[_SELECT_CONFIRM_KEY] = confirm_phrases
             started = ASR_BRIDGE.start_select_session(
-                phrases=game_phrases,
+                phrases=phrases,
                 asr_enabled=arena_asr_enabled(get_arena_config()),
                 provider_id=arena_slot_value(get_arena_config(), "asr"),
                 on_select=_select_broadcast(_SELECT_BUS),
@@ -1286,6 +1303,7 @@ class Handler(BaseHTTPRequestHandler):
                     {"id": game_id, "phrases": words}
                     for game_id, words in game_phrases.items()
                 ] if started else [],
+                "confirm_phrases": confirm_phrases if started else [],
                 "cursor": cursor,
             })
             return

@@ -195,10 +195,11 @@ function stopStandbyListening() {
 }
 
 // --- 列表页语音选游戏（与待机层同构：会话 + 纪元 + 轮询 + 保鲜窗） ---
-// 玩家在游戏列表说"我想玩摇骰子游戏"，服务端在常驻引擎上换绑选路
-// 路由（词表 = 各启用游戏名/别名），命中推 selected 事件；前端走与
-// 绿色按钮同一条 enterSelectedGame 路径进对局。进对局/进待机时轮询
-// 停止（服务端路由由回合/待机会话自动顶掉）。
+// 玩家在游戏列表说"我想玩摇骰子游戏"（点名）或"进入游戏"（确认当前
+// 高亮项），服务端在常驻引擎上换绑选路路由（词表 = 各启用游戏名/别名
+// + 全局配置里的确认词），命中推 selected/confirm 事件；前端走与绿色
+// 按钮同一条 enterSelectedGame 路径进对局。进对局/进待机时轮询停止
+// （服务端路由由回合/待机会话自动顶掉）。
 let selectEventCursor = 0;
 let selectPollTimer = null;
 
@@ -209,7 +210,7 @@ function startSelectListening() {
     body: JSON.stringify({ listen: true }),
   }).then((payload) => {
     selectEventCursor = Number(payload?.cursor || 0);
-    renderSelectVoiceHint(payload?.games);
+    renderSelectVoiceHint(payload?.games, payload?.confirm_phrases);
   }).catch(() => { /* 后端不可用不阻塞列表页 */ });
   selectPollTimer = setInterval(async () => {
     try {
@@ -217,11 +218,19 @@ function startSelectListening() {
       for (const event of (payload.events || [])) {
         if (event.sequence > selectEventCursor) {
           selectEventCursor = event.sequence;
+          // 保鲜窗：超过 10 秒的选择事件视为过期（防御旧事件重放）。
+          const fresh = Date.now() - Number(event.timestamp_ms || 0) <= 10000;
           if (event.status === 'selected' && event.game_id) {
-            // 保鲜窗：超过 10 秒的选择事件视为过期（防御旧事件重放）。
-            if (Date.now() - Number(event.timestamp_ms || 0) <= 10000) {
+            if (fresh) {
               showAsrFeedback({ status: 'submitted', text: event.text });
               enterGameById(event.game_id);
+              return;
+            }
+          } else if (event.status === 'confirm') {
+            // 语音确认：进入当前高亮的游戏（上下键/点选已改写选中态）。
+            if (fresh) {
+              showAsrFeedback({ status: 'submitted', text: event.text });
+              enterSelectedGame();
               return;
             }
           } else {
@@ -244,14 +253,18 @@ function stopSelectListening() {
   }).catch(() => { /* already stopped */ });
 }
 
-function renderSelectVoiceHint(selectGames) {
+function renderSelectVoiceHint(selectGames, confirmPhrases) {
   const node = $('selectVoiceHint');
   if (!node) return;
   const words = (selectGames || [])
     .map((game) => (game.phrases || [])[0])
     .filter(Boolean);
-  if (words.length) {
-    node.textContent = `或对我说：${words.join(' / ')}，直接开始`;
+  const confirm = (confirmPhrases || [])[0];
+  const parts = [];
+  if (words.length) parts.push(words.join(' / '));
+  if (confirm) parts.push(`「${confirm}」确认进入`);
+  if (parts.length) {
+    node.textContent = `或对我说：${parts.join('，或')}`;
     node.classList.remove('hidden');
   } else {
     node.classList.add('hidden');

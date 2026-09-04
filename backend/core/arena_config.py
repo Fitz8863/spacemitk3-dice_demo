@@ -90,6 +90,17 @@ def validate_arena_config(payload: Any) -> dict[str, Any]:
                 f"game_select.phrases.{game_id!r} must be a non-empty duplicate-free "
                 "list of trigger words"
             )
+    # Optional "enter the currently highlighted game" words (list screen).
+    # Empty/missing list = the voice-confirm affordance is off.
+    confirm_phrases = game_select.get("confirm_phrases", [])
+    if (
+        not isinstance(confirm_phrases, list)
+        or not all(isinstance(word, str) and word.strip() for word in confirm_phrases)
+        or len(confirm_phrases) != len(set(confirm_phrases))
+    ):
+        raise ArenaConfigError(
+            "game_select.confirm_phrases must be a duplicate-free list of trigger words"
+        )
     return payload
 
 
@@ -159,6 +170,22 @@ def arena_game_select_phrases(arena: Mapping[str, Any] | None) -> dict[str, list
         if cleaned:
             table[game_id.strip()] = cleaned
     return table
+
+
+def arena_game_select_confirm_phrases(arena: Mapping[str, Any] | None) -> list[str]:
+    """Trigger words that enter the currently highlighted game (list screen).
+
+    Lives beside ``game_select.phrases`` in the global config: the game list
+    is a deployment-level surface, and so is its "confirm selection" command.
+    Empty/missing means the affordance is off.
+    """
+    game_select = (arena or {}).get("game_select")
+    if not isinstance(game_select, Mapping):
+        return []
+    words = game_select.get("confirm_phrases")
+    if not isinstance(words, list):
+        return []
+    return [str(word).strip() for word in words if isinstance(word, str) and word.strip()]
 
 
 def with_global_defaults(

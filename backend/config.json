@@ -27,6 +27,7 @@
   "game_select": {
     "phrases": {
       "dice": ["摇骰子"]
-    }
+    },
+    "confirm_phrases": ["进入游戏", "玩这个游戏", "进入这个游戏", "开始这个游戏"]
   }
 }
