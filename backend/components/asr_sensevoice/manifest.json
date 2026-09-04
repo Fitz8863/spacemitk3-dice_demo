@@ -1,0 +1,15 @@
+{
+  "id": "asr_sensevoice",
+  "type": "asr",
+  "name": "SenseVoice ASR (sentence-segmented, X100)",
+  "version": "1.0",
+  "enabled": true,
+  "entry": "provider.py:SensevoiceAsrProvider",
+  "capabilities": [
+    "asr.sentence_vad",
+    "asr.zh_en_ja_ko_yue",
+    "asr.non_streaming",
+    "asr.x100_cores"
+  ],
+  "config": "config.json"
+}
