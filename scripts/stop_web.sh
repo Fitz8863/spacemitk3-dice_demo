@@ -7,6 +7,12 @@ RUNTIME_DIR="${DICE_RUNTIME_DIR:-${ROOT_DIR}/.runtime}"
 PID_FILE="${PID_FILE:-${RUNTIME_DIR}/web-${PORT}.pid}"
 TTS_PROVIDER_FILE="${TTS_PROVIDER_FILE:-${RUNTIME_DIR}/web-${PORT}.tts-provider}"
 PYTHON_BIN="${DICE_PYTHON:-python3}"
+# The server's SIGTERM teardown is serial (ASR engine, per-component
+# shutdowns, YOLO child + MPP codec release) and stretches past a few
+# seconds after a busy round, so give it a real grace window before
+# escalating to SIGKILL instead of reporting failure at 3s.
+TERM_WAIT_SECONDS="${STOP_TERM_WAIT_SECONDS:-10}"
+KILL_WAIT_SECONDS="${STOP_KILL_WAIT_SECONDS:-5}"
 
 resolve_tts_providers() {
     # Prefer the manifest-derived list (local + remote slots + per-line
@@ -98,6 +104,55 @@ find_expected_pid() {
     return 1
 }
 
+wait_for_exit() {
+    # wait_for_exit <pid> <seconds>: 0 = process gone, 1 = still alive.
+    local pid="$1" seconds="$2" waited=0
+    while (( waited < seconds * 10 )); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
+runtime_children() {
+    # Resident engine children of this deployment (yolov8_camera,
+    # stream_asr; arecord exits by itself once stream_asr's pipe closes).
+    # Matched by executable path under this project so a sibling checkout or
+    # unrelated process is never touched.
+    local pid exe
+    for pid in $(pgrep -x yolov8_camera 2>/dev/null; pgrep -x stream_asr 2>/dev/null); do
+        exe="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
+        case "$exe" in
+            "$ROOT_DIR"/*) printf '%s\n' "$pid" ;;
+        esac
+    done
+}
+
+kill_runtime_children() {
+    # A server killed with SIGKILL leaves its resident children orphaned and
+    # still holding the camera and microphone; a clean exit stops them via
+    # the provider shutdown hooks. Wait briefly, then force the stragglers so
+    # the next start never races the previous run for the devices.
+    local waited=0 pid
+    while (( waited < 50 )); do
+        if [[ -z "$(runtime_children)" ]]; then
+            return 0
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    for pid in $(runtime_children); do
+        echo "Warning: killing leftover runtime child pid=$pid (still holding camera/mic)" >&2
+        kill -KILL "$pid" 2>/dev/null || true
+    done
+}
+
 pid=""
 if [[ -f "$PID_FILE" ]]; then
     candidate="$(cat "$PID_FILE" 2>/dev/null || true)"
@@ -110,28 +165,40 @@ fi
 if [[ -z "$pid" ]]; then
     pid="$(find_expected_pid || true)"
 fi
+
+status=0
+running_tts_provider=""
 if [[ -z "$pid" ]]; then
     echo "Dice Arena web is not running"
-    stop_selected_tts
-    rm -f "$TTS_PROVIDER_FILE"
-    exit 0
+else
+    running_tts_provider="$(curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null \
+        | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("tts_provider", ""))' 2>/dev/null || true)"
+    kill -TERM "$pid" 2>/dev/null || true
+    if wait_for_exit "$pid" "$TERM_WAIT_SECONDS"; then
+        :
+    else
+        echo "Web process $pid did not exit within ${TERM_WAIT_SECONDS}s; sending SIGKILL" >&2
+        kill -KILL "$pid" 2>/dev/null || true
+        if wait_for_exit "$pid" "$KILL_WAIT_SECONDS"; then
+            :
+        else
+            echo "Web process $pid survived SIGKILL (uninterruptible state?); camera/mic may stay held" >&2
+            status=1
+        fi
+    fi
+    rm -f "$PID_FILE"
+    echo "Dice Arena web stopped: pid=$pid"
+    kill_runtime_children
 fi
 
-running_tts_provider="$(curl -fsS --max-time 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null \
-    | "$PYTHON_BIN" -c 'import json,sys; print(json.load(sys.stdin).get("tts_provider", ""))' 2>/dev/null || true)"
-kill "$pid"
-for _ in {1..30}; do
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.1
-done
-if kill -0 "$pid" 2>/dev/null; then
-    echo "Web process $pid did not stop cleanly" >&2
-    exit 1
-fi
-rm -f "$PID_FILE"
-echo "Dice Arena web stopped: pid=$pid"
 # Stop both the provider reported by the running backend and everything the
 # current manifest references, so a manifest edit between start and stop
-# cannot leak a warmed local runtime.
+# cannot leak a warmed local runtime.  This runs on every path — including
+# an unclean stop — so a heavyweight local engine is never left alive.
 stop_selected_tts "$(printf '%s\n%s\n' "$running_tts_provider" "$(resolve_tts_providers)")"
 rm -f "$TTS_PROVIDER_FILE"
+# Brief settle window: the MPP codec/camera release can lag the last child's
+# exit, and a restart launched inside that window has been observed to leave
+# the new YOLO runtime degraded (~6 s/frame).  Two seconds is cheap insurance.
+sleep 2
+exit "$status"
