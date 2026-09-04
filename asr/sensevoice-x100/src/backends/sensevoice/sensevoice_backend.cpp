@@ -92,7 +92,7 @@ ErrorInfo SenseVoiceBackend::initialize(const ASRConfig& config) {
         .required_files = {"model_quant_optimized.onnx", "tokens.txt", "am.mvn"},
     });
     if (!downloader.ensure()) {
-        std::cout << "[SenseVoiceBackend] Models not found, will attempt to use provided paths"
+        std::cerr << "[SenseVoiceBackend] Models not found, will attempt to use provided paths"
                 << std::endl;
     }
 
@@ -103,7 +103,7 @@ ErrorInfo SenseVoiceBackend::initialize(const ASRConfig& config) {
     }
 
     initialized_.store(true);
-    std::cout << "[SenseVoiceBackend] Initialized successfully" << std::endl;
+    std::cerr << "[SenseVoiceBackend] Initialized successfully" << std::endl;
 
     return ErrorInfo::ok();
 }
@@ -138,7 +138,7 @@ ErrorInfo SenseVoiceBackend::initializeASRModel() {
                 "Model path: " + model_config.model_path);
         }
 
-        std::cout << "[SenseVoiceBackend] SenseVoice model loaded: "
+        std::cerr << "[SenseVoiceBackend] SenseVoice model loaded: "
                 << model_config.model_path << std::endl;
 
         if (!config_.hotwords.empty()) {
@@ -163,7 +163,7 @@ void SenseVoiceBackend::shutdown() {
     model_.reset();
 
     initialized_.store(false);
-    std::cout << "[SenseVoiceBackend] Shutdown complete" << std::endl;
+    std::cerr << "[SenseVoiceBackend] Shutdown complete" << std::endl;
 }
 
 // =============================================================================
@@ -344,7 +344,7 @@ ErrorInfo SenseVoiceBackend::startStream() {
     stream_active_.store(true);
     notifyStart();
 
-    std::cout << "[SenseVoiceBackend] Stream started" << std::endl;
+    std::cerr << "[SenseVoiceBackend] Stream started" << std::endl;
     return ErrorInfo::ok();
 }
 
@@ -383,7 +383,7 @@ ErrorInfo SenseVoiceBackend::stopStream() {
     notifyComplete();
     notifyClose();
 
-    std::cout << "[SenseVoiceBackend] Stream stopped" << std::endl;
+    std::cerr << "[SenseVoiceBackend] Stream stopped" << std::endl;
     return ErrorInfo::ok();
 }
 
@@ -402,7 +402,7 @@ ErrorInfo SenseVoiceBackend::flushStream() {
     // Note: Keep stream active, don't call notifyComplete/notifyClose
     // User can continue sending audio for next segment
 
-    std::cout << "[SenseVoiceBackend] Stream flushed" << std::endl;
+    std::cerr << "[SenseVoiceBackend] Stream flushed" << std::endl;
     return ErrorInfo::ok();
 }
 
@@ -462,7 +462,7 @@ ErrorInfo SenseVoiceBackend::setLanguage(Language language) {
     config_.language = language;
     // Note: Language change requires model reinitialization
     // For now, just update config
-    std::cout << "[SenseVoiceBackend] Language set to: "
+    std::cerr << "[SenseVoiceBackend] Language set to: "
             << languageToString(language) << std::endl;
     return ErrorInfo::ok();
 }
@@ -564,7 +564,7 @@ std::vector<float> SenseVoiceBackend::trimEndpointSilence(
         return audio;
     }
 
-    std::cout << "[SenseVoiceBackend] Trim endpoint silence: "
+    std::cerr << "[SenseVoiceBackend] Trim endpoint silence: "
             << (audio.size() * 1000 / config_.sample_rate) << " ms -> "
             << ((trim_end - trim_begin) * 1000 / config_.sample_rate) << " ms"
             << std::endl;

@@ -39,18 +39,18 @@ bool ModelDownloader::ensure() {
     bool all_exist = true;
     for (const auto& file : config_.required_files) {
         if (!fileExists(filePath(file))) {
-            std::cout << "[ModelDownloader] Missing: " << file << std::endl;
+            std::cerr << "[ModelDownloader] Missing: " << file << std::endl;
             all_exist = false;
         }
     }
 
     if (all_exist) {
-        std::cout << "[ModelDownloader] All models available in " << model_dir_ << std::endl;
+        std::cerr << "[ModelDownloader] All models available in " << model_dir_ << std::endl;
         return true;
     }
 
     // Download
-    std::cout << "[ModelDownloader] Downloading to " << model_dir_ << " ..." << std::endl;
+    std::cerr << "[ModelDownloader] Downloading to " << model_dir_ << " ..." << std::endl;
     if (!download()) {
         return false;
     }
@@ -136,7 +136,7 @@ bool ModelDownloader::downloadFile(
         return false;
     }
 
-    std::cout << "[ModelDownloader] Downloaded: " << output_path << std::endl;
+    std::cerr << "[ModelDownloader] Downloaded: " << output_path << std::endl;
     return true;
 }
 
@@ -187,7 +187,7 @@ bool ModelDownloader::extractArchive(const std::string& archive_path) {
 
     std::filesystem::remove_all(temp_dir);
 
-    std::cout << "[ModelDownloader] Extracted successfully" << std::endl;
+    std::cerr << "[ModelDownloader] Extracted successfully" << std::endl;
     return true;
 }
 

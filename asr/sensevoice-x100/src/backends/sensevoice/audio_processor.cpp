@@ -46,7 +46,7 @@ void AudioProcessor::initializeFFTW() {
 
     if (fft_input_ && fft_output_) {
         fft_plan_ = fftwf_plan_dft_r2c_1d(fft_size_, fft_input_, fft_output_, FFTW_MEASURE);
-        std::cout << "[AudioProcessor] FFTW plan initialized (size=" << fft_size_ << ")" << std::endl;
+        std::cerr << "[AudioProcessor] FFTW plan initialized (size=" << fft_size_ << ")" << std::endl;
     } else {
         std::cerr << "[AudioProcessor] Failed to allocate FFTW buffers" << std::endl;
     }
@@ -150,7 +150,7 @@ void AudioProcessor::loadCMVN(const std::string& cmvn_file) {
     cmvn_var_.assign(config_.n_mels, 1.0f);
     cmvn_loaded_ = true;
 
-    std::cout << "CMVN loaded (dummy implementation)" << std::endl;
+    std::cerr << "CMVN loaded (dummy implementation)" << std::endl;
 }
 
 std::vector<std::vector<float>> AudioProcessor::extractFeatures(const std::vector<float>& audio) {

@@ -114,7 +114,7 @@ bool Tokenizer::loadVocabulary() {
     }
 
     vocab_size_ = id_to_token_.size();
-    std::cout << "[Tokenizer] Loaded " << vocab_size_ << " tokens" << std::endl;
+    std::cerr << "[Tokenizer] Loaded " << vocab_size_ << " tokens" << std::endl;
 
     return vocab_size_ > 0;
 }
@@ -143,7 +143,7 @@ bool Tokenizer::initializeDecoder() {
             output_names_.push_back(name.release());
         }
 
-        std::cout << "[Tokenizer] ONNX decoder loaded" << std::endl;
+        std::cerr << "[Tokenizer] ONNX decoder loaded" << std::endl;
         return true;
     } catch (const std::exception& e) {
         // Decoder is optional

@@ -100,7 +100,7 @@ bool SenseVoiceModel::initializeSession() {
             }
             Ort::Status status = Ort::SessionOptionsSpaceMITEnvInit(session_options, ep_options);
             if (status.IsOK()) {
-                std::cout << "[ASR] SpaceMIT EP initialized (threads=" << config_.num_threads
+                std::cerr << "[ASR] SpaceMIT EP initialized (threads=" << config_.num_threads
                     << ", core_arch="
                     << (config_.core_arch.empty() ? "ep-default" : config_.core_arch)
                     << ")" << std::endl;
@@ -336,28 +336,28 @@ SenseVoiceModel::RecognitionOutput SenseVoiceModel::recognizeInternal(
             std::chrono::duration<double, std::milli>(flat_end - flat_start).count();
 
         // Always print performance breakdown
-        std::cout << "\n=== Performance Breakdown ===" << std::endl;
-        std::cout << "Feature extraction: " << std::fixed << std::setprecision(2)
+        std::cerr << "\n=== Performance Breakdown ===" << std::endl;
+        std::cerr << "Feature extraction: " << std::fixed << std::setprecision(2)
                 << last_stats_.feature_time_ms / 1000.0 << "s ("
                 << std::setprecision(2)
                 << (last_stats_.feature_time_ms / last_stats_.total_time_ms * 100)
                 << "%)" << std::endl;
-        std::cout << "Data flattening: " << std::fixed << std::setprecision(2)
+        std::cerr << "Data flattening: " << std::fixed << std::setprecision(2)
                 << flatten_time_ms / 1000.0 << "s ("
                 << std::setprecision(2)
                 << (flatten_time_ms / last_stats_.total_time_ms * 100)
                 << "%)" << std::endl;
-        std::cout << "ONNX inference: " << std::fixed << std::setprecision(2)
+        std::cerr << "ONNX inference: " << std::fixed << std::setprecision(2)
                 << last_stats_.inference_time_ms / 1000.0 << "s ("
                 << std::setprecision(2)
                 << (last_stats_.inference_time_ms / last_stats_.total_time_ms * 100)
                 << "%)" << std::endl;
-        std::cout << "Token decoding: " << std::fixed << std::setprecision(2)
+        std::cerr << "Token decoding: " << std::fixed << std::setprecision(2)
                 << last_stats_.decode_time_ms / 1000.0 << "s ("
                 << std::setprecision(2)
                 << (last_stats_.decode_time_ms / last_stats_.total_time_ms * 100)
                 << "%)" << std::endl;
-        std::cout << "Total (model): " << std::fixed << std::setprecision(2)
+        std::cerr << "Total (model): " << std::fixed << std::setprecision(2)
                 << last_stats_.total_time_ms / 1000.0 << "s, Audio: "
                 << last_stats_.audio_duration_ms / 1000.0 << "s, RTF: "
                 << std::setprecision(3) << last_stats_.rtf << std::endl;

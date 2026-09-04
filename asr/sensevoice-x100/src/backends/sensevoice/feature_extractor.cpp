@@ -116,7 +116,7 @@ void FeatureExtractor::initializeFFTW() {
     fft_output_ = fftwf_alloc_complex(config_.n_fft / 2 + 1);
     fft_plan_ = fftwf_plan_dft_r2c_1d(config_.n_fft, fft_input_, fft_output_, FFTW_MEASURE);
 
-    std::cout << "[FeatureExtractor] FFTW initialized (size=" << config_.n_fft << ")" << std::endl;
+    std::cerr << "[FeatureExtractor] FFTW initialized (size=" << config_.n_fft << ")" << std::endl;
 }
 
 void FeatureExtractor::cleanupFFTW() {
@@ -147,7 +147,7 @@ bool FeatureExtractor::loadCMVN(const std::string& path) {
     cmvn_var_.resize(dim, 1.0f);
     cmvn_loaded_ = true;
 
-    std::cout << "[FeatureExtractor] CMVN loaded (dim=" << dim << ")" << std::endl;
+    std::cerr << "[FeatureExtractor] CMVN loaded (dim=" << dim << ")" << std::endl;
     return true;
 }
 

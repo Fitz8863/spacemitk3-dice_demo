@@ -23,6 +23,7 @@
 #include <cerrno>
 #include <unistd.h>
 #include <cmath>
+#include <cstdio>
 
 #include <algorithm>
 #include <atomic>
@@ -46,6 +47,34 @@ static std::atomic<bool> g_running{true};
 static std::atomic<bool> g_waked{false};
 static std::vector<std::string> g_wake_words;  // 唤醒词列表 (空 = 不检测)
 static std::string g_wake_hit;
+// --jsonl: stdout 只输出 JSON Lines 事件 (ready/partial/sentence), 供下游
+// 程序解析; banner 与诊断信息全部转到 stderr, 保证 stdout 可直接 pipe。
+static bool g_jsonl = false;
+
+static std::ostream& diag() { return g_jsonl ? std::cerr : std::cout; }
+
+static std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += static_cast<char>(c);
+                }
+        }
+    }
+    return out;
+}
 
 static void checkWakeWord(const std::string& text) {
     if (g_wake_words.empty() || g_waked.load()) return;
@@ -53,10 +82,10 @@ static void checkWakeWord(const std::string& text) {
         if (!w.empty() && text.find(w) != std::string::npos) {
             g_wake_hit = w;
             g_waked.store(true);
-            std::cout << "\n*************************************" << std::endl;
-            std::cout << "  [🔔 唤醒] 识别到唤醒词: \"" << w << "\"" << std::endl;
-            std::cout << "  原文: " << text << std::endl;
-            std::cout << "*************************************" << std::endl;
+            diag() << "\n*************************************" << std::endl;
+            diag() << "  [🔔 唤醒] 识别到唤醒词: \"" << w << "\"" << std::endl;
+            diag() << "  原文: " << text << std::endl;
+            diag() << "*************************************" << std::endl;
             return;
         }
     }
@@ -80,20 +109,36 @@ public:
             checkWakeWord(text);
             std::lock_guard<std::mutex> lock(mutex_);
             last_text_ = text;
-            std::cout << ">>> " << text;
-            if (result->GetAudioDuration() > 0) {
-                std::cout << "    (音频 " << result->GetAudioDuration()
-                    << "ms, 处理 " << result->GetProcessingTime()
-                    << "ms, RTF " << std::fixed << std::setprecision(3)
-                    << result->GetRTF() << ")";
+            if (g_jsonl) {
+                std::cout << "{\"type\":\"sentence\",\"text\":\"" << jsonEscape(text) << "\"";
+                if (result->GetAudioDuration() > 0) {
+                    std::cout << ",\"audio_ms\":" << result->GetAudioDuration()
+                              << ",\"proc_ms\":" << result->GetProcessingTime()
+                              << ",\"rtf\":" << std::fixed << std::setprecision(3)
+                              << result->GetRTF();
+                }
+                std::cout << "}" << std::endl;
+            } else {
+                std::cout << ">>> " << text;
+                if (result->GetAudioDuration() > 0) {
+                    std::cout << "    (音频 " << result->GetAudioDuration()
+                        << "ms, 处理 " << result->GetProcessingTime()
+                        << "ms, RTF " << std::fixed << std::setprecision(3)
+                        << result->GetRTF() << ")";
+                }
+                std::cout << std::endl;
             }
-            std::cout << std::endl;
         } else {
             // 流式引擎的中间结果, 内容变化时才打印
             std::lock_guard<std::mutex> lock(mutex_);
             if (text != last_partial_) {
                 last_partial_ = text;
-                std::cout << "    ... " << text << std::endl;
+                if (g_jsonl) {
+                    std::cout << "{\"type\":\"partial\",\"text\":\""
+                              << jsonEscape(text) << "\"}" << std::endl;
+                } else {
+                    std::cout << "    ... " << text << std::endl;
+                }
             }
         }
     }
@@ -270,6 +315,9 @@ void printUsage(const char* program) {
     std::cout << "  --pause <N>        停顿多少秒判定一句话结束 (默认 0.5)" << std::endl;
     std::cout << "  --max-utt <N>      单句最长秒数, 超过强制断句 (默认 6)" << std::endl;
     std::cout << "  --engine <name>    sensevoice | zipformer (默认 sensevoice)" << std::endl;
+    std::cout << "  --jsonl            stdout 输出 JSON Lines 事件 (ready/partial/sentence)," << std::endl;
+    std::cout << "                    banner 转 stderr, 供下游程序解析" << std::endl;
+    std::cout << "  --model-dir <DIR>  模型目录 (默认 ~/.cache/models/asr/sensevoice/)" << std::endl;
     std::cout << "  --emotion          启用情绪识别" << std::endl;
     std::cout << "  --wake <词,词>     唤醒词检测: 识别文本包含任一词即触发提示" << std::endl;
     std::cout << "  --wake-exit        唤醒后自动退出 (供脚本接入下一级流程)" << std::endl;
@@ -292,6 +340,7 @@ int main(int argc, char* argv[]) {
     float max_utt_secs = 6.0f;
     std::string wake_words;
     bool wake_exit = false;
+    std::string model_dir;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -306,6 +355,10 @@ int main(int argc, char* argv[]) {
             core_arch = argv[++i];
         } else if ((arg == "--engine" || arg == "-e") && i + 1 < argc) {
             engine = argv[++i];
+        } else if (arg == "--model-dir" && i + 1 < argc) {
+            model_dir = argv[++i];
+        } else if (arg == "--jsonl") {
+            g_jsonl = true;
         } else if (arg == "--flush" && i + 1 < argc) {
             flush_seconds = std::stof(argv[++i]);
         } else if (arg == "--vad") {
@@ -340,30 +393,33 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    std::cout << "========================================" << std::endl;
-    std::cout << "  SpacemitAudioSDK 管道流式识别" << std::endl;
-    std::cout << "========================================" << std::endl;
-    std::cout << "引擎: " << engine << ", 语言: " << language
+    diag() << "========================================" << std::endl;
+    diag() << "  SpacemitAudioSDK 管道流式识别" << std::endl;
+    diag() << "========================================" << std::endl;
+    diag() << "引擎: " << engine << ", 语言: " << language
         << ", Provider: " << provider << ", 核架构: " << core_arch << std::endl;
+    if (!model_dir.empty()) {
+        diag() << "模型目录: " << model_dir << std::endl;
+    }
     if (use_vad) {
-        std::cout << "断句: VAD (停顿 " << pause_secs << "s 出字幕, 阈值 "
+        diag() << "断句: VAD (停顿 " << pause_secs << "s 出字幕, 阈值 "
             << vad_thresh << ", 单句上限 " << max_utt_secs << "s)" << std::endl;
     } else {
-        std::cout << "断句: 定时 (每 " << flush_seconds << "s)" << std::endl;
+        diag() << "断句: 定时 (每 " << flush_seconds << "s)" << std::endl;
     }
     if (!g_wake_words.empty()) {
-        std::cout << "唤醒词: ";
+        diag() << "唤醒词: ";
         for (size_t i = 0; i < g_wake_words.size(); ++i) {
-            std::cout << (i ? " / " : "") << g_wake_words[i];
+            diag() << (i ? " / " : "") << g_wake_words[i];
         }
-        std::cout << (wake_exit ? "  (唤醒后退出)" : "") << std::endl;
+        diag() << (wake_exit ? "  (唤醒后退出)" : "") << std::endl;
     }
-    std::cout << std::endl;
+    diag() << std::endl;
 
     if (engine == "zipformer") {
-        std::cout << "提示: zipformer 在 K3 + SpaceMIT EP 下需设置" << std::endl;
-        std::cout << "      export SPACEMIT_EP_DISABLE_OP_TYPE_FILTER=\"Conv\"" << std::endl;
-        std::cout << std::endl;
+        diag() << "提示: zipformer 在 K3 + SpaceMIT EP 下需设置" << std::endl;
+        diag() << "      export SPACEMIT_EP_DISABLE_OP_TYPE_FILTER=\"Conv\"" << std::endl;
+        diag() << std::endl;
     }
 
     SpacemiT::AsrConfig config = SpacemiT::AsrConfig::Preset(engine);
@@ -372,6 +428,9 @@ int main(int argc, char* argv[]) {
     config.provider = provider;
     config.core_arch = core_arch;
     config.enable_emotion = enable_emotion;
+    if (!model_dir.empty()) {
+        config.model_dir = model_dir;
+    }
 
     auto asrEngine = std::make_shared<SpacemiT::AsrEngine>(config);
     if (!asrEngine->IsInitialized()) {
@@ -379,17 +438,21 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << ">>> Warmup..." << std::endl;
+    diag() << ">>> Warmup..." << std::endl;
     {
         std::vector<float> silence(8000, 0.0f);
         auto t0 = std::chrono::steady_clock::now();
         asrEngine->Recognize(silence, SAMPLE_RATE);
         auto t1 = std::chrono::steady_clock::now();
-        std::cout << "Warmup done: " << std::fixed << std::setprecision(0)
+        diag() << "Warmup done: " << std::fixed << std::setprecision(0)
             << std::chrono::duration<double, std::milli>(t1 - t0).count()
             << " ms" << std::endl;
     }
-    std::cout << std::endl;
+    // 模型加载与 warmup 全部完成: 下游 (常驻服务的 prewarm) 以此为准。
+    if (g_jsonl) {
+        std::cout << "{\"type\":\"ready\"}" << std::endl;
+    }
+    diag() << std::endl;
 
     auto callback = std::make_shared<PipeCallback>();
     asrEngine->SetCallback(callback);
@@ -398,8 +461,8 @@ int main(int argc, char* argv[]) {
     PipeReader reader;
     reader.start();
 
-    std::cout << ">>> 等待 stdin 音频流 (16kHz mono PCM16)，Ctrl+C 退出" << std::endl;
-    std::cout << "========================================" << std::endl;
+    diag() << ">>> 等待 stdin 音频流 (16kHz mono PCM16)，Ctrl+C 退出" << std::endl;
+    diag() << "========================================" << std::endl;
 
     VadSegmenter segmenter(vad_thresh, pause_secs, max_utt_secs);
     std::deque<AudioChunkData> incoming;
@@ -421,7 +484,7 @@ int main(int argc, char* argv[]) {
         if (pcm.empty()) return;
         sentence_count++;
         if (verbose_tag) {
-            std::cout << "[句子 " << sentence_count << "] Flush..." << std::endl;
+            diag() << "[句子 " << sentence_count << "] Flush..." << std::endl;
         }
         asrEngine->SendAudioFrame(pcm);
         asrEngine->Flush();
@@ -431,10 +494,17 @@ int main(int argc, char* argv[]) {
         reader.drain(incoming);
 
         if (use_vad) {
-            // 全部块先喂给断句器, 再统一判断是否触发 (避免丢弃当批剩余块)
+            // 逐块喂给断句器, 一旦某块触发断句就停在该边界上:
+            // 触发块属于当前句, 其后的块留给下一句。这样即使上游一次
+            // 灌入一大批音频 (如 cat 文件), 句子也不会被并成一句。
+            size_t consumed = 0;
             bool flush_now = false;
-            for (const auto& c : incoming) {
-                flush_now = segmenter.feed(c) || flush_now;
+            for (; consumed < incoming.size(); ++consumed) {
+                if (segmenter.feed(incoming[consumed])) {
+                    flush_now = true;
+                    ++consumed;
+                    break;
+                }
             }
             if (flush_now) {
                 doFlush(false);
@@ -442,16 +512,17 @@ int main(int argc, char* argv[]) {
             if (reader.eof() && segmenter.eofRemainder()) {
                 doFlush(false);  // 收尾: 把最后一句话送出去
             }
+            incoming.erase(incoming.begin(), incoming.begin() + consumed);
         } else {
             for (const auto& c : incoming) buffered_since_flush += c.seconds;
             if (buffered_since_flush >= flush_seconds) {
                 doFlush(true);
             }
+            incoming.clear();
         }
-        incoming.clear();
 
         if (g_waked && wake_exit) {
-            std::cout << ">>> 唤醒退出, 此处可衔接后续流程 (LLM / TTS)" << std::endl;
+            diag() << ">>> 唤醒退出, 此处可衔接后续流程 (LLM / TTS)" << std::endl;
             break;
         }
         if (reader.eof()) break;
@@ -472,13 +543,13 @@ int main(int argc, char* argv[]) {
     reader.join();
     asrEngine->Stop();
 
-    std::cout << std::endl;
-    std::cout << "========================================" << std::endl;
-    std::cout << "共识别 " << sentence_count << " 段" << std::endl;
+    diag() << std::endl;
+    diag() << "========================================" << std::endl;
+    diag() << "共识别 " << sentence_count << " 段" << std::endl;
     if (!callback->getLastText().empty()) {
-        std::cout << "最后结果: " << callback->getLastText() << std::endl;
+        diag() << "最后结果: " << callback->getLastText() << std::endl;
     }
-    std::cout << "Done." << std::endl;
+    diag() << "Done." << std::endl;
 
     return 0;
 }

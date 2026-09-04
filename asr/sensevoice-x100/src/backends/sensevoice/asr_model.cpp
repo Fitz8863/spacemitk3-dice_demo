@@ -248,16 +248,16 @@ std::string ASRModel::recognize(const float* audio, size_t length) {
         double audio_duration = static_cast<double>(length) / config_.sample_rate;
         double rtf = duration / audio_duration;
 
-        std::cout << "=== Performance Breakdown ===" << std::endl;
-        std::cout << "Feature extraction: " << feature_time
+        std::cerr << "=== Performance Breakdown ===" << std::endl;
+        std::cerr << "Feature extraction: " << feature_time
                 << "s (" << (feature_time / duration * 100) << "%)" << std::endl;
-        std::cout << "Data flattening: " << flatten_time
+        std::cerr << "Data flattening: " << flatten_time
                 << "s (" << (flatten_time / duration * 100) << "%)" << std::endl;
-        std::cout << "ONNX inference: " << inference_time
+        std::cerr << "ONNX inference: " << inference_time
                 << "s (" << (inference_time / duration * 100) << "%)" << std::endl;
-        std::cout << "Token decoding: " << decode_time
+        std::cerr << "Token decoding: " << decode_time
                 << "s (" << (decode_time / duration * 100) << "%)" << std::endl;
-        std::cout << "Total time: " << duration << "s, Audio duration: "
+        std::cerr << "Total time: " << duration << "s, Audio duration: "
                 << audio_duration << "s, RTF: " << rtf << std::endl;
 
         return result;

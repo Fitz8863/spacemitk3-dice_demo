@@ -106,7 +106,7 @@ ErrorInfo ASREngine::initialize(const ASRConfig& config) {
     }
 
     initialized_.store(true);
-    std::cout << "[ASREngine] Initialized with backend: " << backend_->getName() << std::endl;
+    std::cerr << "[ASREngine] Initialized with backend: " << backend_->getName() << std::endl;
 
     return ErrorInfo::ok();
 }
