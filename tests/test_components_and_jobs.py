@@ -167,6 +167,14 @@ class ComponentTests(unittest.TestCase):
         )
         self.assertEqual(registry.provider_ids("asr"), ["asr_zipformer"])
         self.assertEqual(
+            registry.provider_ids("llm"),
+            ["llm_openai_compat"],
+        )
+        self.assertEqual(
+            registry.get_manifest("llm_openai_compat")["entry"],
+            "provider.py:LlmOpenAiCompat",
+        )
+        self.assertEqual(
             registry.get_manifest("asr_zipformer")["entry"],
             "provider.py:ZipformerAsrProvider",
         )

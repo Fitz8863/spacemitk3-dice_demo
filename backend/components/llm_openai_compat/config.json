@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "endpoint": "https://api.deepseek.com/v1",
+  "model": "deepseek-v4-flash-vision-exp",
+  "api_key": "sk-86c1f6eacf2e4bd69b2c071f8bde9c82"
+}

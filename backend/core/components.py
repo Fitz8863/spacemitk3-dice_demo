@@ -54,6 +54,10 @@ def _validate_component_contract(component: Component) -> None:
         from core.asr import AsrProvider
 
         expected = AsrProvider
+    elif component.type == "llm":
+        from core.llm import LlmProvider
+
+        expected = LlmProvider
     elif component.type == "vision":
         from core.vision import VisionAdjudicatorProvider, VisionLocalizerProvider
 

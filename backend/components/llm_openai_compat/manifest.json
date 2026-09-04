@@ -1,0 +1,15 @@
+{
+  "id": "llm_openai_compat",
+  "type": "llm",
+  "name": "OpenAI-Compatible Chat LLM (cloud / vLLM / llama.cpp server)",
+  "version": "1.0",
+  "enabled": true,
+  "entry": "provider.py:LlmOpenAiCompat",
+  "capabilities": [
+    "llm.openai_chat",
+    "llm.multimodal_images",
+    "llm.structured_verify",
+    "llm.failure_diagnosis"
+  ],
+  "config": "config.json"
+}
