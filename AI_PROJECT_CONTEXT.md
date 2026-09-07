@@ -54,7 +54,7 @@ manifest 不管，未声明的游戏不参与）。2026-09-04 补**语音确认�
 `enterSelectedGame` 路径；匹配优先级游戏名 > 确认词；待机页无选中态故不生效）。
 
 2026-09-04（晚）**SenseVoice 本地 ASR 入仓并切换为默认引擎**：第二套 ASR 引擎
-`asr/sensevoice-x100/`（源码快照入库含 core_arch=X100 绑核改动，模型 232MB 在
+`asr/sensevoice/`（源码快照入库含 core_arch=X100 绑核改动，模型 232MB 在
 `model/` gitignore）。**非流式引擎融入流式契约**：引擎对
 `arecord | asr_pipe_demo --vad --jsonl` 常驻，能量 VAD 断句→逐句识别→JSONL
 sentence 事件；"会话"仍是瞬时路由切换，与 asr_zipformer 完全同构（_AsrEngine

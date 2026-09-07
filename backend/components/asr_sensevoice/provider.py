@@ -631,7 +631,7 @@ class SensevoiceAsrProvider(AsrProvider):
         if not (self._model_dir / "model_quant_optimized.onnx").is_file():
             problems.append(
                 "model missing under runtime.model_dir; rebuild per "
-                "asr/sensevoice-x100/.gitignore"
+                "asr/sensevoice/.gitignore"
             )
         with self._engine_lock:
             engine = self._engine

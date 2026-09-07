@@ -32,9 +32,9 @@ from components.asr_sensevoice.provider import (  # noqa: E402
 VALID_CONFIG = {
     "schema_version": 1,
     "runtime": {
-        "binary": "asr/sensevoice-x100/build/bin/asr_pipe_demo",
-        "working_dir": "asr/sensevoice-x100",
-        "model_dir": "asr/sensevoice-x100/model",
+        "binary": "asr/sensevoice/build/bin/asr_pipe_demo",
+        "working_dir": "asr/sensevoice",
+        "model_dir": "asr/sensevoice/model",
         "language": "auto",
         "core_arch": "x100",
         "num_threads": 2,
@@ -103,7 +103,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_rejects_traversal_model_dir(self):
         with self.assertRaises(AsrConfigError):
-            self._load(_mutated(model_dir="asr/sensevoice-x100/../../models"))
+            self._load(_mutated(model_dir="asr/sensevoice/../../models"))
 
     def test_rejects_wrong_sample_rate(self):
         with self.assertRaises(AsrConfigError):
@@ -531,11 +531,11 @@ class ProviderTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
 
     def _make_board_tree(self) -> None:
-        binary = self.root / "asr/sensevoice-x100/build/bin/asr_pipe_demo"
+        binary = self.root / "asr/sensevoice/build/bin/asr_pipe_demo"
         binary.parent.mkdir(parents=True, exist_ok=True)
         binary.write_bytes(b"#!/bin/sh\n")
         binary.chmod(0o755)
-        model = self.root / "asr/sensevoice-x100/model"
+        model = self.root / "asr/sensevoice/model"
         model.mkdir(parents=True, exist_ok=True)
         (model / "model_quant_optimized.onnx").write_bytes(b"model")
 
