@@ -22,13 +22,19 @@
       "游戏",
       "你好",
       "在不",
-      "开始游戏"
+      "开始游戏",
+      "hello",
+      "wake up",
+      "start game",
+      "start the game"
     ]
   },
   "game_select": {
     "phrases": {
-      "dice": ["摇骰子","骰子"]
+      "dice": ["摇骰子","骰子","dice"]
     },
-    "confirm_phrases": ["进入游戏", "玩这个", "进入这个游戏", "开始这个游戏"]
+    "confirm_phrases": ["进入游戏", "玩这个", "进入这个游戏", "开始这个游戏",
+                        "play this", "enter the game", "enter this game",
+                        "start the game", "start this game"]
   }
 }
