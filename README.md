@@ -169,10 +169,16 @@ rtsp://127.0.0.1:8554/dice
 
 启动时会打印：
 
-- 实际模型输入和 13 个输出形状。
+- 实际模型输入和全部输出形状，以及自动识别的输出布局（SpaceMIT 13 输出 / 标准 Ultralytics 2 输出）。
 - OpenCL 设备。
 - SpaceMIT EP affinity。
 - 摄像头节点、协商分辨率/FPS 和实际 decoder。
+
+输出格式自适应：
+
+- 输出数量为 13 → SpaceMIT 布局，走 DFL 解码，类别分按图内已归一化的概率直接使用。
+- 输出数量为 2 → 标准 Ultralytics 布局（`[1,116,8400]` + `[1,32,160,160]`），类别分 logit 需经 sigmoid，box 已在图内解码为 cx,cy,w,h。
+- 两种布局共用同一套 NMS、mask 组装和坐标映射；类别数分别从各自输出形状推导。
 
 验证时需要区分：
 
@@ -183,4 +189,4 @@ rtsp://127.0.0.1:8554/dice
 
 模型二进制被 `.gitignore` 忽略；Git 只保存源码、配置、README 和模型说明。
 
-当前默认模型为 `models/yolov8s-seg.q.onnx`，这是 SpaceMIT 13 输出格式，当前程序可以直接加载。官方标准 FP32 `models/yolov8s-seg.fp32.onnx` 也可以放在 `models/` 下用于后续对比，但它是 2 输出格式，当前程序会明确拒绝加载，详见 `models/README.md`。
+当前默认模型为 `models/yolov8s-seg.fp32.q.onnx`（标准 2 输出布局的 SpaceMIT 量化版，SpaceMIT EP 实测可加载）。程序同时支持 SpaceMIT 13 输出格式（如 `models/yolov8s-seg.q.onnx`）与官方标准 2 输出格式（官方 FP32 `models/yolov8s-seg.fp32.onnx` 也可直接加载），按输出数量自动识别，详见 `models/README.md`。

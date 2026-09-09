@@ -3,15 +3,15 @@
 Model binaries are intentionally ignored by Git. Place the board-compatible
 model files in this directory before running the application.
 
-## SpaceMIT model used by this application
+## SpaceMIT 13-output models
 
 ```text
 models/yolov8n-seg.q.onnx
 models/yolov8s-seg.q.onnx
 ```
 
-The SpaceMIT `*.q.onnx` segmentation models use the 13-output layout expected
-by the current detector:
+The SpaceMIT `*.q.onnx` segmentation models use the 13-output layout
+(auto-detected by the detector alongside the standard 2-output layout):
 
 - three DFL box branches;
 - three class-score branches;
@@ -19,13 +19,39 @@ by the current detector:
 - three mask-coefficient branches;
 - one `[1,32,160,160]` prototype output.
 
-The current default configuration uses `yolov8s-seg.q.onnx`.
+The current default configuration uses `yolov8s-seg.fp32.q.onnx`.
 
 The `yolov8s-seg.q.onnx` file supplied from the SpaceMIT model archive has:
 
 ```text
 size: 12095249 bytes
 sha256: 294b21d44dfc85fd06b46966d69492c764a1387a4356d3dddea0fc458d3ee42d
+```
+
+## SpaceMIT-quantized standard 2-output model
+
+```text
+models/yolov8s-seg.fp32.q.onnx
+```
+
+This is the official Ultralytics YOLOv8s-seg graph quantized for the SpaceMIT
+EP while keeping the standard 2-output layout:
+
+```text
+input:   [1,3,640,640]
+output0: [1,116,8400]  (4 box + 80 class logits + 32 mask coefficients)
+output1: [1,32,160,160] (prototype)
+```
+
+The detector auto-detects this layout by output count; class scores are
+sigmoid-activated in the standard 2-output postprocessor. Verified working on
+the SpaceMIT EP (2026-09-09).
+
+The local artifact has:
+
+```text
+size: 12265685 bytes
+sha256: fc3ffd7f18f0c135c0dbc3582840e9bbe8233ba8a05fbe57987853fa094b98e5
 ```
 
 ## Official Ultralytics FP32 model
@@ -43,9 +69,9 @@ input:  [1,3,640,640]
 output: [1,116,8400] and [1,32,160,160]
 ```
 
-This is a 2-output layout and is **not currently loadable by this application**,
-which expects the SpaceMIT 13-output layout. Do not switch `config.json` to this
-file until a standard Ultralytics 2-output postprocessor is added.
+This 2-output layout is supported by the same auto-detected standard
+postprocessor (see above); expect a much larger file and slower inference than
+the quantized variants.
 
 The locally downloaded official FP32 artifact has:
 
