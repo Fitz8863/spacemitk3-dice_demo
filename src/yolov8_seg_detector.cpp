@@ -156,6 +156,7 @@ std::vector<SegmentationDetection> Yolov8SegDetector::infer(
         candidates = decode_spacemit13(views, conf_threshold, scale, pad_x, pad_y,
                                        image_width, image_height);
     } else {
+        debug_dump_standard2(views[0], views[1]);
         candidates = decode_standard2(views[0], conf_threshold, scale, pad_x, pad_y,
                                       image_width, image_height);
     }

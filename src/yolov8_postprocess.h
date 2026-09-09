@@ -44,8 +44,13 @@ std::vector<Candidate> decode_spacemit13(
     int pad_y, int image_width, int image_height);
 
 // 官方标准 2 输出布局的检测输出 [1, 4+classes+32, anchors]：
-// 通道 0-3 为 cx,cy,w,h（640 letterbox 像素坐标），4..3+classes 为类别 logit（需 sigmoid），
-// 其后 32 通道为 mask 系数；proto 输出由调用方传给 build_contours。
+// 通道 0-3 为 cx,cy,w,h（640 letterbox 像素坐标），4..3+classes 为类别分，其后 32 通道为
+// mask 系数。与 SpaceMIT 13 输出导出约定一致，类别分是图内已激活的概率（不再 sigmoid）；
+// 官方原始 logit 导出不适用此路径。proto 由调用方传给 build_contours。
 std::vector<Candidate> decode_standard2(
     const OutputView& detection, float conf_threshold, float scale, int pad_x,
     int pad_y, int image_width, int image_height);
+
+// YOLO_SEG_DEBUG=1 时在首次标准 2 输出推理后打印各段数值统计，
+// 用于确认类别分是 logit 还是已激活概率（量化导出工具决定）。
+void debug_dump_standard2(const OutputView& detection, const OutputView& prototype);

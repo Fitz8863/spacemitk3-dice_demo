@@ -43,9 +43,10 @@ output0: [1,116,8400]  (4 box + 80 class logits + 32 mask coefficients)
 output1: [1,32,160,160] (prototype)
 ```
 
-The detector auto-detects this layout by output count; class scores are
-sigmoid-activated in the standard 2-output postprocessor. Verified working on
-the SpaceMIT EP (2026-09-09).
+The detector auto-detects this layout by output count. As with the SpaceMIT
+13-output exports, class scores are already activated probabilities inside the
+graph and are used directly by the postprocessor (verified 2026-09-09; do not
+apply a second sigmoid).
 
 The local artifact has:
 
@@ -69,9 +70,11 @@ input:  [1,3,640,640]
 output: [1,116,8400] and [1,32,160,160]
 ```
 
-This 2-output layout is supported by the same auto-detected standard
-postprocessor (see above); expect a much larger file and slower inference than
-the quantized variants.
+This 2-output layout loads and runs, but the official export keeps **raw class
+logits** while the current standard postprocessor expects already activated
+probabilities (SpaceMIT export convention) — confidence values from this file
+will be misinterpreted. Kept for reference/对比; do not use it as a daily
+driver unless a sigmoid variant of the postprocessor is added.
 
 The locally downloaded official FP32 artifact has:
 

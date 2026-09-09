@@ -17,8 +17,8 @@ bool near(float value, float expected, float tolerance) {
     return std::fabs(value - expected) <= tolerance;
 }
 
-// 标准 2 输出布局：合成 4 个 anchor（2 类），验证 xywh 解码、sigmoid、conf 过滤、
-// 同类 NMS 抑制、mask 系数切片与轮廓组装。
+// 标准 2 输出布局：合成 4 个 anchor（2 类），验证 xywh 解码、类别分（已激活概率）
+// 直接与 conf 比较、conf 过滤、同类 NMS 抑制、mask 系数切片与轮廓组装。
 void test_decode_standard2() {
     const int anchors = 4;
     const int classes = 2;
@@ -27,18 +27,18 @@ void test_decode_standard2() {
     auto at = [&det, anchors](int channel, int anchor) -> float& {
         return det[static_cast<size_t>(channel * anchors + anchor)];
     };
-    // anchor 0: class 0，高置信度
+    // anchor 0: class 0，高置信度（类别分是图内已激活的概率，直接使用）
     at(0, 0) = 320.0f; at(1, 0) = 320.0f; at(2, 0) = 100.0f; at(3, 0) = 80.0f;
-    at(4 + 0, 0) = 4.0f;
+    at(4 + 0, 0) = 0.9f;
     // anchor 1: class 1，独立框
     at(0, 1) = 100.0f; at(1, 1) = 100.0f; at(2, 1) = 60.0f; at(3, 1) = 60.0f;
-    at(4 + 1, 1) = 2.0f;
+    at(4 + 1, 1) = 0.85f;
     // anchor 2: class 0，与 anchor 0 高度重叠，应被 NMS 抑制
     at(0, 2) = 322.0f; at(1, 2) = 322.0f; at(2, 2) = 100.0f; at(3, 2) = 80.0f;
-    at(4 + 0, 2) = 3.0f;
-    // anchor 3: class 0，sigmoid(-2)≈0.12 低于 conf，应被过滤
+    at(4 + 0, 2) = 0.8f;
+    // anchor 3: class 0，0.2 低于 conf，应被过滤
     at(0, 3) = 160.0f; at(1, 3) = 160.0f; at(2, 3) = 40.0f; at(3, 3) = 40.0f;
-    at(4 + 0, 3) = -2.0f;
+    at(4 + 0, 3) = 0.2f;
     // anchor 0 的 mask 系数：仅通道 0 有效
     at(4 + classes + 0, 0) = 1.0f;
 
@@ -69,8 +69,8 @@ void test_decode_standard2() {
     }
     assert(ball && other);
     assert(other->class_id == 1);
-    assert(near(ball->score, 1.0f / (1.0f + std::exp(-4.0f)), 1e-4));
-    assert(near(other->score, 1.0f / (1.0f + std::exp(-2.0f)), 1e-4));
+    assert(near(ball->score, 0.9f, 1e-6));
+    assert(near(other->score, 0.85f, 1e-6));
     // 模型坐标 (270,280,370,360) → 图像坐标 ((270-4)*2,(280-8)*2,(370-4)*2,(360-8)*2)
     assert(near(ball->box.x, 532.0f, 1e-2));
     assert(near(ball->box.y, 544.0f, 1e-2));

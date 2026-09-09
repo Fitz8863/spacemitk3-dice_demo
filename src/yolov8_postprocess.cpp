@@ -3,7 +3,10 @@
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -197,6 +200,60 @@ std::vector<Candidate> decode_spacemit13(
     return candidates;
 }
 
+void debug_dump_standard2(const OutputView& detection, const OutputView& prototype) {
+    static const bool enabled = std::getenv("YOLO_SEG_DEBUG") != nullptr;
+    static bool dumped = false;
+    if (!enabled || dumped) return;
+    dumped = true;
+    if (detection.shape.size() != 3 || detection.shape[0] != 1) return;
+    const int channels = static_cast<int>(detection.shape[1]);
+    const int anchors = static_cast<int>(detection.shape[2]);
+    if (channels < 4 + 1 + kMaskChannels || anchors <= 0) return;
+    const int classes = channels - 4 - kMaskChannels;
+    const float* data = detection.data;
+    const auto stats = [anchors](const float* first_row, int rows) {
+        float mn = std::numeric_limits<float>::infinity();
+        float mx = -std::numeric_limits<float>::infinity();
+        double sum = 0.0;
+        size_t count = static_cast<size_t>(rows) * anchors;
+        for (int row = 0; row < rows; ++row) {
+            const float* r = first_row + static_cast<size_t>(row) * anchors;
+            for (int a = 0; a < anchors; ++a) {
+                mn = std::min(mn, r[a]);
+                mx = std::max(mx, r[a]);
+                sum += r[a];
+            }
+        }
+        return std::array<float, 3>{mn, mx, static_cast<float>(sum / static_cast<double>(count))};
+    };
+    const auto box = stats(data, 4);
+    const auto score = stats(data + static_cast<size_t>(4) * anchors, classes);
+    const auto coeff = stats(data + static_cast<size_t>(4 + classes) * anchors, kMaskChannels);
+    int over_conf = 0;
+    for (int row = 4; row < 4 + classes; ++row) {
+        const float* r = data + static_cast<size_t>(row) * anchors;
+        for (int a = 0; a < anchors; ++a) {
+            if (r[a] >= 0.25f) ++over_conf;
+        }
+    }
+    float proto_mn = std::numeric_limits<float>::infinity();
+    float proto_mx = -std::numeric_limits<float>::infinity();
+    if (prototype.shape.size() == 4 && prototype.shape[0] == 1 && prototype.data) {
+        const size_t count = static_cast<size_t>(prototype.shape[1]) *
+                             static_cast<size_t>(prototype.shape[2]) * static_cast<size_t>(prototype.shape[3]);
+        for (size_t i = 0; i < count; ++i) {
+            proto_mn = std::min(proto_mn, prototype.data[i]);
+            proto_mx = std::max(proto_mx, prototype.data[i]);
+        }
+    }
+    std::cout << "[debug] standard2 anchors=" << anchors << " classes=" << classes << "\n"
+              << "[debug] box rows    min=" << box[0] << " max=" << box[1] << " mean=" << box[2] << "\n"
+              << "[debug] class rows  min=" << score[0] << " max=" << score[1] << " mean=" << score[2]
+              << " (values>=0.25: " << over_conf << ")\n"
+              << "[debug] coeff rows  min=" << coeff[0] << " max=" << coeff[1] << " mean=" << coeff[2] << "\n"
+              << "[debug] proto       min=" << proto_mn << " max=" << proto_mx << "\n";
+}
+
 std::vector<Candidate> decode_standard2(
     const OutputView& detection, float conf_threshold, float scale, int pad_x,
     int pad_y, int image_width, int image_height) {
@@ -210,18 +267,16 @@ std::vector<Candidate> decode_standard2(
     const float* data = detection.data;
     std::vector<Candidate> candidates;
     for (int anchor = 0; anchor < anchors; ++anchor) {
-        float best_logit = -std::numeric_limits<float>::infinity();
+        float best_score = -1.0f;
         int best_class = -1;
         for (int class_id = 0; class_id < classes; ++class_id) {
-            const float logit = data[static_cast<size_t>((4 + class_id) * anchors + anchor)];
-            if (std::isfinite(logit) && logit > best_logit) {
-                best_logit = logit;
+            const float score = data[static_cast<size_t>((4 + class_id) * anchors + anchor)];
+            if (std::isfinite(score) && score > best_score) {
+                best_score = score;
                 best_class = class_id;
             }
         }
-        if (best_class < 0) continue;
-        const float score = 1.0f / (1.0f + std::exp(-best_logit));
-        if (score < conf_threshold) continue;
+        if (best_class < 0 || best_score < conf_threshold) continue;
         const float cx = data[static_cast<size_t>(anchor)];
         const float cy = data[static_cast<size_t>(anchors + anchor)];
         const float w = data[static_cast<size_t>(2 * anchors + anchor)];
@@ -229,7 +284,7 @@ std::vector<Candidate> decode_standard2(
         Candidate candidate;
         const cv::Rect2f model_box(cx - w * 0.5f, cy - h * 0.5f, w, h);
         candidate.box = map_model_rect(model_box, scale, pad_x, pad_y, image_width, image_height);
-        candidate.score = score;
+        candidate.score = best_score;
         candidate.class_id = best_class;
         if (candidate.box.width < 1.0f || candidate.box.height < 1.0f) continue;
         const size_t coeff_base = static_cast<size_t>(4 + classes) * anchors + anchor;
