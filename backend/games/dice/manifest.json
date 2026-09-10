@@ -13,20 +13,17 @@
 					"OK",
 					"明白了",
 					"准备好了",
-					"yes",
-					"ok",
-					"OK",
-					"confirm",
+						"yes",
+						"confirm",
 					"got it",
 					"start"
 				],
 				"start_shake": [
 					"开始",
 					"确定",
-					"start",
-					"ok",
-					"OK",
-					"begin",
+						"start",
+						"OK",
+						"begin",
 					"go"
 				],
 				"stop_shake": [
