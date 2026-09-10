@@ -38,6 +38,77 @@ bool isActiveFrame(const std::vector<float>& audio, size_t begin, size_t end) {
     return rms >= kEndpointSilenceThreshold;
 }
 
+// 检测文本是否含日文假名或韩文谚文 —— SenseVoice auto 误判时输出的
+// 文字系统特征。中日共用的汉字与 CJK 标点不在此范围, 中文输出不会误伤。
+bool containsJaKoScript(const std::string& text) {
+    size_t i = 0;
+    while (i < text.size()) {
+        const unsigned char lead = static_cast<unsigned char>(text[i]);
+        uint32_t cp = 0;
+        size_t len = 0;
+        if (lead < 0x80) {
+            cp = lead;
+            len = 1;
+        } else if ((lead & 0xE0) == 0xC0) {
+            cp = lead & 0x1F;
+            len = 2;
+        } else if ((lead & 0xF0) == 0xE0) {
+            cp = lead & 0x0F;
+            len = 3;
+        } else if ((lead & 0xF8) == 0xF0) {
+            cp = lead & 0x07;
+            len = 4;
+        } else {
+            ++i;  // 非法 UTF-8 引导字节, 跳过
+            continue;
+        }
+        if (i + len > text.size()) break;
+        for (size_t k = 1; k < len; ++k) {
+            cp = (cp << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3F);
+        }
+        if ((cp >= 0x3040 && cp <= 0x30FF) ||   // 平假名 + 片假名
+            (cp >= 0xFF61 && cp <= 0xFF9F) ||   // 半角片假名
+            (cp >= 0xAC00 && cp <= 0xD7AF)) {   // 谚文音节
+            return true;
+        }
+        i += len;
+    }
+    return false;
+}
+
+// 模型识别 + auto 模式误判兜底: SenseVoice 的 auto 偶发把中英语音判成
+// 日/韩语 (输出假名/谚文); 命中时用 zh 对同一段音频重识别替换, 避免
+// 外文乱码流入下游意图匹配。重识别失败则保留原结果。
+// 仅在 language=auto 时启用; 显式指定语言时尊重配置, 不做重试。
+// 自由函数而非成员: backend.hpp 对 SenseVoiceModel 只有前置声明,
+// 嵌套类型 RecognitionOutput 不能出现在头文件签名里。
+sensevoice::SenseVoiceModel::RecognitionOutput recognizeWithRescue(
+    sensevoice::SenseVoiceModel* model, bool enable_emotion,
+    const std::string& language, const std::vector<float>& model_audio) {
+    sensevoice::SenseVoiceModel::RecognitionOutput recognition;
+    if (enable_emotion) {
+        recognition = model->recognizeWithMetadata(model_audio);
+    } else {
+        recognition.text = model->recognize(model_audio);
+    }
+
+    if (language == "auto" && containsJaKoScript(recognition.text)) {
+        std::cerr << "[SenseVoiceBackend] auto 输出疑似日/韩文(\""
+                  << recognition.text << "\"), 用 zh 重识别" << std::endl;
+        try {
+            if (enable_emotion) {
+                recognition = model->recognizeWithMetadata(model_audio, "zh");
+            } else {
+                recognition.text = model->recognize(model_audio, "zh");
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[SenseVoiceBackend] zh 重识别失败, 保留原结果: "
+                      << e.what() << std::endl;
+        }
+    }
+    return recognition;
+}
+
 }  // namespace
 
 // Helper function to expand ~ to home directory
@@ -207,11 +278,9 @@ ErrorInfo SenseVoiceBackend::recognize(const AudioChunk& audio, RecognitionResul
     // Call SenseVoice model
     sensevoice::SenseVoiceModel::RecognitionOutput recognition;
     try {
-        if (config_.enable_emotion) {
-            recognition = model_->recognizeWithMetadata(model_audio);
-        } else {
-            recognition.text = model_->recognize(model_audio);
-        }
+        recognition = recognizeWithRescue(
+            model_.get(), config_.enable_emotion,
+            languageToString(config_.language), model_audio);
     } catch (const std::exception& e) {
         return ErrorInfo::error(ErrorCode::INFERENCE_FAILED,
             "SenseVoice inference failed", e.what());
@@ -300,11 +369,9 @@ ErrorInfo SenseVoiceBackend::recognizeFile(const std::string& file_path,
     // Run SenseVoice model directly
     sensevoice::SenseVoiceModel::RecognitionOutput recognition;
     try {
-        if (config_.enable_emotion) {
-            recognition = model_->recognizeWithMetadata(model_audio);
-        } else {
-            recognition.text = model_->recognize(model_audio);
-        }
+        recognition = recognizeWithRescue(
+            model_.get(), config_.enable_emotion,
+            languageToString(config_.language), model_audio);
     } catch (const std::exception& e) {
         return ErrorInfo::error(ErrorCode::INFERENCE_FAILED,
             "SenseVoice inference failed", e.what());
@@ -421,11 +488,9 @@ void SenseVoiceBackend::processBufferedAudio(bool force_final) {
     // Run SenseVoice model
     sensevoice::SenseVoiceModel::RecognitionOutput recognition;
     try {
-        if (config_.enable_emotion) {
-            recognition = model_->recognizeWithMetadata(model_audio);
-        } else {
-            recognition.text = model_->recognize(model_audio);
-        }
+        recognition = recognizeWithRescue(
+            model_.get(), config_.enable_emotion,
+            languageToString(config_.language), model_audio);
     } catch (const std::exception& e) {
         notifyError(ErrorInfo::error(ErrorCode::INFERENCE_FAILED,
             "SenseVoice inference failed", e.what()));

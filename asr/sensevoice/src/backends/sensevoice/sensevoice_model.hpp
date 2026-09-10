@@ -111,32 +111,41 @@ public:
     /**
      * @brief Recognize speech from audio samples
      * @param audio Audio samples (float, normalized to [-1, 1])
+     * @param language Optional language override for this call only
+     *                 (empty = use config_.language)
      * @return Recognized text
      */
-    std::string recognize(const std::vector<float>& audio);
+    std::string recognize(const std::vector<float>& audio,
+                          const std::string& language = "");
 
     /**
      * @brief Recognize speech from audio samples
      * @param audio Pointer to audio samples
      * @param length Number of samples
+     * @param language Optional language override for this call only
      * @return Recognized text
      */
-    std::string recognize(const float* audio, size_t length);
+    std::string recognize(const float* audio, size_t length,
+                          const std::string& language = "");
 
     /**
      * @brief Recognize speech and return SenseVoice metadata.
      * @param audio Audio samples (float, normalized to [-1, 1])
+     * @param language Optional language override for this call only
      * @return Recognized text and optional emotion label
      */
-    RecognitionOutput recognizeWithMetadata(const std::vector<float>& audio);
+    RecognitionOutput recognizeWithMetadata(const std::vector<float>& audio,
+                                            const std::string& language = "");
 
     /**
      * @brief Recognize speech and return SenseVoice metadata.
      * @param audio Pointer to audio samples
      * @param length Number of samples
+     * @param language Optional language override for this call only
      * @return Recognized text and optional emotion label
      */
-    RecognitionOutput recognizeWithMetadata(const float* audio, size_t length);
+    RecognitionOutput recognizeWithMetadata(const float* audio, size_t length,
+                                            const std::string& language = "");
 
     /**
      * @brief Batch recognition
@@ -204,7 +213,8 @@ private:
     void cleanupSession();
 
     RecognitionOutput recognizeInternal(
-        const float* audio, size_t length, bool include_metadata);
+        const float* audio, size_t length, bool include_metadata,
+        const std::string& language = "");
     std::vector<int> decodeCTC(const float* logits, int seq_len, int vocab_size);
     int getLanguageId(const std::string& language);
     int getTextnormId(bool use_itn);

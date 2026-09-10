@@ -4,7 +4,7 @@
     "binary": "asr/sensevoice/build/bin/asr_pipe_demo",
     "working_dir": "asr/sensevoice",
     "model_dir": "asr/sensevoice/model",
-    "language": "zh",
+    "language": "auto",
     "core_arch": "x100",
     "num_threads": 2,
     "cpu_affinity": "6,7",

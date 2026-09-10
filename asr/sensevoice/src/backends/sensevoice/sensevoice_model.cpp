@@ -214,26 +214,29 @@ void SenseVoiceModel::initializeLanguageMaps() {
     textnorm_map_["woitn"] = 15;
 }
 
-std::string SenseVoiceModel::recognize(const std::vector<float>& audio) {
-    return recognize(audio.data(), audio.size());
+std::string SenseVoiceModel::recognize(const std::vector<float>& audio,
+                                       const std::string& language) {
+    return recognize(audio.data(), audio.size(), language);
 }
 
-std::string SenseVoiceModel::recognize(const float* audio, size_t length) {
-    return recognizeInternal(audio, length, false).text;
-}
-
-SenseVoiceModel::RecognitionOutput SenseVoiceModel::recognizeWithMetadata(
-    const std::vector<float>& audio) {
-    return recognizeWithMetadata(audio.data(), audio.size());
+std::string SenseVoiceModel::recognize(const float* audio, size_t length,
+                                       const std::string& language) {
+    return recognizeInternal(audio, length, false, language).text;
 }
 
 SenseVoiceModel::RecognitionOutput SenseVoiceModel::recognizeWithMetadata(
-    const float* audio, size_t length) {
-    return recognizeInternal(audio, length, true);
+    const std::vector<float>& audio, const std::string& language) {
+    return recognizeWithMetadata(audio.data(), audio.size(), language);
+}
+
+SenseVoiceModel::RecognitionOutput SenseVoiceModel::recognizeWithMetadata(
+    const float* audio, size_t length, const std::string& language) {
+    return recognizeInternal(audio, length, true, language);
 }
 
 SenseVoiceModel::RecognitionOutput SenseVoiceModel::recognizeInternal(
-    const float* audio, size_t length, bool include_metadata) {
+    const float* audio, size_t length, bool include_metadata,
+    const std::string& language) {
     if (!initialized_) {
         std::cerr << "[SenseVoiceModel] Model not initialized" << std::endl;
         return {};
@@ -272,7 +275,8 @@ SenseVoiceModel::RecognitionOutput SenseVoiceModel::recognizeInternal(
         std::vector<int64_t> scalar_shape = {config_.batch_size};
 
         std::vector<int32_t> feat_len = {static_cast<int32_t>(seq_len)};
-        std::vector<int32_t> lang_id = {getLanguageId(config_.language)};
+        std::vector<int32_t> lang_id = {
+            getLanguageId(language.empty() ? config_.language : language)};
         std::vector<int32_t> norm_id = {getTextnormId(config_.use_itn)};
 
         std::vector<Ort::Value> inputs;
