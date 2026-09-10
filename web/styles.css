@@ -102,11 +102,12 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .countdown-number { font-size: 240px; line-height: .9; font-weight: 900; letter-spacing: -.06em; }
 .countdown-number.pop { animation: countPop .45s ease both; }
 
-/* 摇骰：容器只当舞台（承载落地阴影，自己不转），翻滚交给 .shake-bounce，
-   这样骰子腾空时地面阴影能同时缩小变淡，看得出它在"篓里被摇"。 */
+/* 摇骰：舞台（.shake-cup）承载落地阴影；.shake-bounce 负责上下颠并给立方体
+   透视；换点数交给 .die-cube 的翻滚。两个动画周期不同（.62s / 1.8s），免得
+   机械同步露出破绽。骰子腾空时地面阴影同时缩小变淡，看得出它在"篓里被摇"。 */
 .shake-cup { position: relative; display: grid; place-items: center; padding-bottom: 30px; margin-bottom: 20px; }
 .shake-cup::after { content: ''; position: absolute; left: 50%; bottom: 8px; width: 96px; height: 18px; margin-left: -48px; border-radius: 50%; background: radial-gradient(ellipse at center, rgba(16, 24, 40, .26) 0%, rgba(16, 24, 40, .11) 46%, rgba(16, 24, 40, 0) 74%); animation: shadowBreathe .62s ease-in-out infinite; }
-.shake-bounce { animation: shake .62s ease-in-out infinite; }
+.shake-bounce { perspective: 760px; animation: shake .62s ease-in-out infinite; }
 .shake-timer { display: flex; align-items: baseline; justify-content: center; gap: 16px; margin: 28px 0 40px; color: var(--muted); font-size: 22px; }
 .shake-timer strong { color: var(--tie); font-size: 72px; font-weight: 900; letter-spacing: -.03em; transition: color .2s, transform .2s; }
 .shake-timer strong.is-urgent { color: var(--loss); text-shadow: 0 4px 18px rgba(220, 38, 38, .22); animation: urgentPulse .8s ease-in-out infinite; }
@@ -144,21 +145,31 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .versus { grid-column: 2; grid-row: 1; color: var(--muted); font-size: 26px; font-weight: 800; }
 
 /* 骰子点阵：全站唯一的骰子画法，比分板与摇骰页共用同一套点数布局。
-   40px（比分板）是"数据字形"，扁平即可；120px 的 .die-lg（摇骰页主角）是
-   一件实物，另给白骰身、边缘收光与钻入式点数——放大后的图标必须换画法。 */
+   40px（比分板）是"数据字形"，扁平即可；摇骰页那颗 120px 的另有实物画法
+   （见下面的 .die-face）——放大后的图标必须换画法，直接缩放会像贴纸。 */
 .die { --die-size: 40px; --die-pip: 7px; --die-pad: 7px; width: var(--die-size); height: var(--die-size); border-radius: var(--die-radius, calc(var(--die-size) * .2)); background: #d9e2ec; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); padding: var(--die-pad); gap: 2px; }
 .die span { width: var(--die-pip); height: var(--die-pip); border-radius: 50%; align-self: center; justify-self: center; background: #17293b; opacity: 0; }
 .die span.on { opacity: 1; }
-.die-lg {
-  --die-size: 120px; --die-pip: 19px; --die-pad: 20px; --die-radius: 19px;
-  background: linear-gradient(158deg, #ffffff 0%, #f7fafd 46%, #e6edf5 100%);
-  border: 1px solid #c9d5e2;
-  box-shadow:
-    0 10px 18px -10px rgba(16, 24, 40, .22),
-    inset 0 3px 0 rgba(255, 255, 255, .95),
-    inset 0 -9px 14px -8px rgba(16, 24, 40, .12);
-}
-.die-lg span { background: radial-gradient(circle at 36% 30%, #3c5878 0%, #17293b 58%, #0b1725 100%); box-shadow: inset 0 2px 3px rgba(0, 0, 0, .5), 0 1px 0 rgba(255, 255, 255, .85); }
+
+/* 摇骰页的主角骰：真·六面立方体（preserve-3d），翻滚时面朝向一变就等于
+   换了点数，所以观众看到的是"在翻的骰子"而不是固定一个 5 点。
+   每一面都复用 .die 的点阵与尺寸变量。
+   两个要点：①六个面按真骰子摆位，对面点数之和为 7（1-6 / 2-5 / 3-4）；
+   ②立体感靠**相邻面的明度差**（每面给不同亮度的白），不靠描边——描边会在
+   共用棱上叠成双线，圆角会在角上留缺口，两个都会让立方体散成几片卡片。
+   所以圆角收到 2px（够软又不露缺口），并且不给 border。 */
+.die-cube { position: relative; width: 120px; height: 120px; transform-style: preserve-3d; animation: tumble 1.8s linear infinite; will-change: transform; }
+.die-face { --die-size: 120px; --die-pip: 19px; --die-pad: 20px; --die-radius: 2px; position: absolute; top: 0; left: 0; }
+.die-face span { background: radial-gradient(circle at 36% 30%, #3c5878 0%, #17293b 58%, #0b1725 100%); box-shadow: inset 0 2px 3px rgba(0, 0, 0, .5), 0 1px 0 rgba(255, 255, 255, .85); }
+/* 固定光源：上面最亮、下面最暗，正面比侧面亮一档。最暗的面压到 #ced9e5
+   附近——这样即使某帧正对镜头，也总有侧面的色阶撑住骰子的轮廓。 */
+.die-face-1 { transform: translateZ(60px); background: linear-gradient(158deg, #ffffff 0%, #e9eff6 100%); }
+.die-face-2 { transform: rotateY(90deg) translateZ(60px); background: linear-gradient(200deg, #f7fafd 0%, #e0e8f1 100%); }
+.die-face-3 { transform: rotateX(90deg) translateZ(60px); background: linear-gradient(158deg, #ffffff 0%, #f0f5fa 100%); }
+.die-face-4 { transform: rotateX(-90deg) translateZ(60px); background: linear-gradient(158deg, #e5ecf4 0%, #ced9e5 100%); }
+.die-face-5 { transform: rotateY(-90deg) translateZ(60px); background: linear-gradient(158deg, #f0f5fa 0%, #d8e1eb 100%); }
+.die-face-6 { transform: rotateY(180deg) translateZ(60px); background: linear-gradient(158deg, #f3f7fb 0%, #dde5ee 100%); }
+
 .agent-side .die { background: #ffe6ce; }
 .agent-side .die span { background: #733d22; }
 
@@ -202,7 +213,10 @@ body[data-phase="standby"] .stage-head { display: none; }
 
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes countPop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-@keyframes shake { 0%, 100% { transform: rotate(-7deg) translate(-4px, 0) scale(1); } 22% { transform: rotate(5deg) translate(4px, -12px) scale(1.02); } 46% { transform: rotate(9deg) translate(5px, 0) scale(1); } 70% { transform: rotate(-5deg) translate(-4px, -10px) scale(1.015); } }
+@keyframes shake { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-14px) scale(1.015); } }
+/* 一圈转满 720°/360°，首尾都是整数圈所以循环无缝；X、Y 轴转速不同，
+   每个相位朝向的面都不一样，看起来就是在翻 */
+@keyframes tumble { 0% { transform: rotateX(0deg) rotateY(0deg) rotateZ(0deg); } 25% { transform: rotateX(200deg) rotateY(80deg) rotateZ(12deg); } 50% { transform: rotateX(375deg) rotateY(195deg) rotateZ(-8deg); } 75% { transform: rotateX(545deg) rotateY(280deg) rotateZ(10deg); } 100% { transform: rotateX(720deg) rotateY(360deg) rotateZ(0deg); } }
 @keyframes shadowBreathe { 0%, 100% { transform: scale(1); opacity: 1; } 22% { transform: scale(.86); opacity: .6; } 46% { transform: scale(1); opacity: 1; } 70% { transform: scale(.88); opacity: .68; } }
 @keyframes urgentPulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.08); opacity: .72; } }
 @keyframes spin { to { transform: rotate(360deg); } }

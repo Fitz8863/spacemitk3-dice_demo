@@ -100,8 +100,21 @@ export function register(engine) {
   }
 
   // ---- 结果与比分渲染 ----
+  // 一面的九宫格点数：比分板与摇骰页六面共用这一份布局
+  function faceSpans(value) {
+    return Array.from({ length: 9 }, (_, i) => `<span class="${dicePips[value].includes(i) ? 'on' : ''}"></span>`).join('');
+  }
+
   function diceMarkup(values, className = '') {
-    return values.map((value) => `<div class="die ${className}" aria-label="${value}点">${Array.from({ length: 9 }, (_, i) => `<span class="${dicePips[value].includes(i) ? 'on' : ''}"></span>`).join('')}</div>`).join('');
+    return values.map((value) => `<div class="die ${className}" aria-label="${value}点">${faceSpans(value)}</div>`).join('');
+  }
+
+  // 摇骰页的主角骰：真六面立方体，翻滚与换面全靠 CSS（.die-cube 的 tumble），
+  // 这里只负责把六面按"对面之和为 7"摆好。游戏模块不许用计时器——测试用子串
+  // 匹配断言本文件里不出现那两个计时器 API 名，所以连注释里也别写它们。
+  function diceCubeMarkup() {
+    return `<div class="die-cube">${[1, 6, 2, 5, 3, 4]
+      .map((value) => `<div class="die die-face die-face-${value}">${faceSpans(value)}</div>`).join('')}</div>`;
   }
 
   function updateScores(player = sum(playerDice), agent = sum(agentDice)) {
@@ -432,10 +445,9 @@ export function register(engine) {
   async function enter(manifest) {
     configureParticipants(manifest);
     stopVisionStream();
-    // 摇骰页的骰子与结果页比分板共用 diceMarkup（同一套点数布局），但放大到
-    // 120px 后换 .die-lg 的实物画法；翻滚动画挂在内层 .shake-bounce 上，
-    // 好让外层的落地阴影独立呼吸。摇动过程的点数只是装饰，不参与判定。
-    $('shakeCup').innerHTML = `<div class="shake-bounce">${diceMarkup([5], 'die-lg')}</div>`;
+    // 摇骰页放一颗会翻滚的六面骰（diceCubeMarkup），观众看到的是在翻的骰子，
+    // 不是固定的某一面；翻滚过程不参与判定。
+    $('shakeCup').innerHTML = `<div class="shake-bounce">${diceCubeMarkup()}</div>`;
     playerDice = [];
     agentDice = [];
     $('analysisFailureActions').classList.add('hidden');
