@@ -34,6 +34,8 @@ REQUIRED_DIRS=(
     tts/moss-tts-nano/models
     tts/moss-tts-nano/voice
     tts/moss-tts-nano/python
+    tts/moss-tts-nano/lib
+    tts/moss-tts-nano/assets
     vision/yolov8_adjudicator/build
 )
 for d in "${REQUIRED_DIRS[@]}"; do
