@@ -67,13 +67,15 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .game-list { display: flex; flex-direction: column; gap: 20px; margin-bottom: 40px; }
 .game-option { width: 100%; display: flex; align-items: center; text-align: left; gap: 28px; padding: 34px 36px; background: var(--surface); border: 2px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); cursor: pointer; transition: .2s; }
 .game-option:hover, .game-option.selected { border-color: var(--accent); background: var(--accent-soft); box-shadow: var(--shadow-hover); transform: translateY(-2px); }
-.game-option.disabled { opacity: .4; cursor: not-allowed; transform: none; }
+.game-option.disabled { cursor: not-allowed; transform: none; background: var(--bg); border-color: var(--line); box-shadow: none; }
+/* 禁用卡片只淡化内容，不淡化「即将开放」徽标——那是这一格里最需要读到的信息 */
+.game-option.disabled .game-icon, .game-option.disabled .game-copy { opacity: .45; }
 .game-icon { width: 76px; height: 76px; border-radius: 18px; display: grid; place-items: center; font-size: 48px; background: var(--surface-muted); }
 .game-copy { display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .game-copy strong { font-size: 34px; }
 .game-copy small { color: var(--muted); font-size: 18px; }
 .game-arrow { font-size: 34px; color: var(--accent); }
-.game-lock { border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; color: var(--muted); font-size: 15px; }
+.game-lock { border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; color: var(--muted-2); font-size: 15px; }
 
 /* 按钮 */
 /* 实体按键同色按钮：绿=确认/开始，蓝=向下/重听/重试，红=停止/返回 */
