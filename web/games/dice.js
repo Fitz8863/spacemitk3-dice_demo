@@ -5,7 +5,7 @@
 export function register(engine) {
   const {
     state, $, setPhase, toast, stopSpeech, requestJson,
-    returnToSelect, createRoundClient, playDirective, setActiveRound,
+    returnToSelect, createRoundClient, playDirective, setActiveRound, setIdleReturn,
   } = engine;
 
   const dicePips = {
@@ -20,6 +20,7 @@ export function register(engine) {
   let participantSides = null;
   let round = null;
   let lastRenderedState = '';
+  let lastCountdownValue = '';
 
   // 后端 ui 文案缺省时的前端兜底（正常路径都来自 manifest state_machine.ui）。
   const phaseMeta = {
@@ -167,9 +168,14 @@ export function register(engine) {
   function renderState(stateName, ui) {
     if (stateName === lastRenderedState) return;
     lastRenderedState = stateName;
+    // 进入新状态时清空倒计时去重值，让新一段倒计时的第一个数字也播放弹出动画。
+    lastCountdownValue = '';
     const view = ui.view || stateName;
     const meta = [ui.title || '', ui.copy || ''];
     setPhase(view, meta[0] || meta[1] ? meta : undefined);
+    // 等玩家操作的状态没有 duration/on_expire，玩家走开后会永远停住；交给引擎
+    // 在这些状态挂空闲退出计时器（超时取消回合回列表），离开即解除。
+    setIdleReturn(['rules', 'ready', 'result', 'analysis_failed'].includes(stateName));
     if (stateName === 'analysis') {
       resetAnalysisSteps();
     } else if (stateName === 'ready' || stateName === 'rules') {
@@ -177,6 +183,19 @@ export function register(engine) {
       agentDice = [];
       updateScores();
     }
+  }
+
+  // 弹出动画重放：纯 CSS 动画只在元素首次显示时播放，数字变化时摘掉 .pop、
+  // 读一次 offsetWidth 触发重排、再加回来，动画即从头播放。
+  function renderCountdownNumber(value) {
+    const text = String(value);
+    if (text === lastCountdownValue) return;
+    lastCountdownValue = text;
+    const node = $('countdownNumber');
+    node.textContent = text;
+    node.classList.remove('pop');
+    void node.offsetWidth;
+    node.classList.add('pop');
   }
 
   function renderTick(event) {
@@ -187,7 +206,7 @@ export function register(engine) {
       // 与预录语音"三二一"的语速对齐；缺省回退按整秒取整。
       const perNumber = Number(event.tick_seconds || 1) * 1000;
       const total = Math.max(1, Math.round(Number(event.duration_seconds || 3) / (event.tick_seconds || 1)));
-      $('countdownNumber').textContent = Math.min(total, Math.max(1, Math.ceil(remaining / perNumber)));
+      renderCountdownNumber(Math.min(total, Math.max(1, Math.ceil(remaining / perNumber))));
     } else if (lastRenderedState === 'shaking') {
       const seconds = Math.max(1, Math.ceil(remaining / 1000));
       const shakeSeconds = $('shakeSeconds');
@@ -445,6 +464,8 @@ export function register(engine) {
           $('analysisTitle').textContent = '识别未完成';
           $('analysisStatus').textContent = '视觉裁决异常结束，请重新开始一局';
           $('analysisFailureActions').classList.remove('hidden');
+          // 回合已终结但界面停在失败页等玩家操作，同样需要空闲退出兜底。
+          setIdleReturn(true);
           toast('K3 视觉裁决失败');
           return;
         }
@@ -455,6 +476,12 @@ export function register(engine) {
         // The round is gone after teardown (returnToSelect/cancel); a stale
         // snapshot must never re-render a finished game view.
         if (!round || !round.roundId) return;
+        // 注意此处传空的 ui：renderState 会退回用状态名当视图名。当前四个
+        // 状态名与视图名不同（shake_countdown/vision_countdown → countdown、
+        // open_reveal → open、analysis_failed → analysis），一旦这条路径被走到
+        // 会隐藏全部视图。现有流程走不到：这些状态都很短（2.4–4s），它们的
+        // state_changed 必然还在 60 条事件窗口内，重连快照一定会先派发它。
+        // 新增长状态时若它的事件能滑出窗口，这里需要补一次视图名映射。
         if (snapshot.state && snapshot.state !== lastRenderedState) {
           renderState(snapshot.state, {});
           if (snapshot.state === 'result' && snapshot.result) showResult(snapshot.result);

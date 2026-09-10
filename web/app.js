@@ -91,6 +91,39 @@ function resetIdleTimer() {
   idleTimer = setTimeout(enterStandby, standbySettings.idle_seconds * 1000);
 }
 
+// --- 对局空闲返回（引擎层计时，游戏模块声明） ---
+// 对局的等待态（听规则/准备/结果/裁决失败）没有 duration 也没有 on_expire，
+// 玩家走开后回合会永远停在那里。服务端的 SSE 看门只管"浏览器断开"，不管
+// "人在不在"，所以由引擎在这类状态计时：超时走与关页同一条取消路径回列表
+// （teardown → round.cancel），列表的待机计时随后自然接管。阈值复用
+// standby.idle_seconds，不新增配置；待机功能关闭时一并关闭。
+// 游戏模块只声明"当前在等玩家操作"（setIdleReturn），计时器留在引擎层。
+let idleReturnTimer = null;
+let idleReturnArmed = false;
+
+function clearIdleReturn() {
+  if (idleReturnTimer) {
+    clearTimeout(idleReturnTimer);
+    idleReturnTimer = null;
+  }
+}
+
+function armIdleReturn() {
+  clearIdleReturn();
+  if (!idleReturnArmed || !standbySettings.enabled) return;
+  idleReturnTimer = setTimeout(() => {
+    idleReturnTimer = null;
+    toast('长时间无操作，已结束本局');
+    returnToSelect();
+  }, standbySettings.idle_seconds * 1000);
+}
+
+function setIdleReturn(armed) {
+  idleReturnArmed = armed === true;
+  if (idleReturnArmed) armIdleReturn();
+  else clearIdleReturn();
+}
+
 function enterStandby() {
   clearTimeout(idleTimer);
   idleTimer = null;
@@ -299,8 +332,13 @@ function enterGameById(gameId) {
       event.preventDefault();
     }
     resetIdleTimer();
+    armIdleReturn();
   }, { capture: true });
 });
+
+// 对局空闲返回把"人在场"的证据放宽到指针输入：与待机唤醒不同（那里刻意排除
+// click 防误唤醒），按钮点击本身就是要重置空闲计时的信号。
+window.addEventListener('pointerdown', () => armIdleReturn(), { capture: true });
 
 // ---- 提示 ----
 function toast(message) {
@@ -587,6 +625,9 @@ async function playDirective(round, directive) {
       round.submitIntent('speech_done', { directive_id: directive.directive_id })
         .catch(() => { /* round may already be closed; the engine fallback covers it */ });
     }
+    // 播报结束即重新起算空闲退出：规则/结果这类长台词播到一半被计时器掐断，
+    // 在台上是可见事故，所以空闲窗口从"台词播完"而不是"台词开始"算起。
+    armIdleReturn();
   };
   if (!state.sound) {
     acknowledge();
@@ -844,6 +885,7 @@ function registerGame(module) {
 }
 
 function returnToSelect() {
+  setIdleReturn(false); // 离开对局即解除空闲退出（回列表后由待机计时接管）
   if (activeGame && activeGame.teardown) activeGame.teardown();
   activeGame = null;
   stopStandbyListening(); // 对局结束回列表：确保没有残留的待机监听/轮询
@@ -935,6 +977,8 @@ const engine = {
   playDirective,
   // 游戏模块在 enter/teardown 时登记当前对局客户端，pagehide 保险据此取 roundId
   setActiveRound(client) { activeRound = client || null; },
+  // 游戏模块声明"当前状态在等玩家操作"；计时与超时动作留在引擎层
+  setIdleReturn,
 };
 
 registerGame(registerDice(engine));
