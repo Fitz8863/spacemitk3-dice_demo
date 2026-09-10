@@ -1,7 +1,7 @@
 {
 	"id": "dice",
 	"name": "摇骰子",
-	"icon": "⚄",
+	"icon": "🎲",
 	"description": "双方各 5 颗 · 比较点数总和",
 	"enabled": true,
 	"asr": {

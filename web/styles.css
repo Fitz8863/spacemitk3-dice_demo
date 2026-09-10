@@ -101,7 +101,7 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .countdown-number.pop { animation: countPop .45s ease both; }
 
 /* 摇骰 */
-.shake-cup { font-size: 120px; line-height: 1; margin-bottom: 20px; animation: shake .5s infinite; }
+.shake-cup { display: grid; place-items: center; margin-bottom: 20px; animation: shake .5s infinite; }
 .shake-timer { display: flex; align-items: baseline; justify-content: center; gap: 16px; margin: 28px 0 40px; color: var(--muted); font-size: 22px; }
 .shake-timer strong { color: var(--tie); font-size: 72px; font-weight: 900; letter-spacing: -.03em; transition: color .2s, transform .2s; }
 .shake-timer strong.is-urgent { color: var(--loss); text-shadow: 0 4px 18px rgba(220, 38, 38, .22); animation: urgentPulse .8s ease-in-out infinite; }
@@ -138,10 +138,12 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .score-side > strong { display: block; font-size: 84px; line-height: 1; font-weight: 900; letter-spacing: -.04em; }
 .versus { grid-column: 2; grid-row: 1; color: var(--muted); font-size: 26px; font-weight: 800; }
 
-/* 骰子 */
-.die { width: 40px; height: 40px; background: #f4f7fa; border-radius: 8px; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); padding: 7px; gap: 2px; }
-.die span { width: 7px; height: 7px; border-radius: 50%; align-self: center; justify-self: center; background: #17293b; opacity: 0; }
+/* 骰子点阵：全站唯一的骰子画法，比分板与摇骰页共用。
+   尺寸走 --die-* 变量，默认 40px（比分板），加 .die-lg 得 120px（摇骰页）。 */
+.die { --die-size: 40px; --die-pip: 7px; --die-pad: 7px; width: var(--die-size); height: var(--die-size); border-radius: calc(var(--die-size) * .2); background: #d9e2ec; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); padding: var(--die-pad); gap: 2px; }
+.die span { width: var(--die-pip); height: var(--die-pip); border-radius: 50%; align-self: center; justify-self: center; background: #17293b; opacity: 0; }
 .die span.on { opacity: 1; }
+.die-lg { --die-size: 120px; --die-pip: 21px; --die-pad: 20px; }
 .agent-side .die { background: #ffe6ce; }
 .agent-side .die span { background: #733d22; }
 
