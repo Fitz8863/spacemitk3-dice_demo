@@ -14,6 +14,8 @@
 					"明白了",
 					"准备好了",
 					"yes",
+					"ok",
+					"OK",
 					"confirm",
 					"got it",
 					"start"
@@ -22,6 +24,8 @@
 					"开始",
 					"确定",
 					"start",
+					"ok",
+					"OK",
 					"begin",
 					"go"
 				],
