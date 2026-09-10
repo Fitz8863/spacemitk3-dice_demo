@@ -102,8 +102,11 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .countdown-number { font-size: 240px; line-height: .9; font-weight: 900; letter-spacing: -.06em; }
 .countdown-number.pop { animation: countPop .45s ease both; }
 
-/* 摇骰 */
-.shake-cup { display: grid; place-items: center; margin-bottom: 20px; animation: shake .5s infinite; }
+/* 摇骰：容器只当舞台（承载落地阴影，自己不转），翻滚交给 .shake-bounce，
+   这样骰子腾空时地面阴影能同时缩小变淡，看得出它在"篓里被摇"。 */
+.shake-cup { position: relative; display: grid; place-items: center; padding-bottom: 30px; margin-bottom: 20px; }
+.shake-cup::after { content: ''; position: absolute; left: 50%; bottom: 8px; width: 96px; height: 18px; margin-left: -48px; border-radius: 50%; background: radial-gradient(ellipse at center, rgba(16, 24, 40, .26) 0%, rgba(16, 24, 40, .11) 46%, rgba(16, 24, 40, 0) 74%); animation: shadowBreathe .62s ease-in-out infinite; }
+.shake-bounce { animation: shake .62s ease-in-out infinite; }
 .shake-timer { display: flex; align-items: baseline; justify-content: center; gap: 16px; margin: 28px 0 40px; color: var(--muted); font-size: 22px; }
 .shake-timer strong { color: var(--tie); font-size: 72px; font-weight: 900; letter-spacing: -.03em; transition: color .2s, transform .2s; }
 .shake-timer strong.is-urgent { color: var(--loss); text-shadow: 0 4px 18px rgba(220, 38, 38, .22); animation: urgentPulse .8s ease-in-out infinite; }
@@ -140,12 +143,22 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .score-side > strong { display: block; font-size: 84px; line-height: 1; font-weight: 900; letter-spacing: -.04em; }
 .versus { grid-column: 2; grid-row: 1; color: var(--muted); font-size: 26px; font-weight: 800; }
 
-/* 骰子点阵：全站唯一的骰子画法，比分板与摇骰页共用。
-   尺寸走 --die-* 变量，默认 40px（比分板），加 .die-lg 得 120px（摇骰页）。 */
-.die { --die-size: 40px; --die-pip: 7px; --die-pad: 7px; width: var(--die-size); height: var(--die-size); border-radius: calc(var(--die-size) * .2); background: #d9e2ec; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); padding: var(--die-pad); gap: 2px; }
+/* 骰子点阵：全站唯一的骰子画法，比分板与摇骰页共用同一套点数布局。
+   40px（比分板）是"数据字形"，扁平即可；120px 的 .die-lg（摇骰页主角）是
+   一件实物，另给白骰身、边缘收光与钻入式点数——放大后的图标必须换画法。 */
+.die { --die-size: 40px; --die-pip: 7px; --die-pad: 7px; width: var(--die-size); height: var(--die-size); border-radius: var(--die-radius, calc(var(--die-size) * .2)); background: #d9e2ec; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); padding: var(--die-pad); gap: 2px; }
 .die span { width: var(--die-pip); height: var(--die-pip); border-radius: 50%; align-self: center; justify-self: center; background: #17293b; opacity: 0; }
 .die span.on { opacity: 1; }
-.die-lg { --die-size: 120px; --die-pip: 21px; --die-pad: 20px; }
+.die-lg {
+  --die-size: 120px; --die-pip: 19px; --die-pad: 20px; --die-radius: 19px;
+  background: linear-gradient(158deg, #ffffff 0%, #f7fafd 46%, #e6edf5 100%);
+  border: 1px solid #c9d5e2;
+  box-shadow:
+    0 10px 18px -10px rgba(16, 24, 40, .22),
+    inset 0 3px 0 rgba(255, 255, 255, .95),
+    inset 0 -9px 14px -8px rgba(16, 24, 40, .12);
+}
+.die-lg span { background: radial-gradient(circle at 36% 30%, #3c5878 0%, #17293b 58%, #0b1725 100%); box-shadow: inset 0 2px 3px rgba(0, 0, 0, .5), 0 1px 0 rgba(255, 255, 255, .85); }
 .agent-side .die { background: #ffe6ce; }
 .agent-side .die span { background: #733d22; }
 
@@ -189,7 +202,8 @@ body[data-phase="standby"] .stage-head { display: none; }
 
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes countPop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-@keyframes shake { 0%, 100% { transform: rotate(-12deg) translate(-6px, 0); } 50% { transform: rotate(12deg) translate(6px, -8px); } }
+@keyframes shake { 0%, 100% { transform: rotate(-7deg) translate(-4px, 0) scale(1); } 22% { transform: rotate(5deg) translate(4px, -12px) scale(1.02); } 46% { transform: rotate(9deg) translate(5px, 0) scale(1); } 70% { transform: rotate(-5deg) translate(-4px, -10px) scale(1.015); } }
+@keyframes shadowBreathe { 0%, 100% { transform: scale(1); opacity: 1; } 22% { transform: scale(.86); opacity: .6; } 46% { transform: scale(1); opacity: 1; } 70% { transform: scale(.88); opacity: .68; } }
 @keyframes urgentPulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.08); opacity: .72; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes livePulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }

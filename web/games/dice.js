@@ -432,9 +432,10 @@ export function register(engine) {
   async function enter(manifest) {
     configureParticipants(manifest);
     stopVisionStream();
-    // 摇骰页的骰子与结果页比分板共用 diceMarkup（同一套点阵画法，尺寸由 .die-lg 放大）。
-    // 摇动过程中的点数只是装饰，不参与判定。
-    $('shakeCup').innerHTML = diceMarkup([5], 'die-lg');
+    // 摇骰页的骰子与结果页比分板共用 diceMarkup（同一套点数布局），但放大到
+    // 120px 后换 .die-lg 的实物画法；翻滚动画挂在内层 .shake-bounce 上，
+    // 好让外层的落地阴影独立呼吸。摇动过程的点数只是装饰，不参与判定。
+    $('shakeCup').innerHTML = `<div class="shake-bounce">${diceMarkup([5], 'die-lg')}</div>`;
     playerDice = [];
     agentDice = [];
     $('analysisFailureActions').classList.add('hidden');
