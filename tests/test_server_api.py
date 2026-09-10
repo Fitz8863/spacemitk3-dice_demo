@@ -598,7 +598,7 @@ class ServerApiTests(unittest.TestCase):
             "id": "dice", "name": "Dice", "enabled": True,
             "providers": {"vision_adjudicator": "vision_dummy"}, "texts": {},
             "vision_profile": {
-                "game_id": "dice", "video": {"enabled": True, "path": "/dice/", "webrtc_base_url": "http://100.118.229.28:8889"},
+                "game_id": "dice", "video": {"enabled": True, "path": "/dice/", "webrtc_base_url": "http://127.0.0.1:8889"},
             },
         })
         server.GAMES = games
@@ -630,7 +630,7 @@ class ServerApiTests(unittest.TestCase):
             "id": "dice", "name": "Dice", "enabled": True,
             "providers": {"vision_adjudicator": "vision_dummy"}, "texts": {},
             "vision_profile": {
-                "game_id": "dice", "video": {"enabled": True, "path": "/dice/", "webrtc_base_url": "http://100.118.229.28:8889"},
+                "game_id": "dice", "video": {"enabled": True, "path": "/dice/", "webrtc_base_url": "http://127.0.0.1:8889"},
                 "multi_view": {"enabled": True, "min_views": 2, "views": [
                     {"id": "front", "camera": "/dev/video1", "video": {"path": "/front/"}},
                     {"id": "side", "camera": "/dev/video2", "video": {"path": "/side/"}},
@@ -650,8 +650,8 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["adjudicator"]["mode"], "resident")
         self.assertTrue(payload["adjudicator"]["prewarm"])
-        self.assertEqual(payload["adjudicator"]["mediamtx_base_url"], "http://100.118.229.28:8889")
-        self.assertEqual(payload["adjudicator"]["webrtc_base_url"], "http://100.118.229.28:8889")
+        self.assertEqual(payload["adjudicator"]["mediamtx_base_url"], "http://127.0.0.1:8889")
+        self.assertEqual(payload["adjudicator"]["webrtc_base_url"], "http://127.0.0.1:8889")
         self.assertTrue(payload["adjudicator"]["multi_view"]["enabled"])
         self.assertEqual(len(payload["adjudicator"]["profiles"]), 1)
 

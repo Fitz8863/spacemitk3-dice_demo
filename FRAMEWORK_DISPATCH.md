@@ -118,7 +118,7 @@ main/
     > vision/yolov8_adjudicator/config.json.video.webrtc_base_url
 ```
 
-当前部署基础地址为 `http://100.118.229.28:8889`；骰子页面最终播放 `http://100.118.229.28:8889/dice/`。YOLO 发布的 RTSP 路径只供 MediaMTX 接管，浏览器不直接使用。
+当前部署基础地址为 `http://127.0.0.1:8889`；骰子页面最终播放 `http://127.0.0.1:8889/dice/`。YOLO 发布的 RTSP 路径只供 MediaMTX 接管，浏览器不直接使用。
 
 ## 4. 服务启动时发生什么
 

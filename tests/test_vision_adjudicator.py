@@ -53,7 +53,7 @@ def test_profile_loads_dice_and_composes_mediamtx_url():
     component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
     runtime = load_runtime_config(resolve_runtime_config_path(component))
     assert compose_video_url(runtime["video"]["webrtc_base_url"], profile["video"]["path"]) == (
-        "http://100.118.229.28:8889/dice/det"
+        "http://127.0.0.1:8889/dice/det"
     )
 
 
@@ -65,7 +65,7 @@ def test_component_points_to_single_runtime_config_and_loads_hardware_defaults()
     assert runtime_path == ROOT / "vision" / "yolov8_adjudicator" / "config.json"
     assert runtime["camera"] == "/dev/video1"
     assert runtime["rtsp"]["port"] == 8554
-    assert runtime["video"]["webrtc_base_url"] == "http://100.118.229.28:8889"
+    assert runtime["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
     assert "rtsp" not in component
     assert "video" not in component
 
@@ -539,7 +539,7 @@ def test_runtime_config_exposes_mediamtx_base_and_component_has_no_duplicate_vid
     component_dir = ROOT / "backend" / "components" / "vision_yolov8_adjudicator"
     config = load_component_config(component_dir)
     runtime = load_runtime_config(resolve_runtime_config_path(config))
-    assert runtime["video"]["webrtc_base_url"] == "http://100.118.229.28:8889"
+    assert runtime["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
     assert "video" not in config
     assert "rtsp" not in config
 
@@ -742,14 +742,14 @@ def test_provider_runs_one_round_and_holds_result(tmp_path: Path):
         def verify(self, **kwargs):
             self.calls += 1; self.timeout_seconds = kwargs["timeout_seconds"]
             return type("R", (), {"status":"success","outcome":"LEFT","error":None})()
-    profile={"game_id":"dice","vision":{"stable_frames":1},"llm":{"enabled":True,"timeout_seconds":0.29,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT","TIE"]},"video":{"path":"/dice/","webrtc_base_url":"http://100.118.229.28:8889"},"multi_view":{"enabled":False,"min_views":1},"lifecycle":{"post_result_hold_seconds":0},"timeouts":{"adjudication_seconds":15}}
+    profile={"game_id":"dice","vision":{"stable_frames":1},"llm":{"enabled":True,"timeout_seconds":0.29,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT","TIE"]},"video":{"path":"/dice/","webrtc_base_url":"http://127.0.0.1:8889"},"multi_view":{"enabled":False,"min_views":1},"lifecycle":{"post_result_hold_seconds":0},"timeouts":{"adjudication_seconds":15}}
     events=[]; verifier=Verifier()
     result=VisionYolov8Adjudicator(runtime_factory=factory, verifier=verifier).adjudicate(VisionAdjudicationRequest("dice",profile,"r1",2),on_log=lambda x:None,on_event=events.append,is_cancelled=lambda:False)
     assert result["decision_source"] == "consensus"; assert verifier.calls == 1
     assert verifier.timeout_seconds == pytest.approx(0.29)
     assert any(r.commands and r.commands[0]["command"] == "START_ADJUDICATION" for r in runtimes)
     video_events = [event for event in events if event.get("event") == "video"]
-    assert video_events == [{"event": "video", "url": "http://100.118.229.28:8889/dice/", "view_id": "default"}]
+    assert video_events == [{"event": "video", "url": "http://127.0.0.1:8889/dice/", "view_id": "default"}]
     progress_events = [event for event in events if event.get("event") == "progress"]
     assert progress_events == [{"event":"progress","phase":"detecting","stable_count":1,"stable_frames":2,"view_id":"default"}]
 
@@ -1587,7 +1587,7 @@ def test_resident_round_emits_video_before_waiting_for_observation(tmp_path: Pat
     profile = {
         "game_id": "x",
         "vision": {"stable_frames": 1},
-        "video": {"path": "/dice/", "webrtc_base_url": "http://100.118.229.28:8889"},
+        "video": {"path": "/dice/", "webrtc_base_url": "http://127.0.0.1:8889"},
         "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
         "lifecycle": {"post_result_hold_seconds": 0},
         "runtime": {"mode": "resident", "prewarm_camera": True},
