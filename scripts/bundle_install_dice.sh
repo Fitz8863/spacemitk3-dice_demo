@@ -37,7 +37,7 @@ say "系统依赖自检通过 (riscv64 / python3 / onnxruntime-EP / sndfile / al
 KEY_FILES=(
     asr/sensevoice/build/bin/asr_pipe_demo
     vision/yolov8_adjudicator/build/yolov8_camera
-    tts/moss-tts-nano/launcher.py
+    backend/components/tts_moss_nano/launcher.py
 )
 for f in "${KEY_FILES[@]}"; do
     [[ -e "$BUNDLE_DIR/$f" ]] || die "包不完整, 缺少: $f"
@@ -82,18 +82,41 @@ bash "$BUNDLE_DIR/scripts/start_web.sh"
 # 5. 健康验收
 # ---------------------------------------------------------------------------
 say "服务健康状态:"
-python3 - "http://127.0.0.1:${PORT}" <<'PY'
+python3 - "http://127.0.0.1:${PORT}" "$BUNDLE_DIR" <<'PY'
 import json, sys, urllib.request
 h = json.load(urllib.request.urlopen(sys.argv[1] + "/api/health", timeout=8))
+# 只报告选中的槽位与关键组件 —— 未选槽的备用引擎不跑属正常, 逐条列
+# "异常"只会误导。
+selected = {h.get("tts_provider"), h.get("tts_remote_provider"),
+            "asr_sensevoice", "vision_yolov8_adjudicator", "llm_openai_compat"}
+idle, shown = [], []
+try:
+    arena = json.load(open(f"{sys.argv[2]}/backend/config.json"))
+except OSError:
+    arena = {}
 for c in h.get("components", []):
+    if c["id"] not in selected:
+        idle.append(c["id"])
+        continue
     health = c.get("health", {})
-    ok = health.get("ok", health.get("running", health.get("configured", False)))
+    if "running" in health:
+        ok = health["running"]
+    else:
+        ok = health.get("ok", health.get("configured", False))
     mark = "OK " if ok else "异常"
-    print(f"    [{mark}] {c['id']}")
+    # ASR 引擎不跑且全局语音总闸是关的 → 出厂状态, 不是故障。
+    if c["id"] == "asr_sensevoice" and not ok and not arena.get("asr_enabled", True):
+        mark = "关闭"
+    shown.append(f"    [{mark}] {c['id']}")
+print("\n".join(shown))
+if idle:
+    print(f"    (未启用引擎, 属正常: {', '.join(sorted(idle))})")
+if not arena.get("asr_enabled", True):
+    print("    注: 语音控制出厂关闭 (backend/config.json 的 asr_enabled=false),")
+    print("        需要语音时改回 true 并重启服务。")
 print(f"    tts_ready={h.get('tts_ready')}  yolo={h.get('vision', {}).get('ok')}")
-comp = {c["id"]: c.get("health", {}) for c in h.get("components", [])}
-if comp.get("tts_gptsovits", {}).get("ok") is False:
-    print("    注: tts_gptsovits (远程 TTS) 异常属预期 —— 分发环境无该远程服务,")
+if h.get("tts_remote_provider"):
+    print("    注: 远程 TTS 槽位的引擎在分发环境不可达属预期 (无对应远程服务),")
     print("        摇骰子台词全部使用本地 MOSS 引擎, 不受影响。")
 PY
 
