@@ -504,6 +504,14 @@ def test_round_with_asr_enabled_starts_session_and_voice_confirms(tmp_path, monk
     monkeypatch.setattr(server, "GAMES", server.load_games(games_root))
     monkeypatch.setattr(server, "_GAMES_MTIMES", server._manifest_mtimes())
     monkeypatch.setattr(server, "rounds", {})
+    # 本测试验证"语音开启路径"的行为, 必须钉住全局开关为 true ——
+    # 不能依赖真实 backend/config.json 的 asr_enabled 值 (它是部署面开关,
+    # 仓库状态随现场在 true/false 间切换)。
+    monkeypatch.setattr(server, "_ARENA_CONFIG", {
+        "asr_enabled": True, "providers": {"asr": "asr_dummy"},
+    })
+    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", Path("/nonexistent-arena.json"))
+    monkeypatch.setattr(server, "_ARENA_MTIME", None)
     logs = []
     monkeypatch.setattr(
         server, "ASR_BRIDGE", AsrIntentBridge(components=registry, log=logs.append)
