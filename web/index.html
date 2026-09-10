@@ -24,16 +24,17 @@
 
       <div class="stage-body" id="stageContent">
 
-        <!-- 待机页（全体游戏之前；select 空闲超时进入，任意输入唤醒） -->
+        <!-- 待机页（全体游戏之前；select 空闲超时进入，任意按键唤醒） -->
         <section class="view hidden" data-view="standby" aria-label="待机">
           <div class="standby-scene">
             <div class="standby-orb">
               <span class="standby-ring" aria-hidden="true"></span>
               <span class="standby-ring standby-ring-2" aria-hidden="true"></span>
               <span class="standby-core" aria-hidden="true"></span>
+              <!-- 睡意符号贴住 orb 右上角，随它一起浮动 -->
+              <div class="standby-zzz" aria-hidden="true"><span>z</span><span>z</span><span>Z</span></div>
             </div>
-            <div class="standby-zzz" aria-hidden="true"><span>z</span><span>z</span><span>Z</span></div>
-            <p class="standby-hint">按任意键或触摸屏幕开始</p>
+            <p class="standby-hint">按任意键开始</p>
             <p class="standby-wake-words hidden" id="standbyWakeWords"></p>
             <p class="standby-probe" id="standbyProbe"></p>
           </div>
@@ -72,7 +73,6 @@
         <!-- 倒计时 -->
         <section class="view hidden" data-view="countdown">
           <div class="countdown-number" id="countdownNumber">3</div>
-          <p class="countdown-hint" id="countdownHint">和 Agent 同步</p>
         </section>
 
         <!-- 摇骰 -->

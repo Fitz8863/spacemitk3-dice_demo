@@ -36,6 +36,17 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 /* 开盖过场：页面标题区下沉并垂直居中，替代原先的底部大字提示 */
 body[data-phase="open"] .stage-head { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; margin: 0; }
 body[data-phase="open"] .stage-body { flex: 0; padding: 0; }
+/* 分析相位：视图自带标题与实时画面面板，外框标题区既重复又占高度。
+   板端内容区实测约 940px，留着它会把检测进度文案挤出屏幕（162px 溢出）。 */
+body[data-phase="analysis"] .stage-head { display: none; }
+/* 分析视图含 16:9 实时画面，是全站最高的一屏：收紧上下留白，让内容在
+   940px 高度内收口，不在识别环节给大屏挂上滚动条。画面面板保持原尺寸
+   （它是这一屏的主角），压缩的是 spinner 与步骤区的间距。 */
+body[data-phase="analysis"] .stage-body { padding-top: 0; padding-bottom: 0; }
+body[data-phase="analysis"] .app-shell { padding-bottom: 0; }
+body[data-phase="analysis"] .analysis-spinner { margin-bottom: 16px; }
+body[data-phase="analysis"] .analysis-steps { margin: 24px 0 18px; }
+body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .stage-title { margin: 12px 0 10px; font-size: 52px; line-height: 1.1; letter-spacing: -.02em; }
 .stage-copy { margin: 0; color: var(--muted-2); font-size: 20px; }
 .controller-hint { display: inline-flex; align-items: center; gap: 7px; margin: 0 5px; white-space: nowrap; vertical-align: middle; }
@@ -84,8 +95,10 @@ body[data-phase="open"] .stage-body { flex: 0; padding: 0; }
 .view-actions { display: flex; justify-content: center; gap: 16px; }
 
 /* 倒计时 */
-.countdown-number { font-size: 240px; line-height: .9; font-weight: 900; letter-spacing: -.06em; animation: countPop .9s ease both; }
-.countdown-hint { margin: 30px 0 0; color: var(--muted-2); font-size: 22px; }
+/* 每个数字各自弹一次：动画时长 0.45s 短于 tick_seconds(0.8s)，下一个数字到来前收尾。
+   纯 CSS 动画只在元素首次显示时播放，数字变化时由 renderTick 摘掉/加回 .pop 重放。 */
+.countdown-number { font-size: 240px; line-height: .9; font-weight: 900; letter-spacing: -.06em; }
+.countdown-number.pop { animation: countPop .45s ease both; }
 
 /* 摇骰 */
 .shake-cup { font-size: 120px; line-height: 1; margin-bottom: 20px; animation: shake .5s infinite; }
@@ -147,13 +160,16 @@ body[data-phase="open"] .stage-body { flex: 0; padding: 0; }
 .asr-feedback.level-info { color: var(--muted-2); }
 
 /* 待机页：全体游戏之前的空闲画面（中性品牌元素，不含任何游戏符号） */
-body[data-phase="standby"] .stage-head { visibility: hidden; }
+/* 待机页把整个标题区让给场景：原先用 visibility 隐藏仍占 147px 版面，
+   会把 orb 推离屏幕中心并产生 67px 滚动溢出。 */
+body[data-phase="standby"] .stage-head { display: none; }
 .standby-scene { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px; min-height: 70vh; }
 .standby-orb { position: relative; width: 180px; height: 180px; display: grid; place-items: center; }
 .standby-core { width: 46px; height: 46px; border-radius: 14px; background: var(--accent); box-shadow: 0 10px 34px rgba(37, 99, 235, .35); animation: standbyBreath 3.6s ease-in-out infinite; }
 .standby-ring { position: absolute; inset: 0; border: 2px solid rgba(37, 99, 235, .35); border-radius: 50%; animation: standbyRipple 3.6s ease-out infinite; }
 .standby-ring-2 { animation-delay: 1.8s; }
-.standby-zzz { position: absolute; top: 8px; right: calc(50% - 130px); display: flex; gap: 6px; color: var(--muted); font-weight: 800; }
+/* 睡意符号挂在 orb 内部，贴其右上角（原先相对 scene 定位，实测飘在 orb 上方 188px） */
+.standby-zzz { position: absolute; top: -16px; right: -54px; display: flex; gap: 6px; color: var(--muted); font-weight: 800; }
 .standby-zzz span { opacity: 0; animation: standbyZ 5.4s ease-in-out infinite; }
 .standby-zzz span:nth-child(2) { animation-delay: 1.2s; font-size: 1.35em; }
 .standby-zzz span:nth-child(3) { animation-delay: 2.4s; font-size: 1.75em; }
