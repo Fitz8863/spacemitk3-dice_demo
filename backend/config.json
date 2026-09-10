@@ -13,7 +13,7 @@
   },
   "voice": "default",
   "speed": 1.0,
-  "asr_enabled": true,
+  "asr_enabled": false,
   "standby": {
     "enabled": true,
     "idle_seconds": 120,
