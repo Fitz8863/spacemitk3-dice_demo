@@ -30,7 +30,7 @@ fi
 
 REQUIRED_DIRS=(
     asr/sensevoice/model
-    asr/sensevoice/build/bin
+    asr/sensevoice/build
     tts/moss-tts-nano/models
     tts/moss-tts-nano/voice
     tts/moss-tts-nano/python
@@ -49,10 +49,10 @@ import json, sys
 root = sys.argv[1]
 cfg = json.load(open(f"{root}/backend/config.json"))
 manifest = json.load(open(f"{root}/backend/games/dice/manifest.json"))
-llm = manifest.get("llm", {})
+llm = manifest.get("vision_profile", manifest.get("vision", {})).get("llm", {})
 print(f"    asr_enabled (全局语音总闸) = {cfg.get('asr_enabled')}")
 print(f"    providers = {json.dumps(cfg.get('providers', {}))}")
-print(f"    dice manifest llm.enabled = {llm.get('enabled', '(未设置)')}")
+print(f"    dice LLM 复核 (vision_profile.llm.enabled) = {llm.get('enabled', '(未设置)')}")
 PY
 
 [[ -e "$WORK_DIR" ]] && die "工作目录已存在: $WORK_DIR (上次打包未清理?)"
@@ -62,10 +62,12 @@ echo "==> 1/6 导出代码树 (git archive, 无 .git)"
 git -C "$ROOT_DIR" archive --format=tar main | tar -x -C "$DICE_DIR"
 
 echo "==> 2/6 合入板端资产 (排除 __pycache__ / *.pyc)"
+# rsync 语义: 源/目标都带尾斜杠 = 拷内容。无尾斜杠目录对不存在的目标
+# 会被当容器, 造成 bin/bin 嵌套 (板上实测踩过)。
 for d in "${REQUIRED_DIRS[@]}"; do
-    mkdir -p "$DICE_DIR/$(dirname "$d")"
+    mkdir -p "$DICE_DIR/$d"
     rsync -a --exclude='__pycache__/' --exclude='*.pyc' \
-        "$ROOT_DIR/$d" "$DICE_DIR/$d"
+        "$ROOT_DIR/$d/" "$DICE_DIR/$d/"
 done
 
 echo "==> 3/6 安装脚本与说明入主包"
