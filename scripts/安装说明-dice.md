@@ -51,6 +51,18 @@ mediamtx 没跑。`systemctl --user status mediamtx` 检查，没装就先装 me
 `ls /dev/video*` 与 `v4l2-ctl --list-devices` 找到 USB 摄像头的设备号，修改
 `vision/yolov8_adjudicator/config.json` 的 `camera` 字段（默认 `/dev/video1`），重启服务。
 
+**摄像头型号与源部署机不同时（首块新板实测经验）**，还需按相机能力调整
+`vision/yolov8_adjudicator/config.json` 以下字段：
+- `fps`：引擎对 720p@25 有 24fps 特判（源机 C920 通告 24fps）；相机只通告
+  25/30fps 时改 `30`；
+- `focus` / `zoom`：固定焦距相机（如 C270）没有这两个控制，改 `-1` 跳过设置
+  （源机 C920 的值是 `0` / `160`，原值会让相机打开直接失败）。
+
+**网页没有骰子识别实时画面？**
+该画面依赖 RTSP 推流（VPU 硬编码）。若本机 VPU 编码设备与源部署机不一致
+（引擎日志出现 MPP-ERROR 刷屏后崩溃），可把 `vision/yolov8_adjudicator/config.json`
+的 `rtsp.enabled` 改为 `false` —— 裁决识别不受影响，仅网页画面缺失。
+
 **健康检查里 tts_gptsovits 显示异常？**
 预期现象。那是远程 TTS 引擎槽位，分发环境没有对应远程服务；摇骰子台词全部使用本地 MOSS 引擎，不受影响。
 

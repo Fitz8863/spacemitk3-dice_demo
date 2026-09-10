@@ -136,7 +136,7 @@ class TtsGptSovits(TtsProvider):
 
     def health(self) -> dict[str, Any]:
         try:
-            self._get_json(_api_url("/voices"), timeout=1.5)
+            self._get_json(_api_url("/voices"), timeout=0.3)
         except Exception as exc:
             return {
                 "id": self.id,

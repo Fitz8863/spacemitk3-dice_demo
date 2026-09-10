@@ -20,7 +20,8 @@ die()  { echo "install: [错误] $*" >&2; exit 1; }
 command -v python3 >/dev/null || die "缺少 python3 (Bianbu 应自带)"
 
 MISSING_PKGS=()
-for pkg in spacemit-onnxruntime libsndfile1 alsa-utils curl; do
+for pkg in spacemit-onnxruntime libsndfile1 alsa-utils curl \
+           libopencv-core410 libopencv-imgproc410 libopencv-imgcodecs410 libopencv-highgui410; do
     dpkg -s "$pkg" >/dev/null 2>&1 || MISSING_PKGS+=("$pkg")
 done
 if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
