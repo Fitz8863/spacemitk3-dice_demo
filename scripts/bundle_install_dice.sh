@@ -25,12 +25,25 @@ for pkg in spacemit-onnxruntime libsndfile1 alsa-utils curl \
     dpkg -s "$pkg" >/dev/null 2>&1 || MISSING_PKGS+=("$pkg")
 done
 if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
-    echo "install: [错误] 缺少系统包: ${MISSING_PKGS[*]}" >&2
-    echo "  请先安装 (需要可用的 apt 源):" >&2
-    echo "    sudo apt-get install -y ${MISSING_PKGS[*]}" >&2
-    exit 1
+    echo "install: 缺少系统包: ${MISSING_PKGS[*]}"
+    echo "  安装命令: sudo apt-get install -y ${MISSING_PKGS[*]}"
+    # 终端交互环境里提供自动安装 (sudo 可能提示密码);
+    # 非交互环境 (管道/CI) 退回手动模式。
+    if [[ -t 0 && -t 1 ]]; then
+        reply=""
+        read -r -p "install: 现在自动安装这些系统包? [Y/n] " reply || true
+        if [[ ! "$reply" =~ ^[Nn] ]]; then
+            sudo apt-get install -y "${MISSING_PKGS[@]}" \
+                || die "自动安装失败, 请手动执行上面的安装命令后重跑 install.sh"
+            say "系统包安装完成"
+        else
+            die "请手动安装后重跑 install.sh"
+        fi
+    else
+        die "非交互环境, 请手动执行上面的安装命令后重跑 install.sh"
+    fi
 fi
-say "系统依赖自检通过 (riscv64 / python3 / onnxruntime-EP / sndfile / alsa / curl)"
+say "系统依赖自检通过 (riscv64 / python3 / onnxruntime-EP / sndfile / alsa / curl / OpenCV)"
 
 # ---------------------------------------------------------------------------
 # 2. 包内资产自检 (确保拿到的包是完整的)
