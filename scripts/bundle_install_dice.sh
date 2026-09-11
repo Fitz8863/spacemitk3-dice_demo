@@ -19,9 +19,25 @@ die()  { echo "install: [错误] $*" >&2; exit 1; }
 [[ "$(uname -m)" == "riscv64" ]] || die "本包面向 SpacemiT K3 (riscv64), 当前架构 $(uname -m)"
 command -v python3 >/dev/null || die "缺少 python3 (Bianbu 应自带)"
 
+# 系统包清单分两组:
+#   BASE_PKGS  —— 推理与音频/工具链 (缺了组件起不来)
+#   GST_PKGS   —— 视觉链路的 GStreamer 插件。整条链是硬依赖: rtsp_streamer
+#                 启动失败时 yolov8_camera 直接 return 8 退出, 于是裁决和
+#                 网页画面一起失效 (不只是"没有实时画面")。
+#                 x264enc 属 plugins-ugly, 只在这块板没有 VPU 时才会被用到,
+#                 但缺了它软件回退路径就断, 所以同样列为必需。
+BASE_PKGS=(
+    spacemit-onnxruntime libsndfile1 alsa-utils curl
+    libopencv-core410 libopencv-imgproc410 libopencv-imgcodecs410 libopencv-highgui410
+    v4l-utils
+)
+GST_PKGS=(
+    gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+    gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-rtsp
+)
+
 MISSING_PKGS=()
-for pkg in spacemit-onnxruntime libsndfile1 alsa-utils curl \
-           libopencv-core410 libopencv-imgproc410 libopencv-imgcodecs410 libopencv-highgui410; do
+for pkg in "${BASE_PKGS[@]}" "${GST_PKGS[@]}"; do
     dpkg -s "$pkg" >/dev/null 2>&1 || MISSING_PKGS+=("$pkg")
 done
 if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
@@ -46,7 +62,54 @@ if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
         die "非交互环境, 请手动执行上面的安装命令后重跑 install.sh"
     fi
 fi
-say "系统依赖自检通过 (riscv64 / python3 / onnxruntime-EP / sndfile / alsa / curl / OpenCV)"
+say "系统依赖自检通过 (riscv64 / python3 / onnxruntime-EP / sndfile / alsa / curl / OpenCV / v4l2-ctl)"
+
+# ---------------------------------------------------------------------------
+# 1b. GStreamer 元素级探测
+# ---------------------------------------------------------------------------
+# 查元素比查包名更贴近真实可用性: 发行版可能把插件打进别的包里, 包在而元素
+# 不在的情况也真实存在 (模块被裁剪)。这里只探测, 不再触发安装 —— 上面那步
+# 已把插件包装齐, 走到这里还缺就说明是环境异常, 直接报出来比默默启动好。
+if ! command -v gst-inspect-1.0 >/dev/null 2>&1; then
+    die "缺少 gst-inspect-1.0, 无法校验视觉链路 (应随 gstreamer1.0-tools 安装)"
+fi
+
+# 格式: 元素|用途|提供包
+GST_REQUIRED=(
+    "v4l2src|摄像头采集|gstreamer1.0-plugins-good"
+    "jpegdec|MJPEG 解码|gstreamer1.0-plugins-good"
+    "videoconvert|色彩转换|gstreamer1.0-plugins-base"
+    "appsink|取帧|gstreamer1.0-plugins-base"
+    "appsrc|送帧|gstreamer1.0-plugins-base"
+    "queue|推流缓冲|gstreamer1.0-plugins-base"
+    "h264parse|H.264 解析|gstreamer1.0-plugins-bad"
+    "x264enc|软件编码回退|gstreamer1.0-plugins-ugly"
+    "rtspclientsink|RTSP 推流|gstreamer1.0-rtsp"
+)
+MISSING_ELEMENTS=()
+for entry in "${GST_REQUIRED[@]}"; do
+    element="${entry%%|*}"
+    rest="${entry#*|}"
+    gst-inspect-1.0 "$element" >/dev/null 2>&1 || MISSING_ELEMENTS+=("$element (${rest%%|*}) ← 需要 ${rest##*|}")
+done
+if [[ ${#MISSING_ELEMENTS[@]} -gt 0 ]]; then
+    echo "install: [错误] 视觉链路缺少 GStreamer 元素:" >&2
+    for item in "${MISSING_ELEMENTS[@]}"; do echo "    - $item" >&2; done
+    echo "  装齐上面的插件包后重跑 install.sh; 排查: gst-inspect-1.0 <元素名>" >&2
+    die "yolov8_camera 会因推流链路启动失败而直接退出 (裁决与画面一起失效)"
+fi
+
+# VPU 硬解/硬编只在有对应硬件的板子上存在, 缺失时引擎会自动回退到软件路径
+# (jpegdec / x264enc), 因此只提示不阻塞。
+GST_OPTIONAL=(spacemitdec spacemith264enc)
+missing_optional=()
+for element in "${GST_OPTIONAL[@]}"; do
+    gst-inspect-1.0 "$element" >/dev/null 2>&1 || missing_optional+=("$element")
+done
+if [[ ${#missing_optional[@]} -gt 0 ]]; then
+    warn "未发现 VPU 编解码元素: ${missing_optional[*]} —— 将使用软件路径 (jpegdec/x264enc), 功能不受影响。"
+fi
+say "视觉链路自检通过 (采集/解码/转换/编码/RTSP 推流元素齐全)"
 
 # ---------------------------------------------------------------------------
 # 2. 包内资产自检 (确保拿到的包是完整的)
@@ -65,7 +128,15 @@ ls "$BUNDLE_DIR"/asr/sensevoice/model/*.onnx >/dev/null 2>&1 \
     || die "包不完整, 缺少 SenseVoice 模型"
 ls "$BUNDLE_DIR"/tts/moss-tts-nano/models/*/ >/dev/null 2>&1 \
     || die "包不完整, 缺少 MOSS 模型"
-say "包完整性自检通过 (ASR/YOLO 引擎与模型、MOSS 模型均在位)"
+# MOSS 除模型外还要 runtime 依赖树: python/ 是 riscv64 依赖, lib/ 是 native
+# 库, voice/ 是内置音色参考音频, assets/ 是 manifest 引用的小资产。
+# 四者缺一 daemon 都起不来, 而它们都不在 git 里, 靠打包时的 rsync 带进来,
+# 是最容易在换源板时漏掉的部分, 所以逐个校验。
+for d in python lib voice assets; do
+    [[ -d "$BUNDLE_DIR/tts/moss-tts-nano/$d" ]] \
+        || die "包不完整, 缺少 MOSS runtime 目录: tts/moss-tts-nano/$d"
+done
+say "包完整性自检通过 (ASR/YOLO 引擎与模型、MOSS 模型与 runtime 依赖树均在位)"
 
 # ---------------------------------------------------------------------------
 # 3. mediamtx 探测 (画面推流依赖它; 缺失时裁决仍可跑, 但网页没有实时画面)

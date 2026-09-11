@@ -11,6 +11,19 @@
 4. USB 摄像头已接好（识别用，画面正对骰盘）；
 5. 麦克风/扬声器按需连接（语音功能用；在系统桌面声音设置里选好默认输入/输出设备）。
 
+系统包依赖（缺了 `install.sh` 会列出并询问是否自动安装）：
+
+- 推理与音频：`spacemit-onnxruntime`、`libsndfile1`、`alsa-utils`、`curl`、四个 `libopencv-*-410`、`v4l-utils`；
+- 视觉链路的 GStreamer 插件：`gstreamer1.0-tools`、`-plugins-base`、`-plugins-good`、`-plugins-bad`、`-plugins-ugly`、`gstreamer1.0-rtsp`。
+
+> GStreamer 这一组是**硬依赖**，不是"只影响画面"：推流链路起不来时 `yolov8_camera`
+> 会直接退出，骰子裁决一起失效。`install.sh` 会在启动前逐个 `gst-inspect-1.0` 探测
+> 元素（采集 `v4l2src` / 解码 `jpegdec` / 转换 `videoconvert` / 取送帧 `appsink`+`appsrc`
+> / 缓冲 `queue` / 解析 `h264parse` / 编码 `x264enc` / 推流 `rtspclientsink`），缺任何
+> 一个都会拒绝启动并列出对应的包名。
+> VPU 硬解硬编元素（`spacemitdec`/`spacemith264enc`）不在必需项内——没有它们时
+> 引擎会自动走软件路径（`jpegdec`/`x264enc`），只提示不阻塞。
+
 ## 安装（3 步）
 
 ```bash
@@ -19,7 +32,7 @@ cd dice-arena
 ./install.sh
 ```
 
-install.sh 会自动完成：系统依赖自检 → 包完整性自检 → mediamtx 探测 → 摄像头设备提示 → 启动服务 → 打印各组件健康状态。
+install.sh 会自动完成：系统依赖自检 → **视觉链路（GStreamer 元素）自检** → 包完整性自检（含 MOSS runtime 依赖树）→ mediamtx 探测 → 摄像头设备提示 → 启动服务 → 打印各组件健康状态。
 
 启动成功后，板载浏览器（或本机任意浏览器）打开：
 
@@ -46,6 +59,12 @@ tail -f .runtime/web-8080.log
 
 **网页里没有骰子识别画面？**
 mediamtx 没跑。`systemctl --user status mediamtx` 检查，没装就先装 mediamtx 小包，然后 `scripts/stop_web.sh && scripts/start_web.sh` 重启本服务。
+
+**识别与画面一起没了（裁决也失败）？**
+多半是视觉链路的 GStreamer 插件不全——推流起不来时 `yolov8_camera` 会直接退出。
+`install.sh` 启动前就会拦下这种情况并列出缺的元素与包名；若是在运行中才发现，按它给的
+包名装齐后重跑 `./install.sh`。手动排查：`gst-inspect-1.0 rtspclientsink`（推流）
+与 `gst-inspect-1.0 x264enc`（软件编码回退）。
 
 **摄像头识别不到？**
 `ls /dev/video*` 与 `v4l2-ctl --list-devices` 找到 USB 摄像头的设备号，修改
