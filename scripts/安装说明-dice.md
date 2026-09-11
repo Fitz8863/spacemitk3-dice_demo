@@ -2,6 +2,8 @@
 
 摇骰子对战 Demo：板端网页 + 语音播报（本地 TTS）+ 可选语音控制 + YOLOv8 骰子识别裁决。
 本包面向 **SpacemiT K3 (riscv64) + Bianbu 系统**，解压即用，**不需要 git、不需要联网**。
+本地 TTS 带两套引擎资产（MOSS 默认 + Matcha 备用，约 1.15G 里的 830M 就是它们），
+`backend/config.json` 里换 `providers.tts_local` 即可切换，不必再补文件。
 
 ## 前置条件
 
@@ -89,6 +91,14 @@ USB 口位置和采集节点（一台相机会占多个 /dev/video 节点，只�
 
 **LLM 大模型复核？**
 分发版默认关闭（YOLO 识别结果直接生效）。如需启用，在 `backend/games/dice/manifest.json` 的 `llm` 节配置你自己的 OpenAI 兼容服务与 key。
+
+**想把语音换成 matcha 引擎？**
+包内**同时带了两套本地 TTS 引擎资产**，切换不需要另外补文件：
+
+1. 改 `backend/config.json` 的 `providers.tts_local`：`tts_moss_nano`（默认）→ `tts_matcha`；
+2. `scripts/stop_web.sh && scripts/start_web.sh`。
+
+本地 TTS 引擎是**启动时钉死**的（运行期改槽位不切换，只打漂移日志），所以必须重启；反过来，一台机器同时只能跑一个本地引擎（引用面出现两个不同本地引擎时后端拒绝启动）。两套资产都在包里：MOSS 约 670M、Matcha 约 157M（模型 + Sherpa-ONNX 运行库 + 服务二进制）。
 
 ## 硬件摆位
 

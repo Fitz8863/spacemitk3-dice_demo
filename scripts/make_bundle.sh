@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 产出两套可分发安装包（在源板或有完整资产的检出上运行）：
 #
-#   dice-arena-bundle-<date>.tar    主包 ~1.05G：完整成品树（代码 + 全部运行资产），
-#                                   解压即用，无需 git、无需网络
+#   dice-arena-bundle-<date>.tar    主包 ~1.15G：完整成品树（代码 + 全部运行资产），
+#                                   解压即用，无需 git、无需网络。本地 TTS 带两套
+#                                   引擎资产：MOSS（默认槽位）+ Matcha（备用）
 #   mediamtx-bundle-<date>.tar      流媒体小包 ~34M：独立安装的 mediamtx 服务
 #
 # 用法: scripts/make_bundle.sh [输出目录，默认 $HOME]
@@ -36,6 +37,12 @@ REQUIRED_DIRS=(
     tts/moss-tts-nano/python
     tts/moss-tts-nano/lib
     tts/moss-tts-nano/assets
+    # 本地 TTS 备选引擎 Matcha（tts_matcha 组件 config 里 root 之下的三个
+    # 板端资产目录）：不带的话，新板上 providers.tts_local 切到 tts_matcha
+    # 会因缺模型/缺 Sherpa-ONNX 库而起不来。三块缺一不可。
+    tts/matcha-tts/build-cpp
+    tts/matcha-tts/matcha-model
+    tts/matcha-tts/runtime
     vision/yolov8_adjudicator/build
 )
 for d in "${REQUIRED_DIRS[@]}"; do
@@ -56,6 +63,10 @@ print(f"    asr_enabled (全局语音总闸) = {cfg.get('asr_enabled')}")
 print(f"    providers = {json.dumps(cfg.get('providers', {}))}")
 print(f"    dice LLM 复核 (vision_profile.llm.enabled) = {llm.get('enabled', '(未设置)')}")
 PY
+echo "==> 随包发出的本地 TTS 引擎资产 (槽位切换无需再补资产):"
+for engine in moss-tts-nano matcha-tts; do
+    printf '    %-16s %s\n' "$engine" "$(du -sh "$ROOT_DIR/tts/$engine" | cut -f1)"
+done
 
 [[ -e "$WORK_DIR" ]] && die "工作目录已存在: $WORK_DIR (上次打包未清理?)"
 mkdir -p "$DICE_DIR" "$MTX_DIR"

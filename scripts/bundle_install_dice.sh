@@ -136,7 +136,21 @@ for d in python lib voice assets; do
     [[ -d "$BUNDLE_DIR/tts/moss-tts-nano/$d" ]] \
         || die "包不完整, 缺少 MOSS runtime 目录: tts/moss-tts-nano/$d"
 done
-say "包完整性自检通过 (ASR/YOLO 引擎与模型、MOSS 模型与 runtime 依赖树均在位)"
+# Matcha 备选本地 TTS: 三块板端资产 (二进制 / 模型 / Sherpa-ONNX 运行库) 都
+# 是 .gitignore 的，靠打包时 rsync 带进来。任一缺失都只在切换槽位时才暴露，
+# 所以这里逐个校验 —— 与 MOSS 同样的理由，提前把话说清楚。
+[[ -x "$BUNDLE_DIR/tts/matcha-tts/build-cpp/matcha_tts_service" ]] \
+    || die "包不完整, matcha 服务缺失或不可执行: tts/matcha-tts/build-cpp/matcha_tts_service"
+for f in model-steps-3.q.onnx vocos-16khz-univ.q.onnx lexicon.txt tokens.txt; do
+    [[ -f "$BUNDLE_DIR/tts/matcha-tts/matcha-model/$f" ]] \
+        || die "包不完整, 缺少 matcha 模型文件: tts/matcha-tts/matcha-model/$f"
+done
+# 走 LD_LIBRARY_PATH 加载，两张库缺一 matcha 起不来 (libsherpa-* 链 onnxruntime)。
+for lib in libsherpa-onnx-c-api.so libonnxruntime.so.1; do
+    [[ -f "$BUNDLE_DIR/tts/matcha-tts/runtime/sherpa_onnx/lib/$lib" ]] \
+        || die "包不完整, 缺少 matcha 的 Sherpa-ONNX 运行库: runtime/sherpa_onnx/lib/$lib"
+done
+say "包完整性自检通过 (ASR/YOLO 引擎与模型、MOSS 模型与 runtime 依赖树、matcha 引擎资产均在位)"
 
 # ---------------------------------------------------------------------------
 # 3. mediamtx 探测 (画面推流依赖它; 缺失时裁决仍可跑, 但网页没有实时画面)
@@ -206,6 +220,7 @@ print(f"    tts_ready={h.get('tts_ready')}  yolo={h.get('vision', {}).get('ok')}
 if h.get("tts_remote_provider"):
     print("    注: 远程 TTS 槽位的引擎在分发环境不可达属预期 (无对应远程服务),")
     print("        摇骰子台词全部使用本地 MOSS 引擎, 不受影响。")
+    print("        包内另带 matcha 本地引擎资产 (未启用); 换法见 安装说明.md 的常见问题。")
 PY
 
 say "安装完成。常用操作:"
@@ -213,3 +228,5 @@ say "  停止:   $(dirname "$BUNDLE_DIR")/dice-arena/scripts/stop_web.sh"
 say "  再启动: $(dirname "$BUNDLE_DIR")/dice-arena/scripts/start_web.sh"
 say "  日志:   $BUNDLE_DIR/.runtime/web-${PORT}.log"
 say "  语音开关 (默认随包): backend/config.json 的 asr_enabled"
+say "  换本地 TTS 引擎:     backend/config.json 的 providers.tts_local 改成 \"tts_matcha\"，"
+say "                       再 scripts/stop_web.sh && scripts/start_web.sh (本地引擎启动时钉死)"
