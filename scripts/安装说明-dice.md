@@ -50,6 +50,8 @@ mediamtx 没跑。`systemctl --user status mediamtx` 检查，没装就先装 me
 **摄像头识别不到？**
 `ls /dev/video*` 与 `v4l2-ctl --list-devices` 找到 USB 摄像头的设备号，修改
 `vision/yolov8_adjudicator/config.json` 的 `camera` 字段（默认 `/dev/video1`），重启服务。
+**接了多台摄像头时**，直接运行包根目录的 `./detect.sh`——它会列出每台相机的型号、
+USB 口位置和采集节点（一台相机会占多个 /dev/video 节点，只有采集节点可用于视觉程序）。
 
 **摄像头型号与源部署机不同时（首块新板实测经验）**，还需按相机能力调整
 `vision/yolov8_adjudicator/config.json` 以下字段：

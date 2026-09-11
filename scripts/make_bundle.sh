@@ -76,6 +76,8 @@ echo "==> 3/6 安装脚本与说明入主包"
 cp "$ROOT_DIR/scripts/bundle_install_dice.sh" "$DICE_DIR/install.sh"
 chmod +x "$DICE_DIR/install.sh"
 cp "$ROOT_DIR/scripts/安装说明-dice.md" "$DICE_DIR/安装说明.md"
+cp "$ROOT_DIR/scripts/detect.sh" "$DICE_DIR/detect.sh"
+chmod +x "$DICE_DIR/detect.sh"
 
 echo "==> 4/6 组装 mediamtx 小包"
 cp "$MEDIAMTX_DIR/bin/mediamtx" "$MTX_DIR/"
