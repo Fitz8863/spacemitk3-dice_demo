@@ -3,10 +3,15 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <fcntl.h>
+#include <filesystem>
 #include <gst/app/gstappsrc.h>
 #include <iostream>
+#include <linux/videodev2.h>
 #include <opencv2/imgproc.hpp>
 #include <sstream>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 namespace {
 
@@ -16,6 +21,33 @@ void ensure_gstreamer_initialized() {
         return true;
     }();
     (void)initialized;
+}
+
+// The MPP stack behind spacemith264enc segfaults on boards that expose no
+// V4L2 M2M device at all (the MPP module probe returns NULL and the pipeline
+// dereferences it), so hardware encoding must be gated on this probe instead
+// of on a graceful runtime failure. Mirrors the decoder-side
+// findV4l2M2mDecoder gate in gstreamer_camera.cpp.
+bool vpu_m2m_device_available() {
+    namespace fs = std::filesystem;
+    std::error_code error;
+    const fs::path video4linux("/sys/class/video4linux");
+    if (!fs::exists(video4linux, error)) return false;
+    for (const auto& entry : fs::directory_iterator(video4linux, error)) {
+        if (error) break;
+        const std::string node = "/dev/" + entry.path().filename().string();
+        const int fd = ::open(node.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) continue;
+        v4l2_capability capability{};
+        const bool queried = ::ioctl(fd, VIDIOC_QUERYCAP, &capability) == 0;
+        ::close(fd);
+        if (!queried) continue;
+        const std::uint32_t caps =
+            (capability.capabilities & V4L2_CAP_DEVICE_CAPS)
+                ? capability.device_caps : capability.capabilities;
+        if (caps & (V4L2_CAP_VIDEO_M2M | V4L2_CAP_VIDEO_M2M_MPLANE)) return true;
+    }
+    return false;
 }
 
 std::string normalize_host(std::string host) {
@@ -56,16 +88,38 @@ bool RtspStreamer::start(const std::string& host, int port, const std::string& p
     fps_ = fps;
     stopping_.store(false);
 
-    if (!initialize_pipeline()) return false;
+    // Encoder selection mirrors the decoder-side fallback pattern: try the
+    // VPU hardware encoder first, fall back to x264enc when the board has no
+    // VPU (or the hardware pipeline fails to start). SPACEMIT_FORCE_SOFTWARE_
+    // ENCODER forces the software path (testing / VPU-diagnostics escape
+    // hatch, symmetric to SPACEMIT_FORCE_SOFTWARE_DECODER).
+    bool hardware = vpu_m2m_device_available();
+    if (std::getenv("SPACEMIT_FORCE_SOFTWARE_ENCODER") != nullptr) {
+        std::cerr << "[Encoder] Software encoder forced by SPACEMIT_FORCE_SOFTWARE_ENCODER\n";
+        hardware = false;
+    } else if (!hardware) {
+        std::cerr << "[Encoder] Hardware encoder unavailable (no V4L2 M2M device); "
+                     "using software encoder x264enc\n";
+    }
+    if (hardware && !initialize_pipeline(true)) {
+        std::cerr << "[Encoder] Hardware encoder spacemith264enc failed; "
+                     "falling back to software encoder x264enc\n";
+        hardware = false;
+    }
+    if (!hardware && !initialize_pipeline(false)) return false;
+    hardware_encoder_ = hardware;
+
     running_.store(true);
     start_time_ = std::chrono::steady_clock::now();
     encoder_thread_ = std::thread(&RtspStreamer::encoder_loop, this);
-    std::cerr << "[RTSP] publishing SpaceMIT VPU H.264 to " << url()
+    std::cerr << "[RTSP] publishing H.264 (encoder="
+              << (hardware_encoder_ ? "spacemith264enc VPU" : "x264enc software")
+              << ") to " << url()
               << " (RTSP client sink; MediaMTX/server must be listening)\n";
     return true;
 }
 
-bool RtspStreamer::initialize_pipeline() {
+bool RtspStreamer::initialize_pipeline(bool use_hardware_encoder) {
     ensure_gstreamer_initialized();
 
     std::ostringstream description;
@@ -75,10 +129,18 @@ bool RtspStreamer::initialize_pipeline() {
                 << ",height=" << height_ << ",framerate=" << fps_ << "/1 "
                 << "! queue max-size-buffers=2 leaky=downstream "
                 << "! videoconvert n-threads=2 "
-                << "! video/x-raw,format=NV12 "
-                << "! spacemith264enc coding-width=" << width_
-                << " code-hight=" << height_ << " "
-                << "! h264parse config-interval=-1 "
+                // The VPU encoder takes NV12; x264enc is fed I420 (libx264's
+                // native format, always supported).
+                << "! video/x-raw,format=" << (use_hardware_encoder ? "NV12" : "I420") << " ";
+    if (use_hardware_encoder) {
+        description << "! spacemith264enc coding-width=" << width_
+                    << " code-hight=" << height_ << " ";
+    } else {
+        // ultrafast keeps 720p software encoding comfortably above 30 fps on
+        // the X100 cores (measured ~71 fps); zerolatency keeps the demo snappy.
+        description << "! x264enc tune=zerolatency speed-preset=ultrafast bitrate=2000 ";
+    }
+    description << "! h264parse config-interval=-1 "
                 << "! video/x-h264,stream-format=byte-stream,alignment=au "
                 // rtspclientsink creates the RTP payloader itself. Feeding it
                 // rtph264pay output would make the sink reject the link.

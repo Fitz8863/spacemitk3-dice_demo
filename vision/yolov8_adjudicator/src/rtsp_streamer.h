@@ -12,9 +12,10 @@
 #include <gst/gst.h>
 #include <opencv2/core.hpp>
 
-// Publishes the application's rendered frames to an RTSP server. The frames
-// are encoded by the SpaceMIT VPU through spacemith264enc and sent as H.264
-// RTP over RTSP (typically to MediaMTX running on the same board).
+// Publishes the application's rendered frames to an RTSP server. Frames are
+// encoded as H.264 — by the SpaceMIT VPU through spacemith264enc when a V4L2
+// M2M device is available, otherwise by the software encoder x264enc — and
+// sent over RTSP (typically to MediaMTX running on the same board).
 class RtspStreamer {
 public:
     RtspStreamer() = default;
@@ -30,7 +31,7 @@ public:
     std::string url() const;
 
 private:
-    bool initialize_pipeline();
+    bool initialize_pipeline(bool use_hardware_encoder);
     void destroy_pipeline();
     void encoder_loop();
     void check_bus();
@@ -41,6 +42,7 @@ private:
     int width_ = 0;
     int height_ = 0;
     int fps_ = 25;
+    bool hardware_encoder_ = false;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> stopping_{false};
