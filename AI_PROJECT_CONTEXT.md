@@ -256,11 +256,15 @@ main/
 以下是运行时文件，不应提交：
 
 ```text
-/tmp/dice-arena-web-<uid>-<port>.pid
-web/dice-arena-web.log
+.runtime/web-<port>.log
+.runtime/web-<port>.pid
+.runtime/web-<port>.tts-provider
 backend/__pycache__/
 vision/yolov8_adjudicator/build/
 ```
+
+（`.runtime/` 是 `scripts/start_web.sh` 当前的运行时目录；早期布局写在 `web/` 下的
+`dice-arena-web.log` 与 `.dice-arena-web.pid` 已废弃并清理。）
 
 ---
 
@@ -569,7 +573,7 @@ curl http://127.0.0.1:8080/api/tts/health
 
 ```bash
 pgrep -af yolov8_camera
-tail -f /home/spacemit/projects/dice-game/main/web/dice-arena-web.log
+tail -f /home/spacemit/projects/dice-game/main/.runtime/web-8080.log
 ```
 
 resident 模式下网页启动后即可看到 `yolov8_camera`；只有收到 `START_ADJUDICATION` 后才进入 YOLO 推理，停止裁决后回到 idle。
