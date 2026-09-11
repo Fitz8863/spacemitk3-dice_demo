@@ -30,7 +30,8 @@ def test_generic_control_path_is_not_gated_by_dice_judgment():
     source = SOURCE.read_text(encoding="utf-8")
     assert "judge_dice" not in source
     assert "DiceJudgment" not in source
-    assert 'if (!item->detections.empty()' in source
+    # The gate is generic detector evidence, never a game-specific judgment.
+    assert "const bool evidence_usable = !item->detections.empty() && divider_ready;" in source
 
 
 def test_generic_control_path_runs_configured_divider_assist():
@@ -65,6 +66,42 @@ def test_runtime_emits_category_stability_progress():
     assert '\\"event\\":\\"progress\\"' in source
     assert '\\"stable_count\\":' in source
     assert '\\"stable_frames\\":' in source
+
+
+def test_stability_streak_only_advances_on_frames_a_profile_can_adjudicate():
+    """A frame missing objects or the divider must reset, not grow, the streak.
+
+    Counting unusable frames let the stable_frames gate be satisfied with
+    evidence gathered while no divider was visible, and produced the visible
+    "48/30" overrun on the analysis page.
+    """
+    source = SOURCE.read_text(encoding="utf-8")
+    start = source.index("const std::string signature = detection_signature(item->detections);")
+    end = source.index("if (evidence_usable &&", start)
+    streak = source[start:end]
+    assert "const bool evidence_usable = !item->detections.empty() && divider_ready;" in streak
+    assert "if (!evidence_usable) {" in streak
+    assert "generic_stable_count.store(0);" in streak
+    # The observation gate reuses the same predicate.
+    assert "stable_count >= a.stable_frames" in source
+    assert "!item->detections.empty() && divider_ready &&" not in source
+
+
+def test_stability_streak_stops_once_the_stable_observation_is_sent():
+    """Bounding proof: the counter cannot be reported above stable_frames.
+
+    Counting only happens while no observation has been sent, and every usable
+    frame from stable_count == stable_frames onward sends one, so the streak
+    never exceeds the threshold in an emitted progress event.
+    """
+    source = SOURCE.read_text(encoding="utf-8")
+    block_start = source.index("if (a.control_fd >= 0 && adjudication_active.load() &&")
+    block_end = source.index("if (!a.no_display || rtsp_streamer.running())", block_start)
+    block = source[block_start:block_end]
+    assert "!generic_observation_sent.load()) {" in block
+    assert block.index("generic_observation_sent.exchange(true)") > block.index(
+        "generic_last_reported_count.exchange(stable_count)"
+    )
 
 
 def test_runtime_does_not_embed_legacy_dice_llm_verifier():

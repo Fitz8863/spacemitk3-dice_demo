@@ -1202,11 +1202,29 @@ int main(int argc, char** argv) {
                         last_diagnostic_snapshot = diagnostic_now;
                     }
                     const std::string signature = detection_signature(item->detections);
+                    // Only a frame a game profile can actually adjudicate may
+                    // advance the stability streak: a non-empty object layout
+                    // plus, when divider assistance is on, a located divider.
+                    // Frames missing either one reset the streak instead of
+                    // incrementing it, because counting them would let the
+                    // stable_frames gate be satisfied with evidence gathered
+                    // while the divider was absent. That is also why the streak
+                    // can never be reported above stable_frames.
+                    const bool divider_ready = !a.divider_detection_enabled || divider_assist.valid;
+                    const bool evidence_usable = !item->detections.empty() && divider_ready;
                     int stable_count = 0;
                     {
                         std::lock_guard<std::mutex> lock(generic_mutex);
-                        if (signature == generic_last_signature) stable_count = generic_stable_count.fetch_add(1) + 1;
-                        else { generic_last_signature = signature; generic_stable_count.store(1); stable_count = 1; }
+                        if (!evidence_usable) {
+                            generic_last_signature.clear();
+                            generic_stable_count.store(0);
+                        } else if (signature == generic_last_signature) {
+                            stable_count = generic_stable_count.fetch_add(1) + 1;
+                        } else {
+                            generic_last_signature = signature;
+                            generic_stable_count.store(1);
+                            stable_count = 1;
+                        }
                     }
                     if (generic_last_reported_count.exchange(stable_count) != stable_count) {
                         emit_event("{\"event\":\"progress\",\"phase\":\"detecting\",\"stable_count\":" +
@@ -1217,8 +1235,7 @@ int main(int argc, char** argv) {
                     // observation contract. An empty detection frame is not
                     // useful evidence, but every non-empty object layout is a
                     // valid candidate for a game profile to interpret.
-                    const bool divider_ready = !a.divider_detection_enabled || divider_assist.valid;
-                    if (!item->detections.empty() && divider_ready &&
+                    if (evidence_usable &&
                         stable_count >= a.stable_frames &&
                         !generic_observation_sent.exchange(true)) {
                         const std::string snapshot_path = save_snapshot(a, bgr, item->id);

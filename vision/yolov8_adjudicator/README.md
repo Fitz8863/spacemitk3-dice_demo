@@ -84,6 +84,11 @@ Runtime 向 `event-fd` 发送：
 {"event":"phase","phase":"idle"}
 ```
 
+`progress` 的 `stable_count` **只统计游戏 profile 真正能裁决的帧**：检测为空、或开启
+`vision.divider_detection` 而分界线未定位到时，该帧把连续计数清零而不是累加。因此
+`stable_count` 不会超过 `stable_frames`（外部观察者不会看到 `48/30` 这类越界值），
+`stable_frames` 门槛也一定由连续的有效帧满足，而不是拿分界线缺席期间的帧凑数。
+
 `observation` 是通用检测证据，包含 detection 列表和稳定帧图片；runtime 不写入游戏
 winner。多视角由 provider 并行启动多个 runtime，并以 `view_id` 区分。LLM 只由 provider
 调用一次，将全部稳定帧作为无状态单轮多模态请求。最终结果优先级为：YOLO 与 LLM 一致
@@ -121,6 +126,10 @@ backend/games/<game_id>/manifest.json -> vision_profile
 `adjudication_seconds` 限制从开始检测到产生最终裁决的总处理预算，
 `post_result_hold_seconds` 控制裁决成功后继续播放实时画面的时间。最后一个保持时间
 在已经产生结果后独立执行，不占用前面的裁决处理预算。
+
+`yolo_detection_seconds` 必须容得下 `stable_frames` 个**有效**帧——要求分界线检测的
+游戏里，分界线缺席的帧不计入，窗口太短会让本来只需重新定位分界线的画面直接落入
+失败诊断。调大 `stable_frames` 或打开 `divider_detection` 时要同步放宽这个预算。
 
 新增游戏不需要修改本 runtime：新增模型文件和 manifest 中的 `vision_profile` 即可。
 profile 中的 path 只能是 URL 路径（例如 `/dice/`），不能包含主机、查询串或 `..`；

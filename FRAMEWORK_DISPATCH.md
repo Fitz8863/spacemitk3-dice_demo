@@ -189,7 +189,7 @@ build/yolov8_camera --config vision/yolov8_adjudicator/config.json \
 
 1. provider 向每个视角发送 `START_ADJUDICATION`。
 2. runtime 通过独立 `event-fd` 输出 JSONL：`started`、`ready`、`video`、`phase`、`progress`、`observation`。stdout/stderr 仅作为诊断日志。
-3. runtime 达到 profile 的稳定帧数量后输出一帧私有 snapshot 和通用 detection；黑线/divider 仅作为场景几何辅助信息。
+3. runtime 的 `stable_count` 只累计**本局 profile 能裁决的帧**：检测为空、或开启 `divider_detection` 而分界线未定位到的帧一律把连续计数清零。达到 `stable_frames` 后输出一帧私有 snapshot 和通用 detection；黑线/divider 作为场景几何辅助信息同时参与该门槛，因此分界线缺席期间的帧不会帮计数凑满。
 4. provider 根据 `class_map`、participants、分组方式和 `rule` 计算每个视角的 YOLO 初判。多视角属于同一个裁决对象，按 profile 的 `majority_vote` 做多数投票。
 5. 如果启用 LLM，provider 将稳定帧和本局 prompt 作为一次无历史的 OpenAI-compatible 多模态请求。LLM 只负责复核图片，不接收其他请求上下文。
 6. 结果优先级：YOLO 与 LLM 一致使用 `consensus`；不一致时对 LLM 复问一次做佐证——复问与 YOLO 一致用 `yolo_reask_confirmed`，复问仍坚持且非平局才用 `llm_override`（平局是算术事实，`tie_upheld` 永不被推翻），复问无定论用 `yolo_reask_fallback`；LLM 超时使用 `yolo_timeout_fallback`；其他无效响应或检测证据不足进入错误。
@@ -197,7 +197,7 @@ build/yolov8_camera --config vision/yolov8_adjudicator/config.json \
 8. 发送 `result` 后进入 `holding`，等待 `lifecycle.post_result_hold_seconds`。保持期间不重新检测、不重复调用 LLM，只继续让前端观看实时画面；值为 `0` 时立即结束。
 9. provider 发出 `complete`，任务变为 `success`，resident runtime 回到 `idle`；per-request 模式则回收进程和摄像头。
 
-总视觉检测/LLM 预算由 `vision_profile.timeouts.adjudication_seconds` 控制，缺省回退全局 `DICE_JOB_TIMEOUT_SECONDS`（当前默认 120 秒）。LLM 自身的 `timeout_seconds`（骰子当前为 3 秒）受该预算约束；结果后的 holding 是展示生命周期，不用于延长检测或 LLM。
+总视觉检测/LLM 预算由 `vision_profile.timeouts.adjudication_seconds` 控制，缺省回退全局 `DICE_JOB_TIMEOUT_SECONDS`（当前默认 120 秒）。稳定观测预算由 `timeouts.yolo_detection_seconds` 单独限制（骰子当前 8 秒），必须容得下 `stable_frames` 个有效帧——分界线缺席的帧不计入，故不能按帧率理论值掐时间。LLM 自身的 `timeout_seconds`（骰子当前为 3 秒）受该预算约束；结果后的 holding 是展示生命周期，不用于延长检测或 LLM。
 
 ### 5.4 结果语义
 

@@ -285,8 +285,12 @@ export function register(engine) {
       $('stepDetect').querySelector('span').textContent = '…';
       const count = Number(event.stable_count || 0);
       const required = Number(event.stable_frames || 0);
-      $('analysisStatus').textContent = count > 0 && required > 0
-        ? `YOLOv8 正在检测双方各 5 颗骰子，并等待稳定帧（${count}/${required}）…`
+      // Display guard only: the runtime resets the streak on frames it cannot
+      // adjudicate, so count must never read above the threshold. Clamping
+      // keeps an older runtime binary from showing "48/30".
+      const shownCount = required > 0 ? Math.min(count, required) : count;
+      $('analysisStatus').textContent = shownCount > 0 && required > 0
+        ? `YOLOv8 正在检测双方各 5 颗骰子，并等待稳定帧（${shownCount}/${required}）…`
         : 'YOLOv8 正在检测双方各 5 颗骰子，并等待稳定帧…';
     } else if (event.phase === 'verifying') {
       $('stepDetect').classList.add('active');

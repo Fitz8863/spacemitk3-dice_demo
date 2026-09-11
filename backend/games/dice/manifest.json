@@ -137,7 +137,7 @@
 			"post_result_hold_seconds": 2
 		},
 		"timeouts": {
-			"yolo_detection_seconds": 4,
+			"yolo_detection_seconds": 8,
 			"adjudication_seconds": 30
 		}
 	},

@@ -418,6 +418,21 @@ def test_frontend_hides_result_phase_copy_when_empty():
     assert '点数已经锁定，看看谁赢下了这一局。' not in dice
 
 
+def test_frontend_never_shows_stable_count_above_threshold():
+    """The analysis copy must not print a streak above stable_frames.
+
+    The runtime no longer counts frames it cannot adjudicate, but an older
+    resident binary could still report "48/30", so the page clamps as well.
+    """
+    dice = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    detecting = dice.split("if (event.phase === 'detecting')", 1)[1].split(
+        "} else if (event.phase === 'verifying')", 1
+    )[0]
+    assert "Math.min(count, required)" in detecting
+    assert "${shownCount}/${required}" in detecting
+    assert "${count}/${required}" not in detecting
+
+
 def test_frontend_round_client_drives_the_game():
     """The game module submits intents and renders; it never advances state."""
     app = (ROOT / "web/app.js").read_text(encoding="utf-8")
