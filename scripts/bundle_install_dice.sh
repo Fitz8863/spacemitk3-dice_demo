@@ -26,13 +26,16 @@ for pkg in spacemit-onnxruntime libsndfile1 alsa-utils curl \
 done
 if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
     echo "install: 缺少系统包: ${MISSING_PKGS[*]}"
-    echo "  安装命令: sudo apt-get install -y ${MISSING_PKGS[*]}"
+    echo "  安装命令: sudo apt-get update && sudo apt-get install -y ${MISSING_PKGS[*]}"
+    # 全新环境的 apt 包列表可能为空 (首块新板实测), 安装前必须刷新索引。
     # 终端交互环境里提供自动安装 (sudo 可能提示密码);
     # 非交互环境 (管道/CI) 退回手动模式。
     if [[ -t 0 && -t 1 ]]; then
         reply=""
         read -r -p "install: 现在自动安装这些系统包? [Y/n] " reply || true
         if [[ ! "$reply" =~ ^[Nn] ]]; then
+            sudo apt-get update \
+                || echo "install: [警告] apt-get update 失败, 继续尝试用现有索引安装" >&2
             sudo apt-get install -y "${MISSING_PKGS[@]}" \
                 || die "自动安装失败, 请手动执行上面的安装命令后重跑 install.sh"
             say "系统包安装完成"
