@@ -10,8 +10,28 @@ set -euo pipefail
 
 SAY() { echo "detect: $*"; }
 
-command -v v4l2-ctl >/dev/null 2>&1 \
-    || { echo "detect: [错误] 缺少 v4l2-ctl, 先安装: sudo apt-get install -y v4l-utils" >&2; exit 1; }
+# v4l2-ctl 依赖检查: 缺失时交互式自动安装 (全新环境 apt 索引可能为空,
+# 先 update), 非交互环境打印手动命令退出 —— 与 install.sh 的模式一致。
+if ! command -v v4l2-ctl >/dev/null 2>&1; then
+    echo "detect: 缺少 v4l2-ctl (v4l-utils)"
+    echo "  安装命令: sudo apt-get update && sudo apt-get install -y v4l-utils"
+    if [[ -t 0 && -t 1 ]]; then
+        reply=""
+        read -r -p "detect: 现在自动安装 v4l-utils? [Y/n] " reply || true
+        if [[ ! "$reply" =~ ^[Nn] ]]; then
+            sudo apt-get update \
+                || echo "detect: [警告] apt-get update 失败, 继续尝试用现有索引安装" >&2
+            sudo apt-get install -y v4l-utils \
+                || { echo "detect: [错误] 安装失败, 请手动执行上面的安装命令" >&2; exit 1; }
+        else
+            echo "detect: 请手动安装后重跑 detect.sh" >&2
+            exit 1
+        fi
+    else
+        echo "detect: [错误] 非交互环境, 请手动执行上面的安装命令后重跑" >&2
+        exit 1
+    fi
+fi
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
