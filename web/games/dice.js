@@ -423,7 +423,10 @@ export function register(engine) {
 
   function onKey(event) {
     if (event.key === 'Escape') {
-      if (['rules', 'ready', 'result'].includes(state.phase)) submitIntent('back');
+      // 红键/Esc 与屏幕上的红色按钮同义：摇骰中就是"停止摇骰"（提前开盖），
+      // 其余可退状态才是返回。走同一个 handler，两条路径不会分叉。
+      if (state.phase === 'shaking') handlers.stopShake();
+      else if (['rules', 'ready', 'result'].includes(state.phase)) submitIntent('back');
       else if (state.phase === 'analysis' && analysisFailureVisible()) submitIntent('back');
       return;
     }
