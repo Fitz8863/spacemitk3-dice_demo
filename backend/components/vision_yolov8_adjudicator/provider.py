@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import tempfile
 import time
 import threading
@@ -20,11 +21,41 @@ from components.vision_yolov8_adjudicator.rules import (
     fuse_yolo_outcomes,
 )
 from components.vision_yolov8_adjudicator.profile import (
+    ProfileError,
     compose_video_url,
     load_component_config,
     load_runtime_config,
+    resolve_project_path,
     resolve_runtime_config_path,
 )
+
+
+COMPONENT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = COMPONENT_DIR.parents[2]
+
+
+def resolve_runtime_binary(
+    component_dir: Path | None = None,
+    project_root: Path | None = None,
+) -> Path:
+    """Resolve the runtime binary the way the process launcher resolves it.
+
+    JSON configuration is the single source of truth (environment overrides
+    were removed), so the component ``config.json`` owns ``runtime.binary`` and
+    it is resolved against the repository root exactly as
+    :meth:`YoloRuntimeProcess.start` does.  A game profile may override
+    ``runtime.binary`` for one round, but readiness has to be answerable before
+    any round exists, so this reports the deployment default.
+    """
+    directory = Path(component_dir) if component_dir is not None else COMPONENT_DIR
+    root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    component = load_component_config(directory)
+    runtime = component.get("runtime")
+    runtime = runtime if isinstance(runtime, Mapping) else {}
+    configured = runtime.get("binary")
+    if not isinstance(configured, str) or not configured.strip():
+        raise ProfileError("vision component config must declare runtime.binary")
+    return resolve_project_path(configured, root)
 
 
 def normalize_observation(
@@ -213,13 +244,29 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         self._runtime_signatures: dict[str, str] = {}
 
     def health(self) -> dict[str, Any]:
-        """Report readiness; LLM configuration lives on the llm component."""
-        return {
+        """Report deployment readiness of this provider's runtime binary.
+
+        ``ready`` answers the deploy-time question -- is the YOLO executable
+        installed and runnable? -- and is what ``server.py`` republishes as the
+        top-level ``yolo_ready`` field.  It is deliberately a static check, not
+        a liveness probe of a resident process, and ``ok`` mirrors it so this
+        component can no longer claim health while its binary is missing.
+        LLM readiness belongs to the ``llm`` component, so this payload stays
+        silent about it.
+        """
+        payload: dict[str, Any] = {
             "id": self.id,
             "type": self.type,
             "role": self.role,
-            "ok": True,
         }
+        try:
+            binary = resolve_runtime_binary()
+        except Exception as exc:
+            # /api/health must always answer; report the failure in-band
+            # instead of raising and losing the identity fields above.
+            return {**payload, "ok": False, "ready": False, "binary": "", "error": str(exc)}
+        ready = binary.is_file() and os.access(binary, os.X_OK)
+        return {**payload, "ok": ready, "ready": ready, "binary": str(binary)}
 
     def _round_llm(self, request: VisionAdjudicationRequest) -> Any:
         """The LLM engine for one round: request-injected provider first.

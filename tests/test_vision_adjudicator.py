@@ -36,9 +36,11 @@ from components.vision_yolov8_adjudicator.process import (  # noqa: E402
     build_rtsp_args,
     verify_snapshot,
 )
+from components.vision_yolov8_adjudicator import provider as vision_provider  # noqa: E402
 from components.vision_yolov8_adjudicator.provider import (  # noqa: E402
     VisionYolov8Adjudicator,
     normalize_observation,
+    resolve_runtime_binary,
 )
 from games.dice import pipeline as dice_pipeline  # noqa: E402
 
@@ -547,8 +549,57 @@ def test_runtime_config_exposes_mediamtx_base_and_component_has_no_duplicate_vid
 def test_provider_health_no_longer_reports_llm_state():
     """LLM configuration moved to the llm component; vision health is silent about it."""
     health = VisionYolov8Adjudicator().health()
-    assert health["ok"] is True
     assert "llm_configured" not in health
+    # ``ok`` now reports the real deployment condition instead of being
+    # hardcoded, so assert the relationship rather than a fixed value.
+    assert health["ok"] is health["ready"]
+
+
+def test_provider_health_reports_ready_and_binary_for_the_launch_path():
+    """Pin the fields ``server.py`` republishes as yolo_ready/yolo_binary.
+
+    The vision package migration silently dropped ``ready``/``binary`` from
+    this payload while the server kept reading them, so ``/api/health``
+    reported ``yolo_ready: false`` forever.  Nothing caught it; this does.
+    """
+    health = VisionYolov8Adjudicator().health()
+    binary = resolve_runtime_binary()
+    assert health["ready"] is (binary.is_file() and os.access(binary, os.X_OK))
+    assert health["ok"] is health["ready"]
+    assert health["binary"] == str(binary)
+    # The reported path must be the one the launcher would execute: the
+    # component config's runtime.binary resolved against the repository root.
+    component = load_component_config(
+        ROOT / "backend" / "components" / "vision_yolov8_adjudicator"
+    )
+    assert Path(health["binary"]) == (ROOT / component["runtime"]["binary"]).resolve()
+
+
+def test_provider_health_fails_closed_when_the_binary_is_missing(monkeypatch):
+    """A missing binary must report not-ready; /api/health still has to answer."""
+    monkeypatch.setattr(
+        vision_provider,
+        "resolve_runtime_binary",
+        lambda *args, **kwargs: Path("/nonexistent/yolov8_camera"),
+    )
+    health = VisionYolov8Adjudicator().health()
+    assert health["ready"] is False
+    assert health["ok"] is False
+    assert health["binary"] == "/nonexistent/yolov8_camera"
+
+
+def test_provider_health_reports_config_errors_in_band(monkeypatch):
+    """An unreadable component config must not raise away the identity fields."""
+    def explode(*args, **kwargs):
+        raise ProfileError("vision component config must declare runtime.binary")
+
+    monkeypatch.setattr(vision_provider, "resolve_runtime_binary", explode)
+    health = VisionYolov8Adjudicator().health()
+    assert health["id"] == "vision_yolov8_adjudicator"
+    assert health["ok"] is False
+    assert health["ready"] is False
+    assert health["binary"] == ""
+    assert "runtime.binary" in health["error"]
 
 
 def test_rtsp_args_emit_one_profile_owned_path():

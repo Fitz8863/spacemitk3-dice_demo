@@ -615,6 +615,45 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(payload["adjudicator"]["profile_id"], "dice")
         self.assertEqual(payload["adjudicator"]["video_path"], "/dice/")
 
+    def test_health_republishes_adjudicator_ready_and_binary(self):
+        """``yolo_ready``/``yolo_binary`` must mirror the adjudicator's health.
+
+        These are compatibility aliases for existing dashboards.  The real
+        vision provider stopped returning ``ready``/``binary`` during its
+        package migration while server.py kept reading them, which pinned
+        ``yolo_ready`` to false with no test to notice.
+        """
+        original_components = server.COMPONENTS
+
+        class ReadyProvider(DummyVisionAdjudicator):
+            def health(self):
+                return {"id": self.id, "type": self.type, "ok": True,
+                        "ready": True, "binary": "/opt/yolo/yolov8_camera"}
+
+        class NotReadyProvider(DummyVisionAdjudicator):
+            def health(self):
+                return {"id": self.id, "type": self.type, "ok": False,
+                        "ready": False, "binary": ""}
+
+        cases = ((ReadyProvider(), True, "/opt/yolo/yolov8_camera"),
+                 (NotReadyProvider(), False, ""))
+        try:
+            for provider, expected_ready, expected_binary in cases:
+                registry = ComponentRegistry()
+                registry.register(provider, {
+                    "id": "vision_dummy", "type": "vision", "role": "adjudicator",
+                    "name": "Dummy Vision Adjudicator", "version": "1",
+                    "enabled": True, "entry": "provider.py:DummyVisionAdjudicator",
+                })
+                server.COMPONENTS = registry
+                status, _, data = self.request("GET", "/api/health")
+                self.assertEqual(status, 200)
+                payload = json.loads(data)
+                self.assertIs(payload["yolo_ready"], expected_ready)
+                self.assertEqual(payload["yolo_binary"], expected_binary)
+        finally:
+            server.COMPONENTS = original_components
+
     def test_health_exposes_multiview_profiles_and_mediamtx_base_url(self):
         original_games = server.GAMES
         original_components = server.COMPONENTS
