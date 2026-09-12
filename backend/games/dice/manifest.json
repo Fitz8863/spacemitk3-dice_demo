@@ -128,7 +128,7 @@
 			]
 		},
 		"video": {
-			"enabled": true,
+			"enabled": false,
 			"protocol": "webrtc",
 			"path": "/dice/det"
 		},
