@@ -48,6 +48,28 @@ def _chat_completions_url(endpoint: str) -> str:
     return endpoint
 
 
+REASONING_EFFORT_VALUES = ("none", "low", "high", "max")
+
+
+def _thinking_payload(effort: str | None) -> dict[str, str] | None:
+    """Translate the effort knob into the endpoint's ``thinking`` object.
+
+    The API requires ``type`` inside ``thinking`` — sending only
+    ``reasoning_effort`` is rejected with ``missing field ``type``` — so
+    ``none`` becomes ``{"type": "disabled"}`` (thinking off, no
+    ``reasoning_content``) and the graded levels ride along with
+    ``{"type": "enabled"}``.  Unknown values are not sent at all.
+    """
+    if not isinstance(effort, str):
+        return None
+    value = effort.strip().lower()
+    if value == "none":
+        return {"type": "disabled"}
+    if value in REASONING_EFFORT_VALUES:
+        return {"type": "enabled", "reasoning_effort": value}
+    return None
+
+
 class LlmOpenAiCompat(LlmProvider):
     """Stateless OpenAI-compatible multimodal chat client."""
 
@@ -69,19 +91,31 @@ class LlmOpenAiCompat(LlmProvider):
         self._endpoint = str(config_value(cfg, "endpoint", default="") or "").strip()
         self._model = str(config_value(cfg, "model", default="") or "").strip()
         self._api_key = str(config_value(cfg, "api_key", default="") or "").strip()
+        # Optional deployment default for the endpoint's thinking depth; a game
+        # profile can override it per call.  An unrecognised value is dropped
+        # (and surfaced in health) instead of failing startup.
+        raw_effort = str(config_value(cfg, "reasoning_effort", default="") or "").strip().lower()
+        self._reasoning_effort = raw_effort if raw_effort in REASONING_EFFORT_VALUES else ""
+        self._reasoning_effort_ignored = raw_effort if raw_effort != self._reasoning_effort else ""
         self._chat_url = _chat_completions_url(self._endpoint)
         self._post = post or _default_post
         self._get = get or _default_get
 
     def health(self) -> dict[str, Any]:
         """Report configuration readiness without exposing credentials."""
-        return {
+        payload: dict[str, Any] = {
             "id": self.id,
             "type": self.type,
             "ok": True,
             "configured": bool(self._endpoint and self._api_key),
             "model": self._model,
+            "reasoning_effort": self._reasoning_effort or None,
         }
+        if self._reasoning_effort_ignored:
+            payload["reasoning_effort_error"] = (
+                f"unrecognised reasoning_effort {self._reasoning_effort_ignored!r}; ignored"
+            )
+        return payload
 
     def probe(self, timeout_seconds: float = 5.0) -> dict[str, Any]:
         """One cheap connectivity/credential check: ``GET {endpoint}/models``.
@@ -113,6 +147,7 @@ class LlmOpenAiCompat(LlmProvider):
         allowed_outcomes: Sequence[str],
         timeout_seconds: float,
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> VerificationResult:
         try:
             image_parts, image_error = self._image_parts(image_path, image_paths)
@@ -128,6 +163,11 @@ class LlmOpenAiCompat(LlmProvider):
                     },
                 ],
             }
+            # A per-call effort (game profile) wins over the deployment default;
+            # both end up as the endpoint's required ``type``-bearing object.
+            thinking = _thinking_payload(reasoning_effort or self._reasoning_effort)
+            if thinking is not None:
+                payload["thinking"] = thinking
             response = self._post(self._chat_url, payload, self._headers(), timeout_seconds)
             content = self._extract_content(response)
             parsed = json.loads(content)

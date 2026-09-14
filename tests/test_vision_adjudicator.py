@@ -296,6 +296,155 @@ def test_profile_rejects_non_boolean_llm_enabled(tmp_path: Path):
         load_profile(path)
 
 
+def test_profile_validates_and_normalizes_reasoning_effort(tmp_path: Path):
+    profile = _minimal_profile()
+    profile["llm"]["reasoning_effort"] = " NoNe "
+    path = tmp_path / "vision_profile-effort-ok.json"
+    path.write_text(json.dumps(profile))
+    assert load_profile(path)["llm"]["reasoning_effort"] == "none"
+
+    for bad in ("turbo", 3, ""):
+        broken = _minimal_profile()
+        broken["llm"]["reasoning_effort"] = bad
+        bad_path = tmp_path / f"vision_profile-effort-{bad!r}.json"
+        bad_path.write_text(json.dumps(broken))
+        with pytest.raises(ProfileError, match=r"llm\.reasoning_effort"):
+            load_profile(bad_path)
+
+
+def test_provider_forwards_reasoning_effort_to_verification(tmp_path: Path):
+    """The profile's thinking depth rides along with both verify calls."""
+    calls = []
+
+    def runtime_with(image: Path):
+        class Runtime:
+            def start(self, *args, **kwargs):
+                self.events_data = iter([{
+                    "event": "observation",
+                    "stable": True,
+                    "yolo_outcome": "LEFT",
+                    "participants": {"LEFT": [1, 2, 3, 4, 6], "RIGHT": [2, 3, 4, 5, 6]},
+                    "snapshot": {"path": str(image)},
+                }])
+
+            def send(self, command):
+                pass
+
+            def events(self):
+                return self.events_data
+
+            def stop(self):
+                pass
+
+        return Runtime()
+
+    class Verifier:
+        def __init__(self, verdict):
+            self.verdict = verdict
+
+        def verify(self, **kwargs):
+            calls.append(kwargs)
+            return type("R", (), {"status": "success", "outcome": self.verdict, "error": None})()
+
+    profile = {
+        "game_id": "dice",
+        "vision": {"expected_count": 5, "participants": ["LEFT", "RIGHT"]},
+        "llm": {
+            "enabled": True,
+            "reasoning_effort": "none",
+            "timeout_seconds": 1,
+            "system_prompt": "judge",
+            "user_prompt_template": "judge",
+            "allowed_outcomes": ["LEFT", "RIGHT", "TIE"],
+        },
+        "rule": {"kind": "numeric_compare", "aggregation": "sum", "higher_wins": True, "tie_value": "TIE"},
+        "timeouts": {"yolo_detection_seconds": 1, "adjudication_seconds": 30},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+
+    def run(verdict, filename):
+        # Single-use snapshots are deleted after verification, so each round
+        # needs its own frame.
+        image = tmp_path / filename
+        image.write_bytes(b"jpeg")
+        calls.clear()
+        VisionYolov8Adjudicator(
+            runtime_factory=lambda _view_id: runtime_with(image), verifier=Verifier(verdict)
+        ).adjudicate(
+            VisionAdjudicationRequest("dice", profile, "effort", 30),
+            on_log=lambda _: None,
+            on_event=lambda _: None,
+            is_cancelled=lambda: False,
+        )
+        return calls
+
+    agreed = run("LEFT", "agreed.jpg")
+    assert [call["reasoning_effort"] for call in agreed] == ["none"]
+
+    # A dissent triggers the corroborating re-ask, which must carry it too.
+    dissented = run("RIGHT", "dissented.jpg")
+    assert [call["reasoning_effort"] for call in dissented] == ["none", "none"]
+
+
+def test_provider_logs_verification_failure_detail(tmp_path: Path):
+    """A failed verification must leave its reason in the log."""
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"jpeg")
+    logs = []
+
+    class Runtime:
+        def start(self, *args, **kwargs):
+            self.events_data = iter([{
+                "event": "observation",
+                "stable": True,
+                "yolo_outcome": "LEFT",
+                "participants": {"LEFT": [1, 2, 3, 4, 6], "RIGHT": [2, 3, 4, 5, 6]},
+                "snapshot": {"path": str(image)},
+            }])
+
+        def send(self, command):
+            pass
+
+        def events(self):
+            return self.events_data
+
+        def stop(self):
+            pass
+
+    class Verifier:
+        def verify(self, **kwargs):
+            return type("R", (), {
+                "status": "timeout",
+                "outcome": None,
+                "error": "The read operation timed out",
+            })()
+
+    profile = {
+        "game_id": "dice",
+        "vision": {"expected_count": 5, "participants": ["LEFT", "RIGHT"]},
+        "llm": {
+            "enabled": True,
+            "timeout_seconds": 1,
+            "system_prompt": "judge",
+            "user_prompt_template": "judge",
+            "allowed_outcomes": ["LEFT", "RIGHT", "TIE"],
+        },
+        "rule": {"kind": "numeric_compare", "aggregation": "sum", "higher_wins": True, "tie_value": "TIE"},
+        "timeouts": {"yolo_detection_seconds": 1, "adjudication_seconds": 30},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+    result = VisionYolov8Adjudicator(
+        runtime_factory=lambda _view_id: Runtime(), verifier=Verifier()
+    ).adjudicate(
+        VisionAdjudicationRequest("dice", profile, "verify-log", 30),
+        on_log=logs.append,
+        on_event=lambda _: None,
+        is_cancelled=lambda: False,
+    )
+    assert result["decision_source"] == "yolo_timeout_fallback"
+    assert any("verification timeout" in line and "timed out" in line for line in logs)
+
+
 def test_dice_pipeline_preserves_diagnosis_without_projecting_winner():
     class Components:
         def require(self, *args, **kwargs):

@@ -778,6 +778,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     cleanup_paths.add(path)
                 verifier = self._round_llm(request)
                 model_override = str(cfg.get("model") or "").strip() or None
+                effort_override = str(cfg.get("reasoning_effort") or "").strip() or None
                 remaining = max(0.0, deadline - time.monotonic())
                 if verifier is None:
                     # The profile asks for verification but the deployment
@@ -789,8 +790,13 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     llm_timeout = min(
                         self._llm_timeout(profile, fallback_timeout), remaining
                     )
-                    vr = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=llm_timeout, model=model_override)
+                    vr = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=llm_timeout, model=model_override, reasoning_effort=effort_override)
                     status, out = vr.status, vr.outcome
+                    if status not in {"success", "disabled"}:
+                        # Otherwise the failure reason is unrecoverable after
+                        # the fact: the result payload keeps only the outcome,
+                        # and the re-ask log below fires on a dissent only.
+                        on_log(f"[vision] verification {status}: {getattr(vr, 'error', None) or 'no error detail'}")
                     # A lone dissent from the verifier is re-asked once within
                     # the same budget: an answer corroborated by the re-ask may
                     # override, an answer that flips back confirms the detector,
@@ -806,7 +812,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                             reask_timeout = min(
                                 self._llm_timeout(profile, fallback_timeout), reask_remaining
                             )
-                            vr2 = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=reask_timeout, model=model_override)
+                            vr2 = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=reask_timeout, model=model_override, reasoning_effort=effort_override)
                             reask = {"outcome": vr2.outcome, "status": vr2.status}
                         else:
                             reask = {"outcome": None, "status": "timeout"}

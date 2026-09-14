@@ -66,6 +66,77 @@ def test_verify_roundtrip_payload_and_headers(tmp_path):
     assert user_content[1]["image_url"]["url"] == "data:image/jpeg;base64,anBlZy1ieXRlcw=="
 
 
+def _thinking_for(**kwargs):
+    """Run one verify call and return the payload the transport received."""
+    captured = {}
+
+    def fake_post(url, payload, headers, timeout):
+        captured.clear()
+        captured.update(payload)
+        return {"choices": [{"message": {"content": '{"winner":"LEFT"}'}}]}
+
+    _provider(post=fake_post).verify(
+        image_path=kwargs.pop("image_path"),
+        system_prompt="judge",
+        user_prompt="judge",
+        allowed_outcomes=["LEFT"],
+        timeout_seconds=1,
+        **kwargs,
+    )
+    return captured
+
+
+def test_verify_maps_reasoning_effort_onto_the_thinking_object(tmp_path):
+    """`none` disables thinking; graded levels carry the endpoint's required type."""
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"jpeg-bytes")
+
+    # No effort configured anywhere: the payload stays exactly as before.
+    assert "thinking" not in _thinking_for(image_path=image)
+    assert _thinking_for(image_path=image, reasoning_effort="none")["thinking"] == {"type": "disabled"}
+    assert _thinking_for(image_path=image, reasoning_effort="low")["thinking"] == {
+        "type": "enabled",
+        "reasoning_effort": "low",
+    }
+    # The endpoint rejects a type-less thinking object, so an unknown value is
+    # dropped instead of being forwarded.
+    assert "thinking" not in _thinking_for(image_path=image, reasoning_effort="bogus")
+
+
+def test_component_config_default_reasoning_effort_and_profile_precedence(tmp_path):
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"jpeg-bytes")
+    captured = {}
+
+    def fake_post(url, payload, headers, timeout):
+        captured.clear()
+        captured.update(payload)
+        return {"choices": [{"message": {"content": '{"winner":"LEFT"}'}}]}
+
+    configured = _provider(config=dict(TEST_CONFIG, reasoning_effort="LOW"), post=fake_post)
+    assert configured.health()["reasoning_effort"] == "low"
+
+    def run(provider, **kwargs):
+        provider.verify(
+            image_path=image,
+            system_prompt="judge",
+            user_prompt="judge",
+            allowed_outcomes=["LEFT"],
+            timeout_seconds=1,
+            **kwargs,
+        )
+        return captured.get("thinking")
+
+    assert run(configured) == {"type": "enabled", "reasoning_effort": "low"}
+    # The per-call value (game profile) outranks the deployment default.
+    assert run(configured, reasoning_effort="none") == {"type": "disabled"}
+
+    broken = _provider(config=dict(TEST_CONFIG, reasoning_effort="bogus"), post=fake_post)
+    assert broken.health()["reasoning_effort"] is None
+    assert "unrecognised reasoning_effort" in broken.health()["reasoning_effort_error"]
+    assert run(broken) is None
+
+
 def test_verify_accepts_full_chat_completions_endpoint(tmp_path):
     image = tmp_path / "stable.png"
     image.write_bytes(b"png-bytes")

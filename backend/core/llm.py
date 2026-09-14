@@ -45,6 +45,12 @@ class LlmProvider(Component, ABC):
         allowed_outcomes: Sequence[str],
         timeout_seconds: float,
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> VerificationResult:
-        """Ask for one outcome constrained to ``allowed_outcomes``."""
+        """Ask for one outcome constrained to ``allowed_outcomes``.
+
+        ``reasoning_effort`` carries the game profile's thinking-depth request
+        (``none``/``low``/``high``/``max``) for endpoints that expose one; an
+        adapter without such a knob may ignore it.
+        """
         raise NotImplementedError

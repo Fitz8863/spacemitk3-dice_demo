@@ -165,6 +165,16 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
     # string such as "false" cannot silently read as true.
     if "enabled" in llm and not isinstance(llm["enabled"], bool):
         raise ProfileError("llm.enabled must be boolean")
+    if "reasoning_effort" in llm:
+        effort = llm["reasoning_effort"]
+        if not isinstance(effort, str) or effort.strip().lower() not in {
+            "none",
+            "low",
+            "high",
+            "max",
+        }:
+            raise ProfileError("llm.reasoning_effort must be one of none/low/high/max")
+        llm["reasoning_effort"] = effort.strip().lower()
     # Failure diagnosis is local-only since 2026-09-14; its configuration keys
     # are refused loudly instead of being silently ignored as dead config.
     for removed in (
