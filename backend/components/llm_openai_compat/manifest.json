@@ -8,8 +8,7 @@
   "capabilities": [
     "llm.openai_chat",
     "llm.multimodal_images",
-    "llm.structured_verify",
-    "llm.failure_diagnosis"
+    "llm.structured_verify"
   ],
   "config": "config.json"
 }

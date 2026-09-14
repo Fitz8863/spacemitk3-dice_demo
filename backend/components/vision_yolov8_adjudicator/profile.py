@@ -161,15 +161,23 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         raise ProfileError("llm must be an object")
     _required_string(llm.get("system_prompt"), "llm.system_prompt")
     _required_string(llm.get("user_prompt_template"), "llm.user_prompt_template")
-    # ``enabled`` gates pre-winner verification, ``diagnosis_enabled`` splits off
-    # the failure-diagnosis LLM path (absent means "follow enabled").  Both are
-    # validated so a quoted string such as "false" cannot silently read as true.
-    for switch in ("enabled", "diagnosis_enabled"):
-        if switch in llm and not isinstance(llm[switch], bool):
-            raise ProfileError(f"llm.{switch} must be boolean")
-    for prompt_field in ("diagnosis_system_prompt", "diagnosis_user_prompt_template"):
-        if prompt_field in llm:
-            _required_string(llm.get(prompt_field), f"llm.{prompt_field}")
+    # ``enabled`` gates pre-winner verification.  It is validated so a quoted
+    # string such as "false" cannot silently read as true.
+    if "enabled" in llm and not isinstance(llm["enabled"], bool):
+        raise ProfileError("llm.enabled must be boolean")
+    # Failure diagnosis is local-only since 2026-09-14; its configuration keys
+    # are refused loudly instead of being silently ignored as dead config.
+    for removed in (
+        "diagnosis_enabled",
+        "diagnosis_system_prompt",
+        "diagnosis_user_prompt_template",
+        "diagnosis_allowed_reason_codes",
+    ):
+        if removed in llm:
+            raise ProfileError(
+                f"llm.{removed} was removed; failure diagnosis is produced from local "
+                "detector evidence and no longer calls the LLM"
+            )
     outcomes = llm.get("allowed_outcomes")
     if (
         not isinstance(outcomes, list)
@@ -221,10 +229,6 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
             raise ProfileError(f"timeouts.{field} must be a positive number")
         normalized_timeouts[field] = float(value)
     profile["timeouts"] = normalized_timeouts
-    if "diagnosis_allowed_reason_codes" in llm:
-        reasons = llm["diagnosis_allowed_reason_codes"]
-        if not isinstance(reasons, list) or not reasons or not all(isinstance(item, str) and item.strip() for item in reasons):
-            raise ProfileError("llm.diagnosis_allowed_reason_codes must be a non-empty string array")
 
     lifecycle = profile.get("lifecycle", {})
     if not isinstance(lifecycle, dict):

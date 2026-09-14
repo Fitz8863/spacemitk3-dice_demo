@@ -17,6 +17,11 @@ class RuleError(ValueError):
     """Raised when an observation, rule, or adjudication decision is invalid."""
 
 
+# Known diagnosis vocabulary.  Since 2026-09-14 the local evidence rules are
+# the only producer, and they emit INCOMPLETE_OBJECTS / NO_OBJECTS_DETECTED /
+# SCENE_GEOMETRY_UNCLEAR / UNSTABLE_DETECTION; the image-only codes
+# (OVERLAPPING_OBJECTS / LOW_LIGHT / OCCLUDED) stay in the guard so a legacy
+# or foreign payload still maps to a known code instead of UNKNOWN.
 _DIAGNOSIS_REASON_CODES = {
     "INCOMPLETE_OBJECTS",
     "OVERLAPPING_OBJECTS",

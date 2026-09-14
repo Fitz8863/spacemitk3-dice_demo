@@ -1,10 +1,10 @@
 """OpenAI-compatible chat LLM adapter (cloud APIs / vLLM / llama.cpp servers).
 
 Pure HTTP client with no local lifecycle: the endpoint is deployment
-config.  Implements the arena ``LlmProvider`` contract — bounded, structured
-multimodal requests (``verify`` / ``diagnose``) — and deliberately knows
-nothing about any game's rules; prompts, allowed outcomes and timeouts
-arrive with each call.
+config.  Implements the arena ``LlmProvider`` contract — one bounded,
+structured multimodal request (``verify``) — and deliberately knows nothing
+about any game's rules; prompts, allowed outcomes and timeouts arrive with
+each call.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-from core.llm import DiagnosisResult, LlmProvider, VerificationResult
+from core.llm import LlmProvider, VerificationResult
 from core.tts_config import config_value, load_component_config
 
 COMPONENT_DIR = Path(__file__).resolve().parent
@@ -148,52 +148,6 @@ class LlmOpenAiCompat(LlmProvider):
             return VerificationResult("failure", error=str(exc))
         except (OSError, ValueError, TypeError, KeyError, IndexError, json.JSONDecodeError) as exc:
             return VerificationResult("failure", error=str(exc) or "LLM request failed")
-
-    def diagnose(
-        self,
-        *,
-        image_path: str | Path | None = None,
-        image_paths: Sequence[str | Path] | None = None,
-        system_prompt: str,
-        user_prompt: str,
-        allowed_reason_codes: Sequence[str],
-        timeout_seconds: float,
-        model: str | None = None,
-    ) -> DiagnosisResult:
-        try:
-            image_parts, image_error = self._image_parts(image_path, image_paths)
-            if image_error:
-                return DiagnosisResult("failure", error=image_error)
-            payload = {
-                "model": model or self._model or "",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": [{"type": "text", "text": user_prompt}, *image_parts]},
-                ],
-            }
-            response = self._post(self._chat_url, payload, self._headers(), timeout_seconds)
-            parsed = json.loads(self._extract_content(response))
-            if not isinstance(parsed, Mapping):
-                return DiagnosisResult("failure", error="LLM diagnosis must be a JSON object")
-            reason = parsed.get("reason_code")
-            message = parsed.get("message")
-            retry = parsed.get("retry", True)
-            allowed = set(allowed_reason_codes)
-            if not isinstance(reason, str) or reason not in allowed:
-                return DiagnosisResult("failure", error="LLM diagnosis returned unknown reason_code")
-            if not isinstance(message, str) or not message.strip():
-                return DiagnosisResult("failure", error="LLM diagnosis has no message")
-            if not isinstance(retry, bool):
-                return DiagnosisResult("failure", error="LLM diagnosis retry must be boolean")
-            return DiagnosisResult("success", reason_code=reason, message=message.strip(), retry=retry)
-        except (TimeoutError, socket.timeout) as exc:
-            return DiagnosisResult("timeout", error=str(exc) or "LLM diagnosis request timed out")
-        except urlerror.URLError as exc:
-            if isinstance(exc.reason, (TimeoutError, socket.timeout)) or "timed out" in str(exc.reason).lower():
-                return DiagnosisResult("timeout", error=str(exc.reason) or "LLM diagnosis request timed out")
-            return DiagnosisResult("failure", error=str(exc))
-        except (OSError, ValueError, TypeError, KeyError, IndexError, json.JSONDecodeError) as exc:
-            return DiagnosisResult("failure", error=str(exc) or "LLM diagnosis failed")
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}

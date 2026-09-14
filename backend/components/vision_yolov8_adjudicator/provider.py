@@ -422,24 +422,6 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         return float(fallback)
 
     @staticmethod
-    def _diagnosis_llm_enabled(llm_cfg: Mapping[str, Any], verification_enabled: bool) -> bool:
-        """Resolve whether the failure-diagnosis LLM path may run.
-
-        Failure diagnosis and pre-winner verification are separate concerns: a
-        deployment may want the multimodal judge on the stable frame while
-        answering failures from the local evidence rules alone, which already
-        know the per-side counts and divider state.  ``llm.diagnosis_enabled``
-        splits the single historical ``llm.enabled`` switch; when it is absent
-        the diagnosis follows ``llm.enabled``, so every existing profile keeps
-        its behaviour.  A profile may also enable diagnosis without
-        verification (``enabled: false`` + ``diagnosis_enabled: true``).
-        """
-        value = llm_cfg.get("diagnosis_enabled")
-        if isinstance(value, bool):
-            return value
-        return bool(verification_enabled)
-
-    @staticmethod
     def _resident_mode(profile: Mapping[str, Any]) -> bool:
         """Return whether the deployment keeps camera/runtime processes warm."""
         configured: Mapping[str, Any] = {}
@@ -463,13 +445,18 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         request: VisionAdjudicationRequest,
         profile: Mapping[str, Any],
         observations: list[Mapping[str, Any]],
-        strict_snapshot_roots: Mapping[str, Path],
-        cleanup_paths: set[Path],
         on_event: Callable[[dict[str, Any]], None],
-        on_log: Callable[[str], None],
-        deadline: float,
     ) -> dict[str, Any]:
-        """Diagnose a failed YOLO round without ever declaring a winner."""
+        """Explain a failed YOLO round from detector evidence, never a winner.
+
+        The reason comes from the local evidence rules only: the runtime and
+        this provider already know the per-side object counts, whether the
+        divider was located and whether any frame qualified, which is all the
+        player-facing hint needs.  The multimodal LLM diagnosis path was
+        removed on 2026-09-14 (it cost one image request per failure while the
+        local rules already named the cause), so ``source`` is always
+        ``local``.
+        """
         from components.vision_yolov8_adjudicator.rules import diagnose_detection_failure
 
         normalized_observations = [normalize_observation(profile, item) for item in observations]
@@ -478,79 +465,8 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             for key in ("participants", "detections", "divider", "width", "height"):
                 if key in item and key not in evidence:
                     evidence[key] = item[key]
-        local = diagnose_detection_failure(profile, evidence)
-        cfg = profile.get("llm", {}) if isinstance(profile.get("llm"), Mapping) else {}
-        llm_enabled = bool(cfg.get("enabled", True))
-        diagnosis_enabled = self._diagnosis_llm_enabled(cfg, llm_enabled)
-        llm_status = "disabled"
-        diagnosis = dict(local)
-        paths: list[Path] = []
-        for item in observations:
-            snapshot = item.get("snapshot")
-            raw = snapshot.get("path") if isinstance(snapshot, Mapping) else None
-            if not isinstance(raw, str) or not raw.strip() or not Path(raw).is_absolute():
-                continue
-            path = Path(raw).resolve()
-            view_id = str(item.get("view_id", "default"))
-            if view_id in strict_snapshot_roots:
-                try:
-                    path = _snapshot_path(item, strict_snapshot_roots[view_id])
-                except Exception:
-                    continue
-            if path.suffix.lower() in {".jpg", ".jpeg", ".png"} and path.is_file():
-                paths.append(path)
-                cleanup_paths.add(path)
-        remaining = max(0.0, deadline - time.monotonic())
-        verifier = self._round_llm(request)
-        diagnosis_available = paths and verifier is not None and hasattr(verifier, "diagnose")
-        if diagnosis_enabled and diagnosis_available and remaining > 0:
-            summary = json.dumps(
-                {"detected_counts": local.get("detected_counts", {}), "reason_code": local.get("reason_code")},
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            system_prompt = str(cfg.get("diagnosis_system_prompt") or "You are a visual inspection diagnostician. Do not declare a winner.")
-            template = str(cfg.get("diagnosis_user_prompt_template") or "Detector summary: {detector_summary}")
-            user_prompt = template.replace("{detector_summary}", summary)
-            allowed = cfg.get("diagnosis_allowed_reason_codes")
-            if not isinstance(allowed, list) or not allowed:
-                allowed = [
-                    "INCOMPLETE_OBJECTS", "OVERLAPPING_OBJECTS", "LOW_LIGHT", "OCCLUDED",
-                    "NO_OBJECTS_DETECTED", "UNSTABLE_DETECTION", "SCENE_GEOMETRY_UNCLEAR", "UNKNOWN",
-                ]
-            llm_timeout = min(
-                self._llm_timeout(profile, 3.0),
-                remaining,
-            )
-            try:
-                result = verifier.diagnose(
-                    image_paths=paths,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    allowed_reason_codes=allowed,
-                    timeout_seconds=llm_timeout,
-                    model=str(cfg.get("model") or "").strip() or None,
-                )
-                llm_status = str(getattr(result, "status", "failure"))
-                if llm_status == "success" and getattr(result, "reason_code", None) and getattr(result, "message", None):
-                    diagnosis.update({
-                        "reason_code": result.reason_code,
-                        "message": result.message,
-                        "retry": bool(getattr(result, "retry", True)),
-                    })
-                    diagnosis["source"] = "llm"
-                else:
-                    diagnosis["source"] = "yolo_fallback"
-            except Exception as exc:
-                llm_status = "failure"
-                diagnosis["source"] = "yolo_fallback"
-                on_log(f"[vision] diagnosis LLM failed: {exc}")
-        elif diagnosis_enabled and diagnosis_available:
-            llm_status = "timeout"
-            diagnosis["source"] = "yolo_fallback"
-        else:
-            diagnosis["source"] = "yolo_fallback" if diagnosis_enabled else "disabled"
-        diagnosis["llm_status"] = llm_status
+        diagnosis = dict(diagnose_detection_failure(profile, evidence))
+        diagnosis["source"] = "local"
         diagnosis["retry"] = True
         result = {
             "adjudicated": False,
@@ -775,11 +691,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     request,
                     profile,
                     diagnostic_observations,
-                    strict_snapshot_roots,
-                    cleanup_paths,
                     on_event,
-                    on_log,
-                    deadline,
                 )
                 on_event({"event": "complete", "phase": "complete"})
                 round_completed = True
@@ -815,11 +727,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     request,
                     profile,
                     ordered,
-                    strict_snapshot_roots,
-                    cleanup_paths,
                     on_event,
-                    on_log,
-                    deadline,
                 )
                 on_event({"event": "complete", "phase": "complete"})
                 round_completed = True

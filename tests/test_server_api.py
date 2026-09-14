@@ -126,9 +126,6 @@ class DummyLlm(LlmProvider):
     def verify(self, **kwargs):
         raise NotImplementedError
 
-    def diagnose(self, **kwargs):
-        raise NotImplementedError
-
 
 def _write_hot_reload_games_root(tmp_path, text):
     """A minimal self-contained dice manifest pointing at the local dummy."""

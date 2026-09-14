@@ -21,7 +21,7 @@ if str(BACKEND) not in sys.path:
 
 from components.llm_openai_compat.provider import LlmOpenAiCompat  # noqa: E402
 from core.components import Component, ComponentRegistry  # noqa: E402
-from core.llm import DiagnosisResult, LlmProvider, VerificationResult  # noqa: E402
+from core.llm import LlmProvider, VerificationResult  # noqa: E402
 
 TEST_CONFIG = {
     "endpoint": "https://llm.test/v1",
@@ -219,55 +219,6 @@ def test_verify_urlerror_without_timeout_reason_is_failure(tmp_path):
     assert result.status == "failure"
 
 
-def test_diagnose_parses_reason_code_and_message(tmp_path):
-    image = tmp_path / "diagnostic.jpg"
-    image.write_bytes(b"jpeg-bytes")
-
-    def fake_post(url, payload, headers, timeout):
-        assert "detector summary" in payload["messages"][1]["content"][0]["text"].lower()
-        return {
-            "choices": [{"message": {"content":
-                '{"reason_code":"OVERLAPPING_OBJECTS","message":"骰子可能叠放。","retry":true}'
-            }}]
-        }
-
-    result = _provider(post=fake_post).diagnose(
-        image_path=image,
-        system_prompt="Diagnose only.",
-        user_prompt="Detector summary: LEFT=4; RIGHT=5",
-        allowed_reason_codes=["OVERLAPPING_OBJECTS", "UNKNOWN"],
-        timeout_seconds=1,
-    )
-    assert result.status == "success"
-    assert result.reason_code == "OVERLAPPING_OBJECTS"
-    assert result.message == "骰子可能叠放。"
-    assert result.retry is True
-
-
-@pytest.mark.parametrize("content", [
-    '{"reason_code":"NOT_ALLOWED","message":"x","retry":true}',
-    '{"reason_code":"OVERLAPPING_OBJECTS","retry":true}',
-    '{"reason_code":"OVERLAPPING_OBJECTS","message":"x","retry":"yes"}',
-    "not json",
-])
-def test_diagnose_invalid_responses_are_failures(tmp_path, content):
-    image = tmp_path / "diagnostic.jpg"
-    image.write_bytes(b"jpeg-bytes")
-
-    def fake_post(url, payload, headers, timeout):
-        return {"choices": [{"message": {"content": content}}]}
-
-    result = _provider(post=fake_post).diagnose(
-        image_path=image,
-        system_prompt="Diagnose.",
-        user_prompt="Summary",
-        allowed_reason_codes=["OVERLAPPING_OBJECTS"],
-        timeout_seconds=1,
-    )
-    assert result.status == "failure"
-    assert result.reason_code is None
-
-
 def test_extract_content_accepts_array_of_text_parts():
     response = {"choices": [{"message": {"content": [
         {"type": "text", "text": '{"winner":'},
@@ -330,4 +281,3 @@ def test_provider_satisfies_the_abstract_contract():
     assert isinstance(LlmOpenAiCompat(), LlmProvider)
     # Result types are part of the core contract.
     assert VerificationResult("success", outcome="LEFT").outcome == "LEFT"
-    assert DiagnosisResult("success", reason_code="UNKNOWN").retry is True
