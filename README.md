@@ -141,12 +141,11 @@ python3 backend/tts_debug.py <provider_id>
 
 ## 语音输入（ASR 语音确认）
 
-除按键外，游戏可开启语音作为第二种意图输入。骰子游戏当前在 `rules` 状态支持：对着麦克风说「确认」等价于按绿色按钮（提交 `confirm` 意图），「重复/再来一遍」重播规则，「返回/退出」退出。
+除按键外，语音是第二种意图输入：**是否启用由全局 `asr_enabled` 唯一决定，游戏 manifest 只声明自己的触发词**。骰子游戏当前在 `rules` 状态支持：对着麦克风说「确认」等价于按绿色按钮（提交 `confirm` 意图），「重复/再来一遍」重播规则，「返回/退出」退出。
 
 ```jsonc
-// backend/games/dice/manifest.json —— 游戏层：开关与触发词
+// backend/games/dice/manifest.json —— 游戏层：触发词
 "asr": {
-  "enabled": true,                       // 游戏级开关，热加载（改后下一局生效）
   "phrases": {                           // 意图 → 触发词表，可自由增删
     "confirm": ["确认"],
     "repeat": ["重复", "再来一遍"],
@@ -155,7 +154,7 @@ python3 backend/tts_debug.py <provider_id>
 }
 // backend/config.json —— 全局层：识别引擎与总闸
 "providers": { "asr": "asr_zipformer" },
-"asr_enabled": true                      // 总闸：false 时所有游戏语音失效
+"asr_enabled": true                      // 唯一开关：false 时所有游戏语音失效
 ```
 
 工作方式：
@@ -164,7 +163,7 @@ python3 backend/tts_debug.py <provider_id>
 - **播报闸**：语音输入只在台词播报结束后有效——TTS 播报期间说的触发词会被忽略（防止游戏自己的播报触发自己）。不想等播报就按实体按键，按键不受此限制。
 - 触发词做子串匹配（识别文本去空格转小写后包含触发词即命中），所以「那我就确认了」也能确认。词表应选日常口语中不常出现的词，避免播报结束后旁人闲聊误触发。
 - 引擎零侵入：语音意图与按键走同一条 `submit_intent` 路径，不适配当前状态的词会被静默忽略（如裁决阶段说「确认」）。
-- 新游戏/新 provider：功能包继承 `AsrProvider`（`core/asr.py`）实现 `start_session`/`stop_session`，游戏 manifest 声明 `asr` 节即可；ASR 故障不影响按键流程。
+- 新游戏/新 provider：功能包继承 `AsrProvider`（`core/asr.py`）实现 `start_session`/`stop_session`，游戏 manifest 声明 `asr.phrases` 词表即可（开关继承全局 `asr_enabled`）；ASR 故障不影响按键流程。
 
 ## K3 后端接口
 

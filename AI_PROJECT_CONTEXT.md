@@ -116,11 +116,19 @@ x=548（比例 **0.4281**），而旧的固定切分在 x=640，两者相差 92p
 `submit_intent` 注入，与按键同路，引擎零改动）。**播报闸**：speech 指令发出即登记
 `_active_speech`，前端现在对**所有**指令回执 `speech_done`（不再仅 `await:true`，
 回执统一在 `playDirective` 的 finally 块），无回执 90s 惰性过期——播报期间语音输入
-无效，按键不受限。开关 = 游戏 manifest `asr.enabled`（热加载）；麦克风跟随系统默认
+无效，按键不受限。开关 = 游戏 manifest `asr.enabled`（热加载；**2026-09-14 起作废**，
+见下）；麦克风跟随系统默认
 输入设备。已在板上验证：会话拉起/EP 模型加载/播报闸登记与释放/取消回合自动停麦/
 开关热切换/进程无泄漏；真实人声「确认」跳转待人工验证。已知边界：server 被 SIGKILL
 时 setsid 的 ASR 子进程可能残留（SIGTERM 路径干净停麦）；ASR EP 线程与主进程同在
 X100 0-7 簇（RTF≈0.24 占用可接受，组件 config 预留 `cpu_affinity` 旋钮）。
+
+2026-09-14 起 **游戏级语音开关 `asr.enabled` 已移除**（上面"开关 = 游戏 manifest
+`asr.enabled`"的说法作废）：语音开关的唯一来源是全局 `asr_enabled`，游戏 manifest 的
+`asr` 节只剩 `phrases` 词表。`validate_asr_section` 不再读该键，残留的 `enabled`
+**静默丢弃而非拒载**（旧检出/热加载版本错配时不会把整个骰子游戏从列表里抹掉）；
+生效值由 `with_global_defaults` 从全局写入，所以 `asr_bridge` 门控与 `/api/games`
+投影读到的仍是同一个键、下游零改动。代价：不再能"单个游戏关语音、别的游戏开着"。
 
 2026-09-03（晚）起 **ASR 引擎改为进程级常驻**（上一段"按回合 spawn/停麦"的描述
 以此为准作废）：`asr_zipformer` 的 `_AsrEngine` 常驻 `arecord | stream_asr` 进程对，
@@ -219,7 +227,8 @@ voice 参数即音色 id（单说话人，仅 `"0"`/`"default"`），speed 真�
 
 2026-09-02（晚）起新增**全局配置层**：`backend/config.json`（校验器 `core/arena_config.py`）
 持有部署级默认——四个引擎槽位（tts_local/tts_remote/asr/vision_adjudicator）、默认
-voice/speed、语音总闸 `asr_enabled`（与游戏级 `asr.enabled` AND）。优先级阶梯：台词级
+voice/speed、语音总闸 `asr_enabled`（唯一开关；2026-09-14 起游戏级 `asr.enabled`
+已移除）。优先级阶梯：台词级
 钉死 > 游戏 manifest 槽位 > 全局；游戏不写槽位即继承全局（dice manifest 已瘦身，
 不再声明 providers/voice/speed）。**本地 TTS 引擎启动钉死**：main() 用
 `resolve_local_tts_pin`（全局+启用游戏）解析唯一本地引擎，冲突拒绝启动，运行期改

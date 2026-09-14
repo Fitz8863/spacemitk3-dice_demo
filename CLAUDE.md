@@ -42,8 +42,10 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
   **回合与浏览器绑定（2026-09-03 起）**：SSE 流是浏览器的存在信号——最后一个消费者
   断开（关页/断网/休眠）后 45 秒宽限（容忍 EventSource 自动重连）即自动取消回合并
   停麦；前端 pagehide 时 sendBeacon 直接取消（快路径）。物理按键不受此机制影响。
-- **语音输入通道（2026-09-02 起）**：游戏 manifest 的 `asr` 节（`enabled` + `phrases`
-  意图→触发词表，热加载）+ `providers.asr` 槽位开启语音确认；`core/asr_bridge.py` 在
+- **语音输入通道（2026-09-02 起）**：全局 `asr_enabled`（唯一开关，2026-09-14 起游戏级
+  `asr.enabled` 已移除，残留的键被静默忽略）+ `providers.asr` 槽位开启语音确认，游戏
+  manifest 的 `asr` 节只提供 `phrases` 意图→触发词表（热加载）；
+  `core/asr_bridge.py` 在
   回合期间持有 ASR 会话，识别句归一化子串匹配后走 `submit_intent` 注入（与按键同路，
   引擎无改动）。**播报闸**：speech 指令发出即登记、`speech_done` 回执释放（前端对
   所有指令回执，不再仅 `await:true`；无回执 90s 惰性过期），播报期间语音输入无效，
