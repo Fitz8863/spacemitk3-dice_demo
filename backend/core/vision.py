@@ -60,6 +60,33 @@ class VisionAdjudicatorProvider(VisionProvider):
         """Run one bounded adjudication and return its final business result."""
         raise NotImplementedError
 
+    def start_streaming(
+        self,
+        profile: Mapping[str, Any],
+        *,
+        on_log: Callable[[str], None] | None = None,
+    ) -> bool:
+        """Bring this game's camera/RTSP stream up without running inference.
+
+        The lifecycle counterpart of :meth:`adjudicate`: entering a game should
+        already show the table, while the detector only works during the
+        adjudication phase.  A provider whose camera is not resident returns
+        False, which the caller treats as "this game has no warm stream".
+
+        Optional by design (a concrete fallback, not an abstract method) so
+        fixture and cloud adapters keep working untouched.
+        """
+        return False
+
+    def stop_streaming(self) -> None:
+        """Tear down the stream :meth:`start_streaming` brought up.
+
+        Only called when the deployment asks a stream to follow the game's
+        lifetime; a resident deployment never reaches it.  Best-effort like
+        ``shutdown()``: it must never raise at a round boundary.
+        """
+        return None
+
 
 class VisionLocalizerProvider(VisionProvider):
     """Visual adapter that locates targets for spatial perception.

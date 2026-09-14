@@ -2158,3 +2158,125 @@ def test_missing_llm_provider_disables_verification_not_the_round(tmp_path: Path
     assert result["decision_source"] == "yolo_only"
     assert result["verification"]["status"] == "disabled"
     assert any("no LLM provider attached" in line for line in logs)
+
+
+# ---- game-entry streaming: preload the camera, reuse it when the round runs --
+
+class _StreamRuntime:
+    """Runtime double that records lifecycle calls and serves one observation."""
+
+    def __init__(self, view_id="default", events=None):
+        self.view_id = view_id
+        self.commands: list[dict] = []
+        self.start_calls = 0
+        self.stop_calls = 0
+        self._events = events if events is not None else []
+        self.start_kwargs: dict = {}
+
+    def start(self, *args, **kwargs):
+        self.start_calls += 1
+        self.start_kwargs = dict(kwargs)
+        self._events = list(self._events)
+
+    def send(self, command):
+        self.commands.append(dict(command))
+
+    def events(self):
+        return iter(self._events)
+
+    def stop(self):
+        self.stop_calls += 1
+
+
+def _resident_profile(events=None):
+    return {
+        "game_id": "x",
+        "runtime": {"mode": "resident", "prewarm_camera": True},
+        "vision": {"stable_frames": 1, "participants": ["LEFT", "RIGHT"]},
+        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+
+
+def test_start_streaming_spawns_a_prewarmed_runtime_once():
+    runtime = _StreamRuntime()
+    provider = VisionYolov8Adjudicator(runtime_factory=lambda _vid: runtime)
+    assert provider.start_streaming(_resident_profile()) is True
+    assert runtime.start_calls == 1
+    # Prewarm is what keeps capture/RTSP up without entering the detector.
+    assert runtime.start_kwargs.get("prewarm") is True
+    # Entering the game again must reuse the warm process, not restart it.
+    assert provider.start_streaming(_resident_profile()) is True
+    assert runtime.start_calls == 1
+
+
+def test_start_streaming_survives_a_broken_runtime():
+    class Boom:
+        def start(self, *args, **kwargs):
+            raise RuntimeError("camera busy")
+
+        def stop(self):
+            pass
+
+    provider = VisionYolov8Adjudicator(runtime_factory=lambda _vid: Boom())
+    # A busy or unplugged camera must not break game entry.
+    assert provider.start_streaming(_resident_profile()) is False
+
+
+def test_start_streaming_rebuilds_when_the_launch_signature_changes():
+    created: list[_StreamRuntime] = []
+
+    def factory(view_id="default"):
+        runtime = _StreamRuntime(view_id)
+        created.append(runtime)
+        return runtime
+
+    provider = VisionYolov8Adjudicator(runtime_factory=factory)
+    provider.start_streaming(_resident_profile())
+    changed = _resident_profile()
+    changed["vision"] = dict(changed["vision"], stable_frames=7)
+    provider.start_streaming(changed)
+    assert len(created) == 2
+    # The stale process is released rather than left holding the camera.
+    assert created[0].stop_calls == 1
+
+
+def test_stop_streaming_releases_the_cached_runtime():
+    runtime = _StreamRuntime()
+    provider = VisionYolov8Adjudicator(runtime_factory=lambda _vid: runtime)
+    provider.start_streaming(_resident_profile())
+    provider.stop_streaming()
+    assert runtime.stop_calls == 1
+    # The next game entry starts a fresh process.
+    provider.start_streaming(_resident_profile())
+    assert runtime.start_calls == 2
+
+
+def test_adjudication_reuses_the_stream_started_at_game_entry(tmp_path: Path):
+    snapshot = tmp_path / "stable.jpg"
+    snapshot.write_bytes(b"jpeg")
+    events = [
+        {"event": "observation", "stable": True, "yolo_outcome": "LEFT",
+         "snapshot": {"path": str(snapshot)}},
+    ]
+    runtime = _StreamRuntime(events=events)
+    provider = VisionYolov8Adjudicator(runtime_factory=lambda _vid: runtime)
+
+    profile = _resident_profile()
+    assert provider.start_streaming(profile) is True
+    assert runtime.start_calls == 1
+
+    result = provider.adjudicate(
+        VisionAdjudicationRequest("x", profile, "r1", 2),
+        on_log=lambda _line: None,
+        on_event=lambda _event: None,
+        is_cancelled=lambda: False,
+    )
+
+    # The whole point of game-entry startup: the round finds the camera already
+    # warm and never pays spawn/model-load latency inside its own budget.
+    assert runtime.start_calls == 1
+    assert result["outcome"]["value"] == "LEFT"
+    assert [c["command"] for c in runtime.commands] == [
+        "START_ADJUDICATION", "FINAL_RESULT", "STOP_ADJUDICATION",
+    ]

@@ -43,6 +43,7 @@ from core.games import (
 )
 from core.jobs import ComponentJob
 from core.asr_bridge import AsrIntentBridge
+from core.vision_stream import VisionStreamManager
 from core.arena_config import (
     ARENA_CONFIG_PATH,
     ArenaConfigError,
@@ -570,6 +571,12 @@ def _sse_stream_closed(round_id: str) -> None:
 
 ASR_BRIDGE = AsrIntentBridge(components=COMPONENTS)
 
+# Vision streaming lifecycle.  Entering a game brings its camera/RTSP stream up
+# before any adjudication runs, so the table is already visible during the
+# rules/ready states and the round does not pay the spawn cost.  Whether the
+# stream outlives the game is the deployment-wide ``vision_always_on`` setting.
+VISION_STREAM = VisionStreamManager(components=COMPONENTS)
+
 # Screen-level ASR events (standby wake / game selection): no round is
 # running on those screens, so there is no per-round SSE stream to ride on.
 # A tiny global event bus serves what the mic heard to the polling frontend
@@ -751,6 +758,13 @@ def create_round(game_id: str) -> GameRound:
         ASR_BRIDGE.start_for_round(round_)
     except Exception as exc:
         print(f"[asr] failed to start for round {round_.id[:8]}: {exc!r}", flush=True)
+    # Entering the game is also when its camera comes up.  Streaming is
+    # best-effort: a broken camera must never block game entry, because
+    # adjudication starts the runtime lazily and reports the real error there.
+    try:
+        VISION_STREAM.start_for_round(round_)
+    except Exception as exc:
+        print(f"[vision] failed to start streaming for round {round_.id[:8]}: {exc!r}", flush=True)
     return round_
 
 
@@ -768,6 +782,11 @@ def _shutdown_runtime_components() -> None:
         ASR_BRIDGE.stop()
     except Exception as exc:
         print(f"[asr] bridge stop failed: {exc!r}", flush=True)
+    # The vision stream may outlive individual rounds, but never the process.
+    try:
+        VISION_STREAM.stop()
+    except Exception as exc:
+        print(f"[vision] stream stop failed: {exc!r}", flush=True)
     with jobs_lock:
         active = jobs.get(active_job_id) if active_job_id else None
     if active is not None and active.status in {"queued", "running"}:

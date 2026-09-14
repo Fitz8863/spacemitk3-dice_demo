@@ -1026,6 +1026,77 @@ def test_round_creation_attaches_asr_synchronously(tmp_path, monkeypatch):
     assert bridge.started == [round_.id]  # attached before the call returned
 
 
+# ---- round creation also brings the game camera up ----
+
+class _RecordingVisionStream:
+    """Vision stream double: records entry calls and can fail on demand."""
+
+    def __init__(self, *, raises: Exception | None = None) -> None:
+        self.started: list[str] = []
+        self.stop_calls = 0
+        self._raises = raises
+
+    def start_for_round(self, round_) -> bool:
+        if self._raises is not None:
+            raise self._raises
+        self.started.append(round_.id)
+        return True
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+
+def test_round_creation_starts_vision_streaming_synchronously(tmp_path, monkeypatch):
+    """Entering a game opens its camera/RTSP stream, without waiting for the
+    first adjudication phase to do it."""
+    _patch_round_environment(monkeypatch, tmp_path)
+    stream = _RecordingVisionStream()
+    monkeypatch.setattr(server, "VISION_STREAM", stream)
+
+    round_ = server.create_round("dice")
+
+    assert round_.state == "rules"
+    assert stream.started == [round_.id]  # started before the call returned
+
+
+def test_round_creation_survives_a_broken_camera(tmp_path, monkeypatch):
+    """A camera failure must never stop a player from entering a game."""
+    _patch_round_environment(monkeypatch, tmp_path)
+    stream = _RecordingVisionStream(raises=RuntimeError("camera busy"))
+    monkeypatch.setattr(server, "VISION_STREAM", stream)
+
+    round_ = server.create_round("dice")
+
+    assert round_.state == "rules"
+
+
+def test_shutdown_stops_the_vision_stream(monkeypatch):
+    """The stream may outlive individual games, but never the process."""
+    class Provider:
+        id = "vision_dummy"
+        type = "vision"
+        role = "adjudicator"
+
+        def shutdown(self):
+            pass
+
+    class Registry:
+        def ids(self):
+            return []
+
+        def get(self, component_id):
+            return Provider()
+
+    stream = _RecordingVisionStream()
+    monkeypatch.setattr(server, "COMPONENTS", Registry())
+    monkeypatch.setattr(server, "VISION_STREAM", stream)
+    monkeypatch.setattr(server, "active_job_id", None)
+
+    server._shutdown_runtime_components()
+
+    assert stream.stop_calls == 1
+
+
 # ---- startup prewarm of the resident ASR engine ----
 
 

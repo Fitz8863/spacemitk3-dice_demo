@@ -296,6 +296,11 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         # single-use snapshot after verification.
         self._runtime_snapshot_dirs: dict[str, Path] = {}
         self._runtime_signatures: dict[str, str] = {}
+        # The cache is now reachable from two entry points -- a game-entry
+        # ``start_streaming`` and an adjudication round -- and multi-view
+        # profiles spawn their runtimes concurrently, so every read/write of
+        # the cache/signature/snapshot-root triple is serialized here.
+        self._runtime_lock = threading.RLock()
 
     def health(self) -> dict[str, Any]:
         """Report deployment readiness of this provider's runtime binary.
@@ -332,19 +337,19 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         provider = getattr(request, "llm_provider", None)
         return provider if provider is not None else self.verifier
 
-    def shutdown(self) -> None:
-        """Stop all resident runtimes owned by this provider instance.
+    def _stop_all_runtimes(self) -> None:
+        """Release every cached runtime and its private snapshot root.
 
-        Resident mode intentionally keeps camera/RTSP workers alive between
-        rounds, but those workers must not outlive the backend process.  The
-        server calls this hook during SIGTERM cleanup so a restart does not
-        leave an orphan holding the camera device.
+        Best-effort by contract: this runs at process shutdown and at a
+        game-lifetime round boundary, where a partially dead runtime must not
+        turn cleanup into a second failure.
         """
-        runtimes = list(self._runtime_cache.items())
-        snapshot_dirs = list(self._runtime_snapshot_dirs.values())
-        self._runtime_cache.clear()
-        self._runtime_snapshot_dirs.clear()
-        self._runtime_signatures.clear()
+        with self._runtime_lock:
+            runtimes = list(self._runtime_cache.items())
+            snapshot_dirs = list(self._runtime_snapshot_dirs.values())
+            self._runtime_cache.clear()
+            self._runtime_snapshot_dirs.clear()
+            self._runtime_signatures.clear()
         import shutil
 
         for _view_id, runtime in runtimes:
@@ -358,6 +363,132 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 pass
         for root in snapshot_dirs:
             shutil.rmtree(root, ignore_errors=True)
+
+    def shutdown(self) -> None:
+        """Stop all resident runtimes owned by this provider instance.
+
+        Resident mode intentionally keeps camera/RTSP workers alive between
+        rounds, but those workers must not outlive the backend process.  The
+        server calls this hook during SIGTERM cleanup so a restart does not
+        leave an orphan holding the camera device.
+        """
+        self._stop_all_runtimes()
+
+    def stop_streaming(self) -> None:
+        """Stop the camera/RTSP stream started for the current game.
+
+        The game-lifetime counterpart of :meth:`start_streaming`: the manager
+        calls it when the deployment does not keep vision warm across games.
+        Identical work to ``shutdown()`` today, but kept as a separate name so
+        the two intents can diverge (for example releasing only the detector)
+        without touching callers.
+        """
+        self._stop_all_runtimes()
+
+    def _resolve_views(self, profile: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        """The view list a profile runs with, single-view fallback included."""
+        multi = profile.get("multi_view", {}) if isinstance(profile, Mapping) else {}
+        views = multi.get("views") if isinstance(multi, Mapping) and multi.get("enabled") else None
+        if not isinstance(views, list) or not views:
+            return [{"id": "default"}]
+        return [view for view in views if isinstance(view, Mapping)]
+
+    def _ensure_runtime(
+        self,
+        profile: Mapping[str, Any],
+        view_id: str,
+        on_log: Callable[[str], None],
+    ) -> Any:
+        """Return this view's runtime, starting or rebuilding it as needed.
+
+        The single place a resident YOLO process is created, shared by the
+        game-entry ``start_streaming`` and by ``adjudicate`` so a game that
+        preloaded its camera is never restarted when the round actually runs.
+        A cached runtime survives across rounds; a changed signature (model,
+        stable frames, confidence, camera, runtime block) invalidates it.
+        """
+        vid = str(view_id)
+        keep_warm = self._resident_mode(profile)
+        signature = self._runtime_signature(profile, vid)
+        with self._runtime_lock:
+            rt = self._runtime_cache.get(vid) if keep_warm else None
+            if rt is not None and self._runtime_signatures.get(vid) != signature:
+                try:
+                    stop = getattr(rt, "stop", None)
+                    if callable(stop):
+                        stop()
+                finally:
+                    self._runtime_cache.pop(vid, None)
+                    self._runtime_signatures.pop(vid, None)
+                    old_root = self._runtime_snapshot_dirs.pop(vid, None)
+                if old_root is not None:
+                    import shutil
+                    shutil.rmtree(old_root, ignore_errors=True)
+                rt = None
+            if rt is not None:
+                return rt
+            rt = self.runtime_factory(vid)
+            snapshot_dir = Path(tempfile.mkdtemp(prefix=f"vision-runtime-{vid}-"))
+            try:
+                rt.start(
+                    profile,
+                    vid,
+                    prewarm=True,
+                    snapshot_dir=snapshot_dir,
+                    on_log=on_log,
+                )
+            except TypeError:
+                # Keep injected test/fallback runtimes source-compatible
+                # while the production adapter receives the per-job
+                # directory above.
+                rt.start(profile, vid, prewarm=True)
+            if keep_warm:
+                self._runtime_cache[vid] = rt
+                self._runtime_snapshot_dirs[vid] = snapshot_dir
+                self._runtime_signatures[vid] = signature
+            return rt
+
+    def _snapshot_root_for(self, view_id: str) -> Path | None:
+        """This view's cached snapshot root, read under the cache lock.
+
+        The stream manager may tear the cache down from its watcher thread
+        while an adjudication is still winding down, so this read is locked
+        like every other access to the cache triple.
+        """
+        with self._runtime_lock:
+            return self._runtime_snapshot_dirs.get(view_id)
+
+    def start_streaming(
+        self,
+        profile: Mapping[str, Any],
+        *,
+        on_log: Callable[[str], None] | None = None,
+    ) -> bool:
+        """Start this game's camera/RTSP stream without running inference.
+
+        Called when a player enters a game, so the table is already visible
+        while the round is still in its rules/ready states.  The runtime is
+        spawned in ``--prewarm`` mode: the camera and RTSP publisher come up
+        and the detector session is loaded, but ``adjudication_active`` stays
+        false, so no OpenCL preprocessing and no inference run until the
+        adjudication phase sends ``START_ADJUDICATION``.
+
+        Failures are swallowed on purpose.  Entering a game must never break
+        because a camera is busy or unplugged; adjudication still starts the
+        runtime lazily and reports the real error in its own phase.
+        """
+        log = on_log or (lambda _line: None)
+        if not isinstance(profile, Mapping):
+            return False
+        started = False
+        for view in self._resolve_views(profile):
+            vid = str(view.get("id", "default"))
+            try:
+                self._ensure_runtime(profile, vid, log)
+                started = True
+            except Exception as exc:
+                log(f"[vision] stream start failed for view {vid}: {exc!r}")
+        return started
 
     @staticmethod
     def _runtime_signature(profile: Mapping[str, Any], view_id: str) -> str:
@@ -548,43 +679,13 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         round_started = False
         try:
             def start(v):
-                vid = str(v.get("id", "default")); rt = self._runtime_cache.get(vid) if keep_warm else None
-                signature = self._runtime_signature(profile, vid)
-                if rt is not None and self._runtime_signatures.get(vid) != signature:
-                    try:
-                        stop = getattr(rt, "stop", None)
-                        if callable(stop):
-                            stop()
-                    finally:
-                        self._runtime_cache.pop(vid, None)
-                        self._runtime_signatures.pop(vid, None)
-                        old_root = self._runtime_snapshot_dirs.pop(vid, None)
-                        if old_root is not None:
-                            import shutil
-                            shutil.rmtree(old_root, ignore_errors=True)
-                    rt = None
-                if rt is None:
-                    rt = self.runtime_factory(vid)
-                    snapshot_dir = Path(tempfile.mkdtemp(prefix=f"vision-runtime-{vid}-"))
-                    try:
-                        rt.start(
-                            profile,
-                            vid,
-                            prewarm=True,
-                            snapshot_dir=snapshot_dir,
-                            on_log=on_log,
-                        )
-                    except TypeError:
-                        # Keep injected test/fallback runtimes source-compatible
-                        # while the production adapter receives the per-job
-                        # directory above.
-                        rt.start(profile, vid, prewarm=True)
-                    if keep_warm:
-                        self._runtime_cache[vid] = rt
-                        self._runtime_snapshot_dirs[vid] = snapshot_dir
-                        self._runtime_signatures[vid] = signature
+                # A game that preloaded its camera on entry already cached the
+                # runtime, so this is normally a lookup and the round starts
+                # without paying the spawn/model-load latency again.
+                vid = str(v.get("id", "default"))
+                rt = self._ensure_runtime(profile, vid, on_log)
                 if isinstance(rt, YoloRuntimeProcess):
-                    root = self._runtime_snapshot_dirs.get(vid)
+                    root = self._snapshot_root_for(vid)
                     if root is not None:
                         strict_snapshot_roots[vid] = root.resolve()
                 return rt
