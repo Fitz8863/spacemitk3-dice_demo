@@ -21,7 +21,21 @@ thinking 开启 + effort=high，复核一次 5–10s（冷调用 10.2s 撞上 `l
 4 次因响应不是裸 JSON 而解析失败（`none` 三次全部正常）——很可能就是历史 `failure_fallback`
 的根因；② 同一台面三局复核分别给出 `llm_override`(LEFT) / `yolo_reask_fallback`(TIE) /
 `consensus`(RIGHT)，即**复核结论本身不稳定**（与档案中"flash 类模型不会数骰子点数"的旧结论
-一致；请求未设 `temperature`，端点默认 1，也可疑）。要恢复复核前建议先解决这两点。
+一致；请求未设 `temperature`，端点默认 1，也可疑）。
+
+**2026-09-14 决定：dice 用纯 YOLO 裁决（`llm.enabled: false`），复核代码与旋钮全部保留但休眠。**
+触发原因是用户实测遇到页面写"大模型复问无定论，采用 YOLOv8"（即 `yolo_reask_fallback`：LLM 首答
+TIE、复问改口 LEFT、YOLO 判 RIGHT，三个答案互不相同 → 护栏判无可信结论、维持 YOLO；这本身是
+**分歧护栏在正常工作，不是误判**）。进一步同帧对照探针把根因缩小到一句话：**模型的"判胜负"与它
+自己"读数"脱节**——让它逐颗读点数求和，它给出合理读数（left 12 : right 19，明显非平局）；但用
+线上 prompt 问"谁赢"，三次得 TIE/TIE/RIGHT；把 prompt 改成"逐颗读点数、分别求和再比"仍是
+TIE/LEFT/TIE。最可能的机制：稳定帧门控保证每侧恰好 5 颗，而 prompt 只说 `compare the two sides`
+（从未要求求和），模型退化成**比个数** → 恒答 TIE。**因此开着复核只有两种结局**：噪声被复问
+护栏丢弃（白花请求，结果仍由 YOLO 决定）或两次一致地错 → `llm_override` 覆盖正确的 YOLO 算术
+（当天已复现）。**重新打开复核前，必须让"裁决"能反映"读数"**；可行方向是让 LLM 只负责**读数**、
+由 provider 做算术并与 YOLO 交叉校验，而不是"问它谁赢"——这是契约级改造，不是改 prompt。
+（延迟不是障碍：`reasoning_effort: none` 已把复核压到单次 1.4–3.8s；全局默认已在 LLM 组件
+config 设为 `none`。另注意探测中出现过单次 36.7s 的极端抖动，超过 10s 预算就会变 timeout。）
 
 2026-09-14（下半 II）**移除 LLM 失败诊断**（commit `01e2014`）：评估结论是 LLM 诊断相对本地规则
 唯一多给的只是"从图里挑一个具体原因"（`OVERLAPPING_OBJECTS`/`LOW_LIGHT`/`OCCLUDED`），而本地规则
