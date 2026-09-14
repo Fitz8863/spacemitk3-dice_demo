@@ -89,7 +89,7 @@
 			"expected_count": 5,
 			"stable_frames": 30,
 			"grouping": "divider_regions",
-			"divider_detection": true
+			"divider_detection": false
 		},
 		"multi_view": {
 			"enabled": false,
