@@ -7,6 +7,22 @@
 
 ## 当前实现覆盖（2026-09-01）
 
+2026-09-14（下半 III）**复核支持"思考深度"参数**（commit `74a18da`）：`deepseek-flash` 默认
+thinking 开启 + effort=high，复核一次 5–10s（冷调用 10.2s 撞上 `llm.timeout_seconds: 10`，
+出现过 `failure_fallback`）。现在 profile 的 `vision_profile.llm.reasoning_effort`
+（`none`/`low`/`high`/`max`，**热加载**）可逐局指定；LLM 组件 config 新增同名可选键作为
+**部署默认**（改它要重启）。组件把它翻译成端点的 `thinking` 对象——`none` → `{"type":"disabled"}`、
+其余 → `{"type":"enabled","reasoning_effort":…}`；**端点强制要求该对象带 `type`**（只发
+`reasoning_effort` 会被拒 `missing field type`，文档与实际不符，已实测）。板端实测（真实
+1280×720 稳定帧）：`none` 单次 1.4–3.8s、端到端 verifying→result 0.92–2.79s；默认 high
+5.3–10.5s；`low` 6.1–15.7s；`max` 24.1s。dice 现状：`reasoning_effort: "none"`，
+`llm.enabled: false`（复核仍关着，用户状态）。
+**同批实测记录了两个与本次改动无关、但影响"要不要开复核"的事实**：① 开着思考的 9 次调用里
+4 次因响应不是裸 JSON 而解析失败（`none` 三次全部正常）——很可能就是历史 `failure_fallback`
+的根因；② 同一台面三局复核分别给出 `llm_override`(LEFT) / `yolo_reask_fallback`(TIE) /
+`consensus`(RIGHT)，即**复核结论本身不稳定**（与档案中"flash 类模型不会数骰子点数"的旧结论
+一致；请求未设 `temperature`，端点默认 1，也可疑）。要恢复复核前建议先解决这两点。
+
 2026-09-14（下半 II）**移除 LLM 失败诊断**（commit `01e2014`）：评估结论是 LLM 诊断相对本地规则
 唯一多给的只是"从图里挑一个具体原因"（`OVERLAPPING_OBJECTS`/`LOW_LIGHT`/`OCCLUDED`），而本地规则
 已给出"每侧检出数量 + 可能原因枚举"的文案，代价却是每次失败多一次多模态请求；且它当天上午起已被

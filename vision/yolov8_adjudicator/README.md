@@ -129,6 +129,7 @@ backend/games/<game_id>/manifest.json -> vision_profile
   vision.expected_count / vision.divider.position / vision.divider.orientation
   rule（numeric_compare 或 categorical_relation）
   llm.enabled（判胜前复核；失败诊断已本地化，不读 llm 段）
+  llm.reasoning_effort（none/low/high/max，热加载；缺省用组件 config 默认）
   llm.system_prompt / user_prompt_template / allowed_outcomes
   multi_view.views[].camera / multi_view.views[].video.path
   video.path / lifecycle.post_result_hold_seconds
@@ -137,7 +138,9 @@ backend/games/<game_id>/manifest.json -> vision_profile
 ```
 
 时间参数只保留四种语义：`yolo_detection_seconds` 限制等待稳定 YOLO 结果的时间，
-`llm.timeout_seconds` 限制每次复核请求（失败诊断不再调用 LLM，故不受它约束），`adjudication_seconds` 限制从开始检测到产生最终裁决的总处理预算，
+`llm.timeout_seconds` 限制每次复核请求（失败诊断不再调用 LLM，故不受它约束；
+`reasoning_effort: none` 关掉模型思考后实测复核只需 1–4s，默认的思考模式要 5–10s，
+预算紧张时优先关思考而不是压这个超时），`adjudication_seconds` 限制从开始检测到产生最终裁决的总处理预算，
 `post_result_hold_seconds` 控制裁决成功后继续播放实时画面的时间。最后一个保持时间
 在已经产生结果后独立执行，不占用前面的裁决处理预算。
 
