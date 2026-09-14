@@ -30,8 +30,10 @@ def test_generic_control_path_is_not_gated_by_dice_judgment():
     source = SOURCE.read_text(encoding="utf-8")
     assert "judge_dice" not in source
     assert "DiceJudgment" not in source
-    # The gate is generic detector evidence, never a game-specific judgment.
-    assert "const bool evidence_usable = !item->detections.empty() && divider_ready;" in source
+    # The gate is generic detector evidence plus profile data (region count and
+    # split), never a game-specific judgment.
+    assert "const bool evidence_usable = region_ok && divider_ready;" in source
+    assert "const bool region_gate = a.expected_count > 0;" in source
 
 
 def test_generic_control_path_runs_configured_divider_assist():
@@ -69,22 +71,51 @@ def test_runtime_emits_category_stability_progress():
 
 
 def test_stability_streak_only_advances_on_frames_a_profile_can_adjudicate():
-    """A frame missing objects or the divider must reset, not grow, the streak.
+    """A frame missing objects, the divider, or the profile's layout resets it.
 
-    Counting unusable frames let the stable_frames gate be satisfied with
-    evidence gathered while no divider was visible, and produced the visible
-    "48/30" overrun on the analysis page.
+    Three conditions gate the streak: a located divider, the profile's object
+    count in each region, and an unchanged per-region class multiset.  Counting
+    frames that fail them let the stable_frames gate be satisfied with evidence
+    the profile must reject -- first the visible "48/30" overrun, then stable
+    observations rejected downstream as incomplete while the detection timeout
+    never got its budget.
     """
     source = SOURCE.read_text(encoding="utf-8")
-    start = source.index("const std::string signature = detection_signature(item->detections);")
+    start = source.index("const bool region_gate = a.expected_count > 0;")
     end = source.index("if (evidence_usable &&", start)
     streak = source[start:end]
-    assert "const bool evidence_usable = !item->detections.empty() && divider_ready;" in streak
+    assert "const bool evidence_usable = region_ok && divider_ready;" in streak
     assert "if (!evidence_usable) {" in streak
     assert "generic_stable_count.store(0);" in streak
+    # The layout check uses the profile's count and split, and feeds a
+    # per-region signature so any point-value change on either side restarts
+    # the streak.
+    assert "region_layout_usable(item->detections, item->width, item->height," in streak
+    assert "a.expected_count, a.region_position," in streak
+    assert "&region_signature_text)" in streak
     # The observation gate reuses the same predicate.
     assert "stable_count >= a.stable_frames" in source
     assert "!item->detections.empty() && divider_ready &&" not in source
+
+
+def test_region_count_gate_is_profile_data_and_off_by_default():
+    """The runtime learns the count from the profile, never from a game rule.
+
+    ``--expected-count 0`` (the default) preserves the generic behaviour every
+    profile without ``vision.expected_count`` relies on, so adding the gate
+    cannot change another game's stability semantics.
+    """
+    source = SOURCE.read_text(encoding="utf-8")
+    assert "int expected_count = 0;" in source
+    assert '"--expected-count"' in source
+    assert '"--region-position"' in source
+    assert '"--region-orientation"' in source
+    start = source.index("static bool region_layout_usable(")
+    end = source.index("// Ultralytics-style vivid palette", start)
+    gate = source[start:end]
+    assert "int expected_count" in gate
+    assert "regions[0].size() == expected" in gate
+    assert "regions[1].size() == expected" in gate
 
 
 def test_stability_streak_stops_once_the_stable_observation_is_sent():

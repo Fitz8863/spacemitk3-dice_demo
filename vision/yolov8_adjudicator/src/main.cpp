@@ -185,6 +185,13 @@ struct Args {
     float conf = 0.50f;
     size_t queue_depth = 2;
     int stable_frames = 20;
+    // Profile-driven evidence gate.  A frame only advances the stability
+    // streak when each region of ``region_position`` holds exactly this many
+    // detections.  Zero keeps the historical behaviour (any non-empty layout
+    // counts), which is what profiles without ``vision.expected_count`` get.
+    int expected_count = 0;
+    double region_position = 0.5;
+    std::string region_orientation = "vertical";
     bool no_display = false;
     int max_frames = 0;
     bool self_test = false;
@@ -382,6 +389,9 @@ static void usage(const char* exe) {
               << "  --conf FLOAT       confidence threshold\n"
               << "  --queue-depth N    keep up to N frames per pipeline queue\n"
               << "  --stable-frames N  matching YOLO observations required for stability\n"
+              << "  --expected-count N objects required in each region for a frame to count (0=off)\n"
+              << "  --region-position F boundary of the first region, 0..1 (default 0.5)\n"
+              << "  --region-orientation vertical|horizontal split axis for --expected-count\n"
               << "  --divider-detection enable reusable scene divider assistance\n"
               << "  --no-divider-detection disable scene divider assistance\n"
               << "  --focus N          fixed manual focus (-1 unchanged)\n"
@@ -422,6 +432,18 @@ static bool validate_args(Args& a) {
     }
     if (a.stable_frames < 1) {
         std::cerr << "--stable-frames must be >= 1\n";
+        return false;
+    }
+    if (a.expected_count < 0) {
+        std::cerr << "--expected-count must be >= 0 (0 disables the region count gate)\n";
+        return false;
+    }
+    if (a.region_position < 0.0 || a.region_position > 1.0) {
+        std::cerr << "--region-position must be between 0 and 1\n";
+        return false;
+    }
+    if (a.region_orientation != "vertical" && a.region_orientation != "horizontal") {
+        std::cerr << "--region-orientation must be vertical or horizontal\n";
         return false;
     }
     if (a.rtsp_port < 1 || a.rtsp_port > 65535) {
@@ -505,6 +527,12 @@ static bool parse(int argc, char** argv, Args& a) {
                 a.queue_depth = static_cast<std::size_t>(std::stoul(v));
             } else if (k == "--stable-frames" && (v = need(i))) {
                 a.stable_frames = std::stoi(v);
+            } else if (k == "--expected-count" && (v = need(i))) {
+                a.expected_count = std::stoi(v);
+            } else if (k == "--region-position" && (v = need(i))) {
+                a.region_position = std::stod(v);
+            } else if (k == "--region-orientation" && (v = need(i))) {
+                a.region_orientation = v;
             } else if (k == "--divider-detection") a.divider_detection_enabled = true;
             else if (k == "--no-divider-detection") a.divider_detection_enabled = false;
             else if (k == "--focus" && (v = need(i))) a.focus = std::stoi(v);
@@ -682,6 +710,51 @@ static std::string detection_signature(const std::vector<Detection>& detections)
         out << '|' << class_id;
     }
     return out.str();
+}
+
+// Region layout gate for profiles that declare how many objects each side
+// must contain (dice: five per side).  The runtime stays game-agnostic: the
+// profile forwards the count and the same split its Python grouping uses, so
+// the runtime never learns dice rules, only "N objects per region".
+//
+// Region assignment mirrors ``normalize_observation`` in the Python provider:
+// a box belongs to the first region when its center lies before
+// ``width * region_position`` (vertical) or ``height * region_position``
+// (horizontal).  ``signature_out`` receives a per-region sorted class
+// multiset, so detections may arrive in any order while any value change on
+// either side still resets the streak.
+//
+// All model classes are counted.  A profile whose ``class_map`` covers only
+// part of the model output would need an explicit class filter; none does
+// today.
+static bool region_layout_usable(const std::vector<Detection>& detections, int width, int height,
+                                 int expected_count, double region_position,
+                                 bool region_horizontal, std::string* signature_out) {
+    if (expected_count <= 0) return false;
+    std::vector<int> regions[2];
+    const double boundary = region_horizontal ? static_cast<double>(height) * region_position
+                                              : static_cast<double>(width) * region_position;
+    for (const auto& detection : detections) {
+        const double center = region_horizontal
+            ? (static_cast<double>(detection.y1) + detection.y2) / 2.0
+            : (static_cast<double>(detection.x1) + detection.x2) / 2.0;
+        regions[center < boundary ? 0 : 1].push_back(detection.class_id);
+    }
+    if (signature_out != nullptr) {
+        std::ostringstream out;
+        for (int index = 0; index < 2; ++index) {
+            if (index) out << '|';
+            std::sort(regions[index].begin(), regions[index].end());
+            out << regions[index].size() << ':';
+            for (std::size_t i = 0; i < regions[index].size(); ++i) {
+                if (i) out << ',';
+                out << regions[index][i];
+            }
+        }
+        *signature_out = out.str();
+    }
+    const auto expected = static_cast<std::size_t>(expected_count);
+    return regions[0].size() == expected && regions[1].size() == expected;
 }
 
 // Ultralytics-style vivid palette. OpenCV colors are BGR.
@@ -1158,6 +1231,7 @@ int main(int argc, char** argv) {
 
     // Thread 3 is the display/stability stage. It runs on the main/UI thread
     // because OpenCV HighGUI on this board must own the X11 event loop here.
+    const bool region_horizontal = a.region_orientation == "horizontal";
     bool first_display = true;
     uint64_t shown = 0;
     auto last_diagnostic_snapshot = start;
@@ -1201,17 +1275,33 @@ int main(int argc, char** argv) {
                                          "diagnostic_snapshot", false);
                         last_diagnostic_snapshot = diagnostic_now;
                     }
-                    const std::string signature = detection_signature(item->detections);
                     // Only a frame a game profile can actually adjudicate may
-                    // advance the stability streak: a non-empty object layout
-                    // plus, when divider assistance is on, a located divider.
-                    // Frames missing either one reset the streak instead of
-                    // incrementing it, because counting them would let the
-                    // stable_frames gate be satisfied with evidence gathered
-                    // while the divider was absent. That is also why the streak
-                    // can never be reported above stable_frames.
+                    // advance the stability streak.  Three conditions must hold
+                    // together; a frame missing any of them resets the streak
+                    // instead of incrementing it:
+                    //   1. divider assistance is off, or the divider is located;
+                    //   2. each region holds exactly ``expected-count`` objects
+                    //      (skipped for profiles that forward no count);
+                    //   3. both regions repeat the previous frame's class
+                    //      multiset, so any point-value change restarts it.
+                    // Counting frames that fail these checks would let the
+                    // stable_frames gate be satisfied with evidence the profile
+                    // must reject, which surfaces as a stable-but-incomplete
+                    // observation instead of the detection timeout. That is
+                    // also why the streak can never be reported above
+                    // stable_frames.
+                    std::string region_signature_text;
+                    const bool region_gate = a.expected_count > 0;
+                    const bool region_ok = region_gate
+                        ? region_layout_usable(item->detections, item->width, item->height,
+                                               a.expected_count, a.region_position,
+                                               region_horizontal, &region_signature_text)
+                        : !item->detections.empty();
+                    const std::string signature = region_gate
+                        ? region_signature_text
+                        : detection_signature(item->detections);
                     const bool divider_ready = !a.divider_detection_enabled || divider_assist.valid;
-                    const bool evidence_usable = !item->detections.empty() && divider_ready;
+                    const bool evidence_usable = region_ok && divider_ready;
                     int stable_count = 0;
                     {
                         std::lock_guard<std::mutex> lock(generic_mutex);
@@ -1232,9 +1322,9 @@ int main(int argc, char** argv) {
                                    ",\"stable_frames\":" + std::to_string(a.stable_frames) + "}");
                     }
                     // Generic provider mode uses the detector's stable
-                    // observation contract. An empty detection frame is not
-                    // useful evidence, but every non-empty object layout is a
-                    // valid candidate for a game profile to interpret.
+                    // observation contract: only a layout that passed the
+                    // evidence gate above may be published as stable once the
+                    // streak reaches ``stable_frames``.
                     if (evidence_usable &&
                         stable_count >= a.stable_frames &&
                         !generic_observation_sent.exchange(true)) {

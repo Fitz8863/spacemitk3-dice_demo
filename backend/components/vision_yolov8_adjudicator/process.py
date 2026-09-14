@@ -50,6 +50,37 @@ def load_runtime_defaults(component_dir: Path | None = None) -> tuple[dict[str, 
     return component, load_runtime_config(runtime_path)
 
 
+def region_split(vision: Mapping[str, Any]) -> tuple[float, str]:
+    """Return the effective region boundary and axis for a profile.
+
+    The runtime's region count gate must agree with the provider's own
+    grouping, otherwise a frame could satisfy one and be rejected by the
+    other -- exactly the mismatch that let occluded scenes count as stable.
+    ``normalize_observation`` splits at ``width * position`` only for
+    ``divider_regions`` profiles (midpoint otherwise) and treats every
+    orientation other than ``horizontal`` as vertical, so this mirrors those
+    effective values.  Out-of-range or malformed values fall back to the
+    default instead of failing the launch; the runtime validates its own
+    arguments.
+    """
+    grouping = str(
+        vision.get("grouping") or vision.get("participant_assignment") or "x_midpoint"
+    )
+    if grouping != "divider_regions":
+        return 0.5, "vertical"
+    divider = vision.get("divider")
+    if not isinstance(divider, Mapping):
+        return 0.5, "vertical"
+    try:
+        position = float(divider.get("position", 0.5))
+    except (TypeError, ValueError):
+        position = 0.5
+    if not 0.0 <= position <= 1.0:
+        position = 0.5
+    orientation = "horizontal" if str(divider.get("orientation", "vertical")) == "horizontal" else "vertical"
+    return position, orientation
+
+
 class YoloRuntimeProcess:
     """Adapter for a resident YOLO process using the vision-control-v1 pipes.
 
@@ -152,6 +183,22 @@ class YoloRuntimeProcess:
                 runtime_overrides.append(
                     "--divider-detection" if divider_detection else "--no-divider-detection"
                 )
+            # The region count gate is profile data, never a game rule: the
+            # runtime only learns "N objects per region" plus the provider's own
+            # split, so a frame the provider would reject as incomplete can no
+            # longer advance the stability streak.
+            expected_count = vision.get("expected_count")
+            if (
+                isinstance(expected_count, int)
+                and not isinstance(expected_count, bool)
+                and expected_count > 0
+            ):
+                position, orientation = region_split(vision)
+                runtime_overrides.extend([
+                    "--expected-count", str(expected_count),
+                    "--region-position", str(position),
+                    "--region-orientation", orientation,
+                ])
 
         # A multi-view profile selects the camera per view.  Single-view
         # profiles intentionally inherit the component/C++ camera default.

@@ -1205,6 +1205,74 @@ os.close(a.control_fd)
         runtime.stop()
 
 
+def test_runtime_process_forwards_region_count_gate_with_provider_split(tmp_path: Path):
+    """The runtime's region gate must receive the provider's own split values.
+
+    A frame may only advance the stability streak when each region holds the
+    profile's expected object count.  The runtime learns that count and the
+    region boundary from the profile, so the two checks can never disagree.
+    """
+    script = tmp_path / "region_runtime.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import argparse, json, os
+p=argparse.ArgumentParser()
+p.add_argument('--config'); p.add_argument('--model'); p.add_argument('--stable-frames'); p.add_argument('--conf')
+p.add_argument('--expected-count', type=int); p.add_argument('--region-position'); p.add_argument('--region-orientation')
+p.add_argument('--divider-detection', action='store_true'); p.add_argument('--no-divider-detection', action='store_true')
+p.add_argument('--control-fd', type=int); p.add_argument('--event-fd', type=int); p.add_argument('--view-id', default='default')
+p.add_argument('--no-display', action='store_true'); p.add_argument('--prewarm', action='store_true')
+p.add_argument('--rtsp', action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path')
+p.add_argument('--snapshot-dir'); p.add_argument('--camera'); p.add_argument('--device')
+a=p.parse_args()
+os.write(a.event_fd, (json.dumps({'event':'started','expected_count':a.expected_count,
+    'region_position':a.region_position,'region_orientation':a.region_orientation})+'\\n').encode())
+os.close(a.control_fd)
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess
+
+    def started(profile):
+        runtime = YoloRuntimeProcess(binary=script)
+        runtime.start(profile, "default", prewarm=True)
+        try:
+            return next(runtime.events())
+        finally:
+            runtime.stop()
+
+    dice = started({"vision": {
+        "stable_frames": 30, "expected_count": 5,
+        "grouping": "divider_regions", "divider_detection": True,
+    }})
+    assert dice["expected_count"] == 5
+    assert dice["region_position"] == "0.5"
+    assert dice["region_orientation"] == "vertical"
+
+    positioned = started({"vision": {
+        "expected_count": 2, "grouping": "divider_regions",
+        "divider": {"position": 0.35, "orientation": "horizontal"},
+    }})
+    assert positioned["expected_count"] == 2
+    assert positioned["region_position"] == "0.35"
+    assert positioned["region_orientation"] == "horizontal"
+
+    # A midpoint profile keeps the default split even with a stale divider
+    # block, and a profile without expected_count forwards no gate at all.
+    midpoint = started({"vision": {
+        "expected_count": 3, "grouping": "x_midpoint",
+        "divider": {"position": 0.35, "orientation": "horizontal"},
+    }})
+    assert midpoint["region_position"] == "0.5"
+    assert midpoint["region_orientation"] == "vertical"
+
+    plain = started({"vision": {"stable_frames": 15, "divider_detection": False}})
+    assert plain["expected_count"] is None
+    assert plain["region_position"] is None
+    assert plain["region_orientation"] is None
+
+
 def test_runtime_process_forwards_diagnostics_and_reports_exit(tmp_path: Path):
     """An early camera/model exit must be visible instead of becoming a vague timeout."""
     script = tmp_path / "exiting_runtime.py"
