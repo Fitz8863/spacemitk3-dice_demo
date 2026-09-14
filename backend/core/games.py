@@ -59,6 +59,12 @@ def render_speech_text(template: str, values: Any) -> str:
 def validate_asr_section(asr: Any, machine: dict[str, Any]) -> dict[str, Any]:
     """Validate the optional ``asr`` voice-input section of a game manifest.
 
+    The section only declares the trigger-word table.  Whether voice input is
+    live is a deployment decision owned by the arena config's global
+    ``asr_enabled`` breaker; an ``enabled`` key left behind by an older
+    manifest is dropped here rather than rejected, so a stale checkout cannot
+    take the whole game offline.
+
     ``phrases`` maps intent names to trigger words.  Intents must be declared
     in the state machine's ``on_intent`` tables so a typo cannot silently
     disable voice control; the built-in ``speech_done`` intent is not
@@ -69,9 +75,6 @@ def validate_asr_section(asr: Any, machine: dict[str, Any]) -> dict[str, Any]:
     """
     if not isinstance(asr, dict):
         raise ValueError("asr must be an object")
-    enabled = asr.get("enabled", True)
-    if not isinstance(enabled, bool):
-        raise ValueError("asr.enabled must be boolean")
     phrases = asr.get("phrases")
     if not isinstance(phrases, dict) or not phrases:
         raise ValueError("asr.phrases must map intents to non-empty trigger-word lists")
@@ -92,7 +95,7 @@ def validate_asr_section(asr: Any, machine: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"asr.phrases.{intent} must be a non-empty list of trigger words")
         if len(words) != len(set(words)):
             raise ValueError(f"asr.phrases.{intent} must not contain duplicate trigger words")
-    return {"enabled": enabled, "phrases": phrases}
+    return {"phrases": phrases}
 
 
 class GameRegistry:

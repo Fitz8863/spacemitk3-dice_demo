@@ -5,7 +5,6 @@
 	"description": "双方各 5 颗 · 比较点数总和",
 	"enabled": true,
 	"asr": {
-		"enabled": false,
 		"phrases": {
 			"confirm": [
 				"确认",

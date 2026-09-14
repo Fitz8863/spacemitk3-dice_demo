@@ -216,6 +216,8 @@ class BridgeTests(unittest.TestCase):
         )
 
     def _enabled_manifest(self):
+        # ``enabled`` is written by the arena layer (with_global_defaults):
+        # a round manifest carries the effective switch, not a game choice.
         manifest = _round_manifest(asr={
             "enabled": True,
             "phrases": {
@@ -227,7 +229,8 @@ class BridgeTests(unittest.TestCase):
         manifest["providers"]["asr"] = "asr_dummy"
         return manifest
 
-    def test_disabled_manifest_starts_nothing(self):
+    def test_effective_switch_off_starts_nothing(self):
+        """The bridge gates on the effective value the arena layer wrote in."""
         round_ = FakeRound(_round_manifest(asr={"enabled": False, "phrases": {"confirm": ["确认"]}}))
         self.assertFalse(self.bridge.start_for_round(round_))
         self.assertEqual(self.provider.sessions, [])
@@ -387,33 +390,34 @@ class ValidateAsrSectionTests(unittest.TestCase):
 
     def test_valid_section_passes(self):
         result = validate_asr_section(
-            {"enabled": True, "phrases": {"confirm": ["确认"]}}, self._machine()
+            {"phrases": {"confirm": ["确认"]}}, self._machine()
         )
         self.assertEqual(result["phrases"], {"confirm": ["确认"]})
 
+    def test_legacy_enabled_key_is_dropped_not_rejected(self):
+        """The switch moved to the arena config's global ``asr_enabled``.
+
+        A manifest left behind by an older checkout still spells ``enabled``;
+        it must be ignored rather than take the whole game offline.
+        """
+        result = validate_asr_section(
+            {"enabled": False, "phrases": {"confirm": ["确认"]}}, self._machine()
+        )
+        self.assertEqual(result, {"phrases": {"confirm": ["确认"]}})
+
     def test_unknown_intent_is_rejected(self):
         with self.assertRaises(ValueError):
-            validate_asr_section(
-                {"enabled": True, "phrases": {"confim": ["确认"]}}, self._machine()
-            )
+            validate_asr_section({"phrases": {"confim": ["确认"]}}, self._machine())
 
     def test_builtin_speech_done_is_not_remappable(self):
         with self.assertRaises(ValueError):
-            validate_asr_section(
-                {"enabled": True, "phrases": {"speech_done": ["完成"]}}, self._machine()
-            )
+            validate_asr_section({"phrases": {"speech_done": ["完成"]}}, self._machine())
 
     def test_phrase_list_must_be_non_empty_strings(self):
         with self.assertRaises(ValueError):
-            validate_asr_section({"enabled": True, "phrases": {"confirm": []}}, self._machine())
+            validate_asr_section({"phrases": {"confirm": []}}, self._machine())
         with self.assertRaises(ValueError):
-            validate_asr_section({"enabled": True, "phrases": {"confirm": [" "]}}, self._machine())
-
-    def test_enabled_must_be_boolean(self):
-        with self.assertRaises(ValueError):
-            validate_asr_section(
-                {"enabled": "yes", "phrases": {"confirm": ["确认"]}}, self._machine()
-            )
+            validate_asr_section({"phrases": {"confirm": [" "]}}, self._machine())
 
     def test_public_projection_exposes_only_enabled(self):
         manifest = _round_manifest(asr={"enabled": True, "phrases": {"confirm": ["确认"]}})
@@ -426,7 +430,8 @@ class ValidateAsrSectionTests(unittest.TestCase):
 
         Both packaged manifests declare multi_view without a ``views`` list
         (multi-view disabled); the projection must tolerate that, and the
-        wired dice manifest must expose its asr switch.
+        wired dice manifest must expose a voice channel without leaking its
+        trigger words.
         """
         from core.games import GAMES_ROOT, load_games
 
@@ -435,7 +440,8 @@ class ValidateAsrSectionTests(unittest.TestCase):
         ids = {game["id"] for game in public}
         self.assertIn("dice", ids)
         dice = next(game for game in public if game["id"] == "dice")
-        self.assertEqual(dice["asr"], {"enabled": True})
+        self.assertEqual(set(dice["asr"]), {"enabled"})
+        self.assertIsInstance(dice["asr"]["enabled"], bool)
 
 
 # ---- server-level integration (real engine + real bridge, dummy provider) ----
@@ -488,7 +494,6 @@ def _write_asr_games_root(tmp_path, asr_section):
 
 def test_round_with_asr_enabled_starts_session_and_voice_confirms(tmp_path, monkeypatch):
     games_root = _write_asr_games_root(tmp_path, {
-        "enabled": True,
         "phrases": {"confirm": ["确认"], "back": ["返回"]},
     })
     provider = FakeAsr()
@@ -585,7 +590,12 @@ def test_round_with_asr_enabled_starts_session_and_voice_confirms(tmp_path, monk
         httpd.shutdown()
 
 
-def test_round_with_asr_disabled_starts_no_session(tmp_path, monkeypatch):
+def test_round_ignores_leftover_per_game_asr_switch(tmp_path, monkeypatch):
+    """A stale per-game ``enabled: false`` no longer silences voice.
+
+    The switch lives in the global ``asr_enabled`` now; with the breaker on,
+    the round listens even though the manifest still spells the old key.
+    """
     games_root = _write_asr_games_root(tmp_path, {
         "enabled": False,
         "phrases": {"confirm": ["确认"]},
@@ -603,6 +613,12 @@ def test_round_with_asr_disabled_starts_no_session(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "GAMES", server.load_games(games_root))
     monkeypatch.setattr(server, "_GAMES_MTIMES", server._manifest_mtimes())
     monkeypatch.setattr(server, "rounds", {})
+    # 全局总闸必须钉成 true，才能把"游戏级开关已失效"与"全局关断"区分开。
+    monkeypatch.setattr(server, "_ARENA_CONFIG", {
+        "asr_enabled": True, "providers": {"asr": "asr_dummy"},
+    })
+    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", Path("/nonexistent-arena.json"))
+    monkeypatch.setattr(server, "_ARENA_MTIME", None)
     monkeypatch.setattr(
         server, "ASR_BRIDGE", AsrIntentBridge(components=registry, log=lambda _l: None)
     )
@@ -618,7 +634,10 @@ def test_round_with_asr_disabled_starts_no_session(tmp_path, monkeypatch):
         snapshot = json.loads(response.read())
         connection.close()
         assert response.status == 201
-        assert provider.sessions == []  # disabled means no listening at all
+        deadline = time.monotonic() + 5.0
+        while not provider.sessions and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(provider.sessions) == 1  # listening: the breaker is on
     finally:
         httpd.shutdown()
 
@@ -747,6 +766,8 @@ def _result_flow_manifest():
     return {
         "id": "dice",
         "providers": {"tts_local": "tts_dummy", "asr": "asr_dummy"},
+        # ``enabled`` is the effective switch the arena layer writes in; this
+        # fixture drives the bridge directly, so it spells the value out.
         "asr": {"enabled": True, "phrases": {
             "new_round": ["再来一局", "下一局"],
             "back": ["返回", "退出"],

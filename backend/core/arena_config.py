@@ -194,9 +194,10 @@ def with_global_defaults(
     """Underlay arena defaults beneath one game manifest.
 
     Per field the game manifest wins; the arena fills only what it leaves
-    out.  The ASR section is the exception: the arena breaker ANDs with the
-    game's own switch.  Returns a fresh dict — the source manifest and the
-    games registry are never mutated.
+    out.  The ASR section is the exception: it carries no switch of its own,
+    so the arena breaker is written in as the effective ``enabled`` value.
+    Returns a fresh dict — the source manifest and the games registry are
+    never mutated.
     """
     merged = dict(manifest)
     arena = arena or {}
@@ -220,8 +221,10 @@ def with_global_defaults(
     asr = merged.get("asr")
     if isinstance(asr, dict):
         asr = dict(asr)
-        if not arena_asr_enabled(arena):
-            asr["enabled"] = False
+        # Voice on/off is a deployment decision rather than a per-game one:
+        # the section only carries trigger words, so the breaker is the sole
+        # source of the effective value downstream code reads.
+        asr["enabled"] = arena_asr_enabled(arena)
         merged["asr"] = asr
     return merged
 

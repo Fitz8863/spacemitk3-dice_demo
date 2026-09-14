@@ -158,8 +158,8 @@ class MergeTests(unittest.TestCase):
         merged = with_global_defaults({"voice": "a", "speed": 1.5}, VALID_ARENA)
         self.assertEqual(merged["speed"], 1.5)
 
-    def test_asr_breaker_ands_with_game_switch(self):
-        game = {"asr": {"enabled": True, "phrases": {"confirm": ["确认"]}}}
+    def test_asr_breaker_is_the_only_switch(self):
+        game = {"asr": {"phrases": {"confirm": ["确认"]}}}
         merged = with_global_defaults(game, VALID_ARENA)
         self.assertTrue(merged["asr"]["enabled"])
         merged = with_global_defaults(game, {**VALID_ARENA, "asr_enabled": False})
@@ -167,6 +167,16 @@ class MergeTests(unittest.TestCase):
         # A game without an asr section gains nothing.
         merged = with_global_defaults({"id": "dice"}, {**VALID_ARENA, "asr_enabled": False})
         self.assertNotIn("asr", merged)
+
+    def test_leftover_game_level_switch_cannot_silence_voice(self):
+        """A manifest still spelling ``enabled: false`` no longer wins.
+
+        The per-game switch was removed: only the arena breaker decides, so a
+        stale key must not be able to mute one game behind its back.
+        """
+        game = {"asr": {"enabled": False, "phrases": {"confirm": ["确认"]}}}
+        merged = with_global_defaults(game, VALID_ARENA)
+        self.assertTrue(merged["asr"]["enabled"])
 
     def test_participants_underlay(self):
         arena = {**VALID_ARENA, "participants": {"player": "LEFT", "agent": "RIGHT"}}
@@ -538,7 +548,7 @@ def test_round_uses_arena_tts_slot_when_manifest_has_none(tmp_path, monkeypatch)
 
 
 def test_arena_asr_breaker_disables_voice_input(tmp_path, monkeypatch):
-    """asr_enabled=false kills ASR globally even when the game opts in."""
+    """asr_enabled=false is the one switch: no voice input anywhere."""
     httpd, provider = _setup_server(
         monkeypatch, tmp_path,
         manifest_providers={"asr": "asr_dummy"},
@@ -547,7 +557,7 @@ def test_arena_asr_breaker_disables_voice_input(tmp_path, monkeypatch):
     )
     manifest_path = tmp_path / "games/dice/manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["asr"] = {"enabled": True, "phrases": {"confirm": ["确认"]}}
+    manifest["asr"] = {"phrases": {"confirm": ["确认"]}}
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     # bump mtime so the hot reload picks the game's asr section up
     import os
@@ -979,7 +989,7 @@ def test_select_endpoints_and_standby_game_selection(tmp_path, monkeypatch):
         "id": "dice", "name": "摇骰子", "enabled": True,
         "participants": {"player": "LEFT", "agent": "RIGHT"},
         "state_machine": MACHINE,
-        "asr": {"enabled": True, "phrases": {"confirm": ["确认"]}},
+        "asr": {"phrases": {"confirm": ["确认"]}},
     }), encoding="utf-8")
     arena_path = tmp_path / "config.json"
     arena_path.write_text(json.dumps({
