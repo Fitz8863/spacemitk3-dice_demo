@@ -910,6 +910,119 @@ static bool detect_black_divider(const cv::Mat& bgr, DividerLine& divider) {
     return true;
 }
 
+// Locate the left/right boundary from the scene's own colour split instead of
+// from a printed mark.  Measured on the demo mat: the red half reads R-B
+// around +35..+108 and the blue half around -198..-244, so the two sides are
+// separated by ~270 levels of channel difference.  A black line was the old
+// signal and measures only ~13 levels against the blue half once ambient light
+// lifts it (mat stripe 94 vs blue 107 at the 1/4 scale), which is why the old
+// detector failed whenever the surface reflected light.  Hue is not affected by
+// illumination the way brightness is, so this stays usable under glare.
+static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider) {
+    if (bgr.empty()) return false;
+
+    constexpr double kDividerScale = 0.25;
+    cv::Mat small;
+    cv::resize(bgr, small, cv::Size(), kDividerScale, kDividerScale, cv::INTER_AREA);
+    if (small.empty() || small.cols < 8 || small.rows < 8) return false;
+
+    // Red minus blue, per pixel.  Positive = warm (left), negative = cool.
+    // The 8-bit channels must be widened to float first: cv::subtract on CV_8U
+    // saturates, which would clip every negative difference to 0 and make the
+    // blue half indistinguishable from a neutral surface.
+    cv::Mat small_f;
+    small.convertTo(small_f, CV_32F);
+    std::vector<cv::Mat> channels;
+    cv::split(small_f, channels);
+    cv::Mat channel_diff = channels[2] - channels[0];   // OpenCV BGR: R - B
+
+    const int width = channel_diff.cols;
+    const int height = channel_diff.rows;
+
+    // A row is usable only when the scene really is red on the left and blue on
+    // the right; this is what rejects rows covered by a hand, a laptop, or table
+    // outside the mat (measured left-half median -33 on such rows).
+    constexpr float kSidePolarity = 25.0f;
+    const int half = width / 2;
+    std::vector<int> usable_rows;
+    usable_rows.reserve(height);
+    for (int y = 0; y < height; ++y) {
+        std::vector<float> left(channel_diff.ptr<float>(y), channel_diff.ptr<float>(y) + half);
+        std::vector<float> right(channel_diff.ptr<float>(y) + half, channel_diff.ptr<float>(y) + width);
+        if (left.empty() || right.empty()) continue;
+        std::nth_element(left.begin(), left.begin() + left.size() / 2, left.end());
+        std::nth_element(right.begin(), right.begin() + right.size() / 2, right.end());
+        const float left_median = left[left.size() / 2];
+        const float right_median = right[right.size() / 2];
+        if (left_median > kSidePolarity && right_median < -kSidePolarity) {
+            usable_rows.push_back(y);
+        }
+    }
+    // Rows occluded by dice/hands/objects are expected; require a third of the
+    // frame to still show the split before trusting the boundary.
+    constexpr double kMinUsableRowRatio = 0.30;
+    if (usable_rows.size() < static_cast<size_t>(kMinUsableRowRatio * height)) return false;
+
+    // Per-column median of the channel difference over the usable rows.  The
+    // median (rather than the mean) keeps dice and hands sitting on the mat from
+    // dragging the profile around.
+    cv::Mat profile(1, width, CV_32F);
+    std::vector<float> column_values;
+    column_values.reserve(usable_rows.size());
+    for (int x = 0; x < width; ++x) {
+        column_values.clear();
+        for (const int y : usable_rows) column_values.push_back(channel_diff.at<float>(y, x));
+        const size_t mid = column_values.size() / 2;
+        std::nth_element(column_values.begin(), column_values.begin() + mid, column_values.end());
+        profile.at<float>(0, x) = column_values[mid];
+    }
+
+    // The boundary is where the profile crosses from warm to cool.  Search the
+    // central corridor so a red/blue object near the edges cannot win.
+    constexpr double kCorridorMin = 0.25;
+    constexpr double kCorridorMax = 0.75;
+    int crossing = -1;
+    float best_step = 0.0f;
+    for (int x = static_cast<int>(kCorridorMin * width);
+         x < static_cast<int>(kCorridorMax * width) - 1; ++x) {
+        const float left_value = profile.at<float>(0, x);
+        const float right_value = profile.at<float>(0, x + 1);
+        if (left_value > 0.0f && right_value <= 0.0f) {
+            const float step = left_value - right_value;
+            if (step > best_step) {
+                best_step = step;
+                crossing = x;
+            }
+        }
+    }
+    if (crossing < 0) return false;
+
+    // Sub-pixel refinement between the two straddling columns.
+    float boundary = static_cast<float>(crossing) + 0.5f;
+    const float left_value = profile.at<float>(0, crossing);
+    const float right_value = profile.at<float>(0, crossing + 1);
+    if (left_value > right_value) {
+        boundary = static_cast<float>(crossing) + left_value / (left_value - right_value);
+    }
+
+    divider.valid = true;
+    divider.horizontal = false;
+    divider.point = cv::Point2f(boundary / static_cast<float>(kDividerScale),
+                                static_cast<float>(height) / static_cast<float>(kDividerScale) * 0.5f);
+    divider.direction = cv::Point2f(0.0f, 1.0f);
+    divider.normal = cv::Point2f(1.0f, 0.0f);
+    return true;
+}
+
+// The runtime publishes one "is there a usable left/right split" answer: the
+// mat's red/blue boundary when the scene has one, otherwise a printed dark
+// line.  Callers (stable-frame gating) only care whether the scene geometry is
+// readable, not which signal proved it.
+static bool detect_scene_divider(const cv::Mat& bgr, DividerLine& divider) {
+    if (detect_red_blue_divider(bgr, divider)) return true;
+    return detect_black_divider(bgr, divider);
+}
+
 static void draw_scene_assist(cv::Mat& bgr, const DividerLine& divider,
                               const std::string& status) {
     if (divider.valid) {
@@ -1258,7 +1371,7 @@ int main(int argc, char** argv) {
             // while idle, but must not spend CPU on scene geometry until a
             // START_ADJUDICATION command enables inference.
             if (a.divider_detection_enabled && adjudication_active.load()) {
-                divider_assist.valid = detect_black_divider(bgr, divider_assist);
+                divider_assist.valid = detect_scene_divider(bgr, divider_assist);
             }
             std::string scene_status = !adjudication_active.load()
                 ? "Ready"

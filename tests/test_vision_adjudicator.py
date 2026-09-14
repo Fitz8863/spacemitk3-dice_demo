@@ -51,6 +51,8 @@ def test_profile_loads_dice_and_composes_mediamtx_url():
     assert profile["game_id"] == "dice"
     assert profile["llm"]["context_mode"] == "single_turn_no_history"
     assert profile["video"]["path"] == "/dice/det"
+    # The scene now carries a red/blue mat whose boundary replaces the black
+    # line as the divider signal (see detect_red_blue_divider in the runtime).
     assert profile["vision"]["divider_detection"] is True
     component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
     runtime = load_runtime_config(resolve_runtime_config_path(component))

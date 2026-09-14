@@ -6,68 +6,68 @@
 	"enabled": true,
 	"asr": {
 		"enabled": true,
-			"phrases": {
-				"confirm": [
-					"确认",
-					"确定",
-					"OK",
-					"明白了",
-					"准备好了",
-						"yes",
-						"confirm",
-					"got it",
-					"start"
-				],
-				"start_shake": [
-					"开始",
-					"确定",
-						"start",
-						"OK",
-						"begin",
-					"go"
-				],
-				"stop_shake": [
-					"停止",
-					"停",
-					"stop"
-				],
-				"repeat": [
-					"重复",
-					"再来一遍",
-					"再听一次",
-					"repeat",
-					"again",
-					"say it again",
-					"one more time"
-				],
-				"retry": [
-					"重试",
-					"重新",
-					"重新来一遍",
-					"retry",
-					"try again",
-					"again"
-				],
-				"new_round": [
-					"再来一局",
-					"再来一句",
-					"下一局",
-					"下一句",
-					"next round",
-					"play again",
-					"new round",
-					"one more round",
-					"one more game"
-				],
-				"back": [
-					"返回",
-					"退出",
-					"back",
-					"go back",
-					"exit",
-					"quit"
-				]
-			}
+		"phrases": {
+			"confirm": [
+				"确认",
+				"确定",
+				"OK",
+				"明白了",
+				"准备好了",
+				"yes",
+				"confirm",
+				"got it",
+				"start"
+			],
+			"start_shake": [
+				"开始",
+				"确定",
+				"start",
+				"OK",
+				"begin",
+				"go"
+			],
+			"stop_shake": [
+				"停止",
+				"停",
+				"stop"
+			],
+			"repeat": [
+				"重复",
+				"再来一遍",
+				"再听一次",
+				"repeat",
+				"again",
+				"say it again",
+				"one more time"
+			],
+			"retry": [
+				"重试",
+				"重新",
+				"重新来一遍",
+				"retry",
+				"try again",
+				"again"
+			],
+			"new_round": [
+				"再来一局",
+				"再来一句",
+				"下一局",
+				"下一句",
+				"next round",
+				"play again",
+				"new round",
+				"one more round",
+				"one more game"
+			],
+			"back": [
+				"返回",
+				"退出",
+				"back",
+				"go back",
+				"exit",
+				"quit"
+			]
+		}
 	},
 	"vision_profile": {
 		"schema_version": 1,
@@ -89,7 +89,7 @@
 			"expected_count": 5,
 			"stable_frames": 30,
 			"grouping": "divider_regions",
-			"divider_detection": false
+			"divider_detection": true
 		},
 		"multi_view": {
 			"enabled": false,
