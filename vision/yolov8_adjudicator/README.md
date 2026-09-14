@@ -150,6 +150,11 @@ backend/games/<game_id>/manifest.json -> vision_profile
 > 改 manifest 后 runtime 侧只有**重启后**才生效——Python 侧读 manifest 是立即生效的，
 > 因此改动后可能出现"Python 按新值校验、runtime 仍按旧值出稳定帧"的短暂不一致
 > （此时 provider 的数量校验会兜底成失败诊断）。改这些字段请一并重启 Web 服务。
+>
+> **"用全局默认"的唯一写法是整行不写**：`llm.reasoning_effort`（以及其它游戏级覆盖项）
+> 留空字符串或 `null` 不算"未设置"，而是非法值 → 校验器拒载整个 manifest，服务保留
+> 上一份可用配置（页面照常可用，很难察觉）。同理，组件 config 的部署默认值也在**启动时**
+> 读入，改它必须重启，否则运行中的进程仍用旧值。
 
 `yolo_detection_seconds` 必须容得下 `stable_frames` 个**有效**帧——要求分界线检测的
 游戏里，分界线缺席的帧不计入；声明了 `expected_count` 的游戏里，数量不达标的帧同样
