@@ -1034,12 +1034,14 @@ class _RecordingVisionStream:
     def __init__(self, *, raises: Exception | None = None) -> None:
         self.started: list[str] = []
         self.stop_calls = 0
+        self.arenas: list[dict] = []
         self._raises = raises
 
-    def start_for_round(self, round_) -> bool:
+    def start_for_round(self, round_, *, arena=None) -> bool:
         if self._raises is not None:
             raise self._raises
         self.started.append(round_.id)
+        self.arenas.append(dict(arena or {}))
         return True
 
     def stop(self) -> None:
@@ -1052,11 +1054,17 @@ def test_round_creation_starts_vision_streaming_synchronously(tmp_path, monkeypa
     _patch_round_environment(monkeypatch, tmp_path)
     stream = _RecordingVisionStream()
     monkeypatch.setattr(server, "VISION_STREAM", stream)
+    monkeypatch.setattr(
+        server, "get_arena_config", lambda: {"vision_always_on": False}
+    )
 
     round_ = server.create_round("dice")
 
     assert round_.state == "rules"
     assert stream.started == [round_.id]  # started before the call returned
+    # The arena config travels with the call: it is what decides whether the
+    # stream follows the game's lifetime or stays resident for the process.
+    assert stream.arenas[0]["vision_always_on"] is False
 
 
 def test_round_creation_survives_a_broken_camera(tmp_path, monkeypatch):

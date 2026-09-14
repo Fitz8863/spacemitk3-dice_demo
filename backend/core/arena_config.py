@@ -50,6 +50,9 @@ def validate_arena_config(payload: Any) -> dict[str, Any]:
     asr_enabled = payload.get("asr_enabled", True)
     if not isinstance(asr_enabled, bool):
         raise ArenaConfigError("asr_enabled must be boolean")
+    vision_always_on = payload.get("vision_always_on", True)
+    if not isinstance(vision_always_on, bool):
+        raise ArenaConfigError("vision_always_on must be boolean")
     standby = payload.get("standby", {})
     if not isinstance(standby, dict):
         raise ArenaConfigError("standby must be an object")
@@ -146,6 +149,20 @@ def arena_slot_value(arena: Mapping[str, Any] | None, slot: str) -> str:
 
 def arena_asr_enabled(arena: Mapping[str, Any] | None) -> bool:
     value = (arena or {}).get("asr_enabled", True)
+    return value if isinstance(value, bool) else True
+
+
+def arena_vision_always_on(arena: Mapping[str, Any] | None) -> bool:
+    """Whether the vision stream outlives the game that started it.
+
+    ``True`` keeps the camera/RTSP stream resident for the whole process, across
+    rounds and games; ``False`` makes the stream follow the game's lifetime and
+    tears it down when the round reaches a terminal status.  Either way the
+    stream is started when the game is entered — this only decides when it ends.
+
+    Missing means ``True`` so an existing deployment behaves exactly as before.
+    """
+    value = (arena or {}).get("vision_always_on", True)
     return value if isinstance(value, bool) else True
 
 

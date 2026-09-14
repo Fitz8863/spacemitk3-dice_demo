@@ -29,6 +29,7 @@ from core.arena_config import (  # noqa: E402
     arena_game_select_phrases,
     arena_slot_value,
     arena_standby,
+    arena_vision_always_on,
     collect_local_tts_ids,
     collect_provider_slot_ids,
     load_arena_config,
@@ -89,6 +90,21 @@ class ValidationTests(unittest.TestCase):
     def test_asr_enabled_must_be_boolean(self):
         with self.assertRaises(ArenaConfigError):
             validate_arena_config({**VALID_ARENA, "asr_enabled": "yes"})
+
+    def test_vision_always_on_must_be_boolean(self):
+        with self.assertRaises(ArenaConfigError):
+            validate_arena_config({**VALID_ARENA, "vision_always_on": "yes"})
+
+    def test_vision_always_on_defaults_to_on(self):
+        # An existing deployment that never heard of the key keeps the stream
+        # resident, which is what the board did before the switch existed.
+        self.assertTrue(arena_vision_always_on(None))
+        self.assertTrue(arena_vision_always_on({}))
+        self.assertTrue(arena_vision_always_on(VALID_ARENA))
+        self.assertFalse(arena_vision_always_on({**VALID_ARENA, "vision_always_on": False}))
+        self.assertTrue(arena_vision_always_on({**VALID_ARENA, "vision_always_on": True}))
+        # A malformed value cannot silently disable the stream.
+        self.assertTrue(arena_vision_always_on({"vision_always_on": "no"}))
 
     def test_standby_validation_and_defaults(self):
         # Validation: bad types rejected.

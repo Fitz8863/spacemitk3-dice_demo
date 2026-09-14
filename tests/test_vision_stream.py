@@ -152,3 +152,97 @@ def test_reentering_a_game_does_not_stop_the_shared_stream():
     # manager must not tear it down on the way into the next game.
     assert provider.stop_calls == 0
     assert len(provider.started) == 2
+
+
+# ---- vision_always_on decides whether the stream outlives the game --------
+
+class _StatusRound(_Round):
+    """Round double whose status the test drives."""
+
+    def __init__(self, round_id: str, manifest: dict | None = None, status: str = "running"):
+        super().__init__(round_id, manifest)
+        self.status = status
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def test_always_on_keeps_the_stream_after_the_game_ends():
+    provider = _Provider()
+    manager = VisionStreamManager(components=_Registry({provider.id: provider}))
+    round_ = _StatusRound("r1", _manifest(_profile()))
+    manager.start_for_round(round_, arena={"vision_always_on": True})
+    round_.status = "exited"
+    # No watcher is armed in this mode, so the stream stays until the process
+    # itself is torn down.
+    import time as _time
+
+    _time.sleep(0.3)
+    assert provider.stop_calls == 0
+    manager.stop()
+    assert provider.stop_calls == 1
+
+
+def test_game_lifetime_releases_the_stream_when_the_round_ends():
+    provider = _Provider()
+    manager = VisionStreamManager(components=_Registry({provider.id: provider}))
+    round_ = _StatusRound("r1", _manifest(_profile()))
+    manager.start_for_round(round_, arena={"vision_always_on": False})
+    assert provider.stop_calls == 0
+    round_.status = "exited"
+    assert _wait_for(lambda: provider.stop_calls == 1)
+
+
+def test_game_lifetime_keeps_the_stream_while_the_round_runs():
+    provider = _Provider()
+    manager = VisionStreamManager(components=_Registry({provider.id: provider}))
+    round_ = _StatusRound("r1", _manifest(_profile()))
+    manager.start_for_round(round_, arena={"vision_always_on": False})
+    # "再来一局" stays inside the same round, so a running round must never be
+    # mistaken for the game being over.
+    import time as _time
+
+    _time.sleep(0.3)
+    assert provider.stop_calls == 0
+    manager.stop()
+
+
+def test_cancelled_and_error_rounds_also_release_the_stream():
+    for status in ("cancelled", "error"):
+        provider = _Provider()
+        manager = VisionStreamManager(components=_Registry({provider.id: provider}))
+        round_ = _StatusRound("r1", _manifest(_profile()))
+        manager.start_for_round(round_, arena={"vision_always_on": False})
+        round_.status = status
+        assert _wait_for(lambda: provider.stop_calls == 1), status
+        manager.stop()
+
+
+def test_a_stale_teardown_cannot_release_the_new_rounds_stream():
+    provider = _Provider()
+    manager = VisionStreamManager(components=_Registry({provider.id: provider}))
+    old_round = _StatusRound("r1", _manifest(_profile()))
+    manager.start_for_round(old_round, arena={"vision_always_on": False})
+
+    # The player leaves and immediately enters another game: create_round
+    # cancels the old round while the new one starts its own stream.
+    old_round.status = "cancelled"
+    new_round = _StatusRound("r2", _manifest(_profile()))
+    manager.start_for_round(new_round, arena={"vision_always_on": False})
+
+    # The outdated watcher must not tear down what the new round now owns.
+    # Wait past its poll interval so it really wakes up and decides.
+    import time as _time
+
+    _time.sleep(2.5)
+    assert provider.stop_calls == 0
+    new_round.status = "exited"
+    assert _wait_for(lambda: provider.stop_calls == 1)
