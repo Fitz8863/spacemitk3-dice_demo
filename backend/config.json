@@ -14,6 +14,7 @@
   "voice": "default",
   "speed": 1.0,
   "asr_enabled": false,
+  "vision_always_on": true,
   "standby": {
     "enabled": true,
     "idle_seconds": 120,
