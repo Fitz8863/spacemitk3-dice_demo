@@ -84,10 +84,22 @@ Runtime 向 `event-fd` 发送：
 {"event":"phase","phase":"idle"}
 ```
 
-`progress` 的 `stable_count` **只统计游戏 profile 真正能裁决的帧**：检测为空、或开启
-`vision.divider_detection` 而分界线未定位到时，该帧把连续计数清零而不是累加。因此
-`stable_count` 不会超过 `stable_frames`（外部观察者不会看到 `48/30` 这类越界值），
-`stable_frames` 门槛也一定由连续的有效帧满足，而不是拿分界线缺席期间的帧凑数。
+`progress` 的 `stable_count` **只统计游戏 profile 真正能裁决的帧**。一帧要进入连续计数
+必须同时满足三条，否则把连续计数清零而不是累加：
+
+1. 开启 `vision.divider_detection` 时，该帧定位到了分界线；
+2. 按 `vision.divider.position` / `orientation`（缺省 `0.5` / `vertical`，与 provider 的
+   `normalize_observation` 使用同一组生效值）切分后，两侧各恰好 `vision.expected_count`
+   个目标；
+3. 两侧的类别多重集与上一帧完全一致（任一侧点数变化即清零）。
+
+因此 `stable_count` 不会超过 `stable_frames`（外部观察者不会看到 `48/30` 这类越界值），
+`stable_frames` 门槛也一定由连续的有效帧满足，而不是拿分界线缺席或数量不达标期间的帧凑数。
+profile 未声明 `expected_count` 时第 2 条不生效（runtime 以 `--expected-count 0` 运行），
+只保留"检测非空 + 分界线已定位"的旧行为。runtime 不因此固化游戏规则：数量与分区位置
+都是 profile 经 `process.py` 转发的参数（`main.cpp` 的 `region_layout_usable`），且
+runtime 统计的是模型输出的**全部**类别——profile 的 `class_map` 若只覆盖部分模型类别，
+需要额外引入类别过滤参数（当前没有这种 profile）。
 
 `observation` 是通用检测证据，包含 detection 列表和稳定帧图片；runtime 不写入游戏
 winner。多视角由 provider 并行启动多个 runtime，并以 `view_id` 区分。LLM 只由 provider
@@ -103,9 +115,10 @@ winner。多视角由 provider 并行启动多个 runtime，并以 `view_id` 区
 backend/components/vision_yolov8_adjudicator/config.json
   runtime.binary / runtime.working_dir / runtime.config / runtime.mode
   runtime.prewarm_camera / runtime.terminate_grace_seconds
-  llm.endpoint / llm.model / llm.api_key
   （不再重复保存摄像头、推理、RTSP 或 WebRTC 参数）
   events.protocol
+  注：LLM 三件套已于 2026-09-04 迁到 llm 槽位指向的组件
+  （backend/components/llm_openai_compat/config.json）；本文件不再有 llm 段
 ```
 
 游戏级 profile：
@@ -113,6 +126,7 @@ backend/components/vision_yolov8_adjudicator/config.json
 ```text
 backend/games/<game_id>/manifest.json -> vision_profile
   vision.model / class_map / participants / stable_frames
+  vision.expected_count / vision.divider.position / vision.divider.orientation
   rule（numeric_compare 或 categorical_relation）
   llm.system_prompt / user_prompt_template / allowed_outcomes
   multi_view.views[].camera / multi_view.views[].video.path
@@ -128,12 +142,14 @@ backend/games/<game_id>/manifest.json -> vision_profile
 在已经产生结果后独立执行，不占用前面的裁决处理预算。
 
 `yolo_detection_seconds` 必须容得下 `stable_frames` 个**有效**帧——要求分界线检测的
-游戏里，分界线缺席的帧不计入，窗口太短会让本来只需重新定位分界线的画面直接落入
-失败诊断。调大 `stable_frames` 或打开 `divider_detection` 时要同步放宽这个预算。
+游戏里，分界线缺席的帧不计入；声明了 `expected_count` 的游戏里，数量不达标的帧同样
+不计入（遮挡、叠放、漏检都会让计数停在低位而不是凑满）。窗口太短会让本来只需重新
+摆放就能通过的画面直接落入失败诊断。调大 `stable_frames`、打开 `divider_detection`
+或声明 `expected_count` 时要同步放宽这个预算。
 
 新增游戏不需要修改本 runtime：新增模型文件和 manifest 中的 `vision_profile` 即可。
 profile 中的 path 只能是 URL 路径（例如 `/dice/`），不能包含主机、查询串或 `..`；
-WebRTC 基础地址通过 `vision/yolov8_adjudicator/config.json` 的 `video.webrtc_base_url` 配置，游戏只配置自己的 `video.path`。LLM 的 endpoint/model/api_key 保存在组件配置 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段（该文件被 Git 跟踪，仓库必须保持私有；环境变量覆盖层已于 2026-09-01 移除，JSON 是唯一配置来源）。组件与 runtime 配置的完整字段说明见 `backend/components/vision_yolov8_adjudicator/参数说明.md`。
+WebRTC 基础地址通过 `vision/yolov8_adjudicator/config.json` 的 `video.webrtc_base_url` 配置，游戏只配置自己的 `video.path`。LLM 的 endpoint/model/api_key 保存在全局 `providers.llm` 槽位指向的组件（当前 `backend/components/llm_openai_compat/config.json` 的 `llm` 段），**不在**视觉组件配置里（该文件被 Git 跟踪，仓库必须保持私有；环境变量覆盖层已于 2026-09-01 移除，JSON 是唯一配置来源）。组件与 runtime 配置的完整字段说明见 `backend/components/vision_yolov8_adjudicator/参数说明.md`。
 
 ## 诊断模式
 

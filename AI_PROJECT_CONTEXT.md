@@ -7,6 +7,26 @@
 
 ## 当前实现覆盖（2026-09-01）
 
+2026-09-14 **稳定帧门控改为三条判据**（`vision/yolov8_adjudicator/src/main.cpp` 的
+`region_layout_usable` + `process.py` 的参数转发）：一帧要推进连续计数，必须同时满足
+① 开启 `divider_detection` 时该帧定位到分界线；② 按 profile 分区（`vision.divider.position`/
+`orientation`，与 `normalize_observation` 同一组生效值）后两侧各恰好 `vision.expected_count`
+个目标；③ 两侧类别多重集与上一帧完全一致。此前判据只有"检测非空 + 分界线已定位"，遮挡骰子
+时画面只要还在稳定吐出任意非空检测（遮挡物杂框、或只剩一两颗骰子）就会凑满 30 帧发出
+`stable` 观测，随后被 provider 的数量校验打回 `INCOMPLETE_OBJECTS` 进入 `analysis_failed`
+——即"稳定帧计数爬到 30/30 后报本次裁决未完成"，而 `yolo_detection_seconds` 的超时预算从未
+被使用。运行时仍不固化游戏规则：数量与分区位置是 profile 经 `--expected-count`/
+`--region-position`/`--region-orientation` 转发的参数，`--expected-count 0`（缺省，例如 rps）
+保持旧行为。板端实测：`expected_count=5`（台上 5+5）计数爬到 30 并发出稳定观测；
+`expected_count=6`（场景不可能满足）12s 内计数恒为 0、无稳定观测；端到端（真实 profile）
+耗时 11.0s = `pre_adjudication_wait_seconds` 3s + `yolo_detection_seconds` 8s，直接产出
+`diagnosis(retry_required)`。全量 pytest 495 passed / 1 skipped。
+
+**已知风险（2026-09-14 记录，未修）**：该门控只能校验"每侧恰好 N 个检测框"，**无法判断这些框
+是否真是骰子**——若遮挡恰好稳定产生每侧 5 个杂框（或点数被遮挡后误读），仍会用错误点数判出
+胜负；而 `vision_profile.llm.enabled=false`（2026-09-07 起）意味着没有大模型复核兜底。需要
+兜底时可选：恢复 LLM 复核、或要求同一局内连续两个稳定观测一致才判胜。
+
 2026-09-02 起游戏调度升级为**后端权威状态机**：`backend/games/<game_id>/manifest.json` 的
 `state_machine` 节点（校验器 `backend/core/state_schema.py`、引擎 `backend/core/state_machine.py`
 的 `GameRound`）声明每个状态的 on_enter 动作（speech/adjudicate，未来 robot）、意图转换表、
@@ -652,7 +672,10 @@ preferred core、CPU affinity 和环境变量只能说明配置意图，不能�
 - 可靠的全局游戏流程状态机；
 - WebSocket 实时推送；
 - K3 统一摄像头服务和检测画面推流；
-- 进程崩溃后的完整任务恢复。
+- 进程崩溃后的完整任务恢复；
+- **检测框语义校验**：稳定帧门控只校验"每侧恰好 N 个框 + 分界线已定位 + 点数与上帧一致"，
+  无法识别"这些框其实不是骰子"（遮挡产生的杂框若恰好每侧 5 个，仍会判出胜负）。当前
+  `vision_profile.llm.enabled=false`，没有复核兜底；需要时再启用 LLM 复核或加稳定证据二次确认。
 
 `backend/server.py` 当前是一个适合 Demo 的轻量 bridge，不应直接承担机械臂关节级实时控制。
 
