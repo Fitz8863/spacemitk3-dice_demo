@@ -191,7 +191,7 @@ build/yolov8_camera --config vision/yolov8_adjudicator/config.json \
 2. runtime 通过独立 `event-fd` 输出 JSONL：`started`、`ready`、`video`、`phase`、`progress`、`observation`。stdout/stderr 仅作为诊断日志。
 3. runtime 的 `stable_count` 只累计**本局 profile 能裁决的帧**，一帧要同时满足三条才累加，否则清零：开启 `divider_detection` 时该帧定位到分界线；按 profile 分区（`vision.divider.position`/`orientation`，与 `normalize_observation` 同一组生效值）后两侧各恰好 `vision.expected_count` 个目标；两侧类别多重集与上一帧完全一致。达到 `stable_frames` 后输出一帧私有 snapshot 和通用 detection。数量与分区位置由 `process.py` 转发为 `--expected-count/--region-position/--region-orientation`，runtime 不固化游戏规则；profile 未声明 `expected_count` 时只保留"检测非空 + 分界线已定位"的旧判据。因此遮挡、叠放、漏检会让计数停在低位，等满 `yolo_detection_seconds` 后走失败诊断，而不是先凑出稳定观测再被 provider 的数量校验打回。
 4. provider 根据 `class_map`、participants、分组方式和 `rule` 计算每个视角的 YOLO 初判。多视角属于同一个裁决对象，按 profile 的 `majority_vote` 做多数投票。
-5. 如果启用 LLM，provider 将稳定帧和本局 prompt 作为一次无历史的 OpenAI-compatible 多模态请求。LLM 只负责复核图片，不接收其他请求上下文。
+5. 如果启用 LLM 复核（`llm.enabled`），provider 将稳定帧和本局 prompt 作为一次无历史的 OpenAI-compatible 多模态请求。LLM 只负责复核图片，不接收其他请求上下文。失败诊断是同级的独立开关 `llm.diagnosis_enabled`（缺省跟随 `enabled`，2026-09-14 起）：关掉它时失败原因只由本地规则依据检测证据（每侧数量、分界线、是否检测为空）给出，不会发起多模态请求。
 6. 结果优先级：YOLO 与 LLM 一致使用 `consensus`；不一致时对 LLM 复问一次做佐证——复问与 YOLO 一致用 `yolo_reask_confirmed`，复问仍坚持且非平局才用 `llm_override`（平局是算术事实，`tie_upheld` 永不被推翻），复问无定论用 `yolo_reask_fallback`；LLM 超时使用 `yolo_timeout_fallback`；其他无效响应或检测证据不足进入错误。
 7. provider 发出 `FINAL_RESULT` 给 runtime，再发出 `STOP_ADJUDICATION`。这会立即停止 YOLO 推理，但 resident 摄像头和视频链路继续保持。
 8. 发送 `result` 后进入 `holding`，等待 `lifecycle.post_result_hold_seconds`。保持期间不重新检测、不重复调用 LLM，只继续让前端观看实时画面；值为 `0` 时立即结束。

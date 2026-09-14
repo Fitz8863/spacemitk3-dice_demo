@@ -128,6 +128,7 @@ backend/games/<game_id>/manifest.json -> vision_profile
   vision.model / class_map / participants / stable_frames
   vision.expected_count / vision.divider.position / vision.divider.orientation
   rule（numeric_compare 或 categorical_relation）
+  llm.enabled（判胜前复核）/ llm.diagnosis_enabled（失败诊断，缺省跟随 enabled）
   llm.system_prompt / user_prompt_template / allowed_outcomes
   multi_view.views[].camera / multi_view.views[].video.path
   video.path / lifecycle.post_result_hold_seconds
@@ -136,10 +137,17 @@ backend/games/<game_id>/manifest.json -> vision_profile
 ```
 
 时间参数只保留四种语义：`yolo_detection_seconds` 限制等待稳定 YOLO 结果的时间，
-`llm.timeout_seconds` 限制每次大模型请求（包括正常复核和失败原因诊断），
-`adjudication_seconds` 限制从开始检测到产生最终裁决的总处理预算，
+`llm.timeout_seconds` 限制每次大模型请求（正常复核和失败原因诊断共用，任一被开关关闭
+的路径不会发起请求），`adjudication_seconds` 限制从开始检测到产生最终裁决的总处理预算，
 `post_result_hold_seconds` 控制裁决成功后继续播放实时画面的时间。最后一个保持时间
 在已经产生结果后独立执行，不占用前面的裁决处理预算。
+
+> 热加载边界（2026-09-14 实测）：`vision.expected_count`、`stable_frames`、
+> `divider_detection`、`divider.position/orientation`、`model` 都是**启动参数**
+> （由 `process.py` 转发为 `--expected-count` 等），resident runtime 跨回合复用，
+> 改 manifest 后 runtime 侧只有**重启后**才生效——Python 侧读 manifest 是立即生效的，
+> 因此改动后可能出现"Python 按新值校验、runtime 仍按旧值出稳定帧"的短暂不一致
+> （此时 provider 的数量校验会兜底成失败诊断）。改这些字段请一并重启 Web 服务。
 
 `yolo_detection_seconds` 必须容得下 `stable_frames` 个**有效**帧——要求分界线检测的
 游戏里，分界线缺席的帧不计入；声明了 `expected_count` 的游戏里，数量不达标的帧同样

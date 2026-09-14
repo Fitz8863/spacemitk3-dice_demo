@@ -7,6 +7,19 @@
 
 ## 当前实现覆盖（2026-09-01）
 
+2026-09-14（下半）**复核与失败诊断拆成两个独立开关**：`vision_profile.llm.enabled` 仍只控制
+**判胜前复核**，新增可选 `vision_profile.llm.diagnosis_enabled` 控制**失败原因诊断**，缺省时
+跟随 `enabled`（所有旧 profile 行为不变）；两个方向都可单独控（要复核不要诊断、或反过来）。
+dice 现状：`enabled: true`（复核已开）+ `diagnosis_enabled: false`（诊断只用本地规则）。
+取舍：关掉 LLM 诊断后，失败原因只剩本地规则能给出的四类（`INCOMPLETE_OBJECTS`、
+`NO_OBJECTS_DETECTED`、`SCENE_GEOMETRY_UNCLEAR`、`UNSTABLE_DETECTION`），带图判断的
+`OVERLAPPING_OBJECTS`/`LOW_LIGHT`/`OCCLUDED` 不会出现。**注意两个坑**：① `llm` 段整体缺失时
+`enabled` 默认仍是 **true**，要关必须显式写 `false`；② `vision.expected_count`、`stable_frames`、
+`divider_detection`、`divider.position/orientation`、`model` 都是 provider 转发给 runtime 的
+**启动参数**，resident runtime 跨回合复用，改 manifest 后 runtime 侧**重启才生效**（Python 侧立即
+生效，会出现"Python 按新值校验、runtime 仍按旧值出稳定帧"的短暂错配，由 provider 的数量校验兜底
+成失败诊断）——板端 2026-09-14 实测确认。
+
 2026-09-14 **稳定帧门控改为三条判据**（`vision/yolov8_adjudicator/src/main.cpp` 的
 `region_layout_usable` + `process.py` 的参数转发）：一帧要推进连续计数，必须同时满足
 ① 开启 `divider_detection` 时该帧定位到分界线；② 按 profile 分区（`vision.divider.position`/
