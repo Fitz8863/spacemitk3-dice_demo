@@ -5,7 +5,7 @@
 	"description": "双方各 5 颗 · 比较点数总和",
 	"enabled": true,
 	"asr": {
-		"enabled": true,
+		"enabled": false,
 		"phrases": {
 			"confirm": [
 				"确认",
@@ -92,7 +92,7 @@
 			"divider_detection": true
 		},
 		"multi_view": {
-			"enabled": false,
+			"enabled": true,
 			"min_views": 1,
 			"yolo_fusion": "majority_vote",
 			"llm_images": "all_stable_views"
