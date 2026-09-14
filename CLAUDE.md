@@ -54,6 +54,16 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
 - 引擎槽位在**全局配置** `backend/config.json` 选择（当前 `tts_local=tts_moss_nano`、`tts_remote=tts_gptsovits`、`asr=asr_zipformer`、`vision_adjudicator=vision_yolov8_adjudicator`）；游戏 manifest 可按槽位覆盖。`tts_qwen3` 是本地可选 provider。
 - 新 TTS 复制一个功能包并继承 `TtsProvider`，最小实现 `health()`、`synthesize()` 即可接入；需要分段低延迟时再覆盖 `stream()`；切换默认 provider 改全局配置 `providers.tts_local` 后重启，前端请求保持不变。Provider 可用 `manifest.lifecycle.start/stop` 声明本地模型进程管理命令，`componentctl.py`/`start_web.sh` 会按"全局槽位 ∪ 各游戏 ∪ 台词钉死"的引用集调度。
 - 当前 YOLO 包是 `type=vision, role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于目标坐标的 YOLO 包应使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得混入裁决器插槽。算法名不是职责接口。
+- **视觉推流生命周期（2026-09-14 起）**：`create_round` 会同步调用 `core/vision_stream.py`
+  的 `VisionStreamManager.start_for_round(round_, arena=…)`，进游戏即拉起摄像头+RTSP
+  （prewarm 模式，不推理）。provider 侧对应新增的可选钩子 `start_streaming()` /
+  `stop_streaming()`（具体方法而非抽象，云/测试替身零改动）；resident runtime 的创建
+  收敛到 provider 的 `_ensure_runtime()` 单一入口（`_runtime_lock` 保护），因此
+  「先进游戏预热、再裁决」不会重启进程。推流何时结束由全局 `vision_always_on` 决定：
+  true 不武装 watcher（常驻），false 则武装 watcher 在回合终态停流。watcher 带
+  **owner 守卫**——`create_round` 先取消残留回合，旧回合的拆除请求可能在新回合已拉起
+  推流之后才醒来，此时必须放弃拆除。**摄像头故障不阻断进游戏**（尽力而为，裁决阶段
+  仍有原有懒启动兜底）。
 - 游戏视觉配置必须内嵌在 `backend/games/<game_id>/manifest.json` 的
   `vision_profile` 节点；不要新增外置 `vision_profile.json`。视觉 runtime 的硬件、RTSP
   和 MediaMTX WebRTC 基础地址统一由 `vision/yolov8_adjudicator/config.json` 提供，游戏
@@ -112,7 +122,7 @@ file /tmp/dice-tts.wav   # 期望 RIFF/WAVE, 24 kHz, 16-bit, mono
 代码职责分离，但 Web 与后端部署在同一 Python 服务里（同源，无 CORS；分析进度使用 SSE，不是 WebSocket）：
 
 1. **`backend/server.py`** — 轻量 `ThreadingHTTPServer`，同时提供 `web/` 静态文件和 `/api/*`；负责路由、provider 选择和 `ComponentJob` 生命周期，不包含具体 YOLO/TTS 实现。
-2. **`vision/yolov8_adjudicator/build/yolov8_camera`** — resident 通用 YOLO runtime，摄像头和视频链路常驻，control-fd 收到开始命令后执行推理；Python provider 负责游戏规则和云端 LLM。
+2. **`vision/yolov8_adjudicator/build/yolov8_camera`** — resident 通用 YOLO runtime，摄像头和视频链路常驻；**进入游戏（`create_round`）时即以 prewarm 模式拉起**，此时只采集 + 推 RTSP、不跑推理，control-fd 收到 `START_ADJUDICATION` 后才过模型；Python provider 负责游戏规则和云端 LLM。这条流何时结束由全局 `vision_always_on` 决定（热加载，见 `backend/参数说明.md`）。
 3. **`tts/qwen3-tts/runtime/bin/llama-server`** — 独立常驻进程，监听 `127.0.0.1:18080`，后端通过 `/v1/audio/speech` 代理。
 
 数据流（详见 `AI_PROJECT_CONTEXT.md` 的 mermaid 图）：

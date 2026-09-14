@@ -7,6 +7,36 @@
 
 ## 当前实现覆盖（2026-09-01）
 
+2026-09-14（晚 II）**视觉推流改为「进游戏即启动」+ 新增全局开关 `vision_always_on`**。
+此前 resident runtime 是**第一次裁决时才 spawn**（`start_web.sh` 不预热 vision），
+所以进游戏后要一直等到 `analysis` 阶段才有摄像头和推流。现在 `create_round` 同步调用
+新增的 `core/vision_stream.py` `VisionStreamManager.start_for_round(round_, arena=…)`：
+进入游戏即以 **prewarm 模式**拉起 runtime——摄像头采集和 RTSP 推流立即就绪、检测器会话
+（ONNX + SpaceMIT EP）同时载入，但 `adjudication_active` 保持 false，**不跑 OpenCL 预处理
+也不跑推理**，直到裁决阶段发 `START_ADJUDICATION`（C++ 侧本就支持，本次未改 C++）。
+副产品：模型加载耗时从 `adjudication_seconds` 预算里挪出去了。
+**接线**：`core/vision.py` 的 `VisionAdjudicatorProvider` 新增两个**具体**（非抽象）钩子
+`start_streaming()` / `stop_streaming()`，所以云 provider 与测试替身零改动；provider 的
+resident runtime 创建收敛到 `_ensure_runtime()` 单一入口（新增 `_runtime_lock` 保护缓存/
+签名/快照根三件套），`adjudicate()` 里的启动闭包改为调用它——**关键契约：先
+`start_streaming()` 再 `adjudicate()`，runtime 只被 start 一次**（有测试钉住）。
+**`vision_always_on`（`backend/config.json`，缺省 true）**：启动时机两者相同，开关只决定
+**何时结束**——true 不武装 watcher，流跨回合跨游戏常驻到进程退出；false 进入游戏时武装
+watcher，回合进入终态（`exited`/`cancelled`/`error`）即 `stop_streaming()`。**每回合开始时
+读取**（true→false 下一局结束生效，false→true 下一局开始生效）。「再来一局」在同一回合内
+（`new_round` 回 `ready`），不触发拆除。
+**★ watcher 的 owner 守卫（必须保留）**：`create_round` 会先 `cancel()` 残留活动回合再建
+新回合，旧回合的 watcher 可能在新回合**已经拉起推流之后**才醒来；拆除前必须在锁内校验
+`_owner_round_id` 与 provider 身份，否则会误杀新回合的摄像头（有测试覆盖「玩家立刻换局」
+场景）。**失败语义**：进游戏的推流是尽力而为，摄像头忙/没插不阻断回合创建（裁决阶段仍有
+原有懒启动兜底）；进程退出走 `_shutdown_runtime_components()` 里的 `VISION_STREAM.stop()`。
+全量 pytest **513 → 537 passed / 1 skipped**。**未改** `vision_profile.video.enabled`
+（仍 false：RTSP 照常推给 mediamtx，网页不播 WebRTC）；**未改** `keep_warm` 语义
+（false 模式下回合期间 runtime 仍缓存复用）。
+**注意**：`vision.expected_count` / `divider_detection` / `divider.position` 等仍**不在**
+runtime 签名里（`_runtime_signature` 只覆盖 model/stable_frames/confidence/view.camera/
+runtime 块），改这些依旧要 `stop_web.sh && start_web.sh`。
+
 2026-09-14（下半 III）**复核支持"思考深度"参数**（commit `74a18da`）：`deepseek-flash` 默认
 thinking 开启 + effort=high，复核一次 5–10s（冷调用 10.2s 撞上 `llm.timeout_seconds: 10`，
 出现过 `failure_fallback`）。现在 profile 的 `vision_profile.llm.reasoning_effort`
@@ -583,12 +613,15 @@ vision/yolov8_adjudicator/build/yolov8_camera
 - stdout/stderr 只保留诊断日志；
 - 后端收到稳定 `observation` 后，由 Python provider 负责 profile 规则、LLM 复核和最终结果。
 
-**YOLOv8 默认使用常驻预热模式。** 空闲时 runtime 保持摄像头和视频链路，处于
-`idle`，不计稳定帧也不调用 LLM；开始裁决时先经过 `lifecycle.pre_adjudication_wait_seconds`
+**YOLOv8 默认使用常驻预热模式。** **2026-09-14 起，runtime 在「进入游戏」时就拉起**
+（`create_round` → `VisionStreamManager.start_for_round`，prewarm 模式），而不是等到第一次
+裁决：此时摄像头和视频链路已经就绪、检测器会话已载入，但仍处于 `idle`，不计稳定帧也不调用
+LLM。裁决开始时先经过 `lifecycle.pre_adjudication_wait_seconds`
 前置等待（缺省 0 秒，骰子配置为 3 秒，期间发布 `pre_wait` 阶段事件、实时画面已可挂上，
 且不占用裁决超时预算），再通过控制通道进入检测，结果后的
-`post_result_hold_seconds` 期间继续发布视频，随后回到 idle。异常或取消时才释放
-runtime 资源。旧版按局启动的二进制仅作为迁移兼容路径。
+`post_result_hold_seconds` 期间继续发布视频，随后回到 idle。**何时释放 runtime 由全局
+`vision_always_on` 决定**：true（缺省）跨回合跨游戏常驻到进程退出（异常或取消时也不拆），
+false 则在回合进入终态时停流。旧版按局启动的二进制仅作为迁移兼容路径。
 
 当前 runtime 的有效输出是模型无关的稳定 `observation`：检测框、可选 `divider` 场景几何辅助和私有快照路径。骰子 5+5、石头剪刀布类别关系、多视角多数投票、LLM 成功/超时/失败策略都由 Python provider 按游戏 manifest 决定。
 
