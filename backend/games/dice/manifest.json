@@ -104,7 +104,7 @@
 			"tie_value": "TIE"
 		},
 		"llm": {
-			"enabled": true,
+			"enabled": false,
 			"context_mode": "single_turn_no_history",
 			"timeout_seconds": 10,
 			"system_prompt": "You are a strict dice-sum judge. Use only the supplied image. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
