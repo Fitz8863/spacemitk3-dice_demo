@@ -67,11 +67,12 @@ dice 现状：`enabled: true`（复核已开）+ `diagnosis_enabled: false`（�
 
 2026-09-14 **稳定帧门控改为三条判据**（`vision/yolov8_adjudicator/src/main.cpp` 的
 `region_layout_usable` + `process.py` 的参数转发）：一帧要推进连续计数，必须同时满足
-① 开启 `divider_detection` 时该帧定位到分界线；② 按 profile 分区（`vision.divider.position`/
-`orientation`，与 `normalize_observation` 同一组生效值）后两侧各恰好 `vision.expected_count`
-个目标；③ 两侧类别多重集与上一帧完全一致。此前判据只有"检测非空 + 分界线已定位"，遮挡骰子
-时画面只要还在稳定吐出任意非空检测（遮挡物杂框、或只剩一两颗骰子）就会凑满 30 帧发出
-`stable` 观测，随后被 provider 的数量校验打回 `INCOMPLETE_OBJECTS` 进入 `analysis_failed`
+① 开启 `divider_detection` 时该帧定位到分界线；② 按该帧**定位到的分界线**切分（定位不到时
+才回落到 `vision.divider.position`/`orientation`，与 `normalize_observation` 同一个像素点）
+后两侧各恰好 `vision.expected_count` 个目标；③ 两侧类别多重集与上一帧完全一致。此前判据
+只有"检测非空 + 分界线已定位"，遮挡骰子时画面只要还在稳定吐出任意非空检测（遮挡物杂框、
+或只剩一两颗骰子）就会凑满 30 帧发出 `stable` 观测，随后被 provider 的数量校验打回
+`INCOMPLETE_OBJECTS` 进入 `analysis_failed`
 ——即"稳定帧计数爬到 30/30 后报本次裁决未完成"，而 `yolo_detection_seconds` 的超时预算从未
 被使用。运行时仍不固化游戏规则：数量与分区位置是 profile 经 `--expected-count`/
 `--region-position`/`--region-orientation` 转发的参数，`--expected-count 0`（缺省，例如 rps）
@@ -79,6 +80,17 @@ dice 现状：`enabled: true`（复核已开）+ `diagnosis_enabled: false`（�
 `expected_count=6`（场景不可能满足）12s 内计数恒为 0、无稳定观测；端到端（真实 profile）
 耗时 11.0s = `pre_adjudication_wait_seconds` 3s + `yolo_detection_seconds` 8s，直接产出
 `diagnosis(retry_required)`。全量 pytest 495 passed / 1 skipped。
+
+2026-09-14 **分界线同时也是左右分组的切分依据**（此前 `grouping: divider_regions` 只决定
+"要不要门控"，真正切分的一直是 `vision.divider.position`，dice 未设置即画面中线 0.5）。
+现在 `main.cpp` 主循环把当帧检出的分界线换算成 `region_boundary` 交给区域计数，provider 的
+`detected_divider_ratio()` 用同一个 `divider.point` 换算分组边界，两边永远切在同一个像素；
+配置比例退化为"未检出时的兜底"。板端实测（2026-09-14，`/dev/video1` 实景）：接缝在
+x=548（比例 **0.4281**），而旧的固定切分在 x=640，两者相差 92px——`divider.position` 缺省
+0.5 只是过去碰巧接近。判别性 A/B（同一毒饵 `--region-position 0.12`，同一摆位）：新二进制
+计数爬到 30 并发布稳定观测，改前二进制恒为 0、连一条 `progress` 都不发。provider 侧对
+`found is not True`（runtime 定位失败仍会发占位 `point:[0,0]`）、比例越界、缺帧尺寸一律
+回落配置值。全量 pytest 511 passed。
 
 **已知风险（2026-09-14 记录，未修）**：该门控只能校验"每侧恰好 N 个检测框"，**无法判断这些框
 是否真是骰子**——若遮挡恰好稳定产生每侧 5 个杂框（或点数被遮挡后误读），仍会用错误点数判出
