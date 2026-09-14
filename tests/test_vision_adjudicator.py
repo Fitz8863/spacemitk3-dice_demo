@@ -123,6 +123,34 @@ def test_profile_accepts_optional_multiview_camera_and_video_paths(tmp_path: Pat
     assert loaded["multi_view"]["views"][1]["video"]["path"] == "/dice-side/"
 
 
+def test_profile_accepts_enabled_multiview_without_views(tmp_path: Path):
+    """``enabled`` with no ``views`` falls back to one implicit view.
+
+    The provider already treats an empty list that way; rejecting it here
+    would let a hand-edited manifest take the whole game offline.
+    """
+    profile = _minimal_profile()
+    profile["multi_view"] = {"enabled": True, "min_views": 1}
+    path = tmp_path / "vision_profile.json"
+    path.write_text(json.dumps(profile))
+    loaded = load_profile(path)
+    assert loaded["multi_view"]["enabled"] is True
+    assert loaded["multi_view"].get("views", []) == []
+
+
+def test_profile_rejects_declared_views_below_min_views(tmp_path: Path):
+    profile = _minimal_profile()
+    profile["multi_view"] = {
+        "enabled": True,
+        "min_views": 2,
+        "views": [{"id": "front", "camera": "/dev/video1", "video": {"path": "/front/"}}],
+    }
+    path = tmp_path / "vision_profile.json"
+    path.write_text(json.dumps(profile))
+    with pytest.raises(ProfileError, match="at least min_views"):
+        load_profile(path)
+
+
 def test_compose_video_url_rejects_path_traversal():
     with pytest.raises(ProfileError, match="video.path"):
         compose_video_url("http://localhost:8889", "/../secret")

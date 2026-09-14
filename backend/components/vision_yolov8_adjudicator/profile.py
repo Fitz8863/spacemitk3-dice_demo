@@ -282,7 +282,11 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         _validate_video_path(view_video.get("path"))
         if view_video.get("enabled", True) not in {True, False}:
             raise ProfileError(f"{field}.video.enabled must be boolean")
-    if bool(multi.get("enabled", False)) and len(views) < int(multi.get("min_views", 1)):
+    # An ``enabled`` section that declares no views at all is not an error:
+    # the provider falls back to one implicit view, so a hand-edited manifest
+    # must not be able to take the whole game offline.  Declaring views but
+    # fewer than ``min_views`` is still a real misconfiguration.
+    if bool(multi.get("enabled", False)) and views and len(views) < int(multi.get("min_views", 1)):
         raise ProfileError("multi_view.views must contain at least min_views entries when enabled")
     if multi.get("yolo_fusion", "majority_vote") not in {"majority_vote"}:
         raise ProfileError("multi_view.yolo_fusion must be majority_vote")
