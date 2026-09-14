@@ -128,7 +128,7 @@ backend/games/<game_id>/manifest.json -> vision_profile
   vision.model / class_map / participants / stable_frames
   vision.expected_count / vision.divider.position / vision.divider.orientation
   rule（numeric_compare 或 categorical_relation）
-  llm.enabled（判胜前复核）/ llm.diagnosis_enabled（失败诊断，缺省跟随 enabled）
+  llm.enabled（判胜前复核；失败诊断已本地化，不读 llm 段）
   llm.system_prompt / user_prompt_template / allowed_outcomes
   multi_view.views[].camera / multi_view.views[].video.path
   video.path / lifecycle.post_result_hold_seconds
@@ -137,8 +137,7 @@ backend/games/<game_id>/manifest.json -> vision_profile
 ```
 
 时间参数只保留四种语义：`yolo_detection_seconds` 限制等待稳定 YOLO 结果的时间，
-`llm.timeout_seconds` 限制每次大模型请求（正常复核和失败原因诊断共用，任一被开关关闭
-的路径不会发起请求），`adjudication_seconds` 限制从开始检测到产生最终裁决的总处理预算，
+`llm.timeout_seconds` 限制每次复核请求（失败诊断不再调用 LLM，故不受它约束），`adjudication_seconds` 限制从开始检测到产生最终裁决的总处理预算，
 `post_result_hold_seconds` 控制裁决成功后继续播放实时画面的时间。最后一个保持时间
 在已经产生结果后独立执行，不占用前面的裁决处理预算。
 
@@ -191,9 +190,9 @@ curl -s http://127.0.0.1:9997/v3/paths/list | python3 -m json.tool
 ## 资源和生命周期约束
 
 - resident runtime 在空闲时保持摄像头和视频链路，不做稳定帧计数、不调用 LLM。
-- active runtime 以受控频率覆盖写入一张最新诊断帧；YOLO 稳定超时后 provider 使用该帧
-  请求诊断 LLM。诊断 LLM 超时或失败时，根据最近的类别数量、目标数量和场景分界信息
-  生成 `yolo_fallback` 原因，不伪造 LEFT/RIGHT/TIE 胜负。
+- active runtime 以受控频率覆盖写入一张最新诊断帧；等不到稳定观测、或稳定观测的每侧
+  数量不符时，provider 用最近的类别数量、目标数量和场景分界信息生成**失败诊断**
+  （本地证据规则，2026-09-14 起不再请求诊断 LLM），不伪造 LEFT/RIGHT/TIE 胜负。
 - 单个裁决对象的多路视角并行运行；provider 负责超时、取消和结果后的保持时长。
 - 稳定帧快照写入每局私有目录，LLM 消费后立即清理；禁止使用不受控的共享路径。
 - 队列深度保持有限，避免摄像头缓冲反向阻塞推理或占满 K3 内存。

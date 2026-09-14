@@ -145,11 +145,12 @@ Current package manifest:
 ## LLM interface
 
 LLM packages use `type=llm`, inherit `core.llm.LlmProvider`, and implement
-the two bounded structured multimodal requests `verify(...)` and
-`diagnose(...)`. Prompts, allowed outcomes and timeouts arrive with each
+the one bounded structured multimodal request `verify(...)`. Prompts, allowed
+outcomes and timeouts arrive with each
 call from the game's vision profile — a provider is a pure transport adapter
 (cloud API, vLLM/llama.cpp server, or a local resident engine) and knows
-nothing about any game's rules.
+nothing about any game's rules.  Failure diagnosis is produced locally by the
+vision provider from detector evidence, so it is not part of this interface.
 
 The vision adjudicator is currently the only consumer; the pipeline resolves
 the engine from the `llm` slot (game manifest override > arena default,

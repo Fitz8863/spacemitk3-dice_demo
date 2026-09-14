@@ -19,7 +19,7 @@ def test_runtime_readme_describes_private_profile_driven_protocol():
         "post_result_hold_seconds",
         "diagnostic_snapshot",
         "yolo_detection_seconds",
-        "yolo_fallback",
+        "失败诊断",
     ):
         assert phrase in text
 

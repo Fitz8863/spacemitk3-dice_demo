@@ -7,7 +7,22 @@
 
 ## 当前实现覆盖（2026-09-01）
 
-2026-09-14（下半）**复核与失败诊断拆成两个独立开关**：`vision_profile.llm.enabled` 仍只控制
+2026-09-14（下半 II）**移除 LLM 失败诊断**（commit `01e2014`）：评估结论是 LLM 诊断相对本地规则
+唯一多给的只是"从图里挑一个具体原因"（`OVERLAPPING_OBJECTS`/`LOW_LIGHT`/`OCCLUDED`），而本地规则
+已给出"每侧检出数量 + 可能原因枚举"的文案，代价却是每次失败多一次多模态请求；且它当天上午起已被
+`diagnosis_enabled: false` 关掉、实际处于死代码状态。移除范围：`core/llm.py` 的 `DiagnosisResult`
+与抽象 `diagnose`（`LlmProvider` 契约收敛为单方法 `verify`）、`llm_openai_compat.diagnose()` 与
+`llm.failure_diagnosis` 能力位、视觉 provider 里的整段 LLM 诊断分支与 `_diagnosis_llm_enabled`。
+**保留**：本地规则诊断、`diagnosis` 事件、`analysis_failed` 状态、失败页文案与"重新识别"按钮、
+`jobs.py` 的"诊断→job error"映射、以及复核（`verify`）整条链。诊断 payload 现在固定
+`source: "local"`、不再有 `llm_status`；manifest 的四个诊断字段（`diagnosis_enabled` 与三个
+`diagnosis_*`）已被校验器改为**加载即报错**，不要写回。失败原因只剩本地四类
+（`INCOMPLETE_OBJECTS`/`NO_OBJECTS_DETECTED`/`SCENE_GEOMETRY_UNCLEAR`/`UNSTABLE_DETECTION`）。
+板端实测（真实摄像头）：成功局复核正常（`agreed`/`consensus`/`llm_called:true`）、失败局
+`source=="local"` 且日志零 LLM 诊断痕迹；全量 pytest **489 passed / 1 skipped**。
+
+2026-09-14（下半）**复核与失败诊断拆成两个独立开关**（当天稍后即被上一条取代：LLM 诊断整体移除，故
+`diagnosis_enabled` 已不存在）：`vision_profile.llm.enabled` 仍只控制
 **判胜前复核**，新增可选 `vision_profile.llm.diagnosis_enabled` 控制**失败原因诊断**，缺省时
 跟随 `enabled`（所有旧 profile 行为不变）；两个方向都可单独控（要复核不要诊断、或反过来）。
 dice 现状：`enabled: true`（复核已开）+ `diagnosis_enabled: false`（诊断只用本地规则）。

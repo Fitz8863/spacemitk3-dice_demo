@@ -62,7 +62,6 @@ llm = manifest.get("vision_profile", manifest.get("vision", {})).get("llm", {})
 print(f"    asr_enabled (全局语音总闸) = {cfg.get('asr_enabled')}")
 print(f"    providers = {json.dumps(cfg.get('providers', {}))}")
 print(f"    dice LLM 复核 (vision_profile.llm.enabled) = {llm.get('enabled', '(未设置)')}")
-print(f"    dice LLM 失败诊断 (vision_profile.llm.diagnosis_enabled) = {llm.get('diagnosis_enabled', '(未设置: 跟随 enabled)')}")
 PY
 echo "==> 随包发出的本地 TTS 引擎资产 (槽位切换无需再补资产):"
 for engine in moss-tts-nano matcha-tts; do
