@@ -104,15 +104,40 @@ def test_stability_streak_only_advances_on_frames_a_profile_can_adjudicate():
     assert "const bool evidence_usable = region_ok && divider_ready;" in streak
     assert "if (!evidence_usable) {" in streak
     assert "generic_stable_count.store(0);" in streak
-    # The layout check uses the profile's count and split, and feeds a
-    # per-region signature so any point-value change on either side restarts
-    # the streak.
+    # The layout check uses the profile's count and the frame's effective split,
+    # and feeds a per-region signature so any point-value change on either side
+    # restarts the streak.
     assert "region_layout_usable(item->detections, item->width, item->height," in streak
-    assert "a.expected_count, a.region_position," in streak
+    assert "a.expected_count, region_boundary," in streak
     assert "&region_signature_text)" in streak
     # The observation gate reuses the same predicate.
     assert "stable_count >= a.stable_frames" in source
     assert "!item->detections.empty() && divider_ready &&" not in source
+
+
+def test_stability_split_uses_the_located_divider_over_the_configured_ratio():
+    """The gate must split where the scene splits, not where the manifest says.
+
+    ``vision.divider.position`` is only a fallback: as long as the gate used it
+    unconditionally the detected boundary -- the thing that actually keeps the
+    split right when the camera moves -- never reached the count check, so
+    ``grouping: divider_regions`` changed whether the divider gated a frame but
+    never where left ended.  The profile's ``--region-position`` may therefore
+    appear only as the fallback assignment.
+    """
+    source = SOURCE.read_text(encoding="utf-8")
+    start = source.index("double region_boundary = a.region_position;")
+    end = source.index("if (evidence_usable &&", start)
+    split = source[start:end]
+    # The fallback is the launch argument, overridden by a located divider.
+    assert "if (a.divider_detection_enabled && divider_assist.valid) {" in split
+    assert "region_boundary = detected / region_extent;" in split
+    assert "a.expected_count, region_boundary," in split
+    # The configured ratio can no longer reach the count check directly.
+    assert "a.expected_count, a.region_position," not in source
+    # And the fallback stays inside the frame, so a degenerate divider cannot
+    # silently push every detection into one region.
+    assert "detected > 0.0 && detected < region_extent" in split
 
 
 def test_region_count_gate_is_profile_data_and_off_by_default():

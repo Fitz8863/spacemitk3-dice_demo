@@ -58,6 +58,48 @@ def resolve_runtime_binary(
     return resolve_project_path(configured, root)
 
 
+def detected_divider_ratio(
+    observation: Mapping[str, Any], orientation: str, enabled: bool = True
+) -> float | None:
+    """Return where the runtime actually found the divider, as a 0..1 ratio.
+
+    The whole point of ``divider_regions`` grouping is to split on the boundary
+    the scene shows, not on a number someone typed into a manifest: the demo
+    mat's red/blue seam sits near 0.505 while the configured default is 0.5, and
+    the two only stay interchangeable until the camera moves.  So the runtime's
+    located boundary wins whenever it has one, and the profile's
+    ``vision.divider.position`` only covers the frames where it does not.
+
+    ``enabled`` mirrors the runtime's own gate: with divider detection off the
+    runtime never looks for a boundary, so a stale ``divider`` key left in an
+    observation must not start steering the split.
+
+    ``found`` is checked with ``is True`` rather than ``is not False`` because
+    the runtime still emits a placeholder ``point`` of ``[0, 0]`` when it fails
+    to locate anything; treating absence as a ratio of 0 would dump every
+    detection into the second participant.
+    """
+    if not enabled:
+        return None
+    divider = observation.get("divider")
+    if not isinstance(divider, Mapping) or divider.get("found") is not True:
+        return None
+    point = divider.get("point")
+    if not isinstance(point, (list, tuple)) or len(point) < 2:
+        return None
+    axis = 1 if orientation == "horizontal" else 0
+    extent = observation.get("height" if orientation == "horizontal" else "width")
+    if not isinstance(extent, (int, float)) or extent <= 0:
+        return None
+    coordinate = point[axis]
+    if not isinstance(coordinate, (int, float)):
+        return None
+    ratio = float(coordinate) / float(extent)
+    if not 0.0 < ratio < 1.0:
+        return None
+    return ratio
+
+
 def normalize_observation(
     profile: Mapping[str, Any], observation: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -68,6 +110,12 @@ def normalize_observation(
     boundary; a
     runtime-provided ``participants`` object remains authoritative when it is
     available (for example, a future detector with its own tracker).
+
+    For ``divider_regions`` the boundary is the divider the runtime located in
+    this very frame (:func:`detected_divider_ratio`), falling back to the
+    profile's ``vision.divider.position`` only when the scene offered no
+    boundary.  The runtime's region gate makes the same substitution, so both
+    halves of the pipeline always split on the same pixel.
     """
     result = dict(observation)
     vision = profile.get("vision", {})
@@ -117,6 +165,12 @@ def normalize_observation(
         except (TypeError, ValueError):
             position = 0.5
         orientation = str(divider.get("orientation", "vertical"))
+    if grouping == "divider_regions":
+        detected = detected_divider_ratio(
+            result, orientation, enabled=vision.get("divider_detection", True) is not False
+        )
+        if detected is not None:
+            position = detected
     for detection in detections:
         if not isinstance(detection, Mapping):
             continue

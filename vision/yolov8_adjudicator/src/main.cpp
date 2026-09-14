@@ -720,9 +720,11 @@ static std::string detection_signature(const std::vector<Detection>& detections)
 // Region assignment mirrors ``normalize_observation`` in the Python provider:
 // a box belongs to the first region when its center lies before
 // ``width * region_position`` (vertical) or ``height * region_position``
-// (horizontal).  ``signature_out`` receives a per-region sorted class
-// multiset, so detections may arrive in any order while any value change on
-// either side still resets the streak.
+// (horizontal).  ``region_position`` is the effective boundary for the frame --
+// the located divider when there is one, otherwise the configured fallback --
+// and the caller is responsible for that substitution.  ``signature_out``
+// receives a per-region sorted class multiset, so detections may arrive in any
+// order while any value change on either side still resets the streak.
 //
 // All model classes are counted.  A profile whose ``class_map`` covers only
 // part of the model output would need an explicit class filter; none does
@@ -1397,6 +1399,10 @@ int main(int argc, char** argv) {
                     //      (skipped for profiles that forward no count);
                     //   3. both regions repeat the previous frame's class
                     //      multiset, so any point-value change restarts it.
+                    // The split point itself comes from the divider located in
+                    // this frame whenever there is one, so all three checks
+                    // describe the same left/right regions the profile will
+                    // later group on.
                     // Counting frames that fail these checks would let the
                     // stable_frames gate be satisfied with evidence the profile
                     // must reject, which surfaces as a stable-but-incomplete
@@ -1405,9 +1411,28 @@ int main(int argc, char** argv) {
                     // stable_frames.
                     std::string region_signature_text;
                     const bool region_gate = a.expected_count > 0;
+                    // The scene's own boundary wins over the configured ratio:
+                    // a located divider is the only thing that keeps the split
+                    // correct when the camera moves, and the Python provider
+                    // substitutes the same point before grouping, so both halves
+                    // of the pipeline always agree on where left ends.  The
+                    // launch argument is only the fallback for frames without a
+                    // located boundary.
+                    double region_boundary = a.region_position;
+                    if (a.divider_detection_enabled && divider_assist.valid) {
+                        const double region_extent = region_horizontal
+                            ? static_cast<double>(item->height)
+                            : static_cast<double>(item->width);
+                        const double detected = region_horizontal
+                            ? static_cast<double>(divider_assist.point.y)
+                            : static_cast<double>(divider_assist.point.x);
+                        if (region_extent > 0.0 && detected > 0.0 && detected < region_extent) {
+                            region_boundary = detected / region_extent;
+                        }
+                    }
                     const bool region_ok = region_gate
                         ? region_layout_usable(item->detections, item->width, item->height,
-                                               a.expected_count, a.region_position,
+                                               a.expected_count, region_boundary,
                                                region_horizontal, &region_signature_text)
                         : !item->detections.empty();
                     const std::string signature = region_gate

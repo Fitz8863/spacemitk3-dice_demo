@@ -39,6 +39,7 @@ from components.vision_yolov8_adjudicator.process import (  # noqa: E402
 from components.vision_yolov8_adjudicator import provider as vision_provider  # noqa: E402
 from components.vision_yolov8_adjudicator.provider import (  # noqa: E402
     VisionYolov8Adjudicator,
+    detected_divider_ratio,
     normalize_observation,
     resolve_runtime_binary,
 )
@@ -1828,6 +1829,141 @@ def test_normalize_divider_regions_uses_profile_divider_not_frame_midpoint():
     }
     normalized = normalize_observation(profile, observation)
     assert normalized["participants"] == {"LEFT": [1], "RIGHT": [2]}
+
+
+def test_normalize_divider_regions_prefers_the_located_divider_over_the_profile():
+    """The frame's own boundary wins over the configured ratio.
+
+    The configured 0.5 puts a detection centred at x=55 on the right, but the
+    runtime located the seam at x=60 (ratio 0.6), so it belongs to the left.
+    This is the whole point of ``divider_regions``: split where the scene
+    splits, not where a manifest says.
+    """
+    profile = {
+        "vision": {
+            "class_map": {"0": "1"},
+            "participants": ["LEFT", "RIGHT"],
+            "grouping": "divider_regions",
+            "divider": {"orientation": "vertical", "position": 0.5},
+        },
+        "rule": {"kind": "numeric_compare"},
+    }
+    observation = {
+        "width": 100,
+        "divider": {"found": True, "point": [60.0, 50.0], "normal": [1.0, 0.0]},
+        "detections": [{"class_id": 0, "bbox": [50, 0, 60, 20]}],
+    }
+    assert normalize_observation(profile, observation)["participants"] == {"LEFT": [1], "RIGHT": []}
+
+
+def test_normalize_divider_regions_honours_a_horizontal_located_divider():
+    profile = {
+        "vision": {
+            "class_map": {"0": "1"},
+            "participants": ["LEFT", "RIGHT"],
+            "grouping": "divider_regions",
+            "divider": {"orientation": "horizontal", "position": 0.5},
+        },
+        "rule": {"kind": "numeric_compare"},
+    }
+    observation = {
+        "width": 100,
+        "height": 100,
+        "divider": {"found": True, "point": [50.0, 20.0]},
+        "detections": [{"class_id": 0, "bbox": [10, 30, 30, 40]}],
+    }
+    assert normalize_observation(profile, observation)["participants"] == {"LEFT": [], "RIGHT": [1]}
+
+
+@pytest.mark.parametrize(
+    "observation",
+    [
+        # No divider was looked for at all.
+        {"width": 100, "detections": []},
+        # The runtime publishes a placeholder point when it locates nothing.
+        {"width": 100, "divider": {"found": False, "point": [0.0, 0.0]}, "detections": []},
+        {"width": 100, "divider": {"found": True, "point": [0.0, 0.0]}, "detections": []},
+        {"width": 100, "divider": {"found": True, "point": [101.0, 5.0]}, "detections": []},
+        {"width": 100, "divider": {"found": True, "point": "60"}, "detections": []},
+        {"width": 100, "divider": {"found": True, "point": [60.0]}, "detections": []},
+        # A ratio needs a frame extent to divide by.
+        {"divider": {"found": True, "point": [60.0, 5.0]}, "detections": []},
+    ],
+)
+def test_detected_divider_ratio_rejects_unusable_boundaries(observation):
+    assert detected_divider_ratio(observation, "vertical") is None
+
+
+def test_detected_divider_ratio_is_disabled_with_the_runtime_gate():
+    observation = {"width": 100, "divider": {"found": True, "point": [60.0, 5.0]}}
+    assert detected_divider_ratio(observation, "vertical", enabled=False) is None
+    assert detected_divider_ratio(observation, "vertical") == pytest.approx(0.6)
+
+
+@pytest.mark.parametrize(
+    "divider",
+    [
+        {"found": False, "point": [60.0, 50.0]},
+        {"point": [60.0, 50.0]},
+    ],
+)
+def test_normalize_divider_regions_falls_back_when_no_divider_was_located(divider):
+    """Without a located boundary the profile ratio is all that is left."""
+    profile = {
+        "vision": {
+            "class_map": {"0": "1"},
+            "participants": ["LEFT", "RIGHT"],
+            "grouping": "divider_regions",
+            "divider": {"orientation": "vertical", "position": 0.5},
+        },
+        "rule": {"kind": "numeric_compare"},
+    }
+    observation = {
+        "width": 100,
+        "divider": divider,
+        "detections": [{"class_id": 0, "bbox": [50, 0, 60, 20]}],
+    }
+    assert normalize_observation(profile, observation)["participants"] == {"LEFT": [], "RIGHT": [1]}
+
+
+def test_normalize_divider_regions_ignores_a_divider_when_detection_is_off():
+    """With the gate off the runtime never looks, so a stale point must not steer."""
+    profile = {
+        "vision": {
+            "class_map": {"0": "1"},
+            "participants": ["LEFT", "RIGHT"],
+            "grouping": "divider_regions",
+            "divider_detection": False,
+            "divider": {"orientation": "vertical", "position": 0.5},
+        },
+        "rule": {"kind": "numeric_compare"},
+    }
+    observation = {
+        "width": 100,
+        "divider": {"found": True, "point": [60.0, 50.0]},
+        "detections": [{"class_id": 0, "bbox": [50, 0, 60, 20]}],
+    }
+    assert normalize_observation(profile, observation)["participants"] == {"LEFT": [], "RIGHT": [1]}
+
+
+def test_normalize_x_midpoint_ignores_a_located_divider():
+    """A midpoint profile keeps splitting at the middle whatever the scene shows."""
+    profile = {
+        "vision": {
+            "class_map": {"0": "1"},
+            "participants": ["LEFT", "RIGHT"],
+            "grouping": "x_midpoint",
+        },
+        "rule": {"kind": "numeric_compare"},
+    }
+    observation = {
+        "width": 100,
+        "divider": {"found": True, "point": [20.0, 50.0]},
+        "detections": [{"class_id": 0, "bbox": [50, 0, 60, 20]}],
+    }
+    # Centre x=55 sits past the midpoint (50), so it is RIGHT even though the
+    # located divider at 0.2 would have put it on the left.
+    assert normalize_observation(profile, observation)["participants"] == {"LEFT": [], "RIGHT": [1]}
 
 
 def test_normalize_numeric_classes_produces_numeric_rule_values():

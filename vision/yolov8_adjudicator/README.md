@@ -88,9 +88,9 @@ Runtime 向 `event-fd` 发送：
 必须同时满足三条，否则把连续计数清零而不是累加：
 
 1. 开启 `vision.divider_detection` 时，该帧定位到了分界线；
-2. 按 `vision.divider.position` / `orientation`（缺省 `0.5` / `vertical`，与 provider 的
-   `normalize_observation` 使用同一组生效值）切分后，两侧各恰好 `vision.expected_count`
-   个目标；
+2. 按该帧**定位到的分界线**切分（定位不到时才回落到 `vision.divider.position` /
+   `orientation`，缺省 `0.5` / `vertical`；与 provider 的 `normalize_observation` 使用
+   同一个像素点）后，两侧各恰好 `vision.expected_count` 个目标；
 3. 两侧的类别多重集与上一帧完全一致（任一侧点数变化即清零）。
 
 因此 `stable_count` 不会超过 `stable_frames`（外部观察者不会看到 `48/30` 这类越界值），
@@ -117,6 +117,14 @@ runtime 统计的是模型输出的**全部**类别——profile 的 `class_map`
 光照会抬升亮度，却基本不改变色相，所以红蓝信号在反光下依然可用——这正是原来那条
 黑线在反光环境里失效的原因。若换回没有红蓝配色的桌面，红蓝信号会失败并回退到深色线；
 两者都没有时 `divider.found=false`，稳定帧计数会一直清零。
+
+**这条线同时就是左右分组的依据**。`emit_observation` 把 `point` 一起发出去，
+`normalize_observation` 用 `point / width`（`horizontal` 时是 `point / height`）作为切分
+比例，runtime 的区域计数门控用同一个比值切分，所以门控判定的"两侧各 5 个"与 provider
+最终分组的左右两侧永远是同一组目标。`vision.divider.position` 只在"这一帧没定位到分界线"
+时兜底（例如反光极强、镜头被挡），不再是常规切分位置——把相机挪了之后不需要改 manifest，
+接缝移动到哪里就切到哪里。比例落在 `(0, 1)` 之外、`found` 不是 `true`（runtime 定位失败时
+仍会发占位 `point:[0,0]`）、或缺少帧尺寸时，provider 一律忽略该 `point` 并回落配置值。
 
 `observation` 是通用检测证据，包含 detection 列表和稳定帧图片；runtime 不写入游戏
 winner。多视角由 provider 并行启动多个 runtime，并以 `view_id` 区分。LLM 只由 provider

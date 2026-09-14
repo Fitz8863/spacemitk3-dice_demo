@@ -51,17 +51,19 @@ def load_runtime_defaults(component_dir: Path | None = None) -> tuple[dict[str, 
 
 
 def region_split(vision: Mapping[str, Any]) -> tuple[float, str]:
-    """Return the effective region boundary and axis for a profile.
+    """Return the configured fallback region boundary and axis for a profile.
 
-    The runtime's region count gate must agree with the provider's own
-    grouping, otherwise a frame could satisfy one and be rejected by the
-    other -- exactly the mismatch that let occluded scenes count as stable.
+    Both the runtime's count gate and the provider's grouping prefer the
+    divider they locate in the frame itself and only use this value when the
+    scene offers no boundary, so the fallback has to describe the same regions
+    ``normalize_observation`` would pick without one -- otherwise a frame could
+    satisfy one half of the pipeline and be rejected by the other, exactly the
+    mismatch that let occluded scenes count as stable.
     ``normalize_observation`` splits at ``width * position`` only for
     ``divider_regions`` profiles (midpoint otherwise) and treats every
     orientation other than ``horizontal`` as vertical, so this mirrors those
-    effective values.  Out-of-range or malformed values fall back to the
-    default instead of failing the launch; the runtime validates its own
-    arguments.
+    values.  Out-of-range or malformed values fall back to the default instead
+    of failing the launch; the runtime validates its own arguments.
     """
     grouping = str(
         vision.get("grouping") or vision.get("participant_assignment") or "x_midpoint"
