@@ -161,6 +161,12 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         raise ProfileError("llm must be an object")
     _required_string(llm.get("system_prompt"), "llm.system_prompt")
     _required_string(llm.get("user_prompt_template"), "llm.user_prompt_template")
+    # ``enabled`` gates pre-winner verification, ``diagnosis_enabled`` splits off
+    # the failure-diagnosis LLM path (absent means "follow enabled").  Both are
+    # validated so a quoted string such as "false" cannot silently read as true.
+    for switch in ("enabled", "diagnosis_enabled"):
+        if switch in llm and not isinstance(llm[switch], bool):
+            raise ProfileError(f"llm.{switch} must be boolean")
     for prompt_field in ("diagnosis_system_prompt", "diagnosis_user_prompt_template"):
         if prompt_field in llm:
             _required_string(llm.get(prompt_field), f"llm.{prompt_field}")

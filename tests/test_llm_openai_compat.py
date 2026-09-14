@@ -280,7 +280,9 @@ def test_packaged_config_carries_the_migrated_deepseek_values():
     """The llm transport moved here from vision_yolov8_adjudicator config."""
     provider = LlmOpenAiCompat()
     assert provider._endpoint == "https://api.deepseek.com/v1"
-    assert provider._model == "deepseek-v4-flash-vision-exp"
+    # The previous experimental name (deepseek-v4-flash-vision-exp) is no longer
+    # in the provider's model list; the shipped default follows the rename.
+    assert provider._model == "deepseek-flash"
     assert provider._api_key.startswith("sk-") and len(provider._api_key) >= 32
     health = provider.health()
     assert health["configured"] is True

@@ -268,6 +268,169 @@ def test_provider_yolo_timeout_calls_diagnosis_and_returns_retry_result(tmp_path
     assert any(command["command"] in {"STOP_ADJUDICATION", "CANCEL"} for command in runtime.commands)
 
 
+def _diagnosis_switch_profile(diagnosis_enabled):
+    """Dice-shaped profile whose failure diagnosis is switched explicitly."""
+    return {
+        "game_id": "dice",
+        "vision": {"expected_count": 5, "participants": ["LEFT", "RIGHT"]},
+        "llm": {
+            "enabled": True,
+            "diagnosis_enabled": diagnosis_enabled,
+            "timeout_seconds": 1,
+            "system_prompt": "judge",
+            "user_prompt_template": "judge",
+            "diagnosis_system_prompt": "diagnose",
+            "diagnosis_user_prompt_template": "Detector summary: {detector_summary}",
+            "allowed_outcomes": ["LEFT", "RIGHT", "TIE"],
+            "diagnosis_allowed_reason_codes": ["OVERLAPPING_OBJECTS", "UNKNOWN"],
+        },
+        "rule": {"kind": "numeric_compare", "aggregation": "sum", "higher_wins": True, "tie_value": "TIE"},
+        "timeouts": {"yolo_detection_seconds": 0.01, "adjudication_seconds": 120},
+        "lifecycle": {"post_result_hold_seconds": 0},
+    }
+
+
+def _diagnosis_switch_runtime(image: Path, *, verdict: bool):
+    class Runtime:
+        def start(self, *args, **kwargs):
+            if verdict:
+                self.events_data = iter([{
+                    "event": "observation",
+                    "stable": True,
+                    "yolo_outcome": "LEFT",
+                    "participants": {"LEFT": [1, 2, 3, 4, 6], "RIGHT": [2, 3, 4, 5, 6]},
+                    "snapshot": {"path": str(image)},
+                }])
+            else:
+                self.events_data = iter([{
+                    "event": "diagnostic_snapshot",
+                    "stable": False,
+                    "snapshot": {"path": str(image)},
+                    "participants": {"LEFT": [1, 2, 3, 4], "RIGHT": [6, 6, 6, 6, 6]},
+                    "detections": [1] * 9,
+                }])
+
+        def send(self, command):
+            self.commands = getattr(self, "commands", []) + [dict(command)]
+
+        def events(self):
+            return self.events_data
+
+        def stop(self):
+            pass
+
+    return Runtime()
+
+
+def _diagnosis_switch_verifier(calls: list[str]):
+    class Verifier:
+        def verify(self, **kwargs):
+            calls.append("verify")
+            return type("R", (), {"status": "success", "outcome": "LEFT", "error": None})()
+
+        def diagnose(self, **kwargs):
+            calls.append("diagnose")
+            return type("R", (), {
+                "status": "success",
+                "reason_code": "OVERLAPPING_OBJECTS",
+                "message": "大模型诊断：骰子可能叠放。",
+                "retry": True,
+                "error": None,
+            })()
+
+    return Verifier()
+
+
+def test_provider_diagnosis_switch_off_keeps_verification_independent(tmp_path: Path):
+    """`enabled: true` + `diagnosis_enabled: false` must never call the diagnosis LLM.
+
+    The local evidence rules already name the incomplete side, so the failure
+    path stays fully local while the pre-winner verification still runs.
+    """
+    image = tmp_path / "diagnostic.jpg"
+    image.write_bytes(b"jpeg")
+    judged_image = tmp_path / "stable.jpg"
+    judged_image.write_bytes(b"jpeg")
+    calls: list[str] = []
+    profile = _diagnosis_switch_profile(False)
+
+    failed = VisionYolov8Adjudicator(
+        runtime_factory=lambda _view_id: _diagnosis_switch_runtime(image, verdict=False),
+        verifier=_diagnosis_switch_verifier(calls),
+    ).adjudicate(
+        VisionAdjudicationRequest("dice", profile, "diagnosis-off", 120),
+        on_log=lambda _: None,
+        on_event=lambda _: None,
+        is_cancelled=lambda: False,
+    )
+    assert failed["diagnosed"] is True
+    assert failed["diagnosis"]["source"] == "disabled"
+    assert failed["diagnosis"]["llm_status"] == "disabled"
+    assert failed["diagnosis"]["reason_code"] == "INCOMPLETE_OBJECTS"
+    assert failed["diagnosis"]["detected_counts"] == {"LEFT": 4, "RIGHT": 5}
+    assert calls == []
+
+    judged = VisionYolov8Adjudicator(
+        runtime_factory=lambda _view_id: _diagnosis_switch_runtime(judged_image, verdict=True),
+        verifier=_diagnosis_switch_verifier(calls),
+    ).adjudicate(
+        VisionAdjudicationRequest("dice", profile, "verification-on", 120),
+        on_log=lambda _: None,
+        on_event=lambda _: None,
+        is_cancelled=lambda: False,
+    )
+    assert judged["outcome"]["value"] == "LEFT"
+    assert judged["decision_source"] == "consensus"
+    assert calls == ["verify"]
+
+
+def test_provider_diagnosis_switch_can_run_without_verification(tmp_path: Path):
+    """The reverse split (`enabled: false` + `diagnosis_enabled: true`) also holds."""
+    image = tmp_path / "diagnostic.jpg"
+    image.write_bytes(b"jpeg")
+    judged_image = tmp_path / "stable.jpg"
+    judged_image.write_bytes(b"jpeg")
+    calls: list[str] = []
+    profile = _diagnosis_switch_profile(True)
+    profile["llm"]["enabled"] = False
+
+    failed = VisionYolov8Adjudicator(
+        runtime_factory=lambda _view_id: _diagnosis_switch_runtime(image, verdict=False),
+        verifier=_diagnosis_switch_verifier(calls),
+    ).adjudicate(
+        VisionAdjudicationRequest("dice", profile, "diagnosis-only", 120),
+        on_log=lambda _: None,
+        on_event=lambda _: None,
+        is_cancelled=lambda: False,
+    )
+    assert failed["diagnosis"]["source"] == "llm"
+    assert failed["diagnosis"]["reason_code"] == "OVERLAPPING_OBJECTS"
+
+    judged = VisionYolov8Adjudicator(
+        runtime_factory=lambda _view_id: _diagnosis_switch_runtime(judged_image, verdict=True),
+        verifier=_diagnosis_switch_verifier(calls),
+    ).adjudicate(
+        VisionAdjudicationRequest("dice", profile, "verification-off", 120),
+        on_log=lambda _: None,
+        on_event=lambda _: None,
+        is_cancelled=lambda: False,
+    )
+    assert judged["decision_source"] == "yolo_only"
+    assert judged["verification"]["status"] == "disabled"
+    assert calls == ["diagnose"]
+
+
+def test_profile_rejects_non_boolean_llm_switches(tmp_path: Path):
+    """A quoted "false" must not silently read as enabled."""
+    for switch, value in (("enabled", "false"), ("diagnosis_enabled", "true")):
+        profile = _minimal_profile()
+        profile["llm"][switch] = value
+        path = tmp_path / f"vision_profile-{switch}.json"
+        path.write_text(json.dumps(profile))
+        with pytest.raises(ProfileError, match=rf"llm\.{switch}"):
+            load_profile(path)
+
+
 def test_provider_diagnosis_llm_timeout_uses_yolo_evidence_fallback(tmp_path: Path):
     image = tmp_path / "diagnostic.jpg"
     image.write_bytes(b"jpeg")

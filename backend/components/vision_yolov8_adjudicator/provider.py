@@ -422,6 +422,24 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         return float(fallback)
 
     @staticmethod
+    def _diagnosis_llm_enabled(llm_cfg: Mapping[str, Any], verification_enabled: bool) -> bool:
+        """Resolve whether the failure-diagnosis LLM path may run.
+
+        Failure diagnosis and pre-winner verification are separate concerns: a
+        deployment may want the multimodal judge on the stable frame while
+        answering failures from the local evidence rules alone, which already
+        know the per-side counts and divider state.  ``llm.diagnosis_enabled``
+        splits the single historical ``llm.enabled`` switch; when it is absent
+        the diagnosis follows ``llm.enabled``, so every existing profile keeps
+        its behaviour.  A profile may also enable diagnosis without
+        verification (``enabled: false`` + ``diagnosis_enabled: true``).
+        """
+        value = llm_cfg.get("diagnosis_enabled")
+        if isinstance(value, bool):
+            return value
+        return bool(verification_enabled)
+
+    @staticmethod
     def _resident_mode(profile: Mapping[str, Any]) -> bool:
         """Return whether the deployment keeps camera/runtime processes warm."""
         configured: Mapping[str, Any] = {}
@@ -462,6 +480,8 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                     evidence[key] = item[key]
         local = diagnose_detection_failure(profile, evidence)
         cfg = profile.get("llm", {}) if isinstance(profile.get("llm"), Mapping) else {}
+        llm_enabled = bool(cfg.get("enabled", True))
+        diagnosis_enabled = self._diagnosis_llm_enabled(cfg, llm_enabled)
         llm_status = "disabled"
         diagnosis = dict(local)
         paths: list[Path] = []
@@ -483,7 +503,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         remaining = max(0.0, deadline - time.monotonic())
         verifier = self._round_llm(request)
         diagnosis_available = paths and verifier is not None and hasattr(verifier, "diagnose")
-        if cfg.get("enabled", True) and diagnosis_available and remaining > 0:
+        if diagnosis_enabled and diagnosis_available and remaining > 0:
             summary = json.dumps(
                 {"detected_counts": local.get("detected_counts", {}), "reason_code": local.get("reason_code")},
                 ensure_ascii=False,
@@ -525,11 +545,11 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 llm_status = "failure"
                 diagnosis["source"] = "yolo_fallback"
                 on_log(f"[vision] diagnosis LLM failed: {exc}")
-        elif cfg.get("enabled", True) and diagnosis_available:
+        elif diagnosis_enabled and diagnosis_available:
             llm_status = "timeout"
             diagnosis["source"] = "yolo_fallback"
         else:
-            diagnosis["source"] = "yolo_fallback" if cfg.get("enabled", True) else "disabled"
+            diagnosis["source"] = "yolo_fallback" if diagnosis_enabled else "disabled"
         diagnosis["llm_status"] = llm_status
         diagnosis["retry"] = True
         result = {
