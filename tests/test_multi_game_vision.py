@@ -230,3 +230,106 @@ def test_runtime_signature_survives_an_unreadable_runtime_config(monkeypatch):
     # Still produces a usable signature instead of raising.
     signature = VisionYolov8Adjudicator._runtime_signature(profile, "default")
     assert "dice" in signature
+
+
+# ---- the pipeline itself is game-agnostic ---------------------------------
+
+class _FakeAdjudicator:
+    """Adjudicator double that returns one physical result per game."""
+
+    def __init__(self, physical):
+        self.physical = physical
+        self.requests = []
+
+    def adjudicate(self, request, **_kwargs):
+        self.requests.append(request)
+        return dict(self.physical)
+
+
+class _FakeRegistry:
+    def __init__(self, providers):
+        self._providers = providers
+
+    def require(self, provider_id, *, expected_type=None, expected_role=None):
+        from core.errors import ComponentNotFoundError
+
+        provider = self._providers.get(provider_id)
+        if provider is None:
+            raise ComponentNotFoundError(provider_id)
+        return provider
+
+
+def test_shared_pipeline_serves_a_non_dice_game():
+    """通用 pipeline 必须能跑非 dice 游戏——这正是「加游戏不用改 core」的证据。"""
+    from core.vision_pipeline import run_vision_game
+
+    adjudicator = _FakeAdjudicator({
+        "winner": "LEFT", "left_values": [2], "right_values": [1],
+    })
+    components = _FakeRegistry({"vision_yolov8_adjudicator": adjudicator})
+    manifest = {
+        "providers": {"vision_adjudicator": "vision_yolov8_adjudicator"},
+        "participants": {"player": "LEFT", "agent": "RIGHT"},
+        "vision_profile": _profile("rps"),
+    }
+    seen: list[str] = []
+
+    result = run_vision_game(
+        lambda line: seen.append(line),
+        lambda: False,
+        5.0,
+        components=components,
+        manifest=manifest,
+        on_event=lambda _event: None,
+        game_id="rps",
+        projector=lambda physical, participants: {
+            "winner": physical["winner"], "projected_for": "rps",
+        },
+    )
+    assert result == {"winner": "LEFT", "projected_for": "rps"}
+    # The request carries the game's own id and profile.
+    assert adjudicator.requests[0].game_id == "rps"
+
+
+def test_shared_pipeline_rejects_a_profile_for_another_game():
+    """profile 的 game_id 与调用游戏不符时必须拒绝，不能拿骰子的参数跑猜拳。"""
+    from core.vision_pipeline import run_vision_game
+
+    components = _FakeRegistry({"vision_yolov8_adjudicator": _FakeAdjudicator({})})
+    manifest = {
+        "providers": {"vision_adjudicator": "vision_yolov8_adjudicator"},
+        "participants": {"player": "LEFT", "agent": "RIGHT"},
+        "vision_profile": _profile("dice"),
+    }
+    with pytest.raises(ValueError, match="vision profile"):
+        run_vision_game(
+            lambda _line: None, lambda: False, 5.0,
+            components=components, manifest=manifest,
+            on_event=lambda _event: None, game_id="rps",
+            projector=lambda physical, participants: physical,
+        )
+
+
+def test_shared_pipeline_passes_a_diagnosed_result_straight_through():
+    """诊断结果是终态重试结论，不能被游戏的结果投影层改写。"""
+    from core.vision_pipeline import run_vision_game
+
+    diagnosis = {"diagnosed": True, "diagnosis": {"reason_code": "NO_OBJECTS_DETECTED"}}
+    components = _FakeRegistry(
+        {"vision_yolov8_adjudicator": _FakeAdjudicator(diagnosis)}
+    )
+    manifest = {
+        "providers": {"vision_adjudicator": "vision_yolov8_adjudicator"},
+        "participants": {"player": "LEFT", "agent": "RIGHT"},
+        "vision_profile": _profile("dice"),
+    }
+
+    def _projector(_physical, _participants):
+        raise AssertionError("诊断结果不应进入投影层")
+
+    result = run_vision_game(
+        lambda _line: None, lambda: False, 5.0,
+        components=components, manifest=manifest,
+        on_event=lambda _event: None, game_id="dice", projector=_projector,
+    )
+    assert result == diagnosis
