@@ -24,17 +24,7 @@
 
 ```json
 {
-  "model": "models/yolov8s-seg.q.onnx",
-  "class_names": [
-    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
-    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
-    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
-    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
-    "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
-    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed",
-    "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven",
-    "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
-  ],
+  "model": "models/best.q.onnx",
   "camera": "/dev/video1",
   "device": "",
   "width": 1280,
@@ -42,14 +32,14 @@
   "fps": 25,
   "intra_threads": 2,
   "ep_affinity": "12;13",
-  "conf": 0.25,
+  "conf": 0.35,
   "iou": 0.45,
   "max_detections": 100,
   "queue_depth": 2,
   "display_enabled": false,
   "decoder": "auto",
-  "focus": 0,
-  "zoom": 160,
+  "focus": -1,
+  "zoom": 120,
   "self_test": false,
   "no_display": false,
   "max_frames": 0,
@@ -60,7 +50,11 @@
     "host": "127.0.0.1",
     "port": 8554,
     "path": "/dice/seg"
-  }
+  },
+  "class_names": [
+    "cap",
+    "ground"
+  ]
 }
 ```
 
@@ -93,7 +87,7 @@ ctest --test-dir build --output-on-failure
 
 ## 运行
 
-模型文件已放在 `models/yolov8s-seg.q.onnx` 时：
+模型文件已放在 `models/best.q.onnx` 时：
 
 ```bash
 ./build/yolov8_seg_camera --config config.json
@@ -119,7 +113,7 @@ ctest --test-dir build --output-on-failure
 ```bash
 ./build/yolov8_seg_camera \
   --config config.json \
-  --model models/yolov8s-seg.q.onnx \
+  --model models/best.q.onnx \
   --camera /dev/video1 \
   --ep-affinity '12;13'
 ```
@@ -188,6 +182,6 @@ rtsp://127.0.0.1:8554/dice
 - EP 线程是否使用请求的 CPU 核。
 - 是否仍有 CPU fallback。
 
-模型二进制被 `.gitignore` 忽略；Git 只保存源码、配置、README 和模型说明。
+模型二进制默认被 `.gitignore` 的 `models/*.onnx` 忽略，`models/best.q.onnx` 通过 `!models/best.q.onnx` 例外纳入版本控制。
 
-当前默认模型为 `models/yolov8s-seg.fp32.q.onnx`（标准 2 输出布局的 SpaceMIT 量化版，SpaceMIT EP 实测可加载）。程序同时支持 SpaceMIT 13 输出格式（如 `models/yolov8s-seg.q.onnx`）与官方标准 2 输出格式（官方 FP32 `models/yolov8s-seg.fp32.onnx` 也可直接加载），按输出数量自动识别，详见 `models/README.md`。
+当前默认模型为 `models/best.q.onnx`——自训练的 2 类（`cap`/`ground`）YOLOv8-seg 盖子分割模型，标准 2 输出布局（`output0 [1,38,8400]` = 4 box + 2 class + 32 mask 系数；`output1 [1,32,160,160]` proto），已由 SpaceMIT 量化、SpaceMIT EP 实测可加载。程序仍同时支持 SpaceMIT 13 输出格式与官方标准 2 输出格式，按输出数量自动识别，详见 `models/README.md`。

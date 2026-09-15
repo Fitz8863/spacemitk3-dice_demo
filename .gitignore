@@ -5,6 +5,8 @@ build/
 *.part
 .cache/
 models/*.onnx
+!models/best.q.onnx
 config.local.json
 compile_commands.json
 .shaders/
+.zcode/
