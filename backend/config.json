@@ -8,8 +8,8 @@
     "llm": "llm_openai_compat"
   },
   "participants": {
-    "player": "LEFT",
-    "agent": "RIGHT"
+    "player": "RIGHT",
+    "agent": "LEFT"
   },
   "voice": "default",
   "speed": 1.0,
