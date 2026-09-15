@@ -241,7 +241,12 @@ cmake --build build -j4
 
 当前迁移的模型是 YOLOv8 raw 输出模型，预期输出 `[1, 10, 8400]`。程序会在 CPU 侧执行 YOLOv8 解码和 NMS，并以模型无关的 detection 列表和稳定帧快照交给游戏 profile 解释；不会在 C++ 中固化骰子数量、分区、求和或胜负规则。
 
-`vision/yolov8_adjudicator/config.json` 是 YOLO runtime 的硬件、部署与 WebRTC 基础地址唯一来源（摄像头、分辨率、帧率、EP 绑核、焦距、RTSP 地址）。`backend/components/vision_yolov8_adjudicator/config.json` 只保存 Provider 的 runtime 路径与生命周期。两者都**不含** LLM 凭证——endpoint/model/api_key 在 `backend/components/llm_openai_compat/config.json`。游戏 manifest 声明自己的 `video.path` 与**检测阈值** `vision.confidence`（2026-09-15 起：阈值是游戏参数，见下），完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
+`vision/yolov8_adjudicator/config.json` 原本是 YOLO runtime 的硬件、部署与 WebRTC 基础地址唯一来源，**2026-09-15 起它退回为部署默认模板**：游戏用 `vision_profile.runtime_config` 指向自己的硬件文件后，只读那一份。**dice 现在读 `backend/games/dice/adjudicator_config.json`**，所以改共享文件对 dice 没有影响。`backend/components/vision_yolov8_adjudicator/config.json` 只保存 Provider 的 runtime 路径与生命周期。三者都**不含** LLM 凭证——endpoint/model/api_key 在 `backend/components/llm_openai_compat/config.json`。游戏 manifest 声明自己的 `video.path` 与**检测阈值** `vision.confidence`（阈值是游戏参数），完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
+
+> ⚠️ **per-game 硬件文件是"整份替换"，不与共享文件做字段级合并。** runtime 只带 `--config <那一份>`，
+> 里面**没写的键会回落到 C++ 编译期默认值**（`conf` 0.50、`stable_frames` 20、`focus` 0），**不是**
+> 回退到共享文件。所以要做差异就得整份复制。另外删掉了 `model`，**直接跑 CLI 时要自带 `--model`**
+> （C++ 按配置文件所在目录解析相对路径）；生产不受影响，provider 永远传绝对路径。
 
 ### 第二个视觉游戏怎么接（2026-09-15 起）
 

@@ -119,7 +119,8 @@ main/
 | --- | --- | --- |
 | `backend/components/vision_yolov8_adjudicator/config.json` | Python provider | resident/per-request 模式、runtime 路径、生命周期宽限时间（**不含** LLM 凭证；2026-09-04 起 LLM 配置在 `backend/components/llm_openai_compat/config.json`） |
 | `backend/components/llm_openai_compat/config.json` | LLM 组件 | endpoint、model、api_key、`reasoning_effort` 部署默认（Git 跟踪，**仓库须保持私有**） |
-| `vision/yolov8_adjudicator/config.json` | C++ runtime / 部署 | 摄像头、分辨率、帧率、推理线程、EP affinity、焦距/变焦、RTSP 地址、MediaMTX `video.webrtc_base_url`。**只放"这台板子+这张桌子"的属性**：检测阈值等游戏参数在游戏 manifest（见 §3.3） |
+| `vision/yolov8_adjudicator/config.json` | C++ runtime / **部署默认** | 摄像头、分辨率、帧率、推理线程、EP affinity、焦距/变焦、RTSP 地址、MediaMTX `video.webrtc_base_url`。**只放"这台板子+这张桌子"的属性**：检测阈值等游戏参数在游戏 manifest（见 §3.3） |
+| `backend/games/dice/adjudicator_config.json` | C++ runtime / **dice 专属** | 同上。dice 的 manifest 通过 `runtime_config` 指向它，所以**改上面那份共享文件不会影响 dice**（2026-09-15 起） |
 | `backend/components/tts_*/config.json` | 各 TTS provider | 本地 runtime 路径、端口、模型和音色参数 |
 
 视觉组件配置不重复保存摄像头、RTSP 或 WebRTC 基础地址。新增游戏只写自己的 `vision_profile.video.path`，例如 `/dice/` 或 `/rps/`。完整播放地址由基础地址和 path 安全拼接：
@@ -148,6 +149,13 @@ main/
 解析优先级：**`profile.runtime_config` > 组件 `runtime.config` > 打包默认
 `vision/yolov8_adjudicator/config.json`**。声明的路径是**强制**的——解析或读取失败会**直接报错**
 （日志给出具体文件名），绝不会静默改用共享配置，否则就是悄悄用了别的游戏的摄像头与 RTSP 设置。
+
+> **整份替换，不是字段合并。** runtime 只带 `--config <那份>`，C++ 只读它。**没写的键不会回退到
+> 共享文件**，而是回落到 **C++ 编译期默认值**（例如 `conf` 0.50、`stable_frames` 20、`focus` 0）。
+> 所以"我只改一个值、其余继承共享"做不到，必须整份复制。
+> **dice 现状**：`vision_profile.runtime_config` 指向 `backend/games/dice/adjudicator_config.json`，
+> 因此**改 `vision/yolov8_adjudicator/config.json` 对 dice 没有任何影响**——这份共享文件现在只是
+> 未来新游戏的默认模板。dice 的配置文件里有一个 `_note` 键写着这件事（两个解析器都忽略未知键）。
 
 | 归属 | 字段 | 放哪 |
 | --- | --- | --- |
