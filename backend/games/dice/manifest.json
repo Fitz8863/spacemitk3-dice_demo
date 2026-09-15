@@ -71,6 +71,7 @@
 	"vision_profile": {
 		"schema_version": 1,
 		"game_id": "dice",
+		"runtime_config": "backend/games/dice/adjudicator_config.json",
 		"vision": {
 			"model": "vision/yolov8_adjudicator/models/best.q.onnx",
 			"confidence": 0.45,

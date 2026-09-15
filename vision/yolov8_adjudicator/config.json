@@ -1,5 +1,4 @@
 {
-  "model": "models/best.q.onnx",
   "camera": "/dev/video1",
   "device": "",
   "width": 1280,
@@ -10,17 +9,12 @@
   "queue_depth": 2,
   "focus": -1,
   "zoom": 150,
-  "display_enabled": false,
-  "yolov8_enabled": false,
-  "divider_detection": false,
-  "stable_frames": 30,
   "video": {
     "webrtc_base_url": "http://127.0.0.1:8889"
   },
   "rtsp": {
     "enabled": true,
     "host": "127.0.0.1",
-    "port": 8554,
-    "path": "/dice/det"
+    "port": 8554
   }
 }

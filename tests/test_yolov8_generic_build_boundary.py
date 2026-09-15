@@ -203,11 +203,29 @@ def test_runtime_has_no_cpp_llm_or_legacy_dice_state_machine():
 
 
 def test_runtime_config_owns_hardware_only_settings():
+    """共享硬件配置只放"这台板子+这张桌子"的属性。
+
+    LLM 凭证在 LLM 组件；模型/稳定帧/阈值/分界线门控这些**游戏语义**参数在
+    游戏 manifest（并按游戏各自可覆盖）。此前它们混在这份共享文件里、会被
+    所有游戏继承——2026-09-15 起已归位，这里把边界钉住。
+    """
     config = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
     assert "llm" not in config
     assert "rejudge_on_change" not in config
-    assert config["yolov8_enabled"] is False
-    assert config["divider_detection"] is False
+    for game_owned in (
+        "model",
+        "stable_frames",
+        "conf",
+        "divider_detection",
+        "display_enabled",
+        "yolov8_enabled",
+    ):
+        assert game_owned not in config, f"{game_owned} 属于游戏 manifest，不该在共享硬件配置里"
+    # The hardware it does own must stay.
+    for hardware in ("camera", "width", "height", "fps", "ep_affinity", "focus", "zoom"):
+        assert hardware in config, f"{hardware} 是硬件属性，必须留在共享配置里"
+    # Without rtsp.enabled the provider never adds --rtsp, i.e. no stream at all.
+    assert config["rtsp"]["enabled"] is True
 
 
 def test_runtime_resolves_config_relative_model_path():

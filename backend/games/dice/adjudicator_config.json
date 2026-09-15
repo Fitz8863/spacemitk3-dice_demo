@@ -1,0 +1,22 @@
+{
+  "_note": "dice 专属的视觉 runtime 硬件配置。manifest 的 vision_profile.runtime_config 指向本文件，所以 dice 只读这一份——改 vision/yolov8_adjudicator/config.json 不会影响 dice。整份替换、不与共享文件做字段级合并：这里没写的键会回落到 C++ 编译期默认值，加字段请整份补齐。",
+  "camera": "/dev/video1",
+  "device": "",
+  "width": 1280,
+  "height": 720,
+  "fps": 25,
+  "intra_threads": 2,
+  "ep_affinity": "14;15",
+  "queue_depth": 2,
+  "focus": -1,
+  "zoom": 150,
+  "video": {
+    "webrtc_base_url": "http://127.0.0.1:8889"
+  },
+  "rtsp": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8554,
+    "path": "/dice/det"
+  }
+}
