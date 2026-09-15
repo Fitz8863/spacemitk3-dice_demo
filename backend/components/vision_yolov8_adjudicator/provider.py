@@ -495,25 +495,31 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         return started
 
     @staticmethod
-    def _runtime_config_stamp() -> str:
-        """Fingerprint the C++ runtime config file so editing it takes effect.
+    def _runtime_config_stamp(profile: Mapping[str, Any]) -> str:
+        """Fingerprint this game's C++ runtime config file.
 
         ``conf``, ``zoom``, ``focus``, the camera device and the RTSP endpoint
-        live in ``vision/yolov8_adjudicator/config.json`` and reach the runtime
-        only through ``--config``.  Without this stamp, editing that file needed
-        a full backend restart, which reads as a bug next to the hot-reloaded
-        game manifests.  Including mtime+size in the signature makes the next
-        round rebuild the resident process instead.
+        live in a runtime config file and reach the runtime only through
+        ``--config``.  Without this stamp, editing that file needed a full
+        backend restart, which reads as a bug next to the hot-reloaded game
+        manifests.  Including mtime+size in the signature makes the next round
+        rebuild the resident process instead.
 
-        Unreadable or missing file degrades to an empty stamp: a broken path
-        must never refuse to start, it just cannot participate in the verdict.
+        The resolved path is part of the stamp, so two games pointing at
+        different hardware files never share a signature even when the files
+        happen to be the same size.  Unreadable or missing file degrades to a
+        marker (or an empty string when nothing was declared): a broken path
+        must never refuse to start, it just cannot participate in the verdict —
+        and resolution failures surface loudly at launch instead.
         """
+        profile = profile if isinstance(profile, Mapping) else {}
         try:
             component = load_component_config(COMPONENT_DIR)
-            path = resolve_runtime_config_path(component)
+            path = resolve_runtime_config_path(component, profile=profile)
             stat = path.stat()
         except Exception:
-            return ""
+            declared = profile.get("runtime_config")
+            return f"unresolved:{declared}" if declared else ""
         return f"{path}:{stat.st_mtime_ns}:{stat.st_size}"
 
     @staticmethod
@@ -564,9 +570,11 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             "video_path": video_path,
             "camera": view_data.get("camera"),
             "runtime": profile.get("runtime"),
-            # Editing the shared runtime config must rebuild the process on the
-            # next round (camera / conf / zoom / focus / RTSP all live there).
-            "runtime_config": VisionYolov8Adjudicator._runtime_config_stamp(),
+            # Editing this game's runtime config must rebuild the process on the
+            # next round (camera / conf / zoom / focus / RTSP all live there),
+            # and the stamp carries the resolved path so a per-game file is
+            # never confused with the shared deployment default.
+            "runtime_config": VisionYolov8Adjudicator._runtime_config_stamp(profile),
         }
         return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
 
@@ -582,10 +590,17 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             component = {}
         runtime_base = ""
         configured_runtime = component.get("runtime", {})
-        has_explicit_runtime_config = isinstance(configured_runtime, Mapping) and configured_runtime.get("config")
+        profile_declares_config = isinstance(profile, Mapping) and bool(
+            isinstance(profile.get("runtime_config"), str) and profile["runtime_config"].strip()
+        )
+        has_explicit_runtime_config = (
+            isinstance(configured_runtime, Mapping) and configured_runtime.get("config")
+        ) or profile_declares_config
         if has_explicit_runtime_config:
             try:
-                runtime = load_runtime_config(resolve_runtime_config_path(component))
+                runtime = load_runtime_config(
+                    resolve_runtime_config_path(component, profile=profile)
+                )
                 runtime_video = runtime.get("video", {})
                 if isinstance(runtime_video, Mapping):
                     runtime_base = runtime_video.get("webrtc_base_url", "")

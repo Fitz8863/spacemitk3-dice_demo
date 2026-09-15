@@ -45,14 +45,32 @@ def _read_object(path: Path, label: str) -> dict[str, Any]:
 def resolve_runtime_config_path(
     component: Mapping[str, Any] | str | Path,
     project_root: Path = PROJECT_ROOT,
+    *,
+    profile: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Resolve the C++ runtime configuration owned by the vision package.
+    """Resolve the C++ runtime configuration for one game.
 
-    New component manifests declare ``runtime.config``.  A missing value is
-    intentionally compatible with older deployments and falls back to the
-    standard package location; arbitrary absolute paths and traversal are
-    still rejected by :func:`resolve_project_path`.
+    Resolution order:
+
+    1. ``profile["runtime_config"]`` — a **per-game** hardware file declared by
+       the game manifest.  A game only declares this when it genuinely differs
+       from the deployment defaults (another camera, another RTSP endpoint,
+       different resolution/zoom); otherwise it inherits.
+    2. ``component["runtime"]["config"]`` — the deployment default.
+    3. ``DEFAULT_RUNTIME_CONFIG`` — the packaged location.
+
+    A declared per-game path is *not* silently ignored when it is malformed:
+    arbitrary absolute paths and traversal are rejected by
+    :func:`resolve_project_path`, so a typo cannot quietly fall back to the
+    shared camera.
     """
+    declared = None
+    if isinstance(profile, Mapping):
+        value = profile.get("runtime_config")
+        if isinstance(value, str) and value.strip():
+            declared = value.strip()
+    if declared is not None:
+        return resolve_project_path(declared, project_root)
     if isinstance(component, Mapping):
         runtime = component.get("runtime", {})
         value = runtime.get("config") if isinstance(runtime, Mapping) else None
@@ -128,6 +146,16 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
     game_id = profile.get("game_id")
     if not isinstance(game_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", game_id):
         raise ProfileError("game_id must be a non-empty identifier")
+    # Optional per-game hardware runtime config.  Shape is validated here (the
+    # file's existence is checked when the runtime is resolved, so a bad path
+    # surfaces with a precise error instead of silently using the shared
+    # camera).  Kept optional so a game with no hardware differences inherits
+    # the deployment default rather than duplicating it.
+    if "runtime_config" in profile:
+        declared = profile["runtime_config"]
+        if not isinstance(declared, str) or not declared.strip():
+            raise ProfileError("runtime_config must be a non-empty repository-relative path")
+        resolve_project_path(declared.strip())
     vision = profile.get("vision")
     if not isinstance(vision, dict):
         raise ProfileError("vision must be an object")

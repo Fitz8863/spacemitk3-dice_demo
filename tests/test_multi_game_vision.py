@@ -8,6 +8,7 @@ model/stable_frames/confidence/camera/runtime —— 于是两个游戏只要这
 """
 from __future__ import annotations
 
+import json as _json
 import sys
 from pathlib import Path
 
@@ -47,6 +48,7 @@ def _profile(
     if expected_count is not None:
         vision["expected_count"] = expected_count
     return {
+        "schema_version": 1,
         "game_id": game_id,
         "runtime": {"mode": "resident", "prewarm_camera": True},
         "vision": vision,
@@ -203,7 +205,9 @@ def test_runtime_signature_changes_when_the_runtime_config_changes(tmp_path: Pat
     config_file = tmp_path / "runtime-config.json"
     config_file.write_text('{"conf": 0.45}\n', encoding="utf-8")
     monkeypatch.setattr(
-        vision_provider, "resolve_runtime_config_path", lambda _component: config_file
+        vision_provider,
+        "resolve_runtime_config_path",
+        lambda _component, **_kwargs: config_file,
     )
 
     profile = _profile("dice")
@@ -222,7 +226,7 @@ def test_runtime_signature_survives_an_unreadable_runtime_config(monkeypatch):
     """读不到 runtime config 时降级为空指纹，绝不因此拒绝启动。"""
     import components.vision_yolov8_adjudicator.provider as vision_provider
 
-    def _boom(_component):
+    def _boom(_component, **_kwargs):
         raise OSError("no such file")
 
     monkeypatch.setattr(vision_provider, "resolve_runtime_config_path", _boom)
@@ -511,3 +515,164 @@ def test_confidence_reaches_the_runtime_command_line():
     assert 'vision.get("confidence", vision.get("conf"))' in source
     # ...and forwards it as the runtime's --conf override.
     assert '"--conf"' in source
+
+
+# ---- per-game hardware runtime config --------------------------------------
+
+def _write_runtime_config(path: Path, **overrides) -> Path:
+    payload = {
+        "camera": "/dev/video1",
+        "width": 1280,
+        "height": 720,
+        "fps": 25,
+        "intra_threads": 2,
+        "ep_affinity": "14;15",
+        "focus": -1,
+        "zoom": 150,
+        "rtsp": {"enabled": True, "host": "127.0.0.1", "port": 8554},
+        "video": {"webrtc_base_url": "http://127.0.0.1:8889"},
+    }
+    payload.update(overrides)
+    path.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
+def test_a_game_can_point_at_its_own_hardware_config(tmp_path: Path):
+    """游戏 manifest 可以声明自己的硬件配置文件，且解析优先于共享默认。"""
+    from components.vision_yolov8_adjudicator.profile import resolve_runtime_config_path
+
+    own = _write_runtime_config(tmp_path / "rps-runtime.json", camera="/dev/video3")
+    component = {"runtime": {"config": "vision/yolov8_adjudicator/config.json"}}
+
+    shared = resolve_runtime_config_path(component)
+    assert shared.name == "config.json"
+
+    # A relative path is resolved against the repository root, so the test
+    # reaches the file through a path relative to ROOT.
+    rel = own.relative_to(ROOT) if own.is_relative_to(ROOT) else None
+    if rel is None:
+        # tmp_path is outside the repo: assert the rejection instead.
+        with pytest.raises(Exception):
+            resolve_runtime_config_path(component, profile={"runtime_config": str(own)})
+        return
+    resolved = resolve_runtime_config_path(component, profile={"runtime_config": str(rel)})
+    assert resolved == own.resolve()
+
+
+def test_per_game_runtime_config_must_stay_inside_the_project():
+    """绝对路径与 .. 越界必须被拒绝——否则游戏能把运行时指向任意文件。"""
+    from components.vision_yolov8_adjudicator.profile import resolve_runtime_config_path
+
+    component = {"runtime": {"config": "vision/yolov8_adjudicator/config.json"}}
+    for bad in ("/etc/passwd", "../../etc/passwd", "backend/../../outside.json"):
+        with pytest.raises(Exception):
+            resolve_runtime_config_path(component, profile={"runtime_config": bad})
+
+
+def test_profile_validation_accepts_and_shape_checks_runtime_config():
+    """runtime_config 是可选字段；声明了就必须是仓库内相对路径。"""
+    from components.vision_yolov8_adjudicator.profile import ProfileError, validate_profile
+
+    def valid_profile():
+        """A profile that passes full validation (the shared helper is minimal)."""
+        p = _profile("dice")
+        p["vision"]["class_map"] = {"0": "1"}
+        p["vision"]["participants"] = ["LEFT", "RIGHT"]
+        p["llm"] = {
+            "enabled": False,
+            "context_mode": "single_turn_no_history",
+            "system_prompt": "judge",
+            "user_prompt_template": "judge",
+            "allowed_outcomes": ["LEFT", "RIGHT"],
+        }
+        p["video"] = {"enabled": True, "path": "/dice/det"}
+        return p
+
+    # Optional: a game with no hardware differences simply omits it.
+    validate_profile(valid_profile())
+
+    # Declared: accepted when it is a repository-relative path.
+    declared = valid_profile()
+    declared["runtime_config"] = "vision/yolov8_adjudicator/config.json"
+    validate_profile(declared)
+
+    # Rejected shapes: empty, non-string, absolute, and traversal.
+    for bad in ("", "   ", 5, "/abs/path.json", "../escape.json"):
+        broken = valid_profile()
+        broken["runtime_config"] = bad
+        with pytest.raises(ProfileError):
+            validate_profile(broken)
+
+
+def test_declared_per_game_config_is_never_silently_dropped(tmp_path: Path):
+    """声明了自己配置文件的游戏，解析失败必须硬报错。
+
+    否则 `--config` 根本不会被传，C++ 会去读工作目录下的 config.json ——
+    也就是悄悄用了别的游戏的摄像头与 RTSP 设置。
+    """
+    import components.vision_yolov8_adjudicator.process as process
+
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+            self.stdout = None
+            self.pid = 1
+            self.returncode = None
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+    original = process.subprocess.Popen
+    process.subprocess.Popen = _FakePopen
+    try:
+        runtime = process.YoloRuntimeProcess(binary="/bin/true", working_dir=str(ROOT))
+        profile = _profile("dice")
+        profile["video"] = {"enabled": True, "path": "/dice/det"}
+        profile["runtime_config"] = "backend/games/dice/does-not-exist.json"
+        with pytest.raises(Exception):
+            runtime.start(profile, "default", prewarm=True)
+    finally:
+        process.subprocess.Popen = original
+
+
+def test_declared_per_game_config_reaches_the_command_line(tmp_path: Path):
+    """声明成功时，命令行里的 --config 必须指向那个文件。"""
+    import components.vision_yolov8_adjudicator.process as process
+
+    own_dir = ROOT / "backend" / "games" / "dice"
+    own = own_dir / "_tmp_probe_runtime.json"
+    own.write_text(_json.dumps({"camera": "/dev/video7"}), encoding="utf-8")
+    captured = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = list(cmd)
+            self.stdout = None
+            self.pid = 1
+            self.returncode = None
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+    original = process.subprocess.Popen
+    process.subprocess.Popen = _FakePopen
+    try:
+        runtime = process.YoloRuntimeProcess(binary="/bin/true", working_dir=str(ROOT))
+        profile = _profile("dice")
+        profile["video"] = {"enabled": True, "path": "/dice/det"}
+        profile["runtime_config"] = "backend/games/dice/_tmp_probe_runtime.json"
+        runtime.start(profile, "default", prewarm=True)
+        cmd = captured["cmd"]
+        assert "--config" in cmd
+        assert cmd[cmd.index("--config") + 1] == str(own.resolve())
+    finally:
+        process.subprocess.Popen = original
+        own.unlink(missing_ok=True)

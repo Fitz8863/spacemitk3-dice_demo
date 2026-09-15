@@ -467,7 +467,9 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
         component_video = config.get("video", {}) if isinstance(config.get("video"), dict) else {}
         runtime_video = {}
         try:
-            runtime_config = load_runtime_config(resolve_runtime_config_path(config))
+            runtime_config = load_runtime_config(
+                resolve_runtime_config_path(config, profile=profile)
+            )
             runtime_video = runtime_config.get("video", {}) if isinstance(runtime_config.get("video"), dict) else {}
         except Exception:
             runtime_video = {}

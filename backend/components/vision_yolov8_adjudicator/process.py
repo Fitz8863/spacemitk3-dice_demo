@@ -42,11 +42,18 @@ def build_rtsp_args(config: Mapping[str, Any], selected_video: Mapping[str, Any]
     return args
 
 
-def load_runtime_defaults(component_dir: Path | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Load component deployment settings and the single runtime config."""
+def load_runtime_defaults(
+    component_dir: Path | None = None,
+    profile: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load component deployment settings and this game's runtime config.
+
+    ``profile`` lets a game manifest point at its own hardware file
+    (``runtime_config``); without it the component's deployment default applies.
+    """
     directory = component_dir or Path(__file__).parent
     component = load_component_config(directory)
-    runtime_path = resolve_runtime_config_path(component)
+    runtime_path = resolve_runtime_config_path(component, profile=profile)
     return component, load_runtime_config(runtime_path)
 
 
@@ -132,12 +139,18 @@ class YoloRuntimeProcess:
         workdir = runtime.get("working_dir") if isinstance(runtime, Mapping) else None
         if workdir: self.working_dir = str(workdir)
         # Component deployment defaults live next to this package.  A game
-        # profile may override them for tests or a custom local runtime.
+        # profile may override them for tests or a custom local runtime, and may
+        # point at its own hardware config file via ``runtime_config``.
         component_config: Mapping[str, Any] = {}
         runtime_config: Mapping[str, Any] = {}
+        declared_runtime_config = bool(
+            isinstance(profile, Mapping)
+            and isinstance(profile.get("runtime_config"), str)
+            and profile["runtime_config"].strip()
+        )
         if not binary:
             try:
-                component, runtime_config = load_runtime_defaults(Path(__file__).parent)
+                component, runtime_config = load_runtime_defaults(Path(__file__).parent, profile)
                 component_config = component
                 defaults = component.get("runtime", {})
                 if not self.binary or self.binary == "yolov8_camera":
@@ -151,6 +164,14 @@ class YoloRuntimeProcess:
             except Exception:
                 # A fake/injected runtime binary need not have a component
                 # config.  Let subprocess report its normal launch error.
+                #
+                # A per-game config the profile *declared* is different: it is
+                # mandatory, so a missing or malformed file must fail here
+                # rather than be swallowed into "no --config at all", which
+                # would make the C++ read config.json from its own working
+                # directory — another game's camera and RTSP setup.
+                if declared_runtime_config:
+                    raise
                 pass
         if not component_config:
             try:
@@ -224,12 +245,20 @@ class YoloRuntimeProcess:
 
         control_read, control_write = os.pipe()
         event_read, event_write = os.pipe()
+        # Resolve the config file this launch uses.  A path the game profile
+        # declared is **mandatory**: if it cannot be resolved we must fail
+        # loudly instead of launching without --config, because the C++ would
+        # then read config.json from its own working directory — i.e. silently
+        # run with another game's camera and RTSP setup.
         runtime_config_path = None
-        if runtime_config:
-            try:
-                runtime_config_path = resolve_runtime_config_path(component_config).resolve()
-            except Exception:
-                runtime_config_path = None
+        try:
+            runtime_config_path = resolve_runtime_config_path(
+                component_config, profile=profile
+            ).resolve()
+        except Exception:
+            if declared_runtime_config:
+                raise
+            runtime_config_path = None
         cmd = [self.binary]
         if runtime_config_path is not None:
             cmd.extend(["--config", str(runtime_config_path)])
