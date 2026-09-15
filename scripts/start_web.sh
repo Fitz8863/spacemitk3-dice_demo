@@ -218,6 +218,35 @@ fi
 
 cd "$ROOT_DIR"
 start_selected_tts
+
+# Rotate oversized runtime logs before appending.
+#
+# These files are opened with ``>>`` and are never truncated, and the resident
+# vision runtime writes per-frame/per-interval diagnostics into them: the web
+# log had grown to 156 MB with nothing to cap it. Rotating here (rather than
+# relying on logrotate/systemd) keeps the repo self-contained — this project
+# ships as a tarball with no systemd unit for the web service.
+#
+# Keeps the newest $LOG_KEEP rotated copies, newest first.
+LOG_MAX_MB="${DICE_LOG_MAX_MB:-20}"
+LOG_KEEP="${DICE_LOG_KEEP:-3}"
+rotate_oversized_logs() {
+    local file size_mb stamp
+    for file in "$RUNTIME_DIR"/*.log; do
+        [[ -f "$file" ]] || continue
+        size_mb=$(( $(stat -c%s "$file") / 1048576 ))
+        (( size_mb >= LOG_MAX_MB )) || continue
+        stamp="$(date +%Y%m%d-%H%M%S)"
+        mv "$file" "${file}.${stamp}"
+        echo "Rotated $(basename "$file") (${size_mb} MB) -> $(basename "$file").${stamp}"
+        # ``ls -t`` is the portable way to order by mtime here.
+        ls -1t "${file}".* 2>/dev/null | tail -n +$(( LOG_KEEP + 1 )) | while read -r old; do
+            rm -f "$old"
+        done
+    done
+}
+rotate_oversized_logs
+
 nohup "$PYTHON_BIN" backend/server.py --host "$HOST" --port "$PORT" \
     >>"$LOG_FILE" 2>&1 &
 pid=$!
