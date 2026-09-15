@@ -146,16 +146,63 @@ main/
 }
 ```
 
-解析优先级：**`profile.runtime_config` > 组件 `runtime.config` > 打包默认
-`vision/yolov8_adjudicator/config.json`**。声明的路径是**强制**的——解析或读取失败会**直接报错**
-（日志给出具体文件名），绝不会静默改用共享配置，否则就是悄悄用了别的游戏的摄像头与 RTSP 设置。
+**配置解析：三层回退 + 整份替换**
 
-> **整份替换，不是字段合并。** runtime 只带 `--config <那份>`，C++ 只读它。**没写的键不会回退到
-> 共享文件**，而是回落到 **C++ 编译期默认值**（例如 `conf` 0.50、`stable_frames` 20、`focus` 0）。
-> 所以"我只改一个值、其余继承共享"做不到，必须整份复制。
-> **dice 现状**：`vision_profile.runtime_config` 指向 `backend/games/dice/adjudicator_config.json`，
-> 因此**改 `vision/yolov8_adjudicator/config.json` 对 dice 没有任何影响**——这份共享文件现在只是
-> 未来新游戏的默认模板。dice 的配置文件里有一个 `_note` 键写着这件事（两个解析器都忽略未知键）。
+这一节回答两个**互相独立**的问题，混在一起最容易出错：
+
+1. **读哪一份配置文件**——三层回退；
+2. **同一个键谁说了算**——命令行参数恒压过文件；文件里没有的键回落到 C++ 编译期默认值。
+
+```mermaid
+flowchart TD
+    START["一局开始 · 要启动 YOLO runtime"] --> Q1{"manifest 的 vision_profile<br/>写了 runtime_config 吗"}
+    Q1 -->|写了| F1["游戏专属文件<br/>backend/games/dice/adjudicator_config.json"]
+    Q1 -->|没写| Q2{"组件 config 写了<br/>runtime.config 吗"}
+    Q2 -->|写了| F2["共享部署默认<br/>vision/yolov8_adjudicator/config.json"]
+    Q2 -->|没写| F3["打包默认<br/>同一个 vision/yolov8_adjudicator/config.json"]
+
+    F1 --> LAUNCH
+    F2 --> LAUNCH
+    F3 --> LAUNCH
+
+    LAUNCH["启动命令行只带一份：--config 选定文件<br/>整份替换 · 不做字段级合并"] --> Q3{"这个键在 manifest 里<br/>有对应字段吗"}
+
+    Q3 -->|有| WIN1["命令行参数胜<br/>--model / --conf / --stable-frames /<br/>--divider-detection / --expected-count / --rtsp-path"]
+    Q3 -->|没有| Q4{"选定文件里有<br/>这个键吗"}
+    Q4 -->|有| WIN2["用文件里的值"]
+    Q4 -->|没有| WIN3["回落 C++ 编译期默认值<br/>conf 0.50 · stable_frames 20 · focus 0<br/>不是回落到共享文件"]
+
+    style F1 fill:#d4edda
+    style LAUNCH fill:#e2e3f1
+    style WIN3 fill:#fff3cd
+```
+
+**两个反直觉点（都踩过）**：
+
+- **缺键不回退到共享文件。** 三层回退只决定"读哪一份"；一旦选定，那份就是**唯一**来源。
+  所以"我只改一个值、其余继承共享"做不到，必须整份复制。以 `stable_frames` 为例：共享文件写
+  30、C++ 默认是 **20**——游戏那份里漏写它，拿到的是 20 而不是 30。
+- **命令行参数再压一层。** `--model`/`--conf`/`--stable-frames`/`--divider-detection`/
+  `--expected-count`/`--rtsp-path` 由 manifest 生成，**无论哪份文件被读都会再覆盖一次**。
+  因此这些键写在配置文件里是**死的**（已从两份文件删除）：`model`、`stable_frames`、`conf`、
+  `divider_detection`、`rtsp.path`、`display_enabled`、`yolov8_enabled`。
+
+**声明的路径是强制的**：解析或读取失败会**直接报错**（日志给出具体文件名），不会静默改用共享
+配置——否则就是悄悄用了别的游戏的摄像头与 RTSP 设置。实测：把 `runtime_config` 指向不存在的
+文件 → **不起 runtime**，日志 `ProfileError("unable to read vision runtime config: ...")`。
+
+**dice 现状**：`runtime_config` 指向 `backend/games/dice/adjudicator_config.json`，因此
+**改 `vision/yolov8_adjudicator/config.json` 对 dice 没有任何影响**——那份共享文件现在只是未来
+新游戏的默认模板。dice 的配置文件里有一个 `_note` 键写着这件事（两个解析器都忽略未知键，已用
+真实二进制 self-test 验证）。
+
+**改硬件参数时的落点**：
+
+| 想改什么 | 改哪个文件 |
+| --- | --- |
+| dice 的摄像头/分辨率/帧率/焦距/变焦/EP 绑核/RTSP 端点 | `backend/games/dice/adjudicator_config.json` |
+| 未来新游戏的这些参数（未声明 `runtime_config` 时） | `vision/yolov8_adjudicator/config.json` |
+| 两个游戏共用的部署项（如 MediaMTX WebRTC 基址，未按游戏覆盖时） | 同上 |
 
 | 归属 | 字段 | 放哪 |
 | --- | --- | --- |
