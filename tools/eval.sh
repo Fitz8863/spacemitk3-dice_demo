@@ -6,14 +6,14 @@
 #
 # 退出码：0 = 自检全过；非 0 表示有回归。
 #
-# 注意：本脚本一律带 --no-rtsp --no-preview，避免回归测试顺手把推流/预览拉起来。
+# 注意：本脚本一律带 --no-rtsp，避免回归测试顺手把推流拉起来。
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
 BIN=./build/circle_detect
 # 关掉一切对外副作用：只做识别
-OPTS=(--no-rtsp --no-preview)
+OPTS=(--no-rtsp)
 DIR=${1:-samples}
 
 if [[ ! -x $BIN ]]; then

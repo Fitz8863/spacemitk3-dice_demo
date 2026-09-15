@@ -29,7 +29,7 @@
 | 单帧耗时 | **36 ms**（work-width 640）/ **26 ms**（work-width 320） |
 | 斜视视角 | **椭圆拟合**（白化 + 圆 RANSAC），实测轴比 1.59 对真值 1.60、倾角 25.0° 对真值 25° |
 | 盘上放东西 | **flood-fill 填内部空洞**，盘心压住 45% 仍准确（圆心误差 1.0 px） |
-| 推流 | **RTSP / H.264 硬编**（`spacemith264enc` → MediaMTX），另有 MJPEG 预览做调试 |
+| 推流 | **RTSP / H.264 硬编**（`spacemith264enc` → MediaMTX），RTSP 与 WebRTC 均可观看 |
 | 配置 | 参数全部在 `config.json`，**直接 `./build/circle_detect` 就行** |
 | 依赖 | 只依赖系统 OpenCV 4.10 + GStreamer/V4L2，**零模型文件** |
 
@@ -238,16 +238,15 @@ $ printf '{"work_width": "abc"}' > b.json && ./build/circle_detect --config b.js
 | | `fill_holes` | 泛洪填盘内空洞（抗遮挡） |
 | | `ellipse_fit` / `max_axis_ratio` | 椭圆拟合（抗斜视）/ 轴比上限 |
 | | `require_ring` / `ring_*` | 环带验证 |
-| 推流 | `rtsp.enabled/host/port/path` | **RTSP 推流（生产路径）** |
-| 预览 | `preview.enabled/port/bind/width/jpeg_quality` | MJPEG 预览（调试路径） |
+| 推流 | `rtsp.enabled/host/port/path` | RTSP 推流地址与开关 |
 | 叠加 | `overlay.hud/mask_inset/crosshair/axes` | 画面上画什么 |
 | 输出 | `debug_dir` / `save_video` / `out_json` / `show` / `summary` / `quiet` / `verbose` | |
 
-> `--no-rtsp` / `--no-preview` / `--no-hud` / `--no-ellipse` / `--no-fill-holes`
+> `--no-rtsp` / `--no-hud` / `--no-ellipse` / `--no-fill-holes`
 > 这几个是**纯命令行开关**，专门用来临时关掉配置里打开的东西（`tools/eval.sh`
-> 就靠 `--no-rtsp --no-preview` 保证回归测试不会顺手拉起推流）。
+> 就靠 `--no-rtsp` 保证回归测试不会顺手拉起推流）。
 
-### RTSP 推流（生产路径）
+### RTSP 推流
 
 走 H.264 硬编 + MediaMTX，和 dice-game 的 `yolov8_segdetect` 是同一条路子：
 
@@ -295,64 +294,6 @@ ffprobe -v error -rtsp_transport tcp -show_entries stream=codec_name,width,heigh
 > **流的帧率 = 识别帧率**（约 11–18 fps），不是配置里的 `fps`（那是采集帧率）。
 > 每帧带真实 PTS，播放器按时间戳走，看起来正常。
 
-### MJPEG 预览（调试路径，画面上直接画出圆）
-
-RTSP 是给生产/观看用的；调算法时 MJPEG 更方便（浏览器直接开、能抓单帧）。
-两者可以**同时开**（`preview.enabled` 和 `rtsp.enabled` 都设 true）。
-
-板子走 SSH 时没有 `DISPLAY`，`cv::imshow` 开不了窗口，所以预览走浏览器：
-
-```bash
-# config.json 里把 preview.enabled 设成 true，或命令行临时开：
-./build/circle_detect --preview
-```
-
-启动时会打印可访问的网址（自动列出所有网卡地址）：
-
-```
-[preview] MJPEG 预览已启动，浏览器打开：
-          http://127.0.0.1:8099/
-          http://10.0.90.160:8099/        <- 有线网段
-          http://100.118.229.28:8099/     <- tailnet
-          纯流地址（VLC/ffplay）：http://<ip>:8099/stream.mjpg
-```
-
-用笔记本打开 `http://100.118.229.28:8099/` 就能看到**带圆圈标注的实时画面**：
-
-- 检测到的圆用**绿/橙圆环**画出来，圆心打红十字
-- 每个圆左上角标 `#序号 左右 半径 置信度 方法`
-- 顶部状态条：`circles=2 method=mask 30.1 ms 24.3 fps #114`
-- 右下角半透明小窗是**算法眼里的白垫掩码**（白=判为白垫），
-  一眼就能看出算法是不是被光照/反光骗了
-- 一个都没检出时画面正中会打红字 `NO CIRCLE DETECTED`
-
-四个 HTTP 路由：
-
-| 路由 | 用途 |
-|---|---|
-| `/` | 预览页（实时统计 + 流） |
-| `/stream.mjpg` | 纯 MJPEG 流，可直接喂 VLC / ffplay / `<img>` |
-| `/snapshot.jpg` | 抓当前**带标注**的一帧（脚本里很好用） |
-| `/raw.jpg` | 抓当前**未标注**的原始帧 —— 调算法/对比时必须用这个，别用带 overlay 的 |
-| `/status` | 最近一帧的 JSON（fps / 耗时 / 圆坐标 / 长短轴），给上层程序消费 |
-
-```bash
-# 命令行抓一张带标注的图（不需要图形界面）
-curl -s http://127.0.0.1:8099/snapshot.jpg -o annotated.jpg
-# 实时看检测结果
-watch -n0.5 'curl -s http://127.0.0.1:8099/status | python3 -m json.tool | head -20'
-```
-
-其他可视化出口（可任意组合）：
-
-```bash
---show                     # 板子本地有图形会话时用 OpenCV 窗口
---debug-dir /tmp/dbg       # 落盘 overlay_XXXX.jpg + mask_XXXX.png
---save-video out.avi       # 录制带标注的视频（Ctrl-C 会优雅收尾，索引写完整）
---preview-width 640        # 预览推流降到 640 宽
---no-hud --no-mask-inset   # 关掉状态条 / 掩码缩略图
---loop                     # 图片/视频循环播放（配合 --preview 做常驻演示）
-```
 
 ### 不开摄像头先自检
 
@@ -505,25 +446,27 @@ stdout 是 JSON Lines，一帧一行，方便被上层服务消费：
 > ⚠️ **别用 480**：实测 CPU/帧反而比 640 还高（59 ms vs 55 ms，图片路径），
 > 是个反常的分辨率坑，怀疑撞上了某条非优化的内部路径。
 
-> 顺带修掉一个隐性开销：以前只要开了 `--preview`，**每帧都会画叠加图**
-> （clone 720p + 画圈写字 ≈ +10 ms/帧），哪怕根本没人在看。
-> 现在叠加图按需绘制（`MjpegServer::wantsFrame()`），实测
-> "开预览但无客户端" 与 "不开预览" 都是 47 ms/帧 —— **零开销才真正成立**。
+**RTSP 推流的开销**（真机 720p，`--threads 1`，两次测量取一致结论）：
 
-**可视化开销**（真机 60 帧实测，`wall_ms/60` 折算）：
-
-| 配置 | 有效帧率 | 相对基线 |
+| 配置 | CPU/帧 | 相对基线 |
 |---|---|---|
-| 只检测（基线） | 17.3 fps | — |
-| `--preview`（720p，**无客户端**） | 17.4 fps | **0 开销** |
-| `--preview`（720p，浏览器在看） | 16.7 fps | ≈ −0.7 fps |
-| `--preview-width 640`（浏览器在看） | 17.1 fps | ≈ −0.2 fps |
-| `--save-video out.avi`（720p MJPG） | 10.0 fps | **−7 fps** |
+| 不出图（纯识别基线） | 61 ~ 73 ms | — |
+| `rtsp.enabled = true` | 76 ~ 93 ms | **+15 ~ 20 ms** |
+| 同上 + 有客户端在拉流 | 92 ~ 95 ms | +18 ~ 33 ms |
 
-关键设计：**没有客户端连接时完全不编码 JPEG**，所以常驻挂着预览服务对检测
-几乎零成本；真正贵的是 `--save-video`（MJPG 编码 + 落盘，约 +43 ms/帧）。
-基线本身也不是检测瓶颈 —— 22.8 ms 检测 + 33 ms 相机取帧 ≈ 57 ms，**是采集
-节拍在限制帧率**。
+两点结论：
+
+- **推流本身约 +15~20 ms/帧**。`spacemith264enc` 是 VPU 硬编，但前面那级
+  `videoconvert`（BGR→NV12）是纯软件，开销主要在那里；
+  再加一帧 2.7 MB 的搬运。
+- **有没有人看几乎不影响**：发布者一连上 MediaMTX，编码管线就全速跑，
+  MediaMTX 只是决定要不要往外转发。这点和原来 MJPEG 预览的
+  "没人看就不编码" 完全不同 —— **别指望没人看时省 CPU**。
+
+> 绝对数值会随板子负载漂移（实测同一配置 61~73 ms 都有），看**差值**更可靠。
+
+> 如果确实需要省，三个方向：`work_width` 降到 320、把 `overlay.mask_inset` 关掉
+> （少一次缩放+混合）、或者临时 `--no-rtsp` 只做识别。
 
 ## 5. 调参
 
@@ -560,8 +503,9 @@ stdout 是 JSON Lines，一帧一行，方便被上层服务消费：
 
 完整参数表：`./build/circle_detect --help`
 
-**排查斜视/遮挡问题的固定套路**：先用 `/raw.jpg` 抓一张干净原图，
-再对这张图跑 `--verbose` 看每个候选的 `rho`（点集轴比估计）、`a/b`（拟合轴比）、
+**排查斜视/遮挡问题的固定套路**：用 `--debug-dir DIR` 抓几帧，
+对 `DIR/raw_XXXX.jpg`（未标注原图，**别用 overlay_**，画了圈会污染边界信息）
+跑 `--verbose` 看每个候选的 `rho`（点集轴比估计）、`a/b`（拟合轴比）、
 `wr`（归一化空间半径）—— `wr` 应该稳定在 ~2，如果跑到 4 以上说明白化没收敛。
 `circularity` / `fill` 现在都是归一化空间的量，斜视下也应该维持在 0.7 / 0.95 以上。
 
@@ -580,6 +524,9 @@ stdout 是 JSON Lines，一帧一行，方便被上层服务消费：
 - **只做了单帧检测**，时序平滑要显式开 `--smooth 0.4`（默认关）。
 - **RTSP 流是"识别帧率"而不是采集帧率**（约 11–18 fps）：推的是带标注的识别结果帧，
   所以被识别速度限制。要更高帧率就得降 `work_width`。
+- **没有 HTTP 抓图接口了**（原 MJPEG 预览已移除）。看画面走 RTSP / WebRTC；
+  抓帧调算法走 `--debug-dir`，它同时落 `raw_XXXX.jpg`（未标注原图，调参用这张）、
+  `overlay_XXXX.jpg`（带标注）、`mask_XXXX.png`（白垫掩码）。
 - **`[MPP-DEBUG]` 噪音只能丢到 stderr**，屏蔽不掉（闭源 VPU 库、无日志开关）。
 - **未做**：单应标定 + 俯视矫正（`--rectify`）、骰子点数识别、圆内骰子分割、
   与 server.py 的 HTTP 对接。
@@ -596,8 +543,7 @@ yuan/
 │   │      掩码 + 泛洪填洞 + 白化椭圆 RANSAC + 环带验证 + Hough 兜底 + 叠加图绘制
 │   ├── frame_source.h/.cpp      取帧：图片 / 视频 / V4L2 / GStreamer
 │   ├── rtsp_streamer.h/.cpp     RTSP 推流（appsrc → VPU H.264 → rtspclientsink）
-│   ├── mjpeg_server.h/.cpp      MJPEG over HTTP 预览（POSIX socket，零外部依赖）
-│   └── main.cpp                 CLI/配置合并、JSON 输出、6 项自检、推流与预览接线
+│   └── main.cpp                 CLI/配置合并、JSON 输出、6 项自检、推流接线
 ├── tools/eval.sh                一键回归（自检 + 批量 + 耗时表）
 └── samples/                     3 张真实采集帧（含"骰子搭边"这种难例）
 ```

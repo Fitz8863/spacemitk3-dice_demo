@@ -3,7 +3,6 @@
 // 用法示例：
 //   ./build/circle_detect --image frame.jpg --debug-dir out/      # 单图
 //   ./build/circle_detect --image data/ --summary                 # 整个目录批量
-//   ./build/circle_detect --device /dev/video1 --preview          # 浏览器实时预览
 //   ./build/circle_detect --device /dev/video1 --show             # 板子桌面窗口
 //   ./build/circle_detect --device 1 --zoom 160 --save-video out.avi
 //   ./build/circle_detect --self-test                             # 合成图自检
@@ -11,7 +10,6 @@
 // 输出：stdout 每帧一行 JSON（JSON Lines），便于被上层脚本/服务消费。
 //
 // 可视化有四种出口，可以任意组合：
-//   --preview [PORT]    MJPEG over HTTP，浏览器直接看（板子走 SSH 时用这个）
 //   --show              OpenCV 窗口（需要板子本地有 DISPLAY/Wayland）
 //   --debug-dir DIR     overlay_XXXX.jpg + mask_XXXX.png 落盘
 //   --save-video FILE   带标注的视频文件
@@ -19,7 +17,6 @@
 #include "circle_detector.h"
 #include "config.h"
 #include "frame_source.h"
-#include "mjpeg_server.h"
 #include "rtsp_streamer.h"
 
 #include <opencv2/highgui.hpp>
@@ -100,7 +97,6 @@ struct CliOnly {
     bool no_fill_holes = false;
     bool no_hud = false;
     bool no_mask_inset = false;
-    bool no_preview = false;
     bool no_rtsp = false;
     std::string config_path = "config.json";
 };
@@ -126,16 +122,14 @@ void usage() {
         "  --frames N          处理多少帧后停止（0 = 不限/全部）\n"
         "  --loop              图片/视频循环播放\n"
         "\n"
-        "推流 / 预览（可同时开）:\n"
+        "推流:\n"
         "  --rtsp              开 RTSP 推流（H.264 → MediaMTX；config 里 rtsp 段配地址）\n"
         "  --no-rtsp           临时关掉 RTSP\n"
-        "  --preview [PORT]    开 MJPEG HTTP 预览（浏览器直接看，默认端口 8099）\n"
-        "  --no-preview        临时关掉 MJPEG 预览\n"
-        "  --preview-bind ADDR / --preview-width N / --jpeg-quality N\n"
         "  --show              开 OpenCV 窗口（需板子本地有图形会话）\n"
-        "  --debug-dir DIR     保存 overlay_XXXX.jpg / mask_XXXX.png\n"
+        "  --debug-dir DIR     保存 overlay_XXXX.jpg / mask_XXXX.png / raw_XXXX.jpg\n"
+        "                      （raw_ 是没画任何东西的原图，调算法时用这张）\n"
         "  --save-video FILE   保存带标注的视频（.avi / .mp4）\n"
-        "  --no-hud / --no-mask-inset   预览上不画状态条 / 掩码缩略图\n"
+        "  --no-hud / --no-mask-inset   画面上不画状态条 / 掩码缩略图\n"
         "\n"
         "算法（config.json 同名键）:\n"
         "  --method auto|mask|hough   检测路径\n"
@@ -446,16 +440,6 @@ int main(int argc, char** argv) {
             out = argv[++i];
             return true;
         };
-        // --preview 的端口可选：后面跟的是纯数字才吃掉
-        auto optionalInt = [&](int dflt) -> int {
-            if (i + 1 < argc) {
-                const char* s = argv[i + 1];
-                bool digits = (*s != '\0');
-                for (const char* p = s; *p; ++p) if (*p < '0' || *p > '9') { digits = false; break; }
-                if (digits) { ++i; return std::atoi(s); }
-            }
-            return dflt;
-        };
         const char* v = nullptr;
         if (k == "-h" || k == "--help" || k == "--config") { if (k == "--config") ++i; }
         else if (k == "--dump-config") cli.dump_config = true;
@@ -473,11 +457,6 @@ int main(int argc, char** argv) {
         else if (k == "--loop") a.loop = true;
         else if (k == "--rtsp") a.rtsp_enabled = true;
         else if (k == "--no-rtsp") cli.no_rtsp = true;
-        else if (k == "--preview") { a.preview_enabled = true; a.preview_port = optionalInt(a.preview_port); }
-        else if (k == "--no-preview") cli.no_preview = true;
-        else if (k == "--preview-bind") { if (!val(v)) return 2; a.preview_bind = v; }
-        else if (k == "--preview-width") { if (!val(v)) return 2; a.preview_width = std::atoi(v); }
-        else if (k == "--jpeg-quality") { if (!val(v)) return 2; a.jpeg_quality = std::atoi(v); }
         else if (k == "--threads") { if (!val(v)) return 2; a.threads = std::atoi(v); }
         else if (k == "--image")    { if (!val(v)) return 2; a.image = v; }
         else if (k == "--video")    { if (!val(v)) return 2; a.video = v; }
@@ -518,7 +497,6 @@ int main(int argc, char** argv) {
 
     // --no-xxx 是"临时关掉配置里打开的开关"，优先级最高
     if (cli.no_rtsp)      a.rtsp_enabled = false;
-    if (cli.no_preview)   a.preview_enabled = false;
     if (cli.no_hud)       a.overlay_hud = false;
     if (cli.no_mask_inset) a.overlay_mask_inset = false;
     if (cli.no_ring_check) a.require_ring = false;
@@ -576,12 +554,10 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    // 需要画叠加图吗？—— 推流/预览/窗口/存视频/存调试图，任一开启就要
-    const bool need_overlay = a.show || a.preview_enabled || a.rtsp_enabled ||
+    // 需要画叠加图吗？推流/窗口/存视频/存调试图任一开启就要。
+    // （以前 MJPEG 预览还支持"没人看就不画"跳帧优化；改成 RTSP 后每帧都必须画。）
+    const bool need_overlay = a.show || a.rtsp_enabled ||
                               !a.debug_dir.empty() || !a.save_video.empty();
-    // 其中这些用途每帧都必须画；预览可以按"有没有人看"动态跳过
-    const bool always_overlay = a.show || a.rtsp_enabled ||
-                                !a.debug_dir.empty() || !a.save_video.empty();
     // 掩码缩略图要用到 res.mask，所以只要会画叠加图就保留它
     p.keep_debug = need_overlay;
 
@@ -607,28 +583,20 @@ int main(int argc, char** argv) {
         if (!rtsp.start(a.rtsp_host, a.rtsp_port, a.rtsp_path, a.width, a.height, a.fps)) {
             std::fprintf(stderr, "[warn] RTSP 推流启动失败，继续跑识别（不影响检测）\n");
         } else {
+            const std::string host = normalize_rtsp_host(a.rtsp_host);
             std::fprintf(stderr, "[rtsp] 拉流地址：\n");
             std::fprintf(stderr, "          RTSP   : %s\n", rtsp.url().c_str());
             std::fprintf(stderr, "          WebRTC : http://%s:8889%s/\n",
-                         normalize_rtsp_host(a.rtsp_host).c_str(), a.rtsp_path.c_str());
+                         host.c_str(), a.rtsp_path.c_str());
+            // 同一条流换个网卡地址也能拉，顺手列出来
+            for (const auto& ip : localIPv4()) {
+                if (ip == host) continue;
+                std::fprintf(stderr,
+                             "          其他网卡: rtsp://%s:%d%s   http://%s:8889%s/\n",
+                             ip.c_str(), a.rtsp_port, a.rtsp_path.c_str(),
+                             ip.c_str(), a.rtsp_path.c_str());
+            }
         }
-    }
-
-    // ---- MJPEG 预览服务（调试路径）----
-    MjpegServer preview;
-    if (a.preview_enabled) {
-        std::string err;
-        if (!preview.start(a.preview_bind, a.preview_port, err)) {
-            std::fprintf(stderr, "[err] 预览服务启动失败: %s\n", err.c_str());
-            rtsp.stop();
-            return 5;
-        }
-        std::fprintf(stderr, "[preview] MJPEG 预览已启动，浏览器打开：\n");
-        std::fprintf(stderr, "          http://127.0.0.1:%d/\n", a.preview_port);
-        for (const auto& ip : localIPv4())
-            std::fprintf(stderr, "          http://%s:%d/\n", ip.c_str(), a.preview_port);
-        std::fprintf(stderr, "          纯流地址（VLC/ffplay）：http://<ip>:%d/stream.mjpg\n",
-                     a.preview_port);
     }
 
     // ---- 组装任务列表：图片目录 -> 多张图；否则单一来源 ----
@@ -642,7 +610,7 @@ int main(int argc, char** argv) {
         images = listImages(a.image);
         if (images.empty()) {
             std::fprintf(stderr, "[err] 目录里没有图片: %s\n", a.image.c_str());
-            preview.stop(); rtsp.stop();
+            rtsp.stop();
             return 2;
         }
     } else if (!a.image.empty()) {
@@ -684,8 +652,7 @@ int main(int argc, char** argv) {
         // ★ 只在真需要时才画：存盘类需求每帧都要；纯预览且没人看时直接跳过，
         //   否则白白花 ~10ms/帧去 clone 720p 再画圈（实测就是这个数）。
         cv::Mat overlay;
-        const bool need_now = always_overlay || (preview.running() && preview.wantsFrame());
-        if (need_now) {
+        if (need_overlay) {
             OverlayOptions oo;
             oo.hud        = a.overlay_hud;
             oo.mask_inset = a.overlay_mask_inset;
@@ -713,47 +680,17 @@ int main(int argc, char** argv) {
         line += "]}";
         emit(line);
 
-        // ---- MJPEG 预览 ----
-        if (preview.running()) {
-            if (!overlay.empty()) {
-                if (a.preview_width > 0 && overlay.cols > a.preview_width) {
-                    cv::Mat small;
-                    cv::resize(overlay, small, cv::Size(a.preview_width,
-                               cvRound(overlay.rows * (double)a.preview_width / overlay.cols)),
-                               0, 0, cv::INTER_AREA);
-                    preview.publish(small, bgr, a.jpeg_quality);
-                } else {
-                    preview.publish(overlay, bgr, a.jpeg_quality);
-                }
-            }
-            // /status：给上层程序 + 预览页上的实时统计用
-            std::string st = "{\"fps\":" + std::to_string(fps_meter.value()) +
-                             ",\"detect_ms\":" + std::to_string(res.latency_ms) +
-                             ",\"count\":" + std::to_string(res.circles.size()) +
-                             ",\"method\":\"" + res.method_used + "\"" +
-                             ",\"frames\":" + std::to_string(total_frames) +
-                             ",\"wall_ms\":" + std::to_string(total_ms) +
-                             ",\"clients\":" + std::to_string(preview.clients()) +
-                             ",\"circles\":[";
-            for (size_t i = 0; i < res.circles.size(); ++i) {
-                if (i) st += ",";
-                const auto& c = res.circles[i];
-                char cb[192];
-                std::snprintf(cb, sizeof(cb),
-                              "{\"side\":\"%s\",\"cx\":%.2f,\"cy\":%.2f,\"r\":%.2f,\"score\":%.3f}",
-                              c.side == 0 ? "LEFT" : (c.side == 1 ? "RIGHT" : "UNKNOWN"),
-                              c.cx, c.cy, c.r, c.score);
-                st += cb;
-            }
-            st += "]}";
-            preview.setStatusJson(std::move(st));
-        }
-
         // ---- 存调试图 ----
-        if (!a.debug_dir.empty() && !overlay.empty()) {
+        if (!a.debug_dir.empty()) {
             char fn[512];
-            std::snprintf(fn, sizeof(fn), "%s/overlay_%04ld.jpg", a.debug_dir.c_str(), idx);
-            cv::imwrite(fn, overlay);
+            // raw_：没画任何东西的原图。调算法（改阈值/看掩码对不对）时必须用这张，
+            //       不能用画了圈和文字的 overlay_ —— 那会把边界信息污染掉。
+            std::snprintf(fn, sizeof(fn), "%s/raw_%04ld.jpg", a.debug_dir.c_str(), idx);
+            cv::imwrite(fn, bgr);
+            if (!overlay.empty()) {
+                std::snprintf(fn, sizeof(fn), "%s/overlay_%04ld.jpg", a.debug_dir.c_str(), idx);
+                cv::imwrite(fn, overlay);
+            }
             if (!res.mask.empty()) {
                 std::snprintf(fn, sizeof(fn), "%s/mask_%04ld.png", a.debug_dir.c_str(), idx);
                 cv::imwrite(fn, res.mask);
@@ -792,8 +729,7 @@ int main(int argc, char** argv) {
                 const int key = cv::waitKey(1) & 0xFF;
                 if (key == 27 || key == 'q') return false;
             } catch (const cv::Exception& e) {
-                std::fprintf(stderr, "[warn] 无法开窗口（%s）\n"
-                                     "        板子走 SSH 时没有 DISPLAY，请改用 preview\n",
+                std::fprintf(stderr, "[warn] 无法开窗口（%s）：板子走 SSH 时没有 DISPLAY\n",
                              e.what());
                 a.show = false;
             }
@@ -819,7 +755,7 @@ int main(int argc, char** argv) {
                 if (img.empty()) { std::fprintf(stderr, "[warn] 跳过无法读取的图片: %s\n", f.c_str()); continue; }
                 cache.push_back(img);
             }
-            if (cache.empty()) { std::fprintf(stderr, "[err] 没有可用图片\n"); preview.stop(); rtsp.stop(); return 2; }
+            if (cache.empty()) { std::fprintf(stderr, "[err] 没有可用图片\n"); rtsp.stop(); return 2; }
         }
 
         long idx = 0;
@@ -851,7 +787,7 @@ int main(int argc, char** argv) {
                                        : (!so.video.empty() ? so.video.c_str() : so.device.c_str()));
         if (!src.open(so, err)) {
             std::fprintf(stderr, "[err] %s\n", err.c_str());
-            preview.stop(); rtsp.stop();
+            rtsp.stop();
             return 3;
         }
         std::fprintf(stderr, "[src] %s\n", src.describe().c_str());
@@ -877,7 +813,6 @@ int main(int argc, char** argv) {
     }
 
     if (writer.isOpened()) writer.release();
-    preview.stop();
     rtsp.stop();
 
     const double wall_ms = (nowSec() - t_start) * 1000.0;

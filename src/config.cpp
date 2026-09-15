@@ -158,17 +158,6 @@ bool load_config(const std::string& path, AppConfig& c, std::string& error) {
                 !get_str(rtsp, "path", c.rtsp_path, error)) return false;
         }
 
-        // ---- preview ----
-        cv::FileNode pv;
-        if (!get_map(root, "preview", pv, error)) return false;
-        if (!pv.empty()) {
-            if (!get_bool(pv, "enabled", c.preview_enabled, error) ||
-                !get_int(pv, "port", c.preview_port, error) ||
-                !get_str(pv, "bind", c.preview_bind, error) ||
-                !get_int(pv, "width", c.preview_width, error) ||
-                !get_int(pv, "jpeg_quality", c.jpeg_quality, error)) return false;
-        }
-
         // ---- overlay ----
         cv::FileNode ov;
         if (!get_map(root, "overlay", ov, error)) return false;
@@ -207,9 +196,6 @@ bool load_config(const std::string& path, AppConfig& c, std::string& error) {
         if (c.ellipse_fit && c.max_axis_ratio < c.report_ellipse_at)
             return bad("max_axis_ratio 不能小于 report_ellipse_at");
         if (c.smooth_alpha < 0.0 || c.smooth_alpha > 1.0) return bad("smooth_alpha 需在 0..1");
-        if (c.jpeg_quality < 1 || c.jpeg_quality > 100) return bad("jpeg_quality 需在 1..100");
-        if (c.preview_enabled && (c.preview_port < 1 || c.preview_port > 65535))
-            return bad("preview.port 非法");
         if (c.rtsp_enabled && (c.rtsp_port < 1 || c.rtsp_port > 65535))
             return bad("rtsp.port 非法");
 
@@ -244,10 +230,7 @@ std::string default_config_json() {
       << "  \"max_circles\": " << d.max_circles << ",\n"
       << "  \"rtsp\": {\"enabled\": " << (d.rtsp_enabled ? "true" : "false")
       << ", \"host\": \"" << d.rtsp_host << "\", \"port\": " << d.rtsp_port
-      << ", \"path\": \"" << d.rtsp_path << "\"},\n"
-      << "  \"preview\": {\"enabled\": " << (d.preview_enabled ? "true" : "false")
-      << ", \"port\": " << d.preview_port << ", \"bind\": \"" << d.preview_bind
-      << "\", \"width\": " << d.preview_width << ", \"jpeg_quality\": " << d.jpeg_quality << "}\n"
+      << ", \"path\": \"" << d.rtsp_path << "\"}\n"
       << "}\n";
     return o.str();
 }

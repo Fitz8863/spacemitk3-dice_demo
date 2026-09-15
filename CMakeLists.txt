@@ -23,11 +23,10 @@ add_executable(circle_detect
   src/circle_detector.cpp
   src/config.cpp
   src/frame_source.cpp
-  src/mjpeg_server.cpp
   src/rtsp_streamer.cpp
 )
 
-# MJPEG 预览服务用 POSIX socket，需要 threads
+# RTSP 编码线程需要 threads
 find_package(Threads REQUIRED)
 target_include_directories(circle_detect PRIVATE src)
 target_link_libraries(circle_detect PRIVATE

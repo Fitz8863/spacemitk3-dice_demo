@@ -61,19 +61,12 @@ struct AppConfig {
 
     double smooth_alpha = 0.0;
 
-    // ---- 推流 / 预览 -----------------------------------------------------
-    // RTSP：生产路径（H.264，低带宽，接入 MediaMTX / WebRTC）
+    // ---- RTSP 推流 -------------------------------------------------------
+    // H.264 硬编 → MediaMTX；用 RTSP 或 WebRTC 观看
     bool        rtsp_enabled = false;
     std::string rtsp_host = "127.0.0.1";
     int         rtsp_port = 8554;
     std::string rtsp_path = "/dice/circles";
-
-    // MJPEG over HTTP：调试路径（浏览器直接看，另提供 /snapshot.jpg、/raw.jpg）
-    bool        preview_enabled = false;
-    int         preview_port = 8099;
-    std::string preview_bind = "0.0.0.0";
-    int         preview_width = 0;      // 0 = 原尺寸
-    int         jpeg_quality = 80;
 
     // ---- 叠加图开关 ------------------------------------------------------
     bool overlay_hud = true;

@@ -1,5 +1,5 @@
 {
-  "_说明": "circle_detect 全部参数。命令行参数可临时覆盖这里的值（优先级：命令行 > config.json > 代码默认值）。分区注释见 README 第 3 节。",
+  "_说明": "circle_detect 全部参数。命令行参数可临时覆盖这里的值（优先级：命令行 > config.json > 代码默认值）。",
 
   "camera": "/dev/video1",
   "device": "",
@@ -52,14 +52,6 @@
     "host": "127.0.0.1",
     "port": 8554,
     "path": "/dice/circles"
-  },
-
-  "preview": {
-    "enabled": false,
-    "port": 8099,
-    "bind": "0.0.0.0",
-    "width": 0,
-    "jpeg_quality": 80
   },
 
   "overlay": {
