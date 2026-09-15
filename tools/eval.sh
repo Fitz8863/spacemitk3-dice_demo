@@ -4,12 +4,16 @@
 #   ./tools/eval.sh              # 默认跑 samples/ + --self-test
 #   ./tools/eval.sh <图片目录>    # 换成自己的目录（例如生产采集的数据集）
 #
-# 退出码：0 = 自检全过且每帧都检出 2 个圆；非 0 表示有回归。
+# 退出码：0 = 自检全过；非 0 表示有回归。
+#
+# 注意：本脚本一律带 --no-rtsp --no-preview，避免回归测试顺手把推流/预览拉起来。
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
 BIN=./build/circle_detect
+# 关掉一切对外副作用：只做识别
+OPTS=(--no-rtsp --no-preview)
 DIR=${1:-samples}
 
 if [[ ! -x $BIN ]]; then
@@ -21,7 +25,7 @@ fi
 echo "=============================================================="
 echo " 1) 合成图自检（无需摄像头）"
 echo "=============================================================="
-$BIN --self-test
+"$BIN" "${OPTS[@]}" --self-test
 SELF=$?
 
 echo
@@ -33,13 +37,14 @@ if [[ ! -e $DIR ]]; then
   exit $SELF
 fi
 
-$BIN --image "$DIR" --expected 2 --quiet --summary 2>/dev/null | tail -1
+"$BIN" "${OPTS[@]}" --image "$DIR" --expected 2 --quiet --summary 2>/dev/null | tail -1
 
 echo
 echo "  不同工作分辨率的耗时/命中率："
 for w in 320 480 640 960; do
   printf "    work-width %4s : " "$w"
-  $BIN --image "$DIR" --expected 2 --method mask --work-width "$w" --summary 2>/dev/null | tail -1
+  "$BIN" "${OPTS[@]}" --image "$DIR" --expected 2 --method mask \
+      --work-width "$w" --summary 2>/dev/null | tail -1
 done
 
 echo

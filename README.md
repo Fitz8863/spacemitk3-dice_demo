@@ -29,7 +29,8 @@
 | 单帧耗时 | **36 ms**（work-width 640）/ **26 ms**（work-width 320） |
 | 斜视视角 | **椭圆拟合**（白化 + 圆 RANSAC），实测轴比 1.59 对真值 1.60、倾角 25.0° 对真值 25° |
 | 盘上放东西 | **flood-fill 填内部空洞**，盘心压住 45% 仍准确（圆心误差 1.0 px） |
-| 实时预览 | **浏览器直接看带圈画面**（MJPEG over HTTP），常驻零开销 |
+| 推流 | **RTSP / H.264 硬编**（`spacemith264enc` → MediaMTX），另有 MJPEG 预览做调试 |
+| 配置 | 参数全部在 `config.json`，**直接 `./build/circle_detect` 就行** |
 | 依赖 | 只依赖系统 OpenCV 4.10 + GStreamer/V4L2，**零模型文件** |
 
 **真机摄像头也已实测通过**（2026-09-15，罗技 C920 / `/dev/video1`，1280x720@30fps）：
@@ -186,7 +187,7 @@ JSON 里带 `"ellipse": true`，预览画面上会同时画出长短轴（橙色
 
 ## 3. 编译与运行
 
-板子上已装好系统 OpenCV 4.10，直接编：
+板子上已装好系统 OpenCV 4.10 和 GStreamer（含 `rtspclientsink` / `spacemith264enc`），直接编：
 
 ```bash
 cd ~/projects/dice-game/yuan
@@ -194,12 +195,116 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j4
 ```
 
-### 实时预览（画面上直接画出圆）
+### 配置：config.json（推荐用法）
 
-板子走 SSH 时没有 `DISPLAY`，`cv::imshow` 开不了窗口，所以主推**浏览器预览**：
+**所有参数都写在当前目录的 `config.json` 里，直接运行即可，不需要带任何命令行参数：**
 
 ```bash
-./build/circle_detect --device /dev/video1 --zoom 160 --preview
+./build/circle_detect
+```
+
+优先级：**命令行 > config.json > 代码内默认值**。
+日常改配置就编辑 `config.json`，临时试一下才用命令行覆盖。
+
+```bash
+./build/circle_detect --dump-config > config.json   # 导出一份默认配置
+./build/circle_detect --config /path/to/other.json  # 用别的配置文件
+./build/circle_detect --device /dev/video2 --no-rtsp # 临时覆盖并关掉推流
+```
+
+配置读取刻意做得**严格**：键的类型写错、枚举值写错、数值越界都会明确报错并指出是哪一项，
+不会静默回退到默认值（那种 bug 最难查）：
+
+```
+$ ./build/circle_detect --config /tmp/bad.json
+[err] 读取配置失败: 配置值非法: method 只能是 auto / mask / hough
+$ printf '{"work_width": "abc"}' > b.json && ./build/circle_detect --config b.json
+[err] 读取配置失败: config work_width must be a number
+```
+
+主要配置项（完整键见 `config.json`，说明见 `--help`）：
+
+| 段 | 键 | 说明 |
+|---|---|---|
+| 输入 | `camera` / `device` | 摄像头设备路径或数字索引（`device` 优先） |
+| | `width` / `height` / `fps` / `backend` | 采集参数；`backend` = auto/v4l2/gst |
+| | `focus` / `zoom` | v4l2 控制，**负数 = 不设置** |
+| | `image` / `video` | 改用图片目录 / 视频文件（留空则用摄像头） |
+| | `max_frames` / `loop` | 跑多少帧后停；图片/视频循环 |
+| 算法 | `work_width` | 工作分辨率宽度（默认 640，**别用 480**） |
+| | `threads` | 识别线程数，**实测 1 最省 CPU 且帧率不变** |
+| | `method` / `expected` / `max_circles` | 检测路径 / 期望个数（触发 Hough 兜底）/ 上限 |
+| | `sat_max` / `val_min` | 白垫 HSV 阈值 |
+| | `fill_holes` | 泛洪填盘内空洞（抗遮挡） |
+| | `ellipse_fit` / `max_axis_ratio` | 椭圆拟合（抗斜视）/ 轴比上限 |
+| | `require_ring` / `ring_*` | 环带验证 |
+| 推流 | `rtsp.enabled/host/port/path` | **RTSP 推流（生产路径）** |
+| 预览 | `preview.enabled/port/bind/width/jpeg_quality` | MJPEG 预览（调试路径） |
+| 叠加 | `overlay.hud/mask_inset/crosshair/axes` | 画面上画什么 |
+| 输出 | `debug_dir` / `save_video` / `out_json` / `show` / `summary` / `quiet` / `verbose` | |
+
+> `--no-rtsp` / `--no-preview` / `--no-hud` / `--no-ellipse` / `--no-fill-holes`
+> 这几个是**纯命令行开关**，专门用来临时关掉配置里打开的东西（`tools/eval.sh`
+> 就靠 `--no-rtsp --no-preview` 保证回归测试不会顺手拉起推流）。
+
+### RTSP 推流（生产路径）
+
+走 H.264 硬编 + MediaMTX，和 dice-game 的 `yolov8_segdetect` 是同一条路子：
+
+```
+appsrc → queue(leaky) → videoconvert → NV12
+       → spacemith264enc(VPU 硬编) → h264parse → rtspclientsink → MediaMTX
+```
+
+`config.json` 里：
+
+```json
+"rtsp": { "enabled": true, "host": "127.0.0.1", "port": 8554, "path": "/dice/circles" }
+```
+
+起来之后有两条路可看：
+
+| 方式 | 地址 |
+|---|---|
+| RTSP | `rtsp://10.0.90.160:8554/dice/circles` |
+| WebRTC | `http://10.0.90.160:8889/dice/circles/` |
+
+```bash
+ffprobe -v error -rtsp_transport tcp -show_entries stream=codec_name,width,height \
+        -of default=nw=1 rtsp://127.0.0.1:8554/dice/circles
+# codec_name=h264   width=1280   height=720
+```
+
+**不需要改 `mediamtx.yml`** —— 它里面已经有 `"~^dice/": source: publisher`
+这条正则，任何 `dice/*` 子路径都是发布者自建的（和现有 `dice/det`、`dice/seg` 同一机制）。
+
+四个实现要点（照抄参考工程的做法，逐条都验证过）：
+
+1. **编码线程异步 + latest-only**：网络或编码变慢时只丢旧帧，绝不阻塞采集/识别主循环。
+2. **零拷贝包装帧**：`gst_buffer_new_wrapped_full` + `shared_ptr` 持有者，不 clone
+   （BGR 720p 一帧 2.7 MB）。
+3. **`rtspclientsink` 自己建 RTP payloader**，喂它 `rtph264pay` 的输出反而链接失败。
+4. **`queue leaky=downstream`**，队列满丢旧帧。
+
+> **坑：`spacemith264enc` 会把 `[MPP-DEBUG]` 日志直接写到 stdout**
+> （实测一次编码器初始化 34 行），足以把 JSON Lines 冲烂。库是闭源的、也没找到
+> 日志级别开关，所以在 fd 层面隔离：启动时 `dup(STDOUT_FILENO)` 留一份给 JSON，
+> 再把 fd 1 指向 stderr。这样第三方库的噪音全落到 stderr，
+> `circle_detect --quiet > out.jsonl` 照常干净（实测 112 行输出、0 行非 JSON）。
+
+> **流的帧率 = 识别帧率**（约 11–18 fps），不是配置里的 `fps`（那是采集帧率）。
+> 每帧带真实 PTS，播放器按时间戳走，看起来正常。
+
+### MJPEG 预览（调试路径，画面上直接画出圆）
+
+RTSP 是给生产/观看用的；调算法时 MJPEG 更方便（浏览器直接开、能抓单帧）。
+两者可以**同时开**（`preview.enabled` 和 `rtsp.enabled` 都设 true）。
+
+板子走 SSH 时没有 `DISPLAY`，`cv::imshow` 开不了窗口，所以预览走浏览器：
+
+```bash
+# config.json 里把 preview.enabled 设成 true，或命令行临时开：
+./build/circle_detect --preview
 ```
 
 启动时会打印可访问的网址（自动列出所有网卡地址）：
@@ -473,6 +578,9 @@ stdout 是 JSON Lines，一帧一行，方便被上层服务消费：
 - **强反光/全黑画面**下会退化成 0 检出（这是预期行为，不是崩溃），
   JSON 里 `count: 0` + `method: "none"` 可直接判定。
 - **只做了单帧检测**，时序平滑要显式开 `--smooth 0.4`（默认关）。
+- **RTSP 流是"识别帧率"而不是采集帧率**（约 11–18 fps）：推的是带标注的识别结果帧，
+  所以被识别速度限制。要更高帧率就得降 `work_width`。
+- **`[MPP-DEBUG]` 噪音只能丢到 stderr**，屏蔽不掉（闭源 VPU 库、无日志开关）。
 - **未做**：单应标定 + 俯视矫正（`--rectify`）、骰子点数识别、圆内骰子分割、
   与 server.py 的 HTTP 对接。
 
@@ -480,13 +588,16 @@ stdout 是 JSON Lines，一帧一行，方便被上层服务消费：
 
 ```
 yuan/
+├── config.json                  ★ 全部参数（直接跑就用它）
 ├── CMakeLists.txt
 ├── src/
+│   ├── config.h/.cpp            config.json 读取 + 校验（cv::FileStorage，无第三方依赖）
 │   ├── circle_detector.h/.cpp   核心算法
-│   │      掩码 + 泛洪填洞 + 白化椭圆 RANSAC + 环带验证 + Hough 兜底 + 预览绘制
+│   │      掩码 + 泛洪填洞 + 白化椭圆 RANSAC + 环带验证 + Hough 兜底 + 叠加图绘制
 │   ├── frame_source.h/.cpp      取帧：图片 / 视频 / V4L2 / GStreamer
-│   ├── mjpeg_server.h/.cpp      MJPEG over HTTP 预览服务（POSIX socket，零外部依赖）
-│   └── main.cpp                 CLI、JSON 输出、6 项自检、预览/录制接线
+│   ├── rtsp_streamer.h/.cpp     RTSP 推流（appsrc → VPU H.264 → rtspclientsink）
+│   ├── mjpeg_server.h/.cpp      MJPEG over HTTP 预览（POSIX socket，零外部依赖）
+│   └── main.cpp                 CLI/配置合并、JSON 输出、6 项自检、推流与预览接线
 ├── tools/eval.sh                一键回归（自检 + 批量 + 耗时表）
 └── samples/                     3 张真实采集帧（含"骰子搭边"这种难例）
 ```

@@ -17,8 +17,10 @@
 //   --save-video FILE   带标注的视频文件
 
 #include "circle_detector.h"
+#include "config.h"
 #include "frame_source.h"
 #include "mjpeg_server.h"
+#include "rtsp_streamer.h"
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -41,8 +43,10 @@
 #include <vector>
 
 #include <arpa/inet.h>
+#include <cerrno>
 #include <ifaddrs.h>
 #include <netinet/in.h>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 using namespace yuan;
@@ -53,98 +57,104 @@ namespace {
 std::atomic<bool> g_stop{false};
 void onSignal(int) { g_stop.store(true); }
 
-struct Args {
-    std::string image;
-    std::string video;
-    std::string device = "/dev/video1";
-    std::string backend = "auto";
-    std::string debug_dir;
-    std::string out_json;
-    std::string save_video;
-    std::string preview_bind = "0.0.0.0";
+// ---------------------------------------------------------------------------
+// 保护 stdout
+//
+// spacemith264enc 背后的 SpaceMIT VPU 库会直接往 **stdout** 打 `[MPP-DEBUG] ...`
+// （实测一次编码器初始化 34 行），足以把本程序的 JSON Lines 冲烂。库是闭源的、
+// 也没找到日志级别开关，所以只能在 fd 层面隔离：
+//   1) dup(STDOUT_FILENO) 留一份"真正的 stdout"专门给 JSON 用
+//   2) dup2(STDERR_FILENO, STDOUT_FILENO) 把 fd 1 指到 stderr
+// 之后第三方库往 fd 1 写的东西全落到 stderr，JSON 仍写进原来的管道/文件。
+// 对调用方透明：`circle_detect --quiet > out.jsonl` 照常工作。
+// ---------------------------------------------------------------------------
+int g_json_fd = -1;
 
-    int    width = 1280, height = 720, fps = 30;
-    int    frames = 0;       // 0 = 图片一张 / 视频全部 / 摄像头无限
-    int    zoom = -1, focus = -1;
-    int    expected = 0;
-    int    max_circles = 4;
-    int    work_width = 640;
-    int    sat_max = 70, val_min = 110;
-    int    close_ksize = 9, open_ksize = 5;
-    int    preview_port = 0;      // 0 = 关
-    int    preview_width = 0;     // 0 = 原尺寸推流；>0 先缩到这个宽度再编码（省 CPU）
-    int    jpeg_quality = 80;
-    int    threads = 0;           // 0 = OpenCV 默认；1 = 强制单线程（更省 CPU）
-    double min_radius_frac = 0.05, max_radius_frac = 0.35;
-    double min_circularity = 0.55, min_fill_ratio = 0.75, min_inlier_ratio = 0.55;
-    double ring_dark_margin = 22.0, ring_min_ratio = 0.55;
-    double max_axis_ratio = 2.5;
-    double hough_dp = 1.2, hough_param1 = 120, hough_param2 = 38, hough_min_dist_frac = 0.20;
-    double smooth_alpha = 0.0;   // >0 开启时序平滑
-    std::string method = "auto";
-    bool   no_ring_check = false;
-    bool   no_ellipse = false;    // 关掉椭圆拟合（强制按圆拟合，对比用）
-    bool   no_fill_holes = false; // 关掉盘内空洞填充（对比用）
-    bool   loop = false;
-    bool   show = false, quiet = false, verbose = false, summary = false, self_test = false;
-    bool   no_hud = false, no_mask_inset = false;
+void protectStdout() {
+    g_json_fd = ::dup(STDOUT_FILENO);
+    if (g_json_fd >= 0) ::dup2(STDERR_FILENO, STDOUT_FILENO);
+}
+
+void writeJsonLine(const std::string& line) {
+    std::string s = line;
+    s += '\n';
+    if (g_json_fd < 0) {           // 没保护过（如 --self-test、--dump-config）
+        std::fwrite(s.data(), 1, s.size(), stdout);
+        return;
+    }
+    size_t off = 0;
+    while (off < s.size()) {
+        const ssize_t w = ::write(g_json_fd, s.data() + off, s.size() - off);
+        if (w < 0) { if (errno == EINTR) continue; break; }
+        if (w == 0) break;
+        off += static_cast<size_t>(w);
+    }
+}
+
+// 只在命令行出现、不写进 config.json 的开关
+struct CliOnly {
+    bool self_test = false;
+    bool dump_config = false;
+    bool no_ring_check = false;
+    bool no_ellipse = false;
+    bool no_fill_holes = false;
+    bool no_hud = false;
+    bool no_mask_inset = false;
+    bool no_preview = false;
+    bool no_rtsp = false;
+    std::string config_path = "config.json";
 };
 
 void usage() {
     std::puts(
         "circle_detect —— K3 摄像头圆圈识别（传统 CV，无模型）\n"
         "\n"
-        "输入:\n"
+        "参数来源：默认读当前目录的 config.json，命令行参数可临时覆盖它。\n"
+        "  优先级：命令行  >  config.json  >  代码内默认值\n"
+        "\n"
+        "配置:\n"
+        "  --config PATH       指定配置文件（默认 config.json）\n"
+        "  --dump-config       打印一份默认配置文本，可重定向成 config.json\n"
+        "\n"
+        "输入（config.json 同名键）：\n"
         "  --image PATH        单张图片，或图片目录（批量）\n"
         "  --video PATH        视频文件\n"
-        "  --device DEV        摄像头，/dev/video1 或索引 1（默认 /dev/video1）\n"
-        "  --width/--height/--fps    采集参数（默认 1280x720@30）\n"
-        "  --backend auto|v4l2|gst   采集后端（默认 auto：先 V4L2，失败退 GStreamer）\n"
-        "  --zoom N            设 zoom_absolute（<0 = 不动，默认 -1）\n"
-        "  --focus N           关自动对焦并设 focus_absolute（<0 = 不动，默认 -1）\n"
+        "  --device DEV        摄像头，/dev/video1 或索引 1\n"
+        "  --width/--height/--fps    采集参数\n"
+        "  --backend auto|v4l2|gst   采集后端\n"
+        "  --zoom N / --focus N      设 v4l2 控制（<0 = 不动）\n"
         "  --frames N          处理多少帧后停止（0 = 不限/全部）\n"
-        "  --loop              图片/视频循环播放（配合 --preview 做常驻预览）\n"
+        "  --loop              图片/视频循环播放\n"
         "\n"
-        "可视化（可组合）:\n"
-        "  --preview [PORT]    开 MJPEG HTTP 预览，浏览器看带圈的实时画面（默认端口 8099）\n"
-        "  --preview-bind ADDR 预览监听地址（默认 0.0.0.0）\n"
-        "  --preview-width N   预览推流宽度（0=原尺寸；设 640 可省 ~4 倍编码开销）\n"
-        "  --jpeg-quality N    预览 JPEG 质量 1..100（默认 80）\n"
+        "推流 / 预览（可同时开）:\n"
+        "  --rtsp              开 RTSP 推流（H.264 → MediaMTX；config 里 rtsp 段配地址）\n"
+        "  --no-rtsp           临时关掉 RTSP\n"
+        "  --preview [PORT]    开 MJPEG HTTP 预览（浏览器直接看，默认端口 8099）\n"
+        "  --no-preview        临时关掉 MJPEG 预览\n"
+        "  --preview-bind ADDR / --preview-width N / --jpeg-quality N\n"
         "  --show              开 OpenCV 窗口（需板子本地有图形会话）\n"
         "  --debug-dir DIR     保存 overlay_XXXX.jpg / mask_XXXX.png\n"
         "  --save-video FILE   保存带标注的视频（.avi / .mp4）\n"
-        "  --no-hud            预览上不画顶部状态条\n"
-        "  --no-mask-inset     预览上不画右下角掩码缩略图\n"
+        "  --no-hud / --no-mask-inset   预览上不画状态条 / 掩码缩略图\n"
         "\n"
-        "算法:\n"
-        "  --method auto|mask|hough   检测路径（默认 auto）\n"
-        "  --work-width N      工作分辨率宽度（0=原图，默认 640，越小越快）\n"
-        "  --sat-max N         白垫饱和度上限（默认 70）\n"
-        "  --val-min N         白垫亮度下限（默认 110）\n"
-        "  --close-ksize N     闭运算核（填骰子空洞，默认 9）\n"
-        "  --open-ksize N      开运算核（去噪，默认 5）\n"
-        "  --min-radius-frac F 最小半径 = F*min(w,h)（默认 0.05）\n"
-        "  --max-radius-frac F 最大半径 = F*min(w,h)（默认 0.35）\n"
-        "  --min-circularity F 圆度下限（默认 0.55）\n"
-        "  --min-fill-ratio F  填充率下限（默认 0.75）\n"
-        "  --min-inlier-ratio F RANSAC 内点比例下限（默认 0.55）\n"
-        "  --ring-margin F     环带需比内盘暗多少（默认 22）\n"
-        "  --ring-ratio F      环带角度覆盖下限（默认 0.55）\n"
-        "  --no-ring-check     关闭环带验证（调试用）\n"
-        "  --no-ellipse        关掉椭圆拟合，强制按正圆拟合（对比用）\n"
-        "  --no-fill-holes     关掉\"填盘内空洞\"（对比用；关掉后盘上放东西会掉检）\n"
-        "  --max-axis-ratio F  长短轴比上限，超过就认为不是盘子（默认 2.5）\n"
-        "  --expected N        期望圆个数，不够时触发 Hough 兜底；只保留最高的 N 个\n"
-        "  --max-circles N     最多输出几个（默认 4）\n"
-        "  --smooth F          时序平滑系数 0..1（默认 0=关）\n"
-        "  --threads N         识别用几个 CPU 线程（0=OpenCV 默认）\n"
-        "                      实测多核只快 ~4ms 却多烧 16ms CPU，建议 1\n"
+        "算法（config.json 同名键）:\n"
+        "  --method auto|mask|hough   检测路径\n"
+        "  --work-width N      工作分辨率宽度（0=原图，越小越快）\n"
+        "  --sat-max N / --val-min N  白垫 HSV 阈值\n"
+        "  --close-ksize N / --open-ksize N   形态学核\n"
+        "  --min-radius-frac F / --max-radius-frac F\n"
+        "  --min-circularity F / --min-fill-ratio F / --min-inlier-ratio F\n"
+        "  --ring-margin F / --ring-ratio F\n"
+        "  --max-axis-ratio F  长短轴比上限（斜视）\n"
+        "  --expected N        期望圆个数，不够时触发 Hough 兜底\n"
+        "  --max-circles N     最多输出几个\n"
+        "  --smooth F          时序平滑系数 0..1\n"
+        "  --threads N         识别线程数（实测 1 最省 CPU，帧率不变）\n"
+        "  --no-ring-check / --no-ellipse / --no-fill-holes   对比实验用\n"
         "\n"
         "输出:\n"
-        "  --out-json FILE     把逐帧 JSON 同时写入文件\n"
-        "  --summary           结束打印汇总 JSON\n"
-        "  --quiet             不打印逐帧 JSON\n"
-        "  --verbose           打印候选接受/拒绝的详细原因\n"
+        "  --out-json FILE     逐帧 JSON 同时写入文件\n"
+        "  --summary / --quiet / --verbose\n"
         "  --self-test         合成图自检（无需摄像头）\n"
         "  -h, --help\n");
 }
@@ -391,9 +401,41 @@ int main(int argc, char** argv) {
     ::signal(SIGPIPE, SIG_IGN);   // 预览客户端断开时别把进程干掉
     ::signal(SIGINT, onSignal);   // Ctrl-C  -> 优雅收尾（写完视频索引）
     ::signal(SIGTERM, onSignal);  // pkill   -> 同上
-    if (argc <= 1) { usage(); return 2; }
+    // ---- 第一遍：先把 --config / -h 挑出来，其余参数留到配置加载后再覆盖 ----
+    std::string config_path;
+    bool config_explicit = false;
+    bool want_help = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string k = argv[i];
+        if (k == "--config" && i + 1 < argc) { config_path = argv[++i]; config_explicit = true; }
+        else if (k == "-h" || k == "--help") want_help = true;
+    }
+    if (want_help) { usage(); return 0; }
+    if (config_path.empty()) config_path = "config.json";
 
-    Args a;
+    // ---- 读 config.json。参数优先级：命令行 > config.json > 代码默认值 ----
+    AppConfig a;
+    {
+        std::error_code ec;
+        const bool exists = fs::exists(config_path, ec);
+        if (!exists && !config_explicit) {
+            std::fprintf(stderr,
+                         "[cfg] 没找到 %s，本次用内置默认值运行。\n"
+                         "      想要配置文件：./build/circle_detect --dump-config > %s\n",
+                         config_path.c_str(), config_path.c_str());
+        } else {
+            std::string err;
+            if (!load_config(config_path, a, err)) {
+                std::fprintf(stderr, "[err] 读取配置失败: %s\n", err.c_str());
+                return 6;
+            }
+            std::fprintf(stderr, "[cfg] 已加载 %s\n", config_path.c_str());
+        }
+    }
+
+    CliOnly cli;
+    cli.config_path = config_path;
+
     for (int i = 1; i < argc; ++i) {
         const std::string k = argv[i];
         auto val = [&](const char*& out) -> bool {
@@ -415,20 +457,24 @@ int main(int argc, char** argv) {
             return dflt;
         };
         const char* v = nullptr;
-        if (k == "-h" || k == "--help") { usage(); return 0; }
-        else if (k == "--self-test") a.self_test = true;
+        if (k == "-h" || k == "--help" || k == "--config") { if (k == "--config") ++i; }
+        else if (k == "--dump-config") cli.dump_config = true;
+        else if (k == "--self-test") cli.self_test = true;
         else if (k == "--show") a.show = true;
         else if (k == "--quiet") a.quiet = true;
         else if (k == "--verbose") a.verbose = true;
         else if (k == "--summary") a.summary = true;
-        else if (k == "--no-ring-check") a.no_ring_check = true;
-        else if (k == "--no-ellipse") a.no_ellipse = true;
-        else if (k == "--no-fill-holes") a.no_fill_holes = true;
+        else if (k == "--no-ring-check") cli.no_ring_check = true;
+        else if (k == "--no-ellipse") cli.no_ellipse = true;
+        else if (k == "--no-fill-holes") cli.no_fill_holes = true;
         else if (k == "--max-axis-ratio") { if (!val(v)) return 2; a.max_axis_ratio = std::atof(v); }
-        else if (k == "--no-hud") a.no_hud = true;
-        else if (k == "--no-mask-inset") a.no_mask_inset = true;
+        else if (k == "--no-hud") cli.no_hud = true;
+        else if (k == "--no-mask-inset") cli.no_mask_inset = true;
         else if (k == "--loop") a.loop = true;
-        else if (k == "--preview") a.preview_port = optionalInt(8099);
+        else if (k == "--rtsp") a.rtsp_enabled = true;
+        else if (k == "--no-rtsp") cli.no_rtsp = true;
+        else if (k == "--preview") { a.preview_enabled = true; a.preview_port = optionalInt(a.preview_port); }
+        else if (k == "--no-preview") cli.no_preview = true;
         else if (k == "--preview-bind") { if (!val(v)) return 2; a.preview_bind = v; }
         else if (k == "--preview-width") { if (!val(v)) return 2; a.preview_width = std::atoi(v); }
         else if (k == "--jpeg-quality") { if (!val(v)) return 2; a.jpeg_quality = std::atoi(v); }
@@ -444,7 +490,7 @@ int main(int argc, char** argv) {
         else if (k == "--width")    { if (!val(v)) return 2; a.width = std::atoi(v); }
         else if (k == "--height")   { if (!val(v)) return 2; a.height = std::atoi(v); }
         else if (k == "--fps")      { if (!val(v)) return 2; a.fps = std::atoi(v); }
-        else if (k == "--frames")   { if (!val(v)) return 2; a.frames = std::atoi(v); }
+        else if (k == "--frames")   { if (!val(v)) return 2; a.max_frames = std::atoi(v); }
         else if (k == "--zoom")     { if (!val(v)) return 2; a.zoom = std::atoi(v); }
         else if (k == "--focus")    { if (!val(v)) return 2; a.focus = std::atoi(v); }
         else if (k == "--expected") { if (!val(v)) return 2; a.expected = std::atoi(v); }
@@ -470,6 +516,20 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --no-xxx 是"临时关掉配置里打开的开关"，优先级最高
+    if (cli.no_rtsp)      a.rtsp_enabled = false;
+    if (cli.no_preview)   a.preview_enabled = false;
+    if (cli.no_hud)       a.overlay_hud = false;
+    if (cli.no_mask_inset) a.overlay_mask_inset = false;
+    if (cli.no_ring_check) a.require_ring = false;
+    if (cli.no_ellipse)    a.ellipse_fit = false;
+    if (cli.no_fill_holes) a.fill_holes = false;
+
+    if (cli.dump_config) {
+        std::fputs(default_config_json().c_str(), stdout);
+        return 0;
+    }
+
     CircleParams p;
     p.work_width        = a.work_width;
     p.sat_max           = a.sat_max;
@@ -483,10 +543,12 @@ int main(int argc, char** argv) {
     p.min_inlier_ratio  = a.min_inlier_ratio;
     p.ring_dark_margin  = a.ring_dark_margin;
     p.ring_min_ratio    = a.ring_min_ratio;
-    p.require_ring      = !a.no_ring_check;
-    p.ellipse_fit       = !a.no_ellipse;
-    p.fill_holes        = !a.no_fill_holes;
+    p.require_ring      = a.require_ring;
+    p.ellipse_fit       = a.ellipse_fit;
+    p.fill_holes        = a.fill_holes;
     p.max_axis_ratio    = a.max_axis_ratio;
+    p.report_ellipse_at = a.report_ellipse_at;
+    p.rect_kernel       = a.rect_kernel;
     p.hough_dp          = a.hough_dp;
     p.hough_param1      = a.hough_param1;
     p.hough_param2      = a.hough_param2;
@@ -496,7 +558,10 @@ int main(int argc, char** argv) {
     p.max_circles       = a.max_circles;
     p.trace             = a.verbose;
 
-    if (a.self_test) return runSelfTest(p);
+    if (cli.self_test) return runSelfTest(p);
+
+    // 从这里往后第三方库（VPU）可能往 stdout 打日志，先隔离好
+    protectStdout();
 
     // 线程数：实测把识别钉在 1 个核上，CPU/帧从 62.8ms 降到 47.9ms 而帧率不变
     // （多出来的那部分是跨核同步的 sys 时间），所以给个显式开关。
@@ -506,16 +571,18 @@ int main(int argc, char** argv) {
     }
 
     if (a.image.empty() && a.video.empty() && a.device.empty()) {
-        std::fprintf(stderr, "[err] 必须指定 --image / --video / --device 之一（-h 看帮助）\n");
+        std::fprintf(stderr, "[err] 必须配置 image / video / device 之一（见 %s）\n",
+                     config_path.c_str());
         return 2;
     }
 
-    // 需要画叠加图吗？—— 预览/窗口/存视频/存调试图，任一开启就要
-    const bool need_overlay = a.show || a.preview_port > 0 ||
+    // 需要画叠加图吗？—— 推流/预览/窗口/存视频/存调试图，任一开启就要
+    const bool need_overlay = a.show || a.preview_enabled || a.rtsp_enabled ||
                               !a.debug_dir.empty() || !a.save_video.empty();
-    // 其中这些用途每帧都必须画；纯预览可以按"有没有人看"动态跳过
-    const bool always_overlay = a.show || !a.debug_dir.empty() || !a.save_video.empty();
-    // 掩码缩略图要用到 res.mask，所以只要会画预览就保留它
+    // 其中这些用途每帧都必须画；预览可以按"有没有人看"动态跳过
+    const bool always_overlay = a.show || a.rtsp_enabled ||
+                                !a.debug_dir.empty() || !a.save_video.empty();
+    // 掩码缩略图要用到 res.mask，所以只要会画叠加图就保留它
     p.keep_debug = need_overlay;
 
     if (!a.debug_dir.empty()) {
@@ -529,16 +596,31 @@ int main(int argc, char** argv) {
         if (!json_out) std::fprintf(stderr, "[warn] 无法写 %s\n", a.out_json.c_str());
     }
     auto emit = [&](const std::string& line) {
-        if (!a.quiet) { std::fwrite(line.data(), 1, line.size(), stdout); std::fputc('\n', stdout); }
+        if (!a.quiet) writeJsonLine(line);
         if (json_out) { json_out << line << '\n'; json_out.flush(); }
     };
 
-    // ---- MJPEG 预览服务 ----
+    // ---- RTSP 推流（生产路径：H.264 → MediaMTX）----
+    RtspStreamer rtsp;
+    if (a.rtsp_enabled) {
+        // 推流分辨率 = 采集分辨率（overlay 就是原图尺寸）
+        if (!rtsp.start(a.rtsp_host, a.rtsp_port, a.rtsp_path, a.width, a.height, a.fps)) {
+            std::fprintf(stderr, "[warn] RTSP 推流启动失败，继续跑识别（不影响检测）\n");
+        } else {
+            std::fprintf(stderr, "[rtsp] 拉流地址：\n");
+            std::fprintf(stderr, "          RTSP   : %s\n", rtsp.url().c_str());
+            std::fprintf(stderr, "          WebRTC : http://%s:8889%s/\n",
+                         normalize_rtsp_host(a.rtsp_host).c_str(), a.rtsp_path.c_str());
+        }
+    }
+
+    // ---- MJPEG 预览服务（调试路径）----
     MjpegServer preview;
-    if (a.preview_port > 0) {
+    if (a.preview_enabled) {
         std::string err;
         if (!preview.start(a.preview_bind, a.preview_port, err)) {
             std::fprintf(stderr, "[err] 预览服务启动失败: %s\n", err.c_str());
+            rtsp.stop();
             return 5;
         }
         std::fprintf(stderr, "[preview] MJPEG 预览已启动，浏览器打开：\n");
@@ -560,7 +642,7 @@ int main(int argc, char** argv) {
         images = listImages(a.image);
         if (images.empty()) {
             std::fprintf(stderr, "[err] 目录里没有图片: %s\n", a.image.c_str());
-            preview.stop();
+            preview.stop(); rtsp.stop();
             return 2;
         }
     } else if (!a.image.empty()) {
@@ -605,8 +687,10 @@ int main(int argc, char** argv) {
         const bool need_now = always_overlay || (preview.running() && preview.wantsFrame());
         if (need_now) {
             OverlayOptions oo;
-            oo.hud        = !a.no_hud;
-            oo.mask_inset = !a.no_mask_inset;
+            oo.hud        = a.overlay_hud;
+            oo.mask_inset = a.overlay_mask_inset;
+            oo.crosshair  = a.overlay_crosshair;
+            oo.axes       = a.overlay_axes;
             oo.fps        = fps_meter.value();
             oo.frame_index = idx;
             oo.source     = name;
@@ -709,11 +793,14 @@ int main(int argc, char** argv) {
                 if (key == 27 || key == 'q') return false;
             } catch (const cv::Exception& e) {
                 std::fprintf(stderr, "[warn] 无法开窗口（%s）\n"
-                                     "        板子走 SSH 时没有 DISPLAY，请改用 --preview\n",
+                                     "        板子走 SSH 时没有 DISPLAY，请改用 preview\n",
                              e.what());
                 a.show = false;
             }
         }
+
+        // ---- RTSP 推流（放在最后：会把 overlay 移走，前面用过的都已写完）----
+        if (rtsp.running() && !overlay.empty()) rtsp.publish(std::move(overlay));
         return true;
     };
 
@@ -732,14 +819,14 @@ int main(int argc, char** argv) {
                 if (img.empty()) { std::fprintf(stderr, "[warn] 跳过无法读取的图片: %s\n", f.c_str()); continue; }
                 cache.push_back(img);
             }
-            if (cache.empty()) { std::fprintf(stderr, "[err] 没有可用图片\n"); preview.stop(); return 2; }
+            if (cache.empty()) { std::fprintf(stderr, "[err] 没有可用图片\n"); preview.stop(); rtsp.stop(); return 2; }
         }
 
         long idx = 0;
         bool stop = false;
         while (!stop) {
             for (size_t i = 0; i < images.size(); ++i) {
-                if (g_stop.load() || (a.frames > 0 && idx >= a.frames)) { stop = true; break; }
+                if (g_stop.load() || (a.max_frames > 0 && idx >= a.max_frames)) { stop = true; break; }
                 cv::Mat img = a.loop ? cache[i < cache.size() ? i : 0] : cv::imread(images[i], cv::IMREAD_COLOR);
                 if (img.empty()) { std::fprintf(stderr, "[warn] 跳过无法读取的图片: %s\n", images[i].c_str()); continue; }
                 if (!process(img, fs::path(images[i]).filename().string(), idx)) { stop = true; break; }
@@ -764,19 +851,19 @@ int main(int argc, char** argv) {
                                        : (!so.video.empty() ? so.video.c_str() : so.device.c_str()));
         if (!src.open(so, err)) {
             std::fprintf(stderr, "[err] %s\n", err.c_str());
-            preview.stop();
+            preview.stop(); rtsp.stop();
             return 3;
         }
         std::fprintf(stderr, "[src] %s\n", src.describe().c_str());
         src_desc = src.describe();
 
-        const bool unlimited = (a.frames <= 0);
+        const bool unlimited = (a.max_frames <= 0);
         long idx = 0;
         cv::Mat frame;
         bool stop = false;
         while (!stop) {
             while (true) {
-                if (g_stop.load() || (!unlimited && idx >= a.frames)) { stop = true; break; }
+                if (g_stop.load() || (!unlimited && idx >= a.max_frames)) { stop = true; break; }
                 if (!src.read(frame)) break;
                 if (!process(frame, src.describe(), idx)) { stop = true; break; }
                 ++idx;
@@ -791,6 +878,7 @@ int main(int argc, char** argv) {
 
     if (writer.isOpened()) writer.release();
     preview.stop();
+    rtsp.stop();
 
     const double wall_ms = (nowSec() - t_start) * 1000.0;
 
@@ -804,7 +892,7 @@ int main(int argc, char** argv) {
                       total_frames ? double(total_circles) / total_frames : 0.0,
                       total_frames ? total_ms / total_frames : 0.0,
                       total_frames ? double(frames_with) / total_frames : 0.0, wall_ms);
-        std::puts(b);   // --quiet 只压逐帧输出，汇总照常打印
+        writeJsonLine(b);   // --quiet 只压逐帧输出，汇总照常打印
         if (json_out) json_out << b << '\n';
     }
     return rc;

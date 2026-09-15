@@ -1,0 +1,79 @@
+{
+  "_说明": "circle_detect 全部参数。命令行参数可临时覆盖这里的值（优先级：命令行 > config.json > 代码默认值）。分区注释见 README 第 3 节。",
+
+  "camera": "/dev/video1",
+  "device": "",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "backend": "auto",
+  "focus": -1,
+  "zoom": 160,
+  "max_frames": 0,
+  "loop": false,
+  "image": "",
+  "video": "",
+
+  "work_width": 640,
+  "threads": 1,
+  "method": "auto",
+  "expected": 2,
+  "max_circles": 4,
+
+  "sat_max": 70,
+  "val_min": 110,
+  "close_ksize": 9,
+  "open_ksize": 5,
+  "rect_kernel": true,
+  "fill_holes": true,
+
+  "min_radius_frac": 0.05,
+  "max_radius_frac": 0.35,
+  "min_circularity": 0.55,
+  "min_fill_ratio": 0.75,
+  "min_inlier_ratio": 0.55,
+  "ellipse_fit": true,
+  "max_axis_ratio": 2.5,
+  "report_ellipse_at": 1.08,
+
+  "require_ring": true,
+  "ring_dark_margin": 22.0,
+  "ring_min_ratio": 0.55,
+
+  "hough_dp": 1.2,
+  "hough_param1": 120,
+  "hough_param2": 38,
+  "hough_min_dist_frac": 0.2,
+
+  "smooth_alpha": 0.0,
+
+  "rtsp": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8554,
+    "path": "/dice/circles"
+  },
+
+  "preview": {
+    "enabled": false,
+    "port": 8099,
+    "bind": "0.0.0.0",
+    "width": 0,
+    "jpeg_quality": 80
+  },
+
+  "overlay": {
+    "hud": true,
+    "mask_inset": true,
+    "crosshair": true,
+    "axes": true
+  },
+
+  "debug_dir": "",
+  "save_video": "",
+  "out_json": "",
+  "show": false,
+  "summary": false,
+  "quiet": false,
+  "verbose": false
+}
