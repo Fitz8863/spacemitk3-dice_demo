@@ -30,6 +30,7 @@
 | 斜视视角 | **椭圆拟合**（白化 + 圆 RANSAC），实测轴比 1.59 对真值 1.60、倾角 25.0° 对真值 25° |
 | 盘上放东西 | **flood-fill 填内部空洞**，盘心压住 45% 仍准确（圆心误差 1.0 px） |
 | 推流 | **RTSP / H.264 硬编**（`spacemith264enc` → MediaMTX），RTSP 与 WebRTC 均可观看 |
+| 吞吐 | **25.5 fps**（真机，3 线程流水线）/ 顺序模式 16.4 fps → **1.56×** |
 | 配置 | 参数全部在 `config.json`，**直接 `./build/circle_detect` 就行** |
 | 依赖 | 只依赖系统 OpenCV 4.10 + GStreamer/V4L2，**零模型文件** |
 
@@ -242,6 +243,7 @@ $ printf '{"work_width": "abc"}' > b.json && ./build/circle_detect --config b.js
 | | `require_ring` / `ring_*` | 环带验证 |
 | 推流 | `rtsp.enabled/host/port/path` | RTSP 推流地址与开关 |
 | 叠加 | `overlay.hud/mask_inset/crosshair/axes` | 画面上画什么 |
+| 流水线 | `pipeline_enabled` / `capture_thread` | A\|B 与采集是否独立成线程（见 docs/pipeline-threading.md） |
 | 输出 | `debug_dir` / `save_video` / `out_json` / `show` / `summary` / `quiet` / `verbose` | |
 
 > `--no-rtsp` / `--no-hud` / `--no-ellipse` / `--no-fill-holes`
@@ -419,6 +421,49 @@ stdout 是 JSON Lines，一帧一行，方便被上层服务消费：
 > 另外注意：**合成测试图（`--self-test`）的边界是硬边，真实帧有过渡带**，
 > 两者对形态学的敏感度不同。我曾在合成图上看到 `close=5 open=0` 半径偏小
 > 11px，而在真实帧上平均只差 3.9px —— 判定精度请以真实帧为准。
+
+## 4.05 线程流水线（吞吐 1.56×）
+
+**这部分不改任何检测判据**，只是让"第 N 帧的拟合"和"第 N+1 帧的像素处理"
+重叠执行。详见 `docs/pipeline-threading.md`。
+
+```
+采集线程 ──q_cap──> 主线程(A: 像素->候选) ──q_ab──> B线程(拟合/验证)
+                                                      │
+                       主线程 <────q_bm────────────────┘（JSON/落盘/窗口）
+                                                      │
+                                              RTSP线程（画标注 + 硬编）
+```
+
+三个队列都是**单槽 latest-only**（照搬参考工程 `yolo_segdetect`）：
+生产者替换旧任务而非排队，所以采集永不阻塞、永远处理最新帧。
+
+### 实测（真机，交替 3 轮各 80 帧）
+
+| 配置 | processed_fps | 检测耗时 |
+|---|---|---|
+| 顺序 + 同步采集（回退） | 16.4 / 16.3 / 16.4 | 37.7 / 38.7 / 38.2 ms |
+| **A\|B + 采集线程** | **25.5 / 25.5 / 25.6** | 37.0 / 37.7 / 38.8 ms |
+
+检测耗时相同 → **提升纯来自重叠**。单图源（无相机限制）下 28.6 → **51.2 fps**。
+
+> ★ **一个反直觉的实测教训**：原计划只加 1 个线程（A\|B），
+> 因为静态算下来 T1=25.5ms、T2=23.6ms 都低于相机 33.3ms。
+> 但真机上 A\|B **反而比顺序慢**（10.0 vs 11.6 fps）——
+> 逐段计时发现 **MJPEG 解码与 B 线程争抢**，取帧从 18.5ms 涨到 35.3ms。
+> 把采集也独立成线程后才拿到收益。**争抢效应必须实测，静态均衡不够。**
+
+> **指标提醒**：summary 里 `processed_fps` 才是吞吐；
+> `result_fps` 偏低是正常的 —— B 比主循环快时，旧结果会被 latest-only
+> 覆盖丢弃（这是设计意图，避免延迟累积）。
+
+### 回退
+
+```
+--no-pipeline        关 A|B，走顺序路径
+--no-capture-thread  关采集线程
+两个都加 = 完全回到改造前行为（逐帧对拍验证就是这么做的）
+```
 
 ## 4.1 CPU 占用（纯识别，不含编码/推流）
 
