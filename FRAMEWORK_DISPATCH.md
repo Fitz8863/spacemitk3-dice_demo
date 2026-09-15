@@ -282,25 +282,69 @@ Content-Type: application/json
 
 ### 5.2 provider 和 runtime
 
-`games/dice/pipeline.py` 按以下顺序选择裁决器：
+`core/vision_pipeline.py` 的 `run_vision_game()` 按以下顺序选择裁决器（游戏薄壳 pipeline 只传
+自己的 `game_id` 与结果投影）：
 
 ```text
-DICE_VISION_ADJUDICATOR_PROVIDER
-    > 兼容 DICE_VISION_PROVIDER
-    > manifest.providers.vision_adjudicator
-    > 兼容 manifest.providers.vision
-    > vision_yolov8_adjudicator
+游戏 manifest  providers.vision_adjudicator      ← 规范槽位
+    > 兼容别名   providers.vision
+    > 全局       backend/config.json 的 providers.vision_adjudicator / .vision
+                 （run_game 用 with_global_defaults 垫在游戏 manifest 之下，逐键游戏优先）
+    > 兜底       vision_yolov8_adjudicator
 ```
 
-随后构造 `VisionAdjudicationRequest`，把已校验的 profile 传给 `VisionAdjudicatorProvider.adjudicate()`。provider 解析组件 config 和 runtime config，按 profile 为每个视角启动或复用 `yolov8_camera`：
+> 环境变量覆盖层（`DICE_VISION_ADJUDICATOR_PROVIDER` / `DICE_VISION_PROVIDER`）**已于
+> 2026-09-02 整体移除**，JSON 是唯一配置来源。
+
+随后构造 `VisionAdjudicationRequest`，把已校验的 profile 传给 `VisionAdjudicatorProvider.adjudicate()`。
+provider 解析**该游戏的** runtime 配置（见 §3.3）和组件 config，按 profile 为每个视角启动或复用
+`yolov8_camera`：
 
 ```text
-build/yolov8_camera --config vision/yolov8_adjudicator/config.json \
-  --no-display --control-fd <fd> --event-fd <fd> --prewarm \
-  --snapshot-dir <本局私有目录> --view-id <view>
+build/yolov8_camera --config <该游戏的 runtime 配置> \
+  --no-display --control-fd <fd> --event-fd <fd> --view-id <view> \
+  --snapshot-dir <本局私有目录> [--prewarm] \
+  --model <绝对路径> --stable-frames <n> --conf <阈值> \
+  [--divider-detection] [--expected-count <n>] [--region-position/-orientation ...] \
+  --rtsp-path <video.path>
 ```
 
-`--prewarm` 让摄像头、GStreamer 和 RTSP/MediaMTX 链路常驻。`config.json` 的 `yolov8_enabled=false` 只表示默认不主动推理；进程拥有控制通道时，收到 `START_ADJUDICATION` 才启用本局 YOLO 检测。
+**摄像头以外的硬件项（分辨率/帧率/EP 绑核/焦距/变焦/RTSP host+port/WebRTC 基址）只来自那份
+runtime 配置**，没有命令行转发——这也是它们必须写在配置文件里、而 `model`/`stable_frames`/`conf`/
+`divider_detection`/`rtsp.path` 写在配置文件里是死键的原因（§3.3）。
+
+`--prewarm` 让摄像头、GStreamer 和 RTSP/MediaMTX 链路先起来。runtime config 的 `yolov8_enabled=false`
+只表示默认不主动推理；进程拥有控制通道时，收到 `START_ADJUDICATION` 才启用本局 YOLO 检测。
+
+**runtime 的生命周期：`vision_always_on`（`backend/config.json`，缺省 `true`）**
+
+先说清它**不**负责什么：多个游戏共用同一个摄像头/裁决器（单机位时 `view_id` 都是 `"default"`），
+靠的是 provider 的 `view_id` 缓存 + `_runtime_signature()`（§3.3 的签名契约）——**每个 `view_id`
+任何时刻只有一个 runtime**，切换游戏就是"拆旧建新"。这个开关不参与那件事，它只决定**回合结束后
+这条流是留着还是放掉**。
+
+| 值 | 行为 | 空闲时的代价 |
+| --- | --- | --- |
+| `true`（缺省） | 不武装拆除者，跨回合、跨游戏常驻到进程退出 | 摄像头一直被占；常驻约 **0.4 核 / RSS 262 MiB** |
+| `false` | 跟随游戏生命周期：回合进入终态（`exited`/`cancelled`/`error`）即停流、释放摄像头 | 每回合重建一次 |
+
+**两种情况下的启动时机是相同的**：进入游戏（`create_round`）就一定以 `--prewarm` 拉起 Camera +
+RTSP，检测器会话一并载入，只是不推理。所以 `false` 的代价**不在裁决那一刻**，而在进游戏那一刻。
+
+**这个代价实测为 1.44 秒**（板端，进游戏 → 模型加载 + 摄像头打开完成；启动序列是
+`Model loaded` → `GStreamer camera opened` → `RTSP publishing`）。它藏在开场语音 + 三二一开盖
+倒计时（十几秒）之后，**玩家看不到**。用 1.44 秒换"不用时立刻释放摄像头"通常更划算。
+
+**什么时候才该用 `true`**：空闲时也需要摄像头画面——例如机械臂标定/取点想随时看画面而不必先开一局，
+或挂一个常驻监控页。没有这类需求就设 `false`。
+
+**⚠️ `true` 模式下不要手工 `kill` 常驻 runtime**：provider 的 `_ensure_runtime()` 只查缓存与签名、
+**不验活**，被外部杀掉的进程会在缓存里留下死句柄，下一局复用它并报 "not running"。要清就重启服务。
+`false` 模式没有这个隐患（每回合自然重建）。
+
+**热加载**：每回合开始时读取（日志里 `stream up for round ... (vision_always_on=...)` 即当回合取值），
+改完保存即生效，不必重启；`true→false` 从下一局结束起生效，`false→true` 从下一局开始起生效。
+它是**全局**开关，游戏 manifest 不参与。
 
 ### 5.3 稳定帧、规则和 LLM
 
