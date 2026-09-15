@@ -134,10 +134,12 @@ def test_frontend_shouts_stop_before_reveal_ready():
     assert stop_entry["audio"] == "audio/停.wav"
     assert stop_entry["text"].strip() == "停！"
     assert stop_entry["await"] is True
-    # The reveal line follows in the same on_enter sequence, and the hold
-    # window starts only after the awaited clip finishes.
+    # The reveal clip follows in the same on_enter sequence and is not awaited,
+    # so the hold window below runs in parallel with the voice instead of
+    # queueing up behind it.
     assert open_reveal["on_enter"][1]["text"].startswith("准备好了没有")
-    assert open_reveal["duration"] == 4
+    assert open_reveal["on_enter"][1].get("await") is not True
+    assert open_reveal["duration"] == 1.6
 
     # The frontend must not re-implement the chain: awaiting is an engine
     # concern, playback acknowledgement happens through the round client.
@@ -252,7 +254,12 @@ def test_frontend_enters_open_transition_and_starts_countdown_automatically():
     assert open_reveal["on_enter"][0].get("await") is True
     assert open_reveal["on_expire"]["to"] == "vision_countdown"
     reveal_entry = open_reveal["on_enter"][1]
-    assert reveal_entry["mode"] == "tts_local"
+    # The reveal countdown is a pre-recorded clip now, and it is deliberately
+    # NOT awaited: the hold timer must run *with* the voice so the screen
+    # countdown starts on the voice's "三".
+    assert reveal_entry["mode"] == "audio"
+    assert reveal_entry["audio"].endswith(".wav")
+    assert reveal_entry.get("await") is not True
     assert reveal_entry["text"]
 
 
@@ -269,6 +276,38 @@ def test_frontend_counts_down_after_open_transition_before_adjudication():
     assert "请保持骰子和骰盅位置不动" in vision_countdown["ui"]["copy"]
     assert "countdownNumber" in js
     assert "revealDice" not in js
+
+
+def test_reveal_voice_and_screen_countdown_stay_in_step():
+    """The two halves of the reveal rhythm must be edited together.
+
+    The voice clip counts 三/二/一 and the *screen* numbers come from
+    ``vision_countdown``; they only line up because ``open_reveal`` hands over
+    at the moment the voice reaches 三.  That handover is a single number:
+    ``open_reveal.duration``, which starts once the awaited 停 clip is
+    acknowledged (the engine only starts a state's timer after its on_enter
+    sequence has been issued) and must therefore cover the reveal clip's
+    lead-in up to its first number (~1.5s) — not a "transition length" chosen
+    for feel.  Changing any one of these four facts desynchronises the demo,
+    so pin them together.
+    """
+    open_reveal = dice_state("open_reveal")
+    stop_entry = open_reveal["on_enter"][0]
+    reveal_entry = open_reveal["on_enter"][1]
+    vision_countdown = dice_state("vision_countdown")
+
+    # 停 must still finish first, and only 停 may block the sequence.
+    assert stop_entry["await"] is True
+    assert reveal_entry.get("await") is not True
+
+    # Handover at the voice's 三 (~1.5s into the clip + browser start latency).
+    assert open_reveal["duration"] == 1.6
+    assert open_reveal["on_expire"]["to"] == "vision_countdown"
+
+    # The screen side: three numbers, 0.8s apart, ending as the clip does.
+    assert vision_countdown["duration"] == 2.4
+    assert vision_countdown["tick_seconds"] == 0.8
+    assert vision_countdown["on_expire"]["to"] == "analysis"
 
 
 def test_frontend_uses_vision_specific_copy_during_post_open_countdown():

@@ -238,11 +238,12 @@
 					},
 					{
 						"action": "speech",
-						"mode": "tts_local",
-						"text": "准备好了没有？三，二，一,开盖！"
+						"mode": "audio",
+						"audio": "audio/warm_准备好了没有？三，二，一,开盖.wav",
+						"text": "准备好了没有？三，二，一,开盖"
 					}
 				],
-				"duration": 4,
+				"duration": 1.6,
 				"tick_seconds": 1.0,
 				"on_expire": {
 					"to": "vision_countdown"
