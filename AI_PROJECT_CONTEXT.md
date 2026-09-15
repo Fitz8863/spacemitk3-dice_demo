@@ -26,6 +26,19 @@ section，而 `web/games/dice.js` 的 `renderTick` 只对 `shake_countdown`/`vis
 `tests/test_web_contract.py` 新增 `test_reveal_voice_and_screen_countdown_stay_in_step` 把
 「开盖词不 await」+「duration 1.6」+「vision_countdown 2.4/0.8」钉在一条用例里防单边改动。
 
+**同日追加：「停！」之后静 2 秒（2026-09-15，用户要求，纯前端实现、写死 2 秒）。** 机制是
+**压后回执，不是压后播放**：后端对 `await` 的台词是「收到 `speech_done` 才发下一句、才启动该状态
+的 `duration` 计时」，所以前端把「停！」的回执压后 2 秒 → 「开盖词」与它的交棒计时一起后移 2 秒，
+**语音↔屏幕的相对对齐不受影响**（板端实测 `delta1 = 2.889s = 0.889 + 2.0`，`delta2` 仍是 1.601s，
+音频收尾→analysis 余量仍 +21ms）。**若改成"只把音频延后播"，屏幕「3」仍在 1.6s 出现，会错开约
+1.9s**——这正是要避免的回归，已用 `test_reveal_hold_delays_the_acknowledgement_not_the_playback`
+锁住。落点：`web/app.js` 的 `playDirective(round, directive, options)` 新增
+`options.ackHoldSeconds`（**仅正常播完才压后**；被取消/被顶替仍立即回执，静音路径也立即回执——
+这两条被既有测试钉着）；`web/games/dice.js` 写死 `REVEAL_HOLD_SECONDS = 2` +
+`REVEAL_STOP_AUDIO = 'audio/停.wav'`，按音频路径识别该句。**脆弱点（有意为之，测试已钉）**：这 2 秒
+与 manifest 里「停！」那条 `await` **配对**，若改manifest 的音频路径而不改 `dice.js` 的常量，
+停顿会**静默失效**——契约测试会先红。`dice.js` 自身保持无 `setTimeout`（仓库既有断言）。
+
 2026-09-14（晚 II）**视觉推流改为「进游戏即启动」+ 新增全局开关 `vision_always_on`**。
 此前 resident runtime 是**第一次裁决时才 spawn**（`start_web.sh` 不预热 vision），
 所以进游戏后要一直等到 `analysis` 阶段才有摄像头和推流。现在 `create_round` 同步调用
