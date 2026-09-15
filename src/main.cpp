@@ -17,6 +17,7 @@
 #include "circle_detector.h"
 #include "config.h"
 #include "frame_source.h"
+#include "latest_queue.h"
 #include "rtsp_streamer.h"
 
 #include <opencv2/highgui.hpp>
@@ -27,6 +28,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <csignal>
 #include <cstdio>
@@ -96,6 +98,7 @@ struct CliOnly {
     bool no_ellipse = false;
     bool no_fill_holes = false;
     bool no_hud = false;
+    bool no_pipeline = false;
     bool no_mask_inset = false;
     bool no_rtsp = false;
     std::string config_path = "config.json";
@@ -146,6 +149,8 @@ void usage() {
         "  --expected N        期望圆个数，不够时触发 Hough 兜底\n"
         "  --max-circles N     最多输出几个\n"
         "  --smooth F          时序平滑系数 0..1\n"
+        "  --no-pipeline       关掉 A|B 双线程流水线，走顺序路径（对拍验证用）\n"
+        "  --no-capture-thread 采集不独立成线程（与 --no-pipeline 组合可完全回退）\n"
         "  --threads N         识别线程数（实测 1 最省 CPU，帧率不变）\n"
         "  --no-ring-check / --no-ellipse / --no-fill-holes   对比实验用\n"
         "\n"
@@ -535,6 +540,9 @@ int main(int argc, char** argv) {
         else if (k == "--hough-param2"){ if (!val(v)) return 2; a.hough_param2 = std::atof(v); }
         else if (k == "--hough-cooldown"){ if (!val(v)) return 2; a.hough_cooldown_frames = std::atoi(v); }
         else if (k == "--smooth")      { if (!val(v)) return 2; a.smooth_alpha = std::atof(v); }
+        else if (k == "--no-pipeline") cli.no_pipeline = true;
+        else if (k == "--no-capture-thread") a.capture_thread = false;
+        else if (k == "--pipeline")    a.pipeline_enabled = true;
         else {
             std::fprintf(stderr, "[err] 未知参数: %s（-h 看帮助）\n", k.c_str());
             return 2;
@@ -543,6 +551,7 @@ int main(int argc, char** argv) {
 
     // --no-xxx 是"临时关掉配置里打开的开关"，优先级最高
     if (cli.no_rtsp)      a.rtsp_enabled = false;
+    if (cli.no_pipeline)  a.pipeline_enabled = false;
     if (cli.no_hud)       a.overlay_hud = false;
     if (cli.no_mask_inset) a.overlay_mask_inset = false;
     if (cli.no_ring_check) a.require_ring = false;
@@ -669,7 +678,6 @@ int main(int argc, char** argv) {
         images.push_back(a.image);
     }
 
-    CircleDetector det(p);
     Smoother sm; sm.alpha = a.smooth_alpha;
     FpsMeter fps_meter;
 
@@ -678,15 +686,89 @@ int main(int argc, char** argv) {
 
     long   total_frames = 0, frames_with = 0, total_circles = 0;
     double total_ms = 0;
+    double total_a_ms = 0, total_b_ms = 0;   // A/B 分段累计（诊断流水线均衡度）
+    double total_cap_ms = 0, total_fin_ms = 0;  // 取帧 / 收尾 累计（定位主循环瓶颈）
+    long   submitted = 0;
+    // 采集线程里的耗时（跨线程，用原子累加；避免与主循环的 total_cap_ms 抢写）
+    std::atomic<long long> cap_us_sum{0};   // 采集线程累计耗时（微秒）
+    std::atomic<long>      cap_n{0};
+    double total_wait_ms = 0, total_pump_ms = 0;   // 主循环：等帧 / 消化结果
 
-    auto process = [&](const cv::Mat& bgr, const std::string& name, long idx) -> bool {
-        if (g_stop.load()) return false;   // Ctrl-C：交回主循环做收尾
-        DetectResult res = det.detect(bgr);
-        sm.apply(res.circles);
+    // =====================================================================
+    // A|B 双线程流水线
+    //
+    //   主线程：取帧 -> A(extractCandidates) -> q_ab -> 消费结果并收尾
+    //   B 线程：q_ab -> B(fitCandidates) -> q_bm
+    //
+    // 顺序模式（pipeline_enabled=false）走同一份 A/B 实现，只是串起来跑 —— 
+    // 两条路径不会分叉，因此可以对拍验证（见 docs/pipeline-threading.md）。
+    // =====================================================================
+    CircleDetector a_det(p);          // A 无跨帧状态
+    CircleDetector b_det(p);          // ★ B 独占：跨帧状态（Hough 冷却）只在这里读写
+    LatestQueue<CandidateSet> q_ab;   // A -> B
+    LatestQueue<DetectJob>    q_bm;   // B -> 主线程
+    std::thread b_thread;
+    long dropped_by_b = 0;            // A 推入时替换掉旧任务的次数（下游没跟上）
+
+    if (a.pipeline_enabled) {
+        b_thread = std::thread([&] {
+            while (true) {
+                auto cs = q_ab.wait_pop_latest(std::chrono::milliseconds(100));
+                if (!cs) {
+                    if (q_ab.closed_and_empty()) break;
+                    continue;
+                }
+                auto job = std::make_shared<DetectJob>();
+                job->cs = cs;
+                job->a_ms = cs->a_ms;
+                const double t0 = nowSec();
+                job->res = b_det.fitCandidates(*cs);
+                job->b_ms = (nowSec() - t0) * 1000.0;
+                q_bm.push(job);
+            }
+            q_bm.close();
+        });
+        std::fprintf(stderr, "[pipeline] A|B 双线程已启用（B 线程独占检测器状态）\n");
+    }
+
+    // 提交一帧：A 阶段 + 交给 B（流水线）或就地跑 B（顺序模式）
+    auto submit = [&](const cv::Mat& bgr, const std::string& name, long idx) {
+        const double tA0 = nowSec();
+        CandidateSet cs = a_det.extractCandidates(bgr, idx);
+        cs.a_ms = (nowSec() - tA0) * 1000.0;
+        cs.name = name;
+        if (a.pipeline_enabled) {
+            if (q_ab.push(std::make_shared<CandidateSet>(std::move(cs)))) ++dropped_by_b;
+        } else {
+            auto job = std::make_shared<DetectJob>();
+            job->cs = std::make_shared<CandidateSet>(std::move(cs));
+            job->a_ms = job->cs->a_ms;
+            const double t0 = nowSec();
+            job->res = b_det.fitCandidates(*job->cs);
+            job->b_ms = (nowSec() - t0) * 1000.0;
+            q_bm.push(job);
+        }
+    };
+
+    bool user_quit = false;   // 窗口里按了 q/ESC
+
+    // 一帧的收尾：平滑、统计、JSON、推流、落盘、显示。
+    // ★ 只在主线程调用（imshow / 信号 / 文件写入都有线程亲和性要求）。
+    auto finishFrame = [&](DetectJob& job) {
+        const double tf0 = nowSec();
+        const DetectResult& res = job.res;
+        const cv::Mat& bgr = *job.cs->frame;
+        const std::string& name = job.cs->name;
+        const long idx = job.cs->index;
+        const double detect_ms = job.a_ms + job.b_ms;
+
+        sm.apply(const_cast<std::vector<CircleResult>&>(res.circles));
         fps_meter.tick();
 
         ++total_frames;
-        total_ms += res.latency_ms;
+        total_ms += detect_ms;
+        total_a_ms += job.a_ms;
+        total_b_ms += job.b_ms;
         total_circles += (long)res.circles.size();
         if (!res.circles.empty()) ++frames_with;
 
@@ -711,8 +793,13 @@ int main(int argc, char** argv) {
         oo.frame_index = idx;
         oo.source     = name;
 
+        // HUD 上的耗时：顺序模式就是 res.latency_ms；流水线模式 res.latency_ms 为 0
+        // （B 阶段只测了自己那一段），这里统一用 a+b 的合计，避免显示 0.0 ms。
+        DetectResult hud_res = res;
+        hud_res.latency_ms = detect_ms;
+
         cv::Mat overlay;
-        if (need_overlay_now) drawOverlay(bgr, res, overlay, oo);
+        if (need_overlay_now) drawOverlay(bgr, hud_res, overlay, oo);
 
         // ---- stdout / 文件 JSON ----
         std::string line = "{\"type\":\"frame\",\"index\":" + std::to_string(idx) +
@@ -720,7 +807,7 @@ int main(int argc, char** argv) {
                            ",\"width\":" + std::to_string(bgr.cols) +
                            ",\"height\":" + std::to_string(bgr.rows) +
                            ",\"method\":\"" + res.method_used + "\"" +
-                           ",\"latency_ms\":" + std::to_string(res.latency_ms) +
+                           ",\"latency_ms\":" + std::to_string(detect_ms) +
                            ",\"count\":" + std::to_string(res.circles.size()) +
                            ",\"circles\":[";
         for (size_t i = 0; i < res.circles.size(); ++i) {
@@ -777,13 +864,15 @@ int main(int argc, char** argv) {
             try {
                 cv::imshow("circle_detect", view);
                 const int key = cv::waitKey(1) & 0xFF;
-                if (key == 27 || key == 'q') return false;
+                if (key == 27 || key == 'q') user_quit = true;
             } catch (const cv::Exception& e) {
                 std::fprintf(stderr, "[warn] 无法开窗口（%s）：板子走 SSH 时没有 DISPLAY\n",
                              e.what());
                 a.show = false;
             }
         }
+
+        total_fin_ms += (nowSec() - tf0) * 1000.0;
 
         // ---- RTSP 推流 ----
         // 把未绘制的原始帧 + 检测结果交给编码线程，由它画标注再编 H.264。
@@ -792,11 +881,16 @@ int main(int argc, char** argv) {
         if (rtsp.running()) {
             OverlayJob job;
             job.frame = bgr;          // 浅拷贝头，深拷贝交给编码线程那次绘制
-            job.det   = res;
+            job.det   = hud_res;      // 用合计耗时的副本（见上）
             job.opt   = oo;
             rtsp.publish(std::move(job));
         }
-        return true;
+    };
+
+    // 非阻塞消费一个已完成的结果（供主循环调用）
+    auto pump = [&]() -> bool {
+        if (auto job = q_bm.try_pop_latest()) { finishFrame(*job); return true; }
+        return false;
     };
 
     int rc = 0;
@@ -821,11 +915,12 @@ int main(int argc, char** argv) {
         bool stop = false;
         while (!stop) {
             for (size_t i = 0; i < images.size(); ++i) {
-                if (g_stop.load() || (a.max_frames > 0 && idx >= a.max_frames)) { stop = true; break; }
+                if (g_stop.load() || user_quit || (a.max_frames > 0 && idx >= a.max_frames)) { stop = true; break; }
+                pump();   // 先消化已完成的结果，避免 q_bm 里堆压
                 cv::Mat img = a.loop ? cache[i < cache.size() ? i : 0] : cv::imread(images[i], cv::IMREAD_COLOR);
                 if (img.empty()) { std::fprintf(stderr, "[warn] 跳过无法读取的图片: %s\n", images[i].c_str()); continue; }
-                if (!process(img, fs::path(images[i]).filename().string(), idx)) { stop = true; break; }
-                ++idx;
+                submit(img, fs::path(images[i]).filename().string(), idx);
+                ++submitted; ++idx;
             }
             if (stop || !a.loop) break;
         }
@@ -854,22 +949,87 @@ int main(int argc, char** argv) {
 
         const bool unlimited = (a.max_frames <= 0);
         long idx = 0;
-        cv::Mat frame;
         bool stop = false;
+
+        // ---- 采集线程 -----------------------------------------------------
+        // 为什么需要：实测把采集留在主循环时，MJPEG 解码会与 B 线程争抢，
+        // 取帧耗时从 18.5ms 涨到 35.3ms —— 主循环反而被采集拖住，流水线比顺序还慢。
+        // 独立成线程后，采集不再受 A/B 干扰，且能与它们重叠。
+        // （参考工程 yolo_segdetect 也是 capture/preprocess/inference 三线程。）
+        LatestQueue<CaptureFrame> q_cap;
+        std::atomic<bool> cap_stop{false};
+        std::thread cap_thread;
+        const bool use_cap_thread = (a.capture_thread && src.isStream());
+
+        if (use_cap_thread) {
+            cap_thread = std::thread([&] {
+                long i = 0;
+                while (!cap_stop.load()) {
+                    auto cf = std::make_shared<CaptureFrame>();
+                    // 每帧新建 Mat：read() 自己分配缓冲，这样交给下游的帧不会被
+                    // 下一帧覆盖（否则就是数据竞争）。零拷贝，只是不复用缓冲。
+                    const double tc0 = nowSec();
+                    if (!src.read(cf->frame)) break;
+                    cap_us_sum.fetch_add((long long)((nowSec() - tc0) * 1e6));
+                    cap_n.fetch_add(1);
+                    cf->index = i++;
+                    cf->name  = src.describe();
+                    q_cap.push(cf);
+                }
+                q_cap.close();
+            });
+            std::fprintf(stderr, "[capture] 采集线程已启用（与 A/B 重叠）\n");
+        }
+
         while (!stop) {
-            while (true) {
-                if (g_stop.load() || (!unlimited && idx >= a.max_frames)) { stop = true; break; }
-                if (!src.read(frame)) break;
-                if (!process(frame, src.describe(), idx)) { stop = true; break; }
-                ++idx;
-                if (!src.isStream()) break;   // 单张图片
+            if (use_cap_thread) {
+                while (true) {
+                    if (g_stop.load() || user_quit || (!unlimited && idx >= a.max_frames)) { stop = true; break; }
+                    const double tw0 = nowSec();
+                    auto cf = q_cap.wait_pop_latest(std::chrono::milliseconds(100));
+                    total_wait_ms += (nowSec() - tw0) * 1000.0;
+                    if (!cf) {
+                        if (q_cap.closed_and_empty()) { stop = true; break; }
+                        continue;
+                    }
+                    const double tp0 = nowSec();
+                    pump();   // 先消化已完成的结果
+                    total_pump_ms += (nowSec() - tp0) * 1000.0;
+                    submit(cf->frame, cf->name, cf->index);
+                    ++submitted; ++idx;
+                }
+            } else {
+                while (true) {
+                    if (g_stop.load() || user_quit || (!unlimited && idx >= a.max_frames)) { stop = true; break; }
+                    cv::Mat frame;
+                    const double tc0 = nowSec();
+                    if (!src.read(frame)) break;
+                    total_cap_ms += (nowSec() - tc0) * 1000.0;
+                    pump();
+                    submit(frame, src.describe(), idx);
+                    ++submitted; ++idx;
+                    if (!src.isStream()) break;   // 单张图片
+                }
             }
             if (stop || !a.loop) break;
             if (!src.rewind()) break;         // 摄像头不能回卷，直接结束
             if (a.verbose) std::fprintf(stderr, "[src] --loop：回到开头\n");
         }
+
+        cap_stop.store(true);
+        q_cap.close();
+        if (cap_thread.joinable()) cap_thread.join();
         rc = (idx > 0) ? 0 : 4;
     }
+
+    // ---- 收尾顺序：主循环 -> B 线程 -> RTSP ----
+    q_ab.close();                     // 告诉 B 没有新任务了
+    if (b_thread.joinable()) b_thread.join();   // B 退出时会 q_bm.close()
+    while (pump()) {}                 // 排空最后的结果（latest-only，最多 1 个）
+    if (dropped_by_b > 0)
+        std::fprintf(stderr, "[pipeline] B 端被替换掉的旧任务: %ld 个\n", dropped_by_b);
+    if (a.pipeline_enabled && rtsp.running())
+        std::fprintf(stderr, "[rtsp] 编码线程绘制平均 %.1f ms\n", rtsp.drawMsAvg());
 
     if (writer.isOpened()) writer.release();
     rtsp.stop();
@@ -881,11 +1041,29 @@ int main(int argc, char** argv) {
         std::snprintf(b, sizeof(b),
                       "{\"type\":\"summary\",\"frames\":%ld,\"frames_with_circles\":%ld,"
                       "\"total_circles\":%ld,\"avg_circles\":%.3f,\"avg_latency_ms\":%.2f,"
-                      "\"detect_hit_rate\":%.3f,\"wall_ms\":%.1f}",
+                      "\"detect_hit_rate\":%.3f,\"wall_ms\":%.1f,"
+                      "\"processed_fps\":%.2f,\"result_fps\":%.2f,"
+                      "\"submitted\":%ld,\"dropped\":%ld,"
+                      "\"avg_a_ms\":%.2f,\"avg_b_ms\":%.2f,"
+                      "\"avg_cap_ms\":%.2f,\"avg_fin_ms\":%.2f,"
+                      "\"cap_thread_ms\":%.2f,\"cap_thread_n\":%ld,"
+                      "\"wait_ms\":%.2f,\"pump_ms\":%.2f,\"pipeline\":%s}",
                       total_frames, frames_with, total_circles,
                       total_frames ? double(total_circles) / total_frames : 0.0,
                       total_frames ? total_ms / total_frames : 0.0,
-                      total_frames ? double(frames_with) / total_frames : 0.0, wall_ms);
+                      total_frames ? double(frames_with) / total_frames : 0.0, wall_ms,
+                      wall_ms > 0 ? submitted / wall_ms * 1000.0 : 0.0,
+                      wall_ms > 0 ? total_frames / wall_ms * 1000.0 : 0.0,
+                      submitted, dropped_by_b,
+                      total_frames ? total_a_ms / total_frames : 0.0,
+                      total_frames ? total_b_ms / total_frames : 0.0,
+                      total_frames ? total_cap_ms / total_frames : 0.0,
+                      total_frames ? total_fin_ms / total_frames : 0.0,
+                      cap_n.load() ? (double)cap_us_sum.load() / cap_n.load() / 1000.0 : 0.0,
+                      (long)cap_n.load(),
+                      submitted ? total_wait_ms / submitted : 0.0,
+                      submitted ? total_pump_ms / submitted : 0.0,
+                      a.pipeline_enabled ? "true" : "false");
         writeJsonLine(b);   // --quiet 只压逐帧输出，汇总照常打印
         if (json_out) json_out << b << '\n';
     }

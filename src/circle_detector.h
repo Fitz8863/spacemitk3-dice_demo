@@ -171,7 +171,23 @@ struct CandidateSet {
     std::vector<std::string> trace;         // A 阶段的诊断行
     double scale = 1.0;
     long   index = 0;                       // 真实帧号（丢帧时不能靠计数推断）
+    std::string name;                       // 帧名（JSON 输出用）
+    double a_ms = 0;                        // A 阶段耗时（分段统计）
     int    width = 0, height = 0;           // 原始帧尺寸
+};
+
+// 采集线程的产物：一帧原始画面 + 帧号 + 帧名
+struct CaptureFrame {
+    cv::Mat     frame;
+    long        index = 0;
+    std::string name;
+};
+
+// 一次完整检测的结果包（B 阶段的产物 + 计时）
+struct DetectJob {
+    std::shared_ptr<const CandidateSet> cs;
+    DetectResult res;
+    double a_ms = 0, b_ms = 0;
 };
 
 // ---------------------------------------------------------------------------

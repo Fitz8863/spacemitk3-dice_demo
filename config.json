@@ -50,6 +50,8 @@
   "hough_useless_limit": 2,
 
   "smooth_alpha": 0.0,
+  "pipeline_enabled": true,
+  "capture_thread": true,
 
   "rtsp": {
     "enabled": true,
