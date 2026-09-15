@@ -24,8 +24,8 @@ output1: [1,32,160,160]  (prototype)
 本地制品：
 
 ```text
-size:   12164084 bytes
-sha256: c45d2b7fa61c45c5ef608cabbefd69fd9befe19243a14685e69b2ad645505ec0
+size:   12164138 bytes
+sha256: ed93624195eb1869d7132f474b81b8212871e9df45298ab98a6468fbd7bd18a3
 ```
 
 ### 训练与标注约定
