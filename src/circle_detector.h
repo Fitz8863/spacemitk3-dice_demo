@@ -26,6 +26,7 @@
 
 #include <opencv2/core.hpp>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -142,11 +143,49 @@ struct DetectResult {
 };
 
 // ---------------------------------------------------------------------------
+// 检测分成两个可独立执行的阶段，供多线程流水线使用：
+//
+//   A  extractCandidates()  像素 -> 候选轮廓   （~18ms：resize/色彩/掩码/形态学/泛洪/轮廓/预筛）
+//   B  fitCandidates()      候选 -> 最终结果   （~24ms：椭圆 RANSAC/环带验证/打分/去重/排序）
+//
+// 顺序模式下 detect() = A + B，**与流水线共用同一份实现**，不会分叉。
+//
+// 线程归属：B 独占一个 CircleDetector 实例（见 CircleDetector 私有成员的说明）。
+// ---------------------------------------------------------------------------
+
+// A 阶段的一个候选轮廓。area/r_area 一起带上，B 阶段打印诊断时要用。
+struct CandidateContour {
+    std::vector<cv::Point> pts;
+    int    orig_index = 0;   // 在原 contours 里的序号（保持 "mask#N" 诊断编号不变）
+    double area = 0;
+    double r_area = 0;
+};
+
+// A 阶段的完整产物：B 阶段所需的一切都在这里，不需要回头碰 A 的对象。
+struct CandidateSet {
+    std::shared_ptr<const cv::Mat> frame;   // 原始帧（未缩放）
+    cv::Mat small;                          // 缩放后 BGR（B 的 Hough + 半径尺度基准）
+    cv::Mat hsv;                            // small 的 HSV（★ 预计算，避免逐候选重算）
+    cv::Mat mask;                           // 白垫掩码（overlay 的 mask_inset + 诊断）
+    std::vector<CandidateContour> candidates;  // 通过预筛的候选
+    std::vector<std::string> trace;         // A 阶段的诊断行
+    double scale = 1.0;
+    long   index = 0;                       // 真实帧号（丢帧时不能靠计数推断）
+    int    width = 0, height = 0;           // 原始帧尺寸
+};
+
+// ---------------------------------------------------------------------------
 class CircleDetector {
 public:
     explicit CircleDetector(const CircleParams& p = CircleParams()) : p_(p) {}
 
     DetectResult detect(const cv::Mat& bgr);
+
+    // A 阶段：像素 -> 候选。无跨帧状态，可安全并发/复用于不同帧。
+    CandidateSet extractCandidates(const cv::Mat& bgr_in, long index = 0);
+
+    // B 阶段：候选 -> 结果。**持有跨帧状态**（Hough 冷却等），不可并发调用同一实例。
+    DetectResult fitCandidates(const CandidateSet& cs);
 
     const CircleParams& params() const { return p_; }
     CircleParams&       params()       { return p_; }
@@ -158,21 +197,28 @@ public:
     bool lastFrameUsedHough() const { return last_used_hough_; }
 
 private:
-    std::vector<CircleResult> detectByMask(const cv::Mat& bgr, const cv::Mat& hsv,
-                                           double scale, cv::Mat& mask_out,
-                                           std::vector<std::string>& trace);
+    // B 阶段用：把一组候选轮廓拟合 + 验证成圆/椭圆
+    std::vector<CircleResult> fitMaskCandidates(const CandidateSet& cs,
+                                                std::vector<std::string>& trace);
     std::vector<CircleResult> detectByHough(const cv::Mat& bgr, const cv::Mat& hsv,
                                             std::vector<std::string>& trace);
 
     // 内盘/环带采样 + 判据。shape 用参数方程 p(t) = c + M*(cos t, sin t) 表示，
     // 圆和椭圆共用同一套代码。
-    // 传 BGR：内部按 mask_space 决定用 HSV 还是三通道最小值判"不是白垫"
-    bool validateShape(const cv::Mat& bgr, const cv::Point2f& c, const cv::Matx22d& M,
+    // ★ hsv 由调用方预算好传进来：本函数是**逐候选**调用的，之前在这里现算
+    //   整图 cvtColor，2 个候选就白烧约 2.3ms（纯重复计算，判据不变）。
+    bool validateShape(const cv::Mat& bgr, const cv::Mat& hsv,
+                       const cv::Point2f& c, const cv::Matx22d& M,
                        CircleResult& out, std::string* why = nullptr) const;
 
     CircleParams p_;
+
+    // ---- 跨帧状态：全部只在 B 阶段（fitCandidates）里读写 ------------------
+    // 因此**一个 CircleDetector 实例只能被 B 线程独占使用**；
+    // A 阶段（extractCandidates）不碰这些成员，可以安全地并行/复用。
+    // 如果以后要加状态，先想清楚它属于 A 还是 B —— 放错就是数据竞争。
     // Hough 降频的跨帧状态
-    int  hough_cooldown_left_  = 0;   // 还剩几帧不许跑 Hough
+    int  hough_cooldown_left_  = 0;   // 还剩几帧不许跑 Hough  [B only]
     int  hough_useless_streak_ = 0;   // 连续几次 Hough 没补上盘
     int  prev_mask_count_      = -1;  // 上一帧 mask 检出数（变化=场景变了）
     bool last_used_hough_      = false;

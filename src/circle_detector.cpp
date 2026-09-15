@@ -416,13 +416,13 @@ void CircleDetector::radiusRange(const cv::Size& sz, double& rmin, double& rmax)
 //   - 环带：p(t, 1.08 / 1.16 / 1.24)，要求多数角度上整条射线被非白占据
 // 参数 s 是相对形状边界的缩放，所以椭圆盘上环带会自动跟着椭圆走。
 // ---------------------------------------------------------------------------
-bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Point2f& c,
-                                   const cv::Matx22d& M, CircleResult& out,
-                                   std::string* why) const {
-    // 判别所需的数据：hsv 模式要 HSV 图，min 模式直接看 BGR
+bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Mat& hsv,
+                                   const cv::Point2f& c, const cv::Matx22d& M,
+                                   CircleResult& out, std::string* why) const {
+    // 判别所需的数据：hsv 模式要 HSV 图，min 模式直接看 BGR。
+    // ★ hsv 由调用方（A 阶段）预算好传进来 —— 本函数是逐候选调用的，
+    //   以前在这里现算整图 cvtColor，2 个候选就白烧约 2.3ms。
     const bool use_min = (p_.mask_space == "min");
-    cv::Mat hsv;
-    if (!use_min) cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
     const cv::Mat& src = use_min ? bgr : hsv;
     auto isWhite = [&](const cv::Vec3b& px) {
         return use_min ? !nonWhiteMin(px, p_.min_channel_thr)
@@ -523,10 +523,34 @@ bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Point2f& c,
 // ---------------------------------------------------------------------------
 // 路径 1：白垫掩码 + 填内部空洞 + 白化椭圆 RANSAC
 // ---------------------------------------------------------------------------
-std::vector<CircleResult> CircleDetector::detectByMask(const cv::Mat& bgr, const cv::Mat& hsv,
-                                                       double scale, cv::Mat& mask_out,
-                                                       std::vector<std::string>& trace) {
-    std::vector<CircleResult> found;
+// ===========================================================================
+// A 阶段：像素 -> 候选轮廓
+//
+// 只做与"每个候选"无关的整图工作：缩放、色彩转换、掩码、形态学、泛洪填洞、
+// 找轮廓、以及便宜的几何预筛。**不碰任何跨帧状态**，所以可以安全地并发调用。
+//
+// 之前这些和逐候选的拟合交织在一个函数里，无法拆到不同线程执行。
+// ===========================================================================
+CandidateSet CircleDetector::extractCandidates(const cv::Mat& bgr_in, long index) {
+    CandidateSet cs;
+    cs.index = index;
+    if (bgr_in.empty()) return cs;
+
+    cs.frame  = std::make_shared<const cv::Mat>(bgr_in);   // 浅拷贝头，共享像素
+    cs.width  = bgr_in.cols;
+    cs.height = bgr_in.rows;
+
+    cv::Mat bgr = bgr_in;
+    cs.scale = 1.0;
+    if (p_.work_width > 0 && bgr.cols > p_.work_width) {
+        cs.scale = double(p_.work_width) / bgr.cols;
+        cv::resize(bgr, bgr, cv::Size(), cs.scale, cs.scale, cv::INTER_AREA);
+    }
+    cs.small = bgr;
+    cv::cvtColor(bgr, cs.hsv, cv::COLOR_BGR2HSV);
+
+    // hough-only 模式不需要 mask 路径
+    if (p_.method == "hough") return cs;
 
     // 白垫掩码。两种判别，见 CircleParams::mask_space 的说明。
     cv::Mat mask;
@@ -534,10 +558,10 @@ std::vector<CircleResult> CircleDetector::detectByMask(const cv::Mat& bgr, const
         // ★ 三通道最小值：白垫三通道都亮，红垫 B 低 / 蓝垫 R 低 / 深色环 V 低。
         //   对白平衡漂移免疫，且只需一次 inRange（比 cvtColor+inRange 还快 ~0.7ms）。
         const int t = p_.min_channel_thr;
-        cv::inRange(bgr, cv::Scalar(t, t, t), cv::Scalar(255, 255, 255), mask);
+        cv::inRange(cs.small, cv::Scalar(t, t, t), cv::Scalar(255, 255, 255), mask);
     } else {
         // S 低 + V 高：红/蓝地垫饱和度高、深色环亮度低，都被排除
-        cv::inRange(hsv, cv::Scalar(0, 0, p_.val_min), cv::Scalar(179, p_.sat_max, 255), mask);
+        cv::inRange(cs.hsv, cv::Scalar(0, 0, p_.val_min), cv::Scalar(179, p_.sat_max, 255), mask);
     }
 
     // 矩形核是可分离的（OpenCV 走行列两趟），比椭圆核快 3~4 倍
@@ -553,21 +577,20 @@ std::vector<CircleResult> CircleDetector::detectByMask(const cv::Mat& bgr, const
     // ★ 盘上压着骰子/骰盅/手时，闭运算补不了那么大的缺口，靠泛洪填内部空洞
     if (p_.fill_holes) fillInteriorHoles(mask);
 
-    if (p_.keep_debug) mask_out = mask.clone();
+    cs.mask = mask;   // Mat 引用计数共享，无需 clone
 
     double rmin = 0, rmax = 0;
-    radiusRange(bgr.size(), rmin, rmax);
-    (void)scale;
+    radiusRange(cs.small.size(), rmin, rmax);
 
     std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+    cv::findContours(cs.mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
 
     char b[288];
     for (size_t ci = 0; ci < contours.size(); ++ci) {
         const auto& c = contours[ci];
         const double area = cv::contourArea(c);
         if (area < CV_PI * rmin * rmin * 0.5) {
-            if (p_.trace) { std::snprintf(b, sizeof(b), "mask#%zu area=%.0f -> reject: too small", ci, area); trace.push_back(b); }
+            if (p_.trace) { std::snprintf(b, sizeof(b), "mask#%zu area=%.0f -> reject: too small", ci, area); cs.trace.push_back(b); }
             continue;
         }
 
@@ -577,9 +600,39 @@ std::vector<CircleResult> CircleDetector::detectByMask(const cv::Mat& bgr, const
         const double r_area = std::sqrt(area / CV_PI);
         if (r_area < rmin * 0.7 || r_area > rmax * 1.4) {
             if (p_.trace) { std::snprintf(b, sizeof(b), "mask#%zu area=%.0f r_area=%.1f -> reject: 等效半径超出 [%.0f,%.0f]",
-                                          ci, area, r_area, rmin * 0.7, rmax * 1.4); trace.push_back(b); }
+                                          ci, area, r_area, rmin * 0.7, rmax * 1.4); cs.trace.push_back(b); }
             continue;
         }
+
+        // 通过预筛 -> 交给 B 阶段拟合（A 到此为止）
+        CandidateContour cand_c;
+        cand_c.pts = c;
+        cand_c.orig_index = (int)ci;
+        cand_c.area = area;
+        cand_c.r_area = r_area;
+        cs.candidates.push_back(std::move(cand_c));
+    }
+    return cs;
+}
+
+// ===========================================================================
+// B 阶段：候选 -> 最终结果
+//
+// 阶段一：把 A 交来的每个候选做椭圆 RANSAC 拟合 + 环带验证
+// ===========================================================================
+std::vector<CircleResult> CircleDetector::fitMaskCandidates(const CandidateSet& cs,
+                                                            std::vector<std::string>& trace) {
+    std::vector<CircleResult> found;
+
+    double rmin = 0, rmax = 0;
+    radiusRange(cs.small.size(), rmin, rmax);
+
+    char b[288];
+    for (const auto& cand_c : cs.candidates) {
+        const auto& c = cand_c.pts;
+        const size_t ci = (size_t)cand_c.orig_index;
+        const double area = cand_c.area;
+        const double r_area = cand_c.r_area;
 
         ShapeFit fit;
         std::string fit_why;
@@ -604,7 +657,8 @@ std::vector<CircleResult> CircleDetector::detectByMask(const cv::Mat& bgr, const
 
         CircleResult cand;
         std::string why;
-        const bool ok = validateShape(bgr, fit.c, fit.M, cand, p_.trace ? &why : nullptr);
+        const bool ok = validateShape(cs.small, cs.hsv, fit.c, fit.M, cand,
+                                      p_.trace ? &why : nullptr);
         if (p_.trace) {
             std::snprintf(b, sizeof(b),
                           "mask#%zu area=%.0f -> %s r=%.1f a/b=%.2f ang=%.1f circ=%.3f fill=%.3f inlier=%.3f (rho=%.2f wr=%.2f) | %s",
@@ -656,7 +710,7 @@ std::vector<CircleResult> CircleDetector::detectByHough(const cv::Mat& bgr, cons
         CircleResult cand;
         std::string why;
         const cv::Matx22d M(hc[i][2], 0, 0, hc[i][2]);
-        const bool ok = validateShape(bgr, cv::Point2f(hc[i][0], hc[i][1]), M, cand,
+        const bool ok = validateShape(bgr, hsv, cv::Point2f(hc[i][0], hc[i][1]), M, cand,
                                       p_.trace ? &why : nullptr);
         if (p_.trace) {
             std::snprintf(b, sizeof(b), "hough#%zu cx=%.1f cy=%.1f r=%.1f -> %s %s",
@@ -675,30 +729,23 @@ std::vector<CircleResult> CircleDetector::detectByHough(const cv::Mat& bgr, cons
 }
 
 // ---------------------------------------------------------------------------
-// 汇总：跑一条或两条路径 -> 打分 -> 去重 -> 排序 -> 分左右
+// B 阶段（续）：阶段二 Hough 兜底 -> 合并 -> 打分 -> 去重 -> 排序 -> 分左右
+//
+// ★ 本函数持有并读写跨帧状态（Hough 冷却等），所以
+//   **一个 CircleDetector 实例仅供一个线程（B 线程）调用**。
 // ---------------------------------------------------------------------------
-DetectResult CircleDetector::detect(const cv::Mat& bgr_in) {
-    const double t0 = nowMs();
+DetectResult CircleDetector::fitCandidates(const CandidateSet& cs) {
     DetectResult res;
-    if (bgr_in.empty()) return res;
-    if (!p_.trace) res.trace.clear();
+    if (cs.small.empty()) return res;
 
-    cv::Mat bgr = bgr_in;
-    double scale = 1.0;
-    if (p_.work_width > 0 && bgr.cols > p_.work_width) {
-        scale = double(p_.work_width) / bgr.cols;
-        cv::resize(bgr, bgr, cv::Size(), scale, scale, cv::INTER_AREA);
-    }
-
-    cv::Mat hsv;
-    cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
+    // A 阶段的诊断行先输出（--verbose 用）
+    res.trace = cs.trace;
 
     const bool want_mask  = (p_.method == "mask"  || p_.method == "auto");
     const bool want_hough = (p_.method == "hough" || p_.method == "auto");
 
     std::vector<CircleResult> mask_res, hough_res;
-    cv::Mat mask_img;
-    if (want_mask) mask_res = detectByMask(bgr, hsv, scale, mask_img, res.trace);
+    if (want_mask) mask_res = fitMaskCandidates(cs, res.trace);
 
     const bool mask_enough = !mask_res.empty() &&
                              (p_.expected <= 0 || (int)mask_res.size() >= p_.expected);
@@ -724,7 +771,7 @@ DetectResult CircleDetector::detect(const cv::Mat& bgr_in) {
     last_hough_helpful_ = false;
     if (want_hough && !mask_enough) {
         if (p_.hough_cooldown_frames <= 0 || hough_cooldown_left_ <= 0) {
-            hough_res = detectByHough(bgr, hsv, res.trace);
+            hough_res = detectByHough(cs.small, cs.hsv, res.trace);
             last_used_hough_ = true;
         } else {
             --hough_cooldown_left_;
@@ -755,7 +802,7 @@ DetectResult CircleDetector::detect(const cv::Mat& bgr_in) {
         } else {
             s = 0.50 * clamp01(c.ring_ratio)
               + 0.30 * clamp01(c.contrast / 80.0)
-              + 0.20 * clamp01((c.r / std::min(bgr.cols, bgr.rows)) / p_.max_radius_frac);
+              + 0.20 * clamp01((c.r / std::min(cs.small.cols, cs.small.rows)) / p_.max_radius_frac);
         }
         c.score = clamp01(s);
     }
@@ -779,9 +826,9 @@ DetectResult CircleDetector::detect(const cv::Mat& bgr_in) {
     std::sort(kept.begin(), kept.end(),
               [](const CircleResult& a, const CircleResult& b) { return a.cx < b.cx; });
     for (auto& c : kept) {
-        c.cx /= scale; c.cy /= scale;
-        c.a  /= scale; c.b /= scale; c.r /= scale;
-        c.side = (c.cx < bgr_in.cols / 2.0) ? 0 : 1;
+        c.cx /= cs.scale; c.cy /= cs.scale;
+        c.a  /= cs.scale; c.b /= cs.scale; c.r /= cs.scale;
+        c.side = (c.cx < cs.width / 2.0) ? 0 : 1;
     }
 
     res.circles = kept;
@@ -812,8 +859,20 @@ DetectResult CircleDetector::detect(const cv::Mat& bgr_in) {
         last_hough_helpful_ = true;
     }
 
+    if (p_.keep_debug) res.mask = cs.mask;
+    return res;
+}
+
+// ---------------------------------------------------------------------------
+// 顺序模式：A + B 一次跑完。与流水线共用同一份实现，不会分叉。
+// ---------------------------------------------------------------------------
+DetectResult CircleDetector::detect(const cv::Mat& bgr_in) {
+    const double t0 = nowMs();
+    DetectResult res;
+    if (bgr_in.empty()) return res;
+    CandidateSet cs = extractCandidates(bgr_in, 0);
+    res = fitCandidates(cs);
     res.latency_ms = nowMs() - t0;
-    if (p_.keep_debug) res.mask = mask_img;
     return res;
 }
 
