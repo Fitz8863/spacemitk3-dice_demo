@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from core.vision import VisionAdjudicationRequest, VisionAdjudicatorProvider
-from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess, _snapshot_path
+from components.vision_yolov8_adjudicator.process import (
+    YoloRuntimeProcess,
+    _snapshot_path,
+    region_split,
+)
 from components.vision_yolov8_adjudicator.rules import (
     diagnose_detection_failure,
     evaluate_rule,
@@ -492,7 +496,23 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
 
     @staticmethod
     def _runtime_signature(profile: Mapping[str, Any], view_id: str) -> str:
-        """Return the profile-owned runtime inputs that require a restart."""
+        """Return the profile-owned runtime inputs that require a restart.
+
+        The cache is keyed by ``view_id``, and every game's single-view profile
+        uses the id ``"default"`` — so this signature is the *only* thing
+        keeping two games apart.  It must therefore cover every profile-owned
+        value that changes what the resident process does, not just the ones
+        that look like "hardware": ``divider_detection``, ``expected_count``,
+        the resolved region split, the ``grouping`` mode and the RTSP path are
+        all forwarded to the runtime on its command line.
+
+        Missing any of them let a second game whose model / stable frames /
+        camera agreed with the first reuse the first game's process, running
+        with the wrong divider gate, the wrong per-side count and the wrong
+        RTSP mount.  Keeping this list complete is what makes one shared camera
+        safe here: a differing signature tears the old process down and builds
+        a new one instead of silently inheriting it.
+        """
         vision = profile.get("vision", {})
         vision = vision if isinstance(vision, Mapping) else {}
         multi = profile.get("multi_view", {})
@@ -502,10 +522,24 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             if isinstance(candidate, Mapping) and str(candidate.get("id")) == view_id:
                 view_data = candidate
                 break
+        video = profile.get("video", {})
+        video_path = video.get("path") if isinstance(video, Mapping) else None
+        # Compare the *resolved* region split (what the runtime is launched
+        # with) rather than the raw divider block, which may be absent.
+        region_position, region_orientation = region_split(vision)
         payload = {
+            # Game identity: two profiles that agree on every numeric knob are
+            # still different games (different classes, rules and prompts).
+            "game_id": profile.get("game_id"),
             "model": vision.get("model"),
             "stable_frames": vision.get("stable_frames"),
             "confidence": vision.get("confidence", vision.get("conf")),
+            "divider_detection": vision.get("divider_detection"),
+            "expected_count": vision.get("expected_count"),
+            "region_position": region_position,
+            "region_orientation": region_orientation,
+            "grouping": vision.get("grouping"),
+            "video_path": video_path,
             "camera": view_data.get("camera"),
             "runtime": profile.get("runtime"),
         }
