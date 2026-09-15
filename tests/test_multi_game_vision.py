@@ -187,3 +187,46 @@ def test_same_game_reuses_its_runtime_across_rounds(tmp_path: Path):
 
     assert len(created) == 1, "同一游戏跨回合不应重建 runtime"
     assert created[0].stop_calls == 0
+
+
+# ---- editing the shared runtime config must reach the runtime --------------
+
+def test_runtime_signature_changes_when_the_runtime_config_changes(tmp_path: Path, monkeypatch):
+    """改 vision/yolov8_adjudicator/config.json 的 conf/zoom 后下一回合应重建。
+
+    该文件只通过 ``--config`` 影响 runtime；此前改它必须重启后端，与
+    manifest 热加载的语义不一致。签名纳入该文件的 mtime+size 后，
+    保存即生效。
+    """
+    import components.vision_yolov8_adjudicator.provider as vision_provider
+
+    config_file = tmp_path / "runtime-config.json"
+    config_file.write_text('{"conf": 0.45}\n', encoding="utf-8")
+    monkeypatch.setattr(
+        vision_provider, "resolve_runtime_config_path", lambda _component: config_file
+    )
+
+    profile = _profile("dice")
+    before = VisionYolov8Adjudicator._runtime_signature(profile, "default")
+
+    # Same path, unchanged file: the verdict must stay stable.
+    assert VisionYolov8Adjudicator._runtime_signature(profile, "default") == before
+
+    # New size (and mtime) => different verdict.
+    config_file.write_text('{"conf": 0.30, "zoom": 150}\n', encoding="utf-8")
+    after = VisionYolov8Adjudicator._runtime_signature(profile, "default")
+    assert after != before, "runtime config 变化没有触发重建"
+
+
+def test_runtime_signature_survives_an_unreadable_runtime_config(monkeypatch):
+    """读不到 runtime config 时降级为空指纹，绝不因此拒绝启动。"""
+    import components.vision_yolov8_adjudicator.provider as vision_provider
+
+    def _boom(_component):
+        raise OSError("no such file")
+
+    monkeypatch.setattr(vision_provider, "resolve_runtime_config_path", _boom)
+    profile = _profile("dice")
+    # Still produces a usable signature instead of raising.
+    signature = VisionYolov8Adjudicator._runtime_signature(profile, "default")
+    assert "dice" in signature

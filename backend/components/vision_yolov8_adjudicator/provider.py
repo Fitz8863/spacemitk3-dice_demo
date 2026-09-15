@@ -495,6 +495,28 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         return started
 
     @staticmethod
+    def _runtime_config_stamp() -> str:
+        """Fingerprint the C++ runtime config file so editing it takes effect.
+
+        ``conf``, ``zoom``, ``focus``, the camera device and the RTSP endpoint
+        live in ``vision/yolov8_adjudicator/config.json`` and reach the runtime
+        only through ``--config``.  Without this stamp, editing that file needed
+        a full backend restart, which reads as a bug next to the hot-reloaded
+        game manifests.  Including mtime+size in the signature makes the next
+        round rebuild the resident process instead.
+
+        Unreadable or missing file degrades to an empty stamp: a broken path
+        must never refuse to start, it just cannot participate in the verdict.
+        """
+        try:
+            component = load_component_config(COMPONENT_DIR)
+            path = resolve_runtime_config_path(component)
+            stat = path.stat()
+        except Exception:
+            return ""
+        return f"{path}:{stat.st_mtime_ns}:{stat.st_size}"
+
+    @staticmethod
     def _runtime_signature(profile: Mapping[str, Any], view_id: str) -> str:
         """Return the profile-owned runtime inputs that require a restart.
 
@@ -542,6 +564,9 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             "video_path": video_path,
             "camera": view_data.get("camera"),
             "runtime": profile.get("runtime"),
+            # Editing the shared runtime config must rebuild the process on the
+            # next round (camera / conf / zoom / focus / RTSP all live there).
+            "runtime_config": VisionYolov8Adjudicator._runtime_config_stamp(),
         }
         return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
 
