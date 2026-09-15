@@ -92,15 +92,10 @@
 		},
 		"multi_view": {
 			"enabled": true,
-			"min_views": 1,
-			"yolo_fusion": "majority_vote",
-			"llm_images": "all_stable_views"
+			"min_views": 1
 		},
 		"rule": {
-			"kind": "numeric_compare",
-			"aggregation": "sum",
-			"higher_wins": true,
-			"tie_value": "TIE"
+			"kind": "numeric_compare"
 		},
 		"llm": {
 			"enabled": false,
@@ -116,7 +111,6 @@
 		},
 		"video": {
 			"enabled": false,
-			"protocol": "webrtc",
 			"path": "/dice/det"
 		},
 		"lifecycle": {
