@@ -109,9 +109,9 @@ python3 backend/tts_debug.py <provider_id>
     "open_reveal": {
       "on_enter": [
         {"action": "speech", "mode": "audio", "audio": "audio/停.wav", "text": "停！", "await": true},
-        {"action": "speech", "mode": "tts_local", "text": "准备好了没有？三，二，一,开盖！"}
+        {"action": "speech", "mode": "audio", "audio": "audio/开盖词.wav", "text": "准备好了没有？三，二，一,开盖"}
       ],
-      "duration": 4,
+      "duration": 1.6,
       "on_expire": {"to": "vision_countdown"}
     },
     "result": {
@@ -134,7 +134,7 @@ python3 backend/tts_debug.py <provider_id>
 
 - 状态机是**显式命名的有向图**：`to` 按状态名引用，支持任意跳转、回跳（如 `analysis_failed --retry--> analysis`）与跳过；删除状态时改掉引用它的边即可，悬空引用在加载时报错。
 - 触发器三类：`on_intent`（前端按键意图）、`duration` + `on_expire`（计时器，`tick_seconds` 可配，倒计时默认 0.9 秒还原舞台节奏）、`on_event`（后端内部事件，如 `adjudication.result`/`adjudication.diagnosis`）。
-- `speech` 动作 `mode` 只有 `tts_local`/`tts_remote`/`audio` 三种；`await: true` 表示后端等待前端播放完成回执（`speech_done`）后才继续推进，保住「停 → 开盖词 → 4 秒过场」的节奏；`select_by: winner_role` 按裁决结果选台词，`{player_score}`/`{agent_score}` 占位符由引擎渲染。
+- `speech` 动作 `mode` 只有 `tts_local`/`tts_remote`/`audio` 三种；`await: true` 表示后端等待前端播放完成回执（`speech_done`）后才继续推进。**注意 `await` 会把本状态的 `duration` 计时器整体后推**（引擎先跑完 `on_enter` 再起计时），所以 `duration` 是"这句播完后再等多久"，不是"本状态持续多久"——骰子正是靠这一点：`停` 用 `await` 保证播完才起开盖词，开盖词**不 await** 让计时器与语音并行，屏幕倒计时因此恰好从语音的「三」开始；`select_by: winner_role` 按裁决结果选台词，`{player_score}`/`{agent_score}` 占位符由引擎渲染。
 - `audio` 模式从该游戏目录读取 WAV（如 `audio/停.wav`），拒绝绝对路径和 `..` 越界。游戏级 `voice`/`speed` 是 TTS 默认参数，单条动作可覆盖。
 - 未来接机械臂时，在对应状态加一条新动作类型（如 `{"action": "robot", "command": "shake_dice"}`）并注册对应执行器与 `command` 类型功能包即可，无需改引擎和前端。
 - manifest 支持热加载（mtime 检测，保存后下一局生效；坏配置保留最后可用版本）。正在跑的一局使用创建时的状态机快照。修改 manifest 结构后无需重启后端。

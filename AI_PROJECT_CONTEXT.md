@@ -7,6 +7,25 @@
 
 ## 当前实现覆盖（2026-09-01）
 
+2026-09-15 **开盖语音与屏幕倒计时对齐**（订正下面「2026-09-02 起游戏调度升级为后端权威状态机」
+那段里的"停→开盖→**4 秒过场**节奏"——那是本次改动前的描述）。用户把 `open_reveal` 的第二句
+从 TTS 换成预录 `audio/warm_准备好了没有？三，二，一,开盖.wav` 并加了 `await: true`，结果语音的
+三二一比屏幕的 3/2/1 **早了 6.41 秒**。**根因两条**：① **`await` 会把本状态的 `duration` 计时器
+整体后推**——`state_machine._run_state` 先跑完 `on_enter`（含 await 阻塞）才启动计时器
+（`backend/core/state_machine.py:358-372`），所以 `duration: 4` 的含义是"语音播完**再等** 4 秒"，
+open_reveal 实际持续 ~8.8s；② 语音数「三二一」时**屏幕上没有数字**——`data-view="open"` 是空
+section，而 `web/games/dice.js` 的 `renderTick` 只对 `shake_countdown`/`vision_countdown` 渲染数字，
+屏幕 3/2/1 的唯一来源一直是 `vision_countdown`（它本来就是对的，未改）。
+**修法（只动 manifest 时序，热加载免重启）**：开盖语音**去掉 `await`**（计时器与语音并行）+
+`open_reveal.duration` **4 → 1.6**（锚点＝开盖语音说到「三」的时刻），`vision_countdown` 的
+2.4s/0.8s **完全不动**。实测时间线（以「停」回执为 0 点）：语音起播 +0.1s；「三」+1.6s ↔ 屏幕「3」
++1.6s（Δ≈0.02）；「二」+2.4s ↔ 屏幕「2」+2.4s（Δ≈0.01）；「一」+2.95s ↔ 屏幕「1」+3.2s（Δ≈0.25）；
+「开盖」+3.5s，音频 +4.03s 收尾而屏幕倒计时 +4.0s 结束——**analysis 的台词不会截断「开盖」尾音**。
+**已知限制**：录音里三个数字起点间隔不均（三→二 0.77s、二→一 0.56s），屏幕是均匀 0.8s/tick，
+数学上无法三者同时零误差，要彻底消除必须重剪辑音频使间隔等于 `tick_seconds`。
+`tests/test_web_contract.py` 新增 `test_reveal_voice_and_screen_countdown_stay_in_step` 把
+「开盖词不 await」+「duration 1.6」+「vision_countdown 2.4/0.8」钉在一条用例里防单边改动。
+
 2026-09-14（晚 II）**视觉推流改为「进游戏即启动」+ 新增全局开关 `vision_always_on`**。
 此前 resident runtime 是**第一次裁决时才 spawn**（`start_web.sh` 不预热 vision），
 所以进游戏后要一直等到 `analysis` 阶段才有摄像头和推流。现在 `create_round` 同步调用
