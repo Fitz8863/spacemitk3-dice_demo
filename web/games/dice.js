@@ -13,6 +13,14 @@ export function register(engine) {
     5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8],
   };
 
+  // 「停！」播完后、开盖词起播前的静音长度（秒）。后端对 await 的台词是
+  // 「收到 speech_done 才发下一句、才启动交棒计时」，所以把这条回执压后 2 秒
+  // ＝整段开盖转场后移 2 秒；语音与屏幕倒计时的相对对齐不受影响。
+  // 与 manifest 的 open_reveal.on_enter[0]（"停！" + await:true）配对：
+  // 改动那一句的音频路径时，这里的 REVEAL_STOP_AUDIO 要一起改。
+  const REVEAL_HOLD_SECONDS = 2;
+  const REVEAL_STOP_AUDIO = 'audio/停.wav';
+
   let playerDice = [];
   let agentDice = [];
   let countdownAudioContext = null;
@@ -475,7 +483,10 @@ export function register(engine) {
         }
       },
       onSpeech: (directive) => {
-        playDirective(round, directive);
+        // 「停！」这一句播完后静 REVEAL_HOLD_SECONDS 秒再放行下一句（开盖词），
+        // 转场整体后移、对齐不变。识别靠音频路径——只有这一句带 await。
+        const hold = directive.audio === REVEAL_STOP_AUDIO ? REVEAL_HOLD_SECONDS : 0;
+        playDirective(round, directive, { ackHoldSeconds: hold });
       },
       onTick: renderTick,
       onEvent: handleRoundEvent,

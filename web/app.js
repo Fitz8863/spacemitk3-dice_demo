@@ -616,10 +616,22 @@ function createSpeechScheduler(requestId) {
   return player;
 }
 
+// 「回执压后」用的最小定时原语。
+function waitSeconds(seconds) {
+  return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+}
+
 // 播放一条后端 speech 指令：拉帧 → 排片播放 → 回执 speech_done。
 // 回执不再仅限 await 指令：引擎用它清除"播报进行中"登记（ASR 播报闸
 // 依赖该登记），所以每条指令播完/失败/被顶替都要回执，finally 统一出口。
-async function playDirective(round, directive) {
+//
+// options.ackHoldSeconds = 把回执压后 N 秒再发。后端对 await 的台词是
+// 「收到 speech_done 才发下一句、才启动该状态的 duration 计时」，所以压后
+// 回执＝在这句与下一句之间插入 N 秒静音，且下游整条序列（含状态机计时器）
+// 一起后移——游戏节奏与「语音↔屏幕倒计时」的相对对齐都不变。用于需要停顿的
+// 转场（骰子：停！之后静 2 秒再念开盖词）。
+async function playDirective(round, directive, options = {}) {
+  const ackHoldSeconds = Math.max(0, Number(options.ackHoldSeconds) || 0);
   const acknowledge = () => {
     if (round && round.roundId) {
       round.submitIntent('speech_done', { directive_id: directive.directive_id })
@@ -675,6 +687,9 @@ async function playDirective(round, directive) {
   const scheduler = createSpeechScheduler(requestId);
   if (scheduler) state.ttsPlaybackCancel = scheduler.cancel;
   let playedFrames = 0;
+  // 只有"正常播完"才做回执压后；被取消/被新指令顶替时立即回执，不去为一条
+  // 已经作废的等待多压 2 秒。
+  let playbackComplete = false;
   try {
     // One HTTP request per directive. The producer keeps reading later WAV
     // frames while the consumer plays the first one; the scheduler lines
@@ -688,6 +703,7 @@ async function playDirective(round, directive) {
     }
     if (scheduler) await scheduler.waitDrained();
     await producer;
+    playbackComplete = true;
   } catch (error) {
     await producer.catch(() => {});
     if (error.name === 'AbortError' || requestId !== state.ttsRequestId || !state.sound) return;
@@ -697,6 +713,7 @@ async function playDirective(round, directive) {
     if (scheduler && state.ttsPlaybackCancel === scheduler.cancel) {
       state.ttsPlaybackCancel = null;
     }
+    if (playbackComplete && ackHoldSeconds > 0) await waitSeconds(ackHoldSeconds);
     // 所有退出路径（成功/失败/被新指令顶替）都恰好回执一次：await 的
     // 唤醒引擎等待者，非 await 的释放播报闸登记。
     acknowledge();

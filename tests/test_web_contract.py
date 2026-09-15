@@ -508,6 +508,36 @@ def test_frontend_acks_awaited_directives_and_mutes_cleanly():
     assert "acknowledge()" in muted
 
 
+def test_reveal_hold_delays_the_acknowledgement_not_the_playback():
+    """开盖转场的 2 秒停顿＝压后回执，不是压后播放。
+
+    后端对 await 的台词是「收到 speech_done 才发下一句、才启动该状态的
+    duration 计时」，所以把回执压后 N 秒会让下游整条序列一起后移，语音与
+    屏幕倒计时的相对对齐不受影响。反过来，只把音频延后播放的话，屏幕倒计时
+    仍按原时刻出现——两者会错开约 2 秒，正是要避免的回归。
+    """
+    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    stop_audio = dice_state("open_reveal")["on_enter"][0]["audio"]
+
+    # The policy is hardcoded in the game module and names the stop clip, so a
+    # manifest rename fails here instead of silently dropping the pause.
+    assert "REVEAL_HOLD_SECONDS = 2" in js
+    assert f"REVEAL_STOP_AUDIO = '{stop_audio}'" in js
+    assert "ackHoldSeconds: hold" in js
+    # dice.js stays timer-free: the wait lives in the engine layer.
+    assert "setTimeout" not in js
+
+    # The engine holds the acknowledgement, and only after a normal finish so a
+    # cancelled or superseded line still acknowledges at once.
+    play = app.split("async function playDirective", 1)[1].split(
+        "// ---- 权威对局客户端", 1
+    )[0]
+    assert "options.ackHoldSeconds" in play
+    assert "playbackComplete && ackHoldSeconds > 0" in play
+    assert "waitSeconds(ackHoldSeconds)" in play
+
+
 def test_frontend_surfaces_asr_recognition_feedback():
     """每句 ASR 识别结果都要有可见反馈：生效/播报闸暂缓/不支持/未匹配。"""
     app = (ROOT / "web/app.js").read_text(encoding="utf-8")
