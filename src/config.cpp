@@ -125,6 +125,8 @@ bool load_config(const std::string& path, AppConfig& c, std::string& error) {
             !get_str(root, "method", c.method, error) ||
             !get_int(root, "expected", c.expected, error) ||
             !get_int(root, "max_circles", c.max_circles, error) ||
+            !get_str(root, "mask_space", c.mask_space, error) ||
+            !get_int(root, "min_channel_thr", c.min_channel_thr, error) ||
             !get_int(root, "sat_max", c.sat_max, error) ||
             !get_int(root, "val_min", c.val_min, error) ||
             !get_int(root, "close_ksize", c.close_ksize, error) ||
@@ -190,6 +192,9 @@ bool load_config(const std::string& path, AppConfig& c, std::string& error) {
             return bad("method 只能是 auto / mask / hough");
         if (c.backend != "auto" && c.backend != "v4l2" && c.backend != "gst")
             return bad("backend 只能是 auto / v4l2 / gst");
+        if (c.mask_space != "hsv" && c.mask_space != "min")
+            return bad("mask_space 只能是 hsv / min");
+        if (c.min_channel_thr < 0 || c.min_channel_thr > 255) return bad("min_channel_thr 需在 0..255");
         if (c.sat_max < 0 || c.sat_max > 255) return bad("sat_max 需在 0..255");
         if (c.val_min < 0 || c.val_min > 255) return bad("val_min 需在 0..255");
         if (c.min_radius_frac <= 0 || c.max_radius_frac <= c.min_radius_frac)

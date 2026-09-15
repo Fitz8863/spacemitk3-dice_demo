@@ -20,6 +20,8 @@
   "expected": 2,
   "max_circles": 4,
 
+  "mask_space": "hsv",
+  "min_channel_thr": 140,
   "sat_max": 70,
   "val_min": 110,
   "close_ksize": 9,

@@ -135,6 +135,8 @@ void usage() {
         "  --method auto|mask|hough   检测路径\n"
         "  --work-width N      工作分辨率宽度（0=原图，越小越快）\n"
         "  --sat-max N / --val-min N  白垫 HSV 阈值\n"
+        "  --mask-space hsv|min       白垫判别方式（min=用三通道最小值，免疫白平衡漂移）\n"
+        "  --min-channel-thr N        mask-space=min 时的下限（默认 140）\n"
         "  --close-ksize N / --open-ksize N   形态学核\n"
         "  --min-radius-frac F / --max-radius-frac F\n"
         "  --min-circularity F / --min-fill-ratio F / --min-inlier-ratio F\n"
@@ -517,6 +519,8 @@ int main(int argc, char** argv) {
         else if (k == "--max-circles") { if (!val(v)) return 2; a.max_circles = std::atoi(v); }
         else if (k == "--work-width")  { if (!val(v)) return 2; a.work_width = std::atoi(v); }
         else if (k == "--sat-max")  { if (!val(v)) return 2; a.sat_max = std::atoi(v); }
+        else if (k == "--mask-space"){ if (!val(v)) return 2; a.mask_space = v; }
+        else if (k == "--min-channel-thr"){ if (!val(v)) return 2; a.min_channel_thr = std::atoi(v); }
         else if (k == "--val-min")  { if (!val(v)) return 2; a.val_min = std::atoi(v); }
         else if (k == "--close-ksize") { if (!val(v)) return 2; a.close_ksize = std::atoi(v); }
         else if (k == "--open-ksize")  { if (!val(v)) return 2; a.open_ksize = std::atoi(v); }
@@ -552,6 +556,8 @@ int main(int argc, char** argv) {
 
     CircleParams p;
     p.work_width        = a.work_width;
+    p.mask_space        = a.mask_space;
+    p.min_channel_thr   = a.min_channel_thr;
     p.sat_max           = a.sat_max;
     p.val_min           = a.val_min;
     p.close_ksize       = a.close_ksize;

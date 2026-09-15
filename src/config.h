@@ -34,6 +34,8 @@ struct AppConfig {
     int    expected = 0;                // >0：不足则触发 Hough 兜底，并只保留前 N 个
     int    max_circles = 4;
 
+    std::string mask_space = "hsv";   // hsv | min（min 对白平衡漂移免疫）
+    int  min_channel_thr = 140;
     int  sat_max = 70;
     int  val_min = 110;
     int  close_ksize = 9;

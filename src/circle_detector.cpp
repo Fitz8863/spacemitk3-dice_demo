@@ -25,9 +25,25 @@ inline bool sampleHSV(const cv::Mat& hsv, double x, double y, cv::Vec3b& out) {
     return true;
 }
 
+inline bool sampleBGR(const cv::Mat& bgr, double x, double y, cv::Vec3b& out) {
+    const int xi = cvRound(x), yi = cvRound(y);
+    if (xi < 0 || yi < 0 || xi >= bgr.cols || yi >= bgr.rows) return false;
+    out = bgr.at<cv::Vec3b>(yi, xi);
+    return true;
+}
+
 // HSV 像素是否"不是白垫"：要么够暗（深色环/阴影），要么够饱和（红蓝地垫）
+// 像素是否"不是白垫"。
+//   hsv 模式：靠饱和度/亮度（S 高=彩色地垫，V 低=深色环）
+//   min 模式：靠"三通道最小值"（白垫三通道都亮；红垫 B 低、蓝垫 R 低）
+// 两种模式都只在采样点上调用，成本可忽略。
 inline bool nonWhite(const cv::Vec3b& p, int sat_thr, int val_thr) {
     return p[1] > sat_thr || p[2] < val_thr;
+}
+
+// BGR 版本的"不是白垫"：三通道最小值低于阈值 => 至少有一个通道不亮
+inline bool nonWhiteMin(const cv::Vec3b& p, int min_thr) {
+    return std::min({p[0], p[1], p[2]}) < min_thr;
 }
 
 inline double clamp01(double v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
@@ -400,18 +416,27 @@ void CircleDetector::radiusRange(const cv::Size& sz, double& rmin, double& rmax)
 //   - 环带：p(t, 1.08 / 1.16 / 1.24)，要求多数角度上整条射线被非白占据
 // 参数 s 是相对形状边界的缩放，所以椭圆盘上环带会自动跟着椭圆走。
 // ---------------------------------------------------------------------------
-bool CircleDetector::validateShape(const cv::Mat& hsv, const cv::Point2f& c,
+bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Point2f& c,
                                    const cv::Matx22d& M, CircleResult& out,
                                    std::string* why) const {
+    // 判别所需的数据：hsv 模式要 HSV 图，min 模式直接看 BGR
+    const bool use_min = (p_.mask_space == "min");
+    cv::Mat hsv;
+    if (!use_min) cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
+    const cv::Mat& src = use_min ? bgr : hsv;
+    auto isWhite = [&](const cv::Vec3b& px) {
+        return use_min ? !nonWhiteMin(px, p_.min_channel_thr)
+                       : !nonWhite(px, p_.sat_max, p_.val_min);
+    };
+    auto sample = [&](double x, double y, cv::Vec3b& px) {
+        return sampleBGR(src, x, y, px);
+    };
     const int kAngles = 72;
     // 盘面证据取"近边缘带"：盘中央被骰盅/骰子压住时，靠边的这一圈仍然露着白
     const double kRimFrac[] = {0.62, 0.78, 0.92};
     // 整体弱要求：只是排除"整个盘都是黑/彩"的情况，不做强约束
     const double kCoreFrac[] = {0.0, 0.30, 0.50, 0.72, 0.90};
     const double kRingFrac[] = {1.08, 1.16, 1.24};
-    const int sat_thr = p_.sat_max;
-    const int val_thr = p_.val_min;
-
     int rim_total = 0, rim_white_n = 0, core_total = 0, core_white_n = 0;
     double in_v_sum = 0;
     for (int a = 0; a < kAngles; ++a) {
@@ -419,17 +444,17 @@ bool CircleDetector::validateShape(const cv::Mat& hsv, const cv::Point2f& c,
         for (double f : kCoreFrac) {
             const cv::Point2f q = shapePoint(c, M, t, f);
             cv::Vec3b px;
-            if (!sampleHSV(hsv, q.x, q.y, px)) continue;
+            if (!sample(q.x, q.y, px)) continue;
             ++core_total;
             in_v_sum += px[2];
-            if (!nonWhite(px, sat_thr, val_thr)) ++core_white_n;
+            if (isWhite(px)) ++core_white_n;
         }
         for (double f : kRimFrac) {
             const cv::Point2f q = shapePoint(c, M, t, f);
             cv::Vec3b px;
-            if (!sampleHSV(hsv, q.x, q.y, px)) continue;
+            if (!sample(q.x, q.y, px)) continue;
             ++rim_total;
-            if (!nonWhite(px, sat_thr, val_thr)) ++rim_white_n;
+            if (isWhite(px)) ++rim_white_n;
         }
     }
     if (core_total < 16 || rim_total < 16) {
@@ -449,10 +474,10 @@ bool CircleDetector::validateShape(const cv::Mat& hsv, const cv::Point2f& c,
         for (double f : kRingFrac) {
             const cv::Point2f q = shapePoint(c, M, t, f);
             cv::Vec3b px;
-            if (!sampleHSV(hsv, q.x, q.y, px)) continue;
+            if (!sample(q.x, q.y, px)) continue;
             ++valid; ++ring_total;
             ring_v_sum += px[2];
-            if (nonWhite(px, sat_thr, val_thr)) { ++hits; ++ring_nonwhite; }
+            if (!isWhite(px)) { ++hits; ++ring_nonwhite; }
         }
         if (valid > 0 && hits * 2 >= valid) ++angle_hit;
     }
@@ -503,9 +528,17 @@ std::vector<CircleResult> CircleDetector::detectByMask(const cv::Mat& bgr, const
                                                        std::vector<std::string>& trace) {
     std::vector<CircleResult> found;
 
-    // 白垫 = 低饱和 + 高亮度。红/蓝地垫饱和度高、深色环亮度低，都被排除。
+    // 白垫掩码。两种判别，见 CircleParams::mask_space 的说明。
     cv::Mat mask;
-    cv::inRange(hsv, cv::Scalar(0, 0, p_.val_min), cv::Scalar(179, p_.sat_max, 255), mask);
+    if (p_.mask_space == "min") {
+        // ★ 三通道最小值：白垫三通道都亮，红垫 B 低 / 蓝垫 R 低 / 深色环 V 低。
+        //   对白平衡漂移免疫，且只需一次 inRange（比 cvtColor+inRange 还快 ~0.7ms）。
+        const int t = p_.min_channel_thr;
+        cv::inRange(bgr, cv::Scalar(t, t, t), cv::Scalar(255, 255, 255), mask);
+    } else {
+        // S 低 + V 高：红/蓝地垫饱和度高、深色环亮度低，都被排除
+        cv::inRange(hsv, cv::Scalar(0, 0, p_.val_min), cv::Scalar(179, p_.sat_max, 255), mask);
+    }
 
     // 矩形核是可分离的（OpenCV 走行列两趟），比椭圆核快 3~4 倍
     const int ktype = p_.rect_kernel ? cv::MORPH_RECT : cv::MORPH_ELLIPSE;
@@ -571,7 +604,7 @@ std::vector<CircleResult> CircleDetector::detectByMask(const cv::Mat& bgr, const
 
         CircleResult cand;
         std::string why;
-        const bool ok = validateShape(hsv, fit.c, fit.M, cand, p_.trace ? &why : nullptr);
+        const bool ok = validateShape(bgr, fit.c, fit.M, cand, p_.trace ? &why : nullptr);
         if (p_.trace) {
             std::snprintf(b, sizeof(b),
                           "mask#%zu area=%.0f -> %s r=%.1f a/b=%.2f ang=%.1f circ=%.3f fill=%.3f inlier=%.3f (rho=%.2f wr=%.2f) | %s",
@@ -623,7 +656,7 @@ std::vector<CircleResult> CircleDetector::detectByHough(const cv::Mat& bgr, cons
         CircleResult cand;
         std::string why;
         const cv::Matx22d M(hc[i][2], 0, 0, hc[i][2]);
-        const bool ok = validateShape(hsv, cv::Point2f(hc[i][0], hc[i][1]), M, cand,
+        const bool ok = validateShape(bgr, cv::Point2f(hc[i][0], hc[i][1]), M, cand,
                                       p_.trace ? &why : nullptr);
         if (p_.trace) {
             std::snprintf(b, sizeof(b), "hough#%zu cx=%.1f cy=%.1f r=%.1f -> %s %s",

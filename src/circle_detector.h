@@ -39,6 +39,32 @@ struct CircleParams {
     int    work_width        = 640;
 
     // --- mask 路径 ---------------------------------------------------------
+    // 白垫判别方式：
+    //   "hsv" —— S<=sat_max 且 V>=val_min（原始方案）
+    //   "min" —— min(B,G,R) >= min_channel_thr（★ 对白平衡漂移免疫）
+    //
+    // 为什么需要 "min"：白垫是画面里唯一"三个通道都亮"的区域。红垫 B≈40、
+    // 蓝垫 R≈12、深色环 V 低，所以地垫/环总有一个通道很暗。自动白平衡漂移只
+    // 改通道间的**比例**，不改"三个通道都亮"这个事实 —— 实测白平衡偏暖时
+    // 白垫 S 从 9 漂到 73（阈值 70 之外），掩码碎掉、一个盘都检不出；
+    // 而 min(B,G,R) 中位仍有 174~183，稳稳高于地垫的 12~51。
+    //
+    // ★★ 实测结论（2026-09-15，不可作为默认值）：
+    //   在正常光照帧上，min 模式会把白垫边界"吃掉"一圈 ——
+    //     hsv          : r = 119.0 / 121.1（绿圈压在盘边界上，正确）
+    //     min thr=130  : r = 108.0 / 109.3（偏小 11px）
+    //     min thr=140  : r = 107.4 / 107.9（偏小 11px）
+    //     min thr<=120 : 左盘 132.0（反而偏大 13px，掩码碎裂后拟合失真）
+    //   扫遍阈值都到不了 hsv 的精度。根因：白垫与深色环的交界像素是"白+深灰"的
+    //   混合，其 B 通道被拉低，min(B,G,R) 因此提前跌破阈值，边界被削。
+    //
+    //   它确实能救"白平衡漂移"场景（偏暖帧 hsv 只能检出 1 个且要 90ms 跑 Hough，
+    //   min thr>=130 能检出 2 个且只要 35ms），但代价是半径小 10px ——
+    //   在"精度优先"的前提下不能作为默认值。
+    //
+    //   定位：**应急可选模式**，默认仍为 "hsv"。
+    std::string mask_space     = "hsv";   // hsv(默认，精度高) | min(抗白平衡漂移，但边界偏小)
+    int    min_channel_thr     = 140;     // mask_space=min 时，三通道最小值下限
     int    sat_max           = 70;    // 白垫 HSV 饱和度上限 (0..255)
     int    val_min           = 110;   // 白垫 HSV 亮度下限 (0..255)
     int    close_ksize       = 9;     // 闭运算核：填掉骰子/骰点造成的空洞
@@ -140,7 +166,8 @@ private:
 
     // 内盘/环带采样 + 判据。shape 用参数方程 p(t) = c + M*(cos t, sin t) 表示，
     // 圆和椭圆共用同一套代码。
-    bool validateShape(const cv::Mat& hsv, const cv::Point2f& c, const cv::Matx22d& M,
+    // 传 BGR：内部按 mask_space 决定用 HSV 还是三通道最小值判"不是白垫"
+    bool validateShape(const cv::Mat& bgr, const cv::Point2f& c, const cv::Matx22d& M,
                        CircleResult& out, std::string* why = nullptr) const;
 
     CircleParams p_;
