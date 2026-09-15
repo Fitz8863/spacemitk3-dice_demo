@@ -416,3 +416,58 @@ def test_categorical_projection_rejects_an_inconsistent_verdict():
     result["outcome"] = {"value": "RIGHT"}
     with pytest.raises(ValueError, match="outcome.value"):
         project_categorical_result(result, {"player": "LEFT", "agent": "RIGHT"})
+
+
+# ---- health must describe the deployed game, not a hardcoded one -----------
+
+def test_primary_vision_game_prefers_the_enabled_vision_game(monkeypatch):
+    """dice 停用、另一个视觉游戏启用时，健康元数据必须取自那个游戏。"""
+    import server
+
+    class _Registry:
+        def all(self):
+            return [
+                {"id": "dice", "enabled": False, "vision_profile": {"game_id": "dice"}},
+                {"id": "rps", "enabled": True, "vision_profile": {"game_id": "rps"}},
+            ]
+
+    monkeypatch.setattr(server, "get_games", lambda: _Registry())
+    assert server._primary_vision_game_id() == "rps"
+
+
+def test_primary_vision_game_skips_games_without_a_vision_profile(monkeypatch):
+    import server
+
+    class _Registry:
+        def all(self):
+            return [
+                {"id": "board_only", "enabled": True},
+                {"id": "rps", "enabled": True, "vision_profile": {"game_id": "rps"}},
+            ]
+
+    monkeypatch.setattr(server, "get_games", lambda: _Registry())
+    assert server._primary_vision_game_id() == "rps"
+
+
+def test_primary_vision_game_falls_back_to_dice(monkeypatch):
+    """一个视觉游戏都没有时保持历史值，不退化成空串。"""
+    import server
+
+    class _Empty:
+        def all(self):
+            return []
+
+    monkeypatch.setattr(server, "get_games", lambda: _Empty())
+    assert server._primary_vision_game_id() == "dice"
+
+
+def test_primary_vision_game_uses_a_disabled_game_when_that_is_all_there_is(monkeypatch):
+    """全是停用游戏时，报出那个游戏总好过报一个不存在的 dice。"""
+    import server
+
+    class _Registry:
+        def all(self):
+            return [{"id": "rps", "enabled": False, "vision_profile": {"game_id": "rps"}}]
+
+    monkeypatch.setattr(server, "get_games", lambda: _Registry())
+    assert server._primary_vision_game_id() == "rps"

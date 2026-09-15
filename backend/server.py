@@ -379,6 +379,36 @@ def _selected_provider_id(game_id: str, provider_slot: str, fallback: str) -> st
     return _game_provider_id(game_id, provider_slot, fallback)
 
 
+def _primary_vision_game_id() -> str:
+    """The vision game the deployment-level health report should describe.
+
+    With more than one vision game loaded there is no single obvious answer, so
+    pick deterministically: the first **enabled** game declaring a
+    ``vision_profile``, else the first such game at all, else ``"dice"`` to keep
+    the historical value for a deployment that has none.  Callers already
+    tolerate an unknown id (``_game_provider_id`` falls back to the arena slot
+    when the manifest cannot be read).
+    """
+    try:
+        manifests = list(get_games().all())
+    except Exception:
+        return "dice"
+    fallback = ""
+    for manifest in manifests:
+        if not isinstance(manifest, dict):
+            continue
+        if not isinstance(manifest.get("vision_profile"), dict):
+            continue
+        game_id = manifest.get("id")
+        if not isinstance(game_id, str) or not game_id.strip():
+            continue
+        if manifest.get("enabled", False):
+            return game_id.strip()
+        if not fallback:
+            fallback = game_id.strip()
+    return fallback or "dice"
+
+
 def _selected_tts_id(game_id: str = "dice") -> str:
     try:
         return _tts_dispatcher().provider_id(game_id)
@@ -1088,7 +1118,12 @@ class Handler(BaseHTTPRequestHandler):
             component_items = COMPONENTS.all(include_health=True)
             tts_id = _selected_tts_id()
             tts_health = _provider_health(tts_id, "tts")
-            remote_id = _selected_provider_id("dice", "tts_remote", "")
+            # Health describes whichever vision game is actually deployed.
+            # Hardcoding "dice" here would report the wrong game's slots and
+            # profile once a second vision game exists — and raise outright if
+            # dice is ever removed.
+            vision_game_id = _primary_vision_game_id()
+            remote_id = _selected_provider_id(vision_game_id, "tts_remote", "")
             remote_health = (
                 _provider_health(remote_id, "tts") if remote_id else {
                     "id": "", "type": "tts", "role": "", "ok": False,
@@ -1096,16 +1131,16 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             adjudicator_id = _selected_provider_id(
-                "dice", "vision_adjudicator", "vision_yolov8_adjudicator"
+                vision_game_id, "vision_adjudicator", "vision_yolov8_adjudicator"
             )
             adjudicator_health = _provider_health(
                 adjudicator_id, "vision", "adjudicator"
             )
             adjudicator_health = {
                 **adjudicator_health,
-                **_vision_profile_metadata("dice", adjudicator_id),
+                **_vision_profile_metadata(vision_game_id, adjudicator_id),
             }
-            llm_id = _selected_provider_id("dice", "llm", "")
+            llm_id = _selected_provider_id(vision_game_id, "llm", "")
             llm_health = (
                 _provider_health(llm_id, "llm") if llm_id else {
                     "id": "", "type": "llm", "role": "", "ok": False,
