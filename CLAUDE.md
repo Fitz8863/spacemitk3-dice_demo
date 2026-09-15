@@ -70,15 +70,18 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
   只声明自己的视频 path。
 - **多游戏视觉架构（2026-09-15 起）**：同一套裁决器服务多个游戏，每个游戏的裁决参数
   （`class_map`/规则/`stable_frames`/`confidence`/`grouping`/`divider_detection`/
-  `expected_count`/`video.path`/prompt）**全部写在自己 manifest 的 `vision_profile` 里**，
-  不需要 per-game 的 runtime config 文件（那里只放硬件与部署属性）。
+  `expected_count`/`video.path`/prompt）**全部写在自己 manifest 的 `vision_profile` 里**。
+  **硬件参数默认继承部署级的一份**（`vision/yolov8_adjudicator/config.json`：摄像头/分辨率/
+  帧率/EP 绑核/焦距/RTSP 地址），需要差异时游戏在 `vision_profile.runtime_config` 指向**自己的
+  硬件文件**（仓库相对路径；解析优先级 profile > 组件 > 打包默认）。**声明的路径是强制的**：
+  读不到就报错，绝不静默回退到共享配置（那等于悄悄用别的游戏的摄像头）。
   **★ 签名契约**：resident runtime 的缓存键是 `view_id`（各游戏都是 `"default"`），
   所以 `_runtime_signature()` 是唯一把两个游戏区分开的东西——它必须覆盖每个会改变
-  runtime 行为的 profile 字段，**外加 runtime config 文件的 mtime+size**。漏掉任一项，
+  runtime 行为的 profile 字段，**外加运行时配置文件的路径与 mtime+size**。漏掉任一项，
   第二个游戏就会复用上一个游戏的进程（用错的分界线门控/每侧数量/RTSP 挂载点）。
   **共用摄像头下「切换游戏必然重建 runtime」是设计取舍不是缺陷**：不允许双 runtime
   共存，因为两者会抢同一个 `/dev/video1`。
-  **接入新视觉游戏**：写 `backend/games/<id>/manifest.json`（含 `vision_profile`）+
+  **接入新视觉游戏**：manifest（含 `vision_profile`，需要时加 `runtime_config`）+
   `backend/games/<id>/pipeline.py`（约 15 行薄壳，调 `core.vision_pipeline.run_vision_game`
   并传入自己的结果投影）+ 结果投影（数值型参照 `games/dice/result.py`，类别型直接用
   `core.participants.project_categorical_result`）+ 前端模块。**`core/` 无需改动。**

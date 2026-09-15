@@ -133,26 +133,48 @@ main/
 
 ### 3.3 接入第二个视觉游戏（2026-09-15 起）
 
-裁决参数**全部按游戏走 manifest**，不需要 per-game 的 runtime config 文件——那里只放
-"这台板子+这张桌子"的属性（摄像头、分辨率、帧率、EP 绑核、焦距、RTSP 地址）。
+裁决参数**全部按游戏走 manifest**。硬件参数默认继承部署级的一份，但**游戏可以声明自己的**——
+需要另一台摄像头、不同分辨率或不同焦距时，在 `vision_profile.runtime_config` 指向该游戏专属的
+硬件配置文件即可（2026-09-15 起支持）：
+
+```jsonc
+"vision_profile": {
+  "game_id": "rps",
+  "runtime_config": "backend/games/rps/runtime.json",   // 可选；不写则继承共享默认
+  "vision": { "...": "..." }
+}
+```
+
+解析优先级：**`profile.runtime_config` > 组件 `runtime.config` > 打包默认
+`vision/yolov8_adjudicator/config.json`**。声明的路径是**强制**的——解析或读取失败会**直接报错**
+（日志给出具体文件名），绝不会静默改用共享配置，否则就是悄悄用了别的游戏的摄像头与 RTSP 设置。
+
+| 归属 | 字段 | 放哪 |
+| --- | --- | --- |
+| **游戏** | `class_map`/规则/`stable_frames`/`confidence`/`grouping`/`divider*`/`expected_count`/`video.path`/prompt/超时/节奏 | 游戏 manifest 的 `vision_profile`（摄像头也可用 `multi_view.views[].camera` 按视角配） |
+| **硬件/部署**（默认共享，可按游戏覆盖） | 摄像头设备、分辨率、帧率、EP 绑核、线程数、队列深度、焦距、变焦、RTSP host/port、WebRTC 基址 | `vision/yolov8_adjudicator/config.json`，或该游戏自己的 `runtime_config` 文件 |
 
 接入清单：
 
 | 步骤 | 位置 |
 | --- | --- |
 | 声明 `vision_profile`（`class_map`/规则/`stable_frames`/`confidence`/`grouping`/`video.path`/prompt） | `backend/games/<id>/manifest.json` |
+| （可选）声明自己的硬件文件 `runtime_config` | 同上 + `backend/games/<id>/runtime.json` |
 | 薄壳 pipeline（约 15 行）：调 `core.vision_pipeline.run_vision_game` 并传入自己的投影 | `backend/games/<id>/pipeline.py` |
 | 结果投影：数值型参照 `games/dice/result.py`；类别型直接用 `core.participants.project_categorical_result` | 游戏自己的 result 模块 |
 | 前端游戏模块（阶段文案/按键/渲染） | `web/games/<id>.js` + 在 `web/app.js` 注册 |
 
 **`backend/core/` 无需改动。**
 
+> 每游戏一份硬件文件里的 `model` 字段是**相对该配置文件所在目录**解析的（C++ 行为）。生产不受影响
+> （provider 永远传 `--model` 绝对路径覆盖它），但**手工直接跑那个二进制时要留意**。
+
 **★ 签名契约（必须理解）**：resident runtime 的缓存键是 `view_id`，而每个游戏的单视图
 profile 都用 `"default"`——所以 `_runtime_signature()`（`provider.py`）是**唯一**把两个游戏
 区分开的东西。它必须覆盖每个会改变 runtime 行为的 profile 字段（`game_id`、`model`、
 `stable_frames`、`confidence`、`divider_detection`、`expected_count`、解析后的
 `region_position`/`region_orientation`、`grouping`、`video.path`、`camera`、profile 的
-`runtime` 块），**外加 runtime config 文件的 `mtime_ns`+`size`**。漏掉任何一项，第二个
+`runtime` 块），**外加运行时配置文件的解析路径与其 `mtime_ns`+`size`**。漏掉任何一项，第二个
 游戏就会复用上一个游戏的进程，带着错的分界线门控/每侧数量/RTSP 挂载点运行。
 
 **共用摄像头下的取舍**：两个游戏共用同一个 `/dev/video1`，因此**不允许双 runtime 共存**

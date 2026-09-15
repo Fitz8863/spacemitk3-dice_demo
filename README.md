@@ -245,23 +245,29 @@ cmake --build build -j4
 
 ### 第二个视觉游戏怎么接（2026-09-15 起）
 
-裁决参数**全部按游戏走 manifest**，不需要每个游戏一份 runtime config 文件——后者只放
-"这台板子+这张桌子"的属性（摄像头设备、分辨率、帧率、EP 绑核、焦距、RTSP 地址）。
+裁决参数**全部按游戏走 manifest**。硬件参数默认继承部署级的一份，但**游戏可以声明自己的**
+（2026-09-15 起）：在 `vision_profile.runtime_config` 写一个仓库相对路径，指向该游戏专属的硬件
+配置文件，就能用另一台摄像头、不同分辨率或不同焦距。**不写就继承共享默认**，所以只有真正有
+硬件差异的游戏才需要这个文件。
 
-接入四件事：① 在 `backend/games/<id>/manifest.json` 写 `vision_profile`
+解析优先级：`profile.runtime_config` > 组件 `runtime.config` > 打包默认
+`vision/yolov8_adjudicator/config.json`。声明的路径是**强制**的——解析或读取失败会直接报错并
+在日志里给出文件名，**不会静默改用共享配置**（否则就是悄悄用了别的游戏的摄像头）。
+
+接入五件事：① 在 `backend/games/<id>/manifest.json` 写 `vision_profile`
 （`class_map`/规则/`stable_frames`/`confidence`/`grouping`/`video.path`/prompt）；
-② 写 `backend/games/<id>/pipeline.py` 薄壳（约 15 行，调
-`core.vision_pipeline.run_vision_game` 并传入自己的结果投影）；③ 结果投影（数值型参照
+② 需要不同硬件时加 `runtime_config` 指向 `backend/games/<id>/runtime.json`；
+③ 写 `backend/games/<id>/pipeline.py` 薄壳（约 15 行，调
+`core.vision_pipeline.run_vision_game` 并传入自己的结果投影）；④ 结果投影（数值型参照
 `games/dice/result.py`，类别型——例如猜拳的手势——直接用
-`core.participants.project_categorical_result`）；④ 前端 `web/games/<id>.js`。
+`core.participants.project_categorical_result`）；⑤ 前端 `web/games/<id>.js`。
 **`backend/core/` 不需要改。**
 
-**★ 为什么改 `vision_profile` 后 runtime 会自动重建**：resident runtime 按 `view_id` 缓存
+**★ 为什么改这些保存后 runtime 会自动重建**：resident runtime 按 `view_id` 缓存
 （每个游戏的单视图 profile 都是 `"default"`），所以 `_runtime_signature()` 是唯一把两个
 游戏分开的依据。它覆盖 `game_id`/模型/稳定帧/置信度/分界线门控/每侧数量/解析后的分区比例/
-分组模式/`video.path`/摄像头，**以及 `vision/yolov8_adjudicator/config.json` 的
-mtime+size**。因此改这些参数（包括直接改那个 config 文件里的 `conf`/`zoom`）保存后
-**下一回合即生效——不必重启服务**。
+分组模式/`video.path`/摄像头，**以及运行时配置文件的路径与 mtime+size**。因此改这些参数
+（包括直接改那些 JSON 文件里的 `conf`/`zoom`/`camera`）**下一回合即生效——不必重启服务**。
 
 **共用摄像头的取舍**：两个游戏共用同一个摄像头设备，所以不允许两个 runtime 同时存在
 （会抢设备）。切换游戏时会拆掉旧的、按新参数重建一次，代价是付一次摄像头打开+模型加载。
