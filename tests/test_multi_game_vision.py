@@ -471,3 +471,43 @@ def test_primary_vision_game_uses_a_disabled_game_when_that_is_all_there_is(monk
 
     monkeypatch.setattr(server, "get_games", lambda: _Registry())
     assert server._primary_vision_game_id() == "rps"
+
+
+# ---- detection threshold belongs to the game, not the shared runtime config
+
+def test_dice_declares_its_own_confidence_threshold():
+    """检测阈值是游戏参数：骰子（小方块）与手势需要的阈值不同。
+
+    此前 `conf: 0.45` 只写在共享的 `vision/yolov8_adjudicator/config.json` 里，
+    是唯一一个「游戏自有却不在 manifest」的裁决参数——多游戏架构下会被所有
+    游戏继承。现在它归 dice 自己的 `vision_profile.vision.confidence`。
+    """
+    import json as _json
+
+    manifest = _json.loads(
+        (ROOT / "backend/games/dice/manifest.json").read_text(encoding="utf-8")
+    )
+    confidence = manifest["vision_profile"]["vision"].get("confidence")
+    assert isinstance(confidence, (int, float)) and 0 < confidence < 1
+
+    runtime_config = _json.loads(
+        (ROOT / "vision/yolov8_adjudicator/config.json").read_text(encoding="utf-8")
+    )
+    # The shared runtime config is hardware/deployment only now; a game-owned
+    # threshold must not reappear there, or it silently applies to every game.
+    assert "conf" not in runtime_config
+
+
+def test_confidence_reaches_the_runtime_command_line():
+    """manifest 的 confidence 必须真的转发成 --conf，否则只是装饰。
+
+    转发逻辑内联在 ``YoloRuntimeProcess.start()`` 里，没有可单独调用的辅助
+    函数，因此这里断言源码里的转发契约（仓库既有测试也用这种源码断言方式）。
+    """
+    source = (ROOT / "backend/components/vision_yolov8_adjudicator/process.py").read_text(
+        encoding="utf-8"
+    )
+    # Reads the manifest field (confidence first, legacy conf spelling second)...
+    assert 'vision.get("confidence", vision.get("conf"))' in source
+    # ...and forwards it as the runtime's --conf override.
+    assert '"--conf"' in source

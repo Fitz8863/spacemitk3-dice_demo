@@ -8,7 +8,6 @@
   "intra_threads": 2,
   "ep_affinity": "14;15",
   "queue_depth": 2,
-  "conf": 0.45,
   "focus": -1,
   "zoom": 150,
   "display_enabled": false,

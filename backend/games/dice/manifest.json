@@ -73,6 +73,7 @@
 		"game_id": "dice",
 		"vision": {
 			"model": "vision/yolov8_adjudicator/models/best.q.onnx",
+			"confidence": 0.45,
 			"class_map": {
 				"0": "1",
 				"1": "2",
