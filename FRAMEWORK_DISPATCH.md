@@ -71,26 +71,36 @@ main/
 
 ### 3.1 游戏 manifest：一局游戏的语义配置
 
-以 [`backend/games/dice/manifest.json`](backend/games/dice/manifest.json) 为例：
+以 [`backend/games/dice/manifest.json`](backend/games/dice/manifest.json) 为例（**节选**：略去 `state_machine` 与 `class_map` 明细，数值与文件同步，如有出入以文件为准）：
 
-```json
+```jsonc
 {
-  "participants": {"player": "LEFT", "agent": "RIGHT"},
-  "providers": {
-    "vision_adjudicator": "vision_yolov8_adjudicator",
-    "tts_local": "tts_moss_nano",
-    "tts_remote": "tts_gptsovits"
-  },
+  // 槽位留空即继承 backend/config.json 的全局默认（dice 现在全部继承）
+  "providers": {"vision_adjudicator": "vision_yolov8_adjudicator"},
   "vision_profile": {
-    "vision": {"model": "...", "class_map": {}, "stable_frames": 30},
-    "rule": {"kind": "numeric_compare", "aggregation": "sum"},
-    "llm": {"timeout_seconds": 3, "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]},
-    "video": {"path": "/dice/"},
-    "lifecycle": {"post_result_hold_seconds": 3},
-    "timeouts": {"adjudication_seconds": 120}
+    "schema_version": 1,
+    "game_id": "dice",
+    "vision": {
+      "model": "vision/yolov8_adjudicator/models/best.q.onnx",
+      "confidence": 0.45,              // 检测阈值：游戏参数（2026-09-15 起在此）
+      "class_map": {"0": "1", "...": "..."},
+      "participants": ["LEFT", "RIGHT"],
+      "expected_count": 5,             // 每侧恰好 5 个才算稳定
+      "stable_frames": 30,
+      "grouping": "divider_regions",   // 按分界线切分左右
+      "divider_detection": true
+    },
+    "multi_view": {"enabled": true, "min_views": 1},
+    "rule": {"kind": "numeric_compare"},
+    "llm": {"enabled": false, "timeout_seconds": 10, "allowed_outcomes": ["LEFT", "RIGHT", "TIE"], "...": "..."},
+    "video": {"enabled": false, "path": "/dice/det"},
+    "lifecycle": {"pre_adjudication_wait_seconds": 3, "post_result_hold_seconds": 2},
+    "timeouts": {"yolo_detection_seconds": 8, "adjudication_seconds": 30}
   }
 }
 ```
+
+> `participants`（玩家/Agent → 物理侧）是**部署属性**，dice 不写即继承全局 `backend/config.json`；只有需要为某个游戏单独换边时才在此声明。
 
 游戏 manifest 负责：
 
@@ -107,8 +117,9 @@ main/
 
 | 文件 | 所有者 | 典型字段 |
 | --- | --- | --- |
-| `backend/components/vision_yolov8_adjudicator/config.json` | Python provider | resident/per-request 模式、runtime 路径、LLM endpoint/model/key、生命周期宽限时间 |
-| `vision/yolov8_adjudicator/config.json` | C++ runtime / 部署 | 摄像头、分辨率、推理线程、EP affinity、RTSP、MediaMTX `video.webrtc_base_url` |
+| `backend/components/vision_yolov8_adjudicator/config.json` | Python provider | resident/per-request 模式、runtime 路径、生命周期宽限时间（**不含** LLM 凭证；2026-09-04 起 LLM 配置在 `backend/components/llm_openai_compat/config.json`） |
+| `backend/components/llm_openai_compat/config.json` | LLM 组件 | endpoint、model、api_key、`reasoning_effort` 部署默认（Git 跟踪，**仓库须保持私有**） |
+| `vision/yolov8_adjudicator/config.json` | C++ runtime / 部署 | 摄像头、分辨率、帧率、推理线程、EP affinity、焦距/变焦、RTSP 地址、MediaMTX `video.webrtc_base_url`。**只放"这台板子+这张桌子"的属性**：检测阈值等游戏参数在游戏 manifest（见 §3.3） |
 | `backend/components/tts_*/config.json` | 各 TTS provider | 本地 runtime 路径、端口、模型和音色参数 |
 
 视觉组件配置不重复保存摄像头、RTSP 或 WebRTC 基础地址。新增游戏只写自己的 `vision_profile.video.path`，例如 `/dice/` 或 `/rps/`。完整播放地址由基础地址和 path 安全拼接：
@@ -288,7 +299,7 @@ TTS 与视觉一样使用职责接口和目录功能包：
 
 ## 8. 安全和边界
 
-- LLM key 存放在 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm.api_key`（Git 跟踪文件，仓库须保持私有），不能写入前端、公开 manifest 或日志。当前工作区若有用户本地组件 config 修改，提交整理时必须跳过。
+- LLM key 存放在 `backend/components/llm_openai_compat/config.json` 的顶层 `api_key`（该文件扁平结构，**没有** `llm` 子段；2026-09-04 大模型模块化后从视觉组件迁出。Git 跟踪文件，仓库须保持私有），不能写入前端、公开 manifest 或日志。当前工作区若有用户本地组件 config 修改，提交整理时必须跳过。
 - profile 的模型路径、视频 path、snapshot path 都经过校验；视频 path 只能是安全 URL path，不能包含主机、query、fragment 或 `..`。
 - provider 业务事件使用独立 JSONL 通道；不要从 stdout/stderr 的日志文本猜测胜负。
 - 网页不生成随机结果；裁决必须来自 runtime detection 和 profile/provider 规则。

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目是什么
 
-SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上选「摇骰子」，人手代替（尚未接机械臂）完成摇骰/停骰/开盖，K3 板端用 YOLOv8 C++ 进程识别左右各 5 颗骰子，再由大模型复核，两者结论一致才判定胜负。浏览器摄像头仅作预览，实际识别读 K3 板端摄像头。
+SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上选「摇骰子」，人手代替（尚未接机械臂）完成摇骰/停骰/开盖，K3 板端用 YOLOv8 C++ 进程识别左右各 5 颗骰子，再由游戏 profile 的规则判定胜负。**大模型复核是可配置的一环、当前关闭**（`vision_profile.llm.enabled=false`，纯 YOLO 判胜；复核代码与旋钮保留但休眠）。浏览器摄像头仅作预览，实际识别读 K3 板端摄像头。
 
 **关键文档**（接手先读，本文不重复其全部内容）：
 - `README.md` — 运行与接口说明。
@@ -205,7 +205,7 @@ select → rules → ready → countdown → shaking → open → analysis → r
 ## 必须遵守的约束（非可选）
 
 - **胜负只能由 K3 YOLOv8 detection + Python profile/provider 产生**，禁止网页随机结果兜底。具体稳定帧、规则、LLM 一致/覆盖/超时回退策略由游戏 manifest 的 `vision_profile` 声明。
-- **LLM key 存放于** `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm.api_key`。该文件被 Git 跟踪，**仓库必须保持私有**；若将来要公开仓库，先在服务商处轮换 key。不要把 key 写进 `web/`、API 响应或日志；提交推送包含真实 key 的文件前先与用户确认。
+- **LLM key 存放于** `backend/components/llm_openai_compat/config.json` 的顶层 `api_key`（该文件是扁平结构：`endpoint`/`model`/`api_key`/`reasoning_effort`，**没有** `llm` 子段；2026-09-04 大模型模块化后从视觉组件迁出，视觉组件 config 现在只剩 `runtime`/`events`）。该文件被 Git 跟踪，**仓库必须保持私有**；若将来要公开仓库，先在服务商处轮换 key。不要把 key 写进 `web/`、API 响应或日志；提交推送包含真实 key 的文件前先与用户确认。**注意：该仓库目前实际是公开的**（见 `AI_PROJECT_CONTEXT.md` 的密钥说明）。
 - **不要回滚/覆盖用户本地修改**：`git status` 里 `vision/yolov8_adjudicator/config.json` 常处于未提交的本地修改状态（涉及 LLM 配置），操作前重新确认，提交时只提交本次任务相关文件。
 - **CPU/EP 亲和性不要混用**：TTS 用 preferred cores `8,9,10,11,12,13`；YOLO EP affinity 是 `14;15`（`config.json` 的 `ep_affinity`）。`taskset`/环境变量只证明配置意图，不证明 AI Core 实际利用率。
 - **不要声称未实现的功能**：当前没有机械臂、没有 ROS2、没有 WebSocket、TTS 不是逐 PCM 流式、底层模型支持 voice cloning 但接口未开放参考音频上传。

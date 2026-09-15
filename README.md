@@ -13,7 +13,9 @@
 [`FRAMEWORK_DISPATCH.md`](FRAMEWORK_DISPATCH.md)；想接手或修改代码，请先阅读
 [`AI_PROJECT_CONTEXT.md`](AI_PROJECT_CONTEXT.md) 和 [`CLAUDE.md`](CLAUDE.md)。
 
-当前阶段**不接机械臂**，用人手和网页按钮代替机械臂的摇骰、停骰、开盖指令。胜负由 K3 板端摄像头上的 YOLOv8 检测和大模型复核产生，不由网页随机生成。浏览器摄像头只用于页面预览；实际识别直接读取 K3 摄像头设备。
+当前阶段**不接机械臂**，用人手和网页按钮代替机械臂的摇骰、停骰、开盖指令。胜负由 K3 板端摄像头上的 YOLOv8 检测产生，不由网页随机生成。浏览器摄像头只用于页面预览；实际识别直接读取 K3 摄像头设备。
+
+> 大模型复核是**可配置**的一环，由游戏 manifest 的 `vision_profile.llm.enabled` 控制；**dice 当前为 `false`（纯 YOLO 判胜）**，复核代码与旋钮保留但休眠。详见下文「大模型的 endpoint…」一段。
 
 ## 在 K3 板端运行前端
 
@@ -70,7 +72,9 @@ python3 backend/tts_debug.py <provider_id>
 
 `web/` 前端和 `backend/server.py` 都只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。网页请求 `/api/adjudicate` 后，bridge 会通过 `vision_yolov8_adjudicator` 启动或复用 `vision/yolov8_adjudicator/build/yolov8_camera`；YOLO runtime 只输出稳定检测证据，LLM 请求由 Python provider 发起。浏览器在板端通过 `127.0.0.1` 访问时，可以正常申请摄像头权限；如果从其他设备通过 HTTP IP 访问，浏览器可能因非安全上下文限制摄像头权限，但实际识别仍使用 K3 板端摄像头。
 
-大模型的 endpoint、model 和 API key 统一配置在 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段。该文件被 Git 跟踪，**仓库必须保持私有**；不要把 key 写进网页或日志。修改后重启 `scripts/start_web.sh` 生效。如果没有配置 key，`/api/health` 会显示 `llm_configured:false`，进入开盖后的视觉裁决阶段会明确提示未配置，而不是使用随机骰子或直接判定胜负。
+大模型的 endpoint、model 和 API key 统一配置在 `backend/components/llm_openai_compat/config.json`（2026-09-04 大模型模块化后从视觉组件迁出；视觉组件 config 现在只剩 `runtime`/`events`）。该文件被 Git 跟踪，**仓库必须保持私有**；不要把 key 写进网页或日志。修改后重启 `scripts/start_web.sh` 生效。如果没有配置 key，`/api/health` 会显示 `llm_configured:false`，进入开盖后的视觉裁决阶段会明确提示未配置，而不是使用随机骰子或直接判定胜负。
+
+> **当前 dice 是纯 YOLO 判胜**：`backend/games/dice/manifest.json` 的 `vision_profile.llm.enabled` 自 2026-09-07 起为 `false`，复核代码与全部旋钮都保留但休眠。`/api/health` 的 `llm_configured:true` 只表示**槽位与组件配置就绪**，不代表这一局会调用大模型。要恢复复核就把该开关改成 `true`（热加载，下一局生效）。
 
 页面交互流程：
 
@@ -81,7 +85,7 @@ python3 backend/tts_debug.py <provider_id>
 5. 人手打开双方骰盅：语音「停！」播完**静 2 秒**（前端把该句的 `speech_done` 回执压后 2 秒，
    后端因此整段转场一起后移），随后念「准备好了没有？三、二、一，开盖」——语音的三/二/一与
    屏幕的 `3、2、1` 同时出现（屏幕倒计时 2.4 秒）；
-6. 倒计时结束后页面自动进入 YOLOv8 + 大模型复核的真实识别流程；
+6. 倒计时结束后页面自动进入 YOLOv8 真实识别流程（结果由板端检测与 profile 规则产生，绝不由网页随机生成；复核开启时会先过大模型）；
 7. 点击「再来一局」回到准备状态。
 
 实体按键：绿色按键发送 `Enter`，用于确认、进入和开始；红色按键发送 `Escape`，用于取消或返回，**摇骰进行中按它等同点击「停止摇骰」**（提前停止并进入开盖）；蓝色按键发送 `ArrowDown`，用于向下选择或重听规则；黄色按键发送 `ArrowUp`，用于向上选择。
@@ -237,7 +241,7 @@ cmake --build build -j4
 
 当前迁移的模型是 YOLOv8 raw 输出模型，预期输出 `[1, 10, 8400]`。程序会在 CPU 侧执行 YOLOv8 解码和 NMS，并以模型无关的 detection 列表和稳定帧快照交给游戏 profile 解释；不会在 C++ 中固化骰子数量、分区、求和或胜负规则。
 
-`vision/yolov8_adjudicator/config.json` 是 YOLO runtime 的硬件、推理、RTSP 和 WebRTC 基础地址唯一默认来源。`backend/components/vision_yolov8_adjudicator/config.json` 只保存 Provider 的 runtime 路径/生命周期与 LLM endpoint、model、API key（仓库须保持私有）。游戏 manifest 只声明自己的 `video.path`，完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
+`vision/yolov8_adjudicator/config.json` 是 YOLO runtime 的硬件、部署与 WebRTC 基础地址唯一来源（摄像头、分辨率、帧率、EP 绑核、焦距、RTSP 地址）。`backend/components/vision_yolov8_adjudicator/config.json` 只保存 Provider 的 runtime 路径与生命周期。两者都**不含** LLM 凭证——endpoint/model/api_key 在 `backend/components/llm_openai_compat/config.json`。游戏 manifest 声明自己的 `video.path` 与**检测阈值** `vision.confidence`（2026-09-15 起：阈值是游戏参数，见下），完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
 
 ### 第二个视觉游戏怎么接（2026-09-15 起）
 

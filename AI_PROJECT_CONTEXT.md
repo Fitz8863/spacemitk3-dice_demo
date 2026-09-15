@@ -7,6 +7,26 @@
 
 ## 当前实现覆盖（2026-09-01）
 
+2026-09-15（晚 III）**工程收尾三件：检测阈值归位、日志轮转、文档订正**。
+**① `conf` 归位到游戏 manifest**：`vision/yolov8_adjudicator/config.json` 的 `conf: 0.45` 已删除，
+改为 dice manifest 的 `vision_profile.vision.confidence: 0.45`（透传 `--conf`，板端实测命令行确认）。
+它是**唯一一个"游戏自有却只活在共享 config 里"**的裁决参数——多游戏架构下会被所有游戏继承
+（骰子小方块与手势需要的阈值不同）。**共享 runtime config 现在是纯硬件/部署**（摄像头、分辨率、
+帧率、EP 绑核、焦距/变焦、RTSP 地址、WebRTC 基址）；手工直接跑 CLI 时阈值回落到 C++ 默认
+**0.50**（`main.cpp` 的 `float conf = 0.50f`），这是有意的：直接跑二进制不再继承骰子的调参。
+附带收益：`confidence` 现在真的进了签名（此前 dice 不声明它，签名里这项是 `None`）。
+**② 日志轮转**：`scripts/start_web.sh` 启动前把 `.runtime/` 下超过 **20 MB** 的 `*.log` 轮转归档
+（`web-8080.log.<时间戳>`，保留最新 **3** 份，可用 `DICE_LOG_MAX_MB`/`DICE_LOG_KEEP` 覆盖）。
+此前用 `>>` 无轮转，该文件已涨到 **156 MB**（板端实测首次轮转即归档 155 MB）。选在脚本里做而不是
+logrotate/systemd，是因为本项目以 tar 包分发、Web 服务没有 systemd 单元。
+**③ 文档订正**：LLM key 的位置在 5 处文档里仍写着 `backend/components/vision_yolov8_adjudicator/config.json`
+的 `llm` 段——实际早在 2026-09-04 大模型模块化时迁到 **`backend/components/llm_openai_compat/config.json`
+的顶层**（扁平结构，无 `llm` 子段），视觉组件 config 现在只剩 `runtime`/`events`；README/CLAUDE 关于
+"YOLO + 大模型复核判胜"的说法也与现状不符（**dice 是纯 YOLO**，`llm.enabled=false`），已全部改为
+"复核可配置、当前关闭"；`FRAMEWORK_DISPATCH` §3.1 那段自称"以 dice manifest 为例"的示例有 5 处与
+真实文件不符（`aggregation`/`timeout_seconds`/`video.path`/`hold`/`adjudication_seconds`），已重写为
+与文件同步的精简版并标注"数值以文件为准"。
+
 2026-09-15（晚 II）**多游戏视觉架构改造**（为"再加一个用同一套裁决器的游戏"铺路；
 本次**不构建**石头剪刀布本体）。核实出三处缺口并逐一修掉：
 **① ★ resident runtime 跨游戏串味（最严重）**：`_runtime_cache` 的键是 **`view_id`**
@@ -337,7 +357,7 @@ load_games 对游戏 manifest 的 participants 改为可选，`public_all(arena)
 合并（前端拿到的永远是有效映射），create_round 在游戏与全局都缺位时报清晰错误。
 字段参考 `backend/参数说明.md`；切换操作已改写进 `TTS配置与切换指南.md`。
 
-2026-09-02 起环境变量覆盖层已整体移除：`.dice-arena.env` 加载器（`backend/core/env.py`）删除，`DICE_LLM_*`、`DICE_TTS_PROVIDER`、`DICE_MOSS_TTS_*`、`DICE_MEDIAMTX_WEBRTC_BASE_URL` 等输入端覆盖分支全部清理，JSON 配置文件（游戏 manifest、组件 `config.json`、`vision/yolov8_adjudicator/config.json`）成为唯一配置来源。游戏 manifest 进一步支持热加载：server.py 的 `get_games()` 按 mtime 自动重载，改台词/换 WAV/按句换引擎保存+刷新页面即生效，坏配置自动保留最后可用版本（删除游戏需重启）；组件 config.json 仍是改后重启生效。LLM endpoint/model/key 位于 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段（该文件被 Git 跟踪，仓库必须保持私有）。daemon 内部为底层原生库 `setdefault` 注入的 `SPACEMIT_EP_*` 变量是 C 库接口，不是人工配置入口。
+2026-09-02 起环境变量覆盖层已整体移除：`.dice-arena.env` 加载器（`backend/core/env.py`）删除，`DICE_LLM_*`、`DICE_TTS_PROVIDER`、`DICE_MOSS_TTS_*`、`DICE_MEDIAMTX_WEBRTC_BASE_URL` 等输入端覆盖分支全部清理，JSON 配置文件（游戏 manifest、组件 `config.json`、`vision/yolov8_adjudicator/config.json`）成为唯一配置来源。游戏 manifest 进一步支持热加载：server.py 的 `get_games()` 按 mtime 自动重载，改台词/换 WAV/按句换引擎保存+刷新页面即生效，坏配置自动保留最后可用版本（删除游戏需重启）；组件 config.json 仍是改后重启生效。LLM endpoint/model/key 位于 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段（该文件被 Git 跟踪，仓库必须保持私有）。**【2026-09-15 订正：此位置已过时——LLM 配置自 2026-09-04 大模型模块化起在 `backend/components/llm_openai_compat/config.json` 的顶层，视觉组件 config 只剩 `runtime`/`events`。上句保留为历史记录。】**daemon 内部为底层原生库 `setdefault` 注入的 `SPACEMIT_EP_*` 变量是 C 库接口，不是人工配置入口。
 
 以下内容覆盖本文中关于组件调度的旧描述：后端扫描 `backend/components/*/manifest.json`，按 `entry` 动态加载功能包并通过 `ComponentRegistry` 按 ID 注入游戏流程。视觉 provider 继续使用广义 `type=vision`，但必须再声明职责 `role`：当前骰子 YOLO 包是 `role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于获取目标坐标/空间位置的 YOLO 包必须使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得接入裁决器插槽。骰子游戏通过 `manifest.json.providers.vision_adjudicator` 选择裁决器。TTS 通过游戏 manifest 的双槽位选择 provider：`providers.tts_local`（本地槽）与 `providers.tts_remote`（远程槽）；台词 mode 只有 `audio`/`tts_local`/`tts_remote` 三种（旧写法 `tts` 与 `providers.tts` 已移除，含它们的 manifest 会加载失败），可按句混用本地与远程引擎，任意台词可用 `provider` 字段显式钉死 provider。`start_web.sh` 会自动启动 manifest 引用到的全部本地 provider。当前骰子本地槽为 `tts_moss_nano`，远程槽为 `tts_gptsovits`——后者通过 HTTP 调用 Tailscale 内另一台 GPU 主机上的 GPT-SoVITS v2ProPlus（9873 按音色名流式调用），无本地 lifecycle，服务地址收敛在组件 `config.json` 的 `runtime.base_url` 一处。`tts_qwen3` 是本地可选 provider。请求体中的 `provider` 不会覆盖后端选择。新增 TTS 不需要修改 `server.py` 或前端：新增功能包并继承 `TtsProvider`，最小实现 `health()` 与 `synthesize()`；只有需要分段低延迟时才覆盖 `stream()`。
 游戏视觉 profile 已正式内嵌到 `backend/games/<game_id>/manifest.json` 的 `vision_profile` 节点；不要再创建外置 `vision_profile.json`。该节点负责模型、类别、规则、LLM prompt、视频 path、任务超时和结果保持时长。`vision/yolov8_adjudicator/config.json` 是 YOLO runtime 的硬件、RTSP 和 MediaMTX WebRTC 基础地址配置；组件配置只负责 provider 生命周期与 LLM endpoint/model/key。
@@ -782,7 +802,7 @@ resident 模式下网页启动后即可看到 `yolov8_camera`；只有收到 `ST
 
 ## 6. 密钥和配置安全
 
-LLM API key 当前直接保存在 `backend/components/vision_yolov8_adjudicator/config.json` 的 `llm` 段。该文件被 Git 跟踪，因此**仓库必须保持私有**；如果将来要公开仓库，先在服务商处轮换 key。Key 绝不应出现在：
+LLM API key 当前直接保存在 **`backend/components/llm_openai_compat/config.json` 的顶层 `api_key`**（该文件是扁平结构：`endpoint`/`model`/`api_key`/`reasoning_effort`，**没有** `llm` 子段）。2026-09-04 大模型模块化时从视觉组件迁出；`backend/components/vision_yolov8_adjudicator/config.json` 现在只剩 `runtime`/`events` 两个键。该文件被 Git 跟踪，因此**仓库必须保持私有**；如果将来要公开仓库，先在服务商处轮换 key。Key 绝不应出现在：
 
 - `web/` 前端代码；
 - HTTP API 响应（health 只暴露 `llm_configured` 布尔值）；
