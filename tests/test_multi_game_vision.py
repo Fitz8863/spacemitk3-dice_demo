@@ -333,3 +333,86 @@ def test_shared_pipeline_passes_a_diagnosed_result_straight_through():
         on_event=lambda _event: None, game_id="dice", projector=_projector,
     )
     assert result == diagnosis
+
+
+# ---- categorical projection: the second kind of vision game ---------------
+
+def _categorical_result():
+    return {
+        "winner": "LEFT",
+        "left_choice": "rock",
+        "right_choice": "scissors",
+        "outcome": {"value": "LEFT"},
+    }
+
+
+def test_categorical_projection_maps_choices_onto_roles():
+    """猜拳这类「每侧一个类别」的游戏：投影出 player/agent 的选择，且不要求数字。"""
+    from core.participants import project_categorical_result
+
+    projected = project_categorical_result(
+        _categorical_result(), {"player": "LEFT", "agent": "RIGHT"}
+    )
+    assert projected["winner_role"] == "PLAYER"
+    assert projected["player_choice"] == "rock"
+    assert projected["agent_choice"] == "scissors"
+    # Physical fields stay untouched for compatibility.
+    assert projected["left_choice"] == "rock"
+    assert projected["right_choice"] == "scissors"
+    # Crucially: no numeric evidence was required.
+    assert "left_values" not in projected
+
+
+def test_categorical_projection_follows_the_participant_mapping():
+    """摆位对调后，选择必须跟着换边——这是机械臂联调会碰到的路径。"""
+    from core.participants import project_categorical_result
+
+    projected = project_categorical_result(
+        _categorical_result(), {"player": "RIGHT", "agent": "LEFT"}
+    )
+    assert projected["winner_role"] == "AGENT"
+    assert projected["player_choice"] == "scissors"
+    assert projected["agent_choice"] == "rock"
+
+
+def test_categorical_projection_maps_a_tie():
+    from core.participants import project_categorical_result
+
+    result = {
+        "winner": "TIE", "left_choice": "paper", "right_choice": "paper",
+    }
+    projected = project_categorical_result(
+        result, {"player": "LEFT", "agent": "RIGHT"}
+    )
+    assert projected["winner_role"] == "TIE"
+    assert projected["player_choice"] == projected["agent_choice"] == "paper"
+
+
+def test_categorical_projection_supports_a_custom_choice_field():
+    from core.participants import project_categorical_result
+
+    result = {"winner": "RIGHT", "left_gesture": "rock", "right_gesture": "paper"}
+    projected = project_categorical_result(
+        result, {"player": "LEFT", "agent": "RIGHT"}, choice_field="gesture"
+    )
+    assert projected["player_choice"] == "rock"
+    assert projected["agent_choice"] == "paper"
+
+
+@pytest.mark.parametrize("bad", [None, "", "   ", 3])
+def test_categorical_projection_rejects_missing_or_non_string_choices(bad):
+    from core.participants import project_categorical_result
+
+    result = {"winner": "LEFT", "left_choice": bad, "right_choice": "scissors"}
+    with pytest.raises(ValueError, match="left_choice"):
+        project_categorical_result(result, {"player": "LEFT", "agent": "RIGHT"})
+
+
+def test_categorical_projection_rejects_an_inconsistent_verdict():
+    """结果自相矛盾（winner 与 outcome.value 不一致）必须拒绝。"""
+    from core.participants import project_categorical_result
+
+    result = _categorical_result()
+    result["outcome"] = {"value": "RIGHT"}
+    with pytest.raises(ValueError, match="outcome.value"):
+        project_categorical_result(result, {"player": "LEFT", "agent": "RIGHT"})

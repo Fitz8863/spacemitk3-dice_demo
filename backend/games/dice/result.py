@@ -4,7 +4,7 @@ from __future__ import annotations
 from numbers import Integral, Real
 from typing import Any, Mapping
 
-from core.participants import normalize_participants, role_for_winner
+from core.participants import normalize_participants, project_roles
 
 
 def _side_values(result: Mapping[str, Any], side: str) -> list[int]:
@@ -44,19 +44,14 @@ def _validate_values_field(
 def project_participant_result(
     result: Mapping[str, Any], participants: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Add role-based fields without changing physical compatibility fields."""
-    if not isinstance(result, Mapping):
-        raise ValueError("dice result must be an object")
-    sides = normalize_participants(participants)
-    winner = result.get("winner")
-    if not isinstance(winner, str):
-        raise ValueError("dice result winner must be LEFT, RIGHT, or TIE")
-    outcome = result.get("outcome")
-    if outcome is not None and (
-        not isinstance(outcome, Mapping) or outcome.get("value") != winner
-    ):
-        raise ValueError("dice result outcome.value must match winner")
+    """Add role-based fields without changing physical compatibility fields.
 
+    The verdict and participant mapping are validated by the shared
+    ``project_roles``; everything below is dice-specific evidence (five pips
+    per side, each 1-6, summed).
+    """
+    roles = project_roles(result, participants)
+    sides = normalize_participants(participants)
     values = {side: _side_values(result, side) for side in ("LEFT", "RIGHT")}
     scores = {side: sum(values[side]) for side in ("LEFT", "RIGHT")}
     _validate_score_field(result, "left_sum", scores["LEFT"])
@@ -67,10 +62,8 @@ def project_participant_result(
     _validate_score_field(result, "second_sum", scores["RIGHT"])
 
     projected = dict(result)
+    projected.update(roles)
     projected.update({
-        "winner_role": role_for_winner(winner, sides),
-        "player_side": sides["player"],
-        "agent_side": sides["agent"],
         "player_values": list(values[sides["player"]]),
         "agent_values": list(values[sides["agent"]]),
         "player_score": scores[sides["player"]],
