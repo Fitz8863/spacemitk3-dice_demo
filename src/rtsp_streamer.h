@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include "circle_detector.h"
+
 #include <opencv2/core.hpp>
 
 #include <atomic>
@@ -47,10 +49,17 @@ public:
     void publish(const cv::Mat& bgr);
     void publish(cv::Mat&& bgr);
 
+    // 把"未绘制的原始帧 + 检测结果"交给推流，由编码线程负责画标注。
+    // 这样绘制（~10ms/帧）就离开了识别主循环的关键路径，
+    // 检测结果已是定型数据，换线程绘制不影响精度。
+    void publish(OverlayJob&& job);
+
     bool running() const { return running_.load(); }
     std::string url() const;
     // 异步线程有没有真的在出帧（用于判断 VPU 编码是否活着）
     long long pushed() const { return pushed_.load(); }
+    // 编码线程里画标注的平均耗时（ms），用于确认绘制确实被挪走了
+    double drawMsAvg() const { return draw_ms_avg_.load(); }
 
 private:
     bool initializePipeline();
@@ -76,8 +85,12 @@ private:
     std::mutex              frame_mutex_;
     std::condition_variable frame_cv_;
     std::shared_ptr<const cv::Mat> latest_frame_;
+    // 待绘制的任务（绘制在编码线程里做）。与 latest_frame_ 互斥使用。
+    std::shared_ptr<OverlayJob>    latest_job_;
     std::uint64_t           frame_sequence_ = 0;
     std::chrono::steady_clock::time_point start_time_{};
+    // 诊断：编码线程里画一帧平均花多少 ms
+    std::atomic<double>     draw_ms_avg_{0.0};
 };
 
 }  // namespace yuan

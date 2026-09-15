@@ -58,6 +58,10 @@ struct AppConfig {
     double hough_param1 = 120;
     double hough_param2 = 38;
     double hough_min_dist_frac = 0.20;
+    // Hough 兜底降频：只在它连续 hough_useless_limit 次没补上盘之后才冷却
+    // hough_cooldown_frames 帧（0=关闭降频）。详见 circle_detector.h。
+    int    hough_cooldown_frames = 5;
+    int    hough_useless_limit = 2;
 
     double smooth_alpha = 0.0;
 

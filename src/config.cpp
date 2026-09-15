@@ -146,6 +146,8 @@ bool load_config(const std::string& path, AppConfig& c, std::string& error) {
             !get_dbl(root, "hough_param1", c.hough_param1, error) ||
             !get_dbl(root, "hough_param2", c.hough_param2, error) ||
             !get_dbl(root, "hough_min_dist_frac", c.hough_min_dist_frac, error) ||
+            !get_int(root, "hough_cooldown_frames", c.hough_cooldown_frames, error) ||
+            !get_int(root, "hough_useless_limit", c.hough_useless_limit, error) ||
             !get_dbl(root, "smooth_alpha", c.smooth_alpha, error)) return false;
 
         // ---- rtsp ----
@@ -196,6 +198,8 @@ bool load_config(const std::string& path, AppConfig& c, std::string& error) {
         if (c.ellipse_fit && c.max_axis_ratio < c.report_ellipse_at)
             return bad("max_axis_ratio 不能小于 report_ellipse_at");
         if (c.smooth_alpha < 0.0 || c.smooth_alpha > 1.0) return bad("smooth_alpha 需在 0..1");
+        if (c.hough_cooldown_frames < 0) return bad("hough_cooldown_frames 不能为负");
+        if (c.hough_useless_limit < 1) return bad("hough_useless_limit 至少为 1");
         if (c.rtsp_enabled && (c.rtsp_port < 1 || c.rtsp_port > 65535))
             return bad("rtsp.port 非法");
 

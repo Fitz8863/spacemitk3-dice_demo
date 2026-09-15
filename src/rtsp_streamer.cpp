@@ -164,20 +164,47 @@ void RtspStreamer::publish(cv::Mat&& bgr) {
     frame_cv_.notify_one();
 }
 
+void RtspStreamer::publish(OverlayJob&& job) {
+    if (!running_.load() || job.frame.empty()) return;
+    auto ptr = std::make_shared<OverlayJob>(std::move(job));
+    {
+        std::lock_guard<std::mutex> lk(frame_mutex_);
+        latest_job_ = std::move(ptr);
+        latest_frame_.reset();       // 两种来源互斥，避免重复推同一帧
+        ++frame_sequence_;
+    }
+    frame_cv_.notify_one();
+}
+
 void RtspStreamer::encoderLoop() {
     std::uint64_t consumed = 0;
     while (!stopping_.load()) {
         std::shared_ptr<const cv::Mat> frame;
+        std::shared_ptr<OverlayJob> job;
         {
             std::unique_lock<std::mutex> lk(frame_mutex_);
             frame_cv_.wait_for(lk, std::chrono::milliseconds(50), [&] {
                 return stopping_.load() || frame_sequence_ != consumed;
             });
             if (stopping_.load()) break;
-            if (frame_sequence_ != consumed && latest_frame_) {
-                frame = std::move(latest_frame_);
+            if (frame_sequence_ != consumed) {
+                if (latest_job_) { job = std::move(latest_job_); }
+                else if (latest_frame_) { frame = std::move(latest_frame_); }
                 consumed = frame_sequence_;
             }
+        }
+        if (job) {
+            // ★ 绘制发生在这里：编码线程大部分时间在等 VPU，把它塞在等待前做，
+            //   就从识别主循环的关键路径上拿掉了 ~10ms/帧。
+            const auto d0 = std::chrono::steady_clock::now();
+            renderOverlay(*job);
+            const double dms = std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - d0).count();
+            {
+                std::lock_guard<std::mutex> lk(frame_mutex_);
+                draw_ms_avg_ = draw_ms_avg_ * 0.9 + dms * 0.1;
+            }
+            frame = std::make_shared<cv::Mat>(std::move(job->frame));
         }
         if (!frame || frame->empty() || !appsrc_) { checkBus(); continue; }
 
@@ -242,6 +269,7 @@ void RtspStreamer::stop() {
     {
         std::lock_guard<std::mutex> lk(frame_mutex_);
         latest_frame_.reset();
+        latest_job_.reset();
         frame_sequence_ = 0;
     }
     if (was) std::fprintf(stderr, "[rtsp] 推流已停止（共推送 %lld 帧）\n", pushed_.load());

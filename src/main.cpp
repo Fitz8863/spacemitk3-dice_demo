@@ -139,6 +139,7 @@ void usage() {
         "  --min-radius-frac F / --max-radius-frac F\n"
         "  --min-circularity F / --min-fill-ratio F / --min-inlier-ratio F\n"
         "  --ring-margin F / --ring-ratio F\n"
+        "  --hough-cooldown N  Hough 兜底跑一次后冷却 N 帧（默认 5，0=不降频）\n"
         "  --max-axis-ratio F  长短轴比上限（斜视）\n"
         "  --expected N        期望圆个数，不够时触发 Hough 兜底\n"
         "  --max-circles N     最多输出几个\n"
@@ -279,13 +280,16 @@ int runSelfTest(const CircleParams& base) {
     p.expected = 2;
     p.method = "auto";
     p.trace = true;          // 失败时能看到候选被拒的确切原因
-    CircleDetector det(p);
+    // ★ 每个用例用一个全新的检测器：6 个用例是互不相关的独立场景，
+    //   共享实例会让 Hough 降频的跨帧状态串味（实测曾导致用例 4 少检出一个盘）。
+    //   "跨帧降频行为"由用例 7 单独验证。
 
     std::puts("[self-test] 1) 合成红蓝地垫 + 两个白垫深环 -> 应检出 2 个");
     {
         const int W = 1280, H = 720;
         const double cxL = 0.20 * W, cxR = 0.72 * W, cy = 0.62 * H, r = 0.115 * H;
         cv::Mat scene = makeSyntheticScene(W, H, 0.20, 0.72, 0.62, 0.115);
+        CircleDetector det(p);
         DetectResult res = det.detect(scene);
         std::printf("        检出 %zu 个 (method=%s, %.1fms)\n",
                     res.circles.size(), res.method_used.c_str(), res.latency_ms);
@@ -309,6 +313,7 @@ int runSelfTest(const CircleParams& base) {
         cv::Mat mat(720, 1280, CV_8UC3);
         mat(cv::Rect(0, 0, 640, 720)).setTo(cv::Scalar(40, 40, 200));
         mat(cv::Rect(640, 0, 640, 720)).setTo(cv::Scalar(200, 90, 30));
+        CircleDetector det(p);
         DetectResult res = det.detect(mat);
         std::printf("        检出 %zu 个\n", res.circles.size());
         check(res.circles.empty(), "无误检");
@@ -320,6 +325,7 @@ int runSelfTest(const CircleParams& base) {
         mat(cv::Rect(0, 0, 640, 720)).setTo(cv::Scalar(40, 40, 200));
         mat(cv::Rect(640, 0, 640, 720)).setTo(cv::Scalar(200, 90, 30));
         cv::rectangle(mat, cv::Rect(200, 300, 180, 180), cv::Scalar(240, 240, 240), -1);
+        CircleDetector det(p);
         DetectResult res = det.detect(mat);
         std::printf("        检出 %zu 个\n", res.circles.size());
         check(res.circles.empty(), "方块未误判为圆");
@@ -332,6 +338,7 @@ int runSelfTest(const CircleParams& base) {
         cv::Mat scene = makeSyntheticScene(W, H, 0.20, 0.72, 0.62, 0.115);
         cv::rectangle(scene, cv::Rect((int)(cxL - r - 34), (int)(cy - r - 34), 88, 88),
                       cv::Scalar(240, 240, 240), -1);
+        CircleDetector det(p);
         DetectResult res = det.detect(scene);
         std::printf("        检出 %zu 个\n", res.circles.size());
         check(res.circles.size() == 2, "数量 == 2");
@@ -350,6 +357,7 @@ int runSelfTest(const CircleParams& base) {
         const double cxL = 0.22 * W, cy = 0.55 * H, r = 0.13 * H;
         const double ar = 1.6, ang = 25.0;
         cv::Mat scene = makeSyntheticScene(W, H, 0.22, 0.74, 0.55, 0.13, ar, ang);
+        CircleDetector det(p);
         DetectResult res = det.detect(scene);
         std::printf("        检出 %zu 个\n", res.circles.size());
         check(res.circles.size() == 2, "数量 == 2");
@@ -374,6 +382,7 @@ int runSelfTest(const CircleParams& base) {
         // 完全落在左盘内部的深色圆盖（模拟骰盅/深色物件压住盘心）
         cv::circle(scene, cv::Point((int)cxL, (int)cy), (int)(0.67 * r),
                    cv::Scalar(20, 20, 20), -1);
+        CircleDetector det(p);
         DetectResult res = det.detect(scene);
         std::printf("        检出 %zu 个\n", res.circles.size());
         check(res.circles.size() == 2, "数量 == 2（圆盖被当成盘内空洞填掉）");
@@ -383,6 +392,38 @@ int runSelfTest(const CircleParams& base) {
             check(e < 0.12 * r && std::fabs(res.circles[0].r - r) < 0.12 * r, "圆心/半径准确");
             if (dump_next_trace) { trace(res); dump_next_trace = false; }
         }
+    }
+
+    std::puts("[self-test] 7) Hough 降频：有用时不压召回，无用时才退让");
+    {
+        // 场景：两个正常盘 -> mask 直接达标，永不触发 Hough
+        //       再人为把 expected 抬到 3 -> mask 永远不够 -> 每帧都试 Hough
+        //       Hough 补不上 -> 连续无用后应进入冷却，耗时下降
+        const int W = 1280, H = 720;
+        cv::Mat scene = makeSyntheticScene(W, H, 0.20, 0.72, 0.62, 0.115);
+
+        CircleParams p2 = p;
+        p2.expected = 3;              // 逼出 Hough 兜底
+        p2.hough_cooldown_frames = 5;
+        p2.hough_useless_limit = 2;
+        p2.trace = false;
+        CircleDetector det2(p2);
+
+        std::vector<double> lat;
+        int used = 0;
+        for (int i = 0; i < 10; ++i) {
+            DetectResult r = det2.detect(scene);
+            lat.push_back(r.latency_ms);
+            if (det2.lastFrameUsedHough()) ++used;
+        }
+        double first2 = (lat[0] + lat[1]) / 2.0, last5 = 0;
+        for (int i = 5; i < 10; ++i) last5 += lat[i];
+        last5 /= 5.0;
+        std::printf("        10 帧里跑了 %d 次 Hough；前 2 帧均 %.1fms，后 5 帧均 %.1fms\n",
+                    used, first2, last5);
+        check(used < 10, "无用后确实降频（不是每帧都跑）");
+        check(used >= 3, "仍在周期性重试（没有彻底放弃兜底）");
+        check(last5 < first2, "降频后耗时下降");
     }
 
     std::printf("[self-test] %s（失败 %d 项）\n", fails == 0 ? "全部通过" : "存在失败", fails);
@@ -488,6 +529,7 @@ int main(int argc, char** argv) {
         else if (k == "--ring-ratio")  { if (!val(v)) return 2; a.ring_min_ratio = std::atof(v); }
         else if (k == "--hough-dp")    { if (!val(v)) return 2; a.hough_dp = std::atof(v); }
         else if (k == "--hough-param2"){ if (!val(v)) return 2; a.hough_param2 = std::atof(v); }
+        else if (k == "--hough-cooldown"){ if (!val(v)) return 2; a.hough_cooldown_frames = std::atoi(v); }
         else if (k == "--smooth")      { if (!val(v)) return 2; a.smooth_alpha = std::atof(v); }
         else {
             std::fprintf(stderr, "[err] 未知参数: %s（-h 看帮助）\n", k.c_str());
@@ -531,6 +573,8 @@ int main(int argc, char** argv) {
     p.hough_param1      = a.hough_param1;
     p.hough_param2      = a.hough_param2;
     p.hough_min_dist_frac = a.hough_min_dist_frac;
+    p.hough_cooldown_frames = a.hough_cooldown_frames;
+    p.hough_useless_limit   = a.hough_useless_limit;
     p.method            = a.method;
     p.expected          = a.expected;
     p.max_circles       = a.max_circles;
@@ -554,12 +598,14 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    // 需要画叠加图吗？推流/窗口/存视频/存调试图任一开启就要。
-    // （以前 MJPEG 预览还支持"没人看就不画"跳帧优化；改成 RTSP 后每帧都必须画。）
-    const bool need_overlay = a.show || a.rtsp_enabled ||
-                              !a.debug_dir.empty() || !a.save_video.empty();
-    // 掩码缩略图要用到 res.mask，所以只要会画叠加图就保留它
-    p.keep_debug = need_overlay;
+    // 谁需要叠加图？
+    //   need_overlay_now —— 必须**在主循环里立刻画**的消费者（窗口/调试图/存视频）
+    //   rtsp_gets_job    —— RTSP 改由编码线程绘制，主循环只交出原始帧+结果
+    // 只开 RTSP 时（生产常态）主循环完全不画，省下 ~10ms/帧。
+    const bool need_overlay_now = a.show || !a.debug_dir.empty() || !a.save_video.empty();
+    const bool rtsp_gets_job    = a.rtsp_enabled;
+    // 掩码缩略图要用到 res.mask，所以只要有消费者就保留
+    p.keep_debug = need_overlay_now || rtsp_gets_job;
 
     if (!a.debug_dir.empty()) {
         std::error_code ec;
@@ -648,21 +694,19 @@ int main(int argc, char** argv) {
                              c.fill_ratio, c.inlier_ratio, c.ring_ratio, c.contrast);
         }
 
-        // ---- 叠加图（预览/窗口/存视频/调试图共用）----
-        // ★ 只在真需要时才画：存盘类需求每帧都要；纯预览且没人看时直接跳过，
-        //   否则白白花 ~10ms/帧去 clone 720p 再画圈（实测就是这个数）。
+        // ---- 叠加图 ----
+        // 主循环只在"窗口/调试图/存视频"需要时画；RTSP 那份由编码线程画。
+        OverlayOptions oo;
+        oo.hud        = a.overlay_hud;
+        oo.mask_inset = a.overlay_mask_inset;
+        oo.crosshair  = a.overlay_crosshair;
+        oo.axes       = a.overlay_axes;
+        oo.fps        = fps_meter.value();
+        oo.frame_index = idx;
+        oo.source     = name;
+
         cv::Mat overlay;
-        if (need_overlay) {
-            OverlayOptions oo;
-            oo.hud        = a.overlay_hud;
-            oo.mask_inset = a.overlay_mask_inset;
-            oo.crosshair  = a.overlay_crosshair;
-            oo.axes       = a.overlay_axes;
-            oo.fps        = fps_meter.value();
-            oo.frame_index = idx;
-            oo.source     = name;
-            drawOverlay(bgr, res, overlay, oo);
-        }
+        if (need_overlay_now) drawOverlay(bgr, res, overlay, oo);
 
         // ---- stdout / 文件 JSON ----
         std::string line = "{\"type\":\"frame\",\"index\":" + std::to_string(idx) +
@@ -735,8 +779,17 @@ int main(int argc, char** argv) {
             }
         }
 
-        // ---- RTSP 推流（放在最后：会把 overlay 移走，前面用过的都已写完）----
-        if (rtsp.running() && !overlay.empty()) rtsp.publish(std::move(overlay));
+        // ---- RTSP 推流 ----
+        // 把未绘制的原始帧 + 检测结果交给编码线程，由它画标注再编 H.264。
+        // 绘制因此离开识别主循环的关键路径（~10ms/帧），且检测结果已定型，
+        // 换线程绘制对精度零影响。
+        if (rtsp.running()) {
+            OverlayJob job;
+            job.frame = bgr;          // 浅拷贝头，深拷贝交给编码线程那次绘制
+            job.det   = res;
+            job.opt   = oo;
+            rtsp.publish(std::move(job));
+        }
         return true;
     };
 

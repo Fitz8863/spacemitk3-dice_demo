@@ -66,6 +66,14 @@ struct CircleParams {
     double hough_param1        = 120;  // Canny 高阈值
     double hough_param2        = 38;   // 累加器阈值（越大越严）
     double hough_min_dist_frac = 0.20; // minDist = frac * min(w,h)
+    // Hough 兜底降频。设计要点：**只在 Hough 被证明无用之后才降频**。
+    //   - Hough 一旦补上了盘（helpful）-> 冷却立刻清零，下一帧照跑
+    //   - Hough 连续 hough_useless_limit 次一个盘都没补上 -> 才开始冷却
+    //   - mask 检出数量发生变化（场景变了）-> 立刻清零，马上允许重试
+    // 这样"能补就继续补"（不降召回），只在它确实白烧 CPU 时才退让。
+    int    hough_cooldown_frames = 5;   // 进入冷却后跳过几帧才开始再试
+    int    hough_useless_limit   = 2;   // 连续几次无用后才进入冷却
+    // 0 = 不降频（每帧都允许兜底，即旧行为）
 
     // --- 汇总 --------------------------------------------------------------
     std::string method       = "auto"; // mask | hough | auto
@@ -120,6 +128,9 @@ public:
     // 半径范围（给定图像尺寸，原图坐标）
     void radiusRange(const cv::Size& sz, double& rmin, double& rmax) const;
 
+    // 本帧实际是否跑了 Hough 兜底（诊断用）
+    bool lastFrameUsedHough() const { return last_used_hough_; }
+
 private:
     std::vector<CircleResult> detectByMask(const cv::Mat& bgr, const cv::Mat& hsv,
                                            double scale, cv::Mat& mask_out,
@@ -133,6 +144,12 @@ private:
                        CircleResult& out, std::string* why = nullptr) const;
 
     CircleParams p_;
+    // Hough 降频的跨帧状态
+    int  hough_cooldown_left_  = 0;   // 还剩几帧不许跑 Hough
+    int  hough_useless_streak_ = 0;   // 连续几次 Hough 没补上盘
+    int  prev_mask_count_      = -1;  // 上一帧 mask 检出数（变化=场景变了）
+    bool last_used_hough_      = false;
+    bool last_hough_helpful_   = false;
 };
 
 // 调试图 / 预览画面的绘制选项
@@ -148,6 +165,25 @@ struct OverlayOptions {
 
 void drawOverlay(const cv::Mat& bgr, const DetectResult& res, cv::Mat& out,
                  const OverlayOptions& opt = OverlayOptions());
+
+// ---------------------------------------------------------------------------
+// 绘制任务：把"画标注"这件事推迟到别的线程做
+//
+// 为什么需要：生产链路上 detect() -> drawOverlay() -> rtsp.publish() 全在主循环
+// 串行，而绘制（clone 720p + 画圈写字）实测约 10ms/帧 —— 占关键路径近三成。
+// 而 RTSP 编码线程大部分时间在等 VPU，把绘制挪过去就基本白赚。
+//
+// 检测结果在这里是**已定型的纯数据**，换个线程画不改变任何判据，因此对精度
+// 零影响。
+// ---------------------------------------------------------------------------
+struct OverlayJob {
+    cv::Mat        frame;   // 待绘制的原始帧（BGR，捕获分辨率）
+    DetectResult   det;     // 检测结果
+    OverlayOptions opt;
+};
+
+// 画到 job.frame 上（原地）。供推流线程调用。
+void renderOverlay(OverlayJob& job);
 
 // 合成一张"红蓝地垫 + 两个白圆垫"的测试图，用于 --self-test
 // axis_ratio > 1 时把白垫画成椭圆，用于测试斜视场景

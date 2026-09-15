@@ -669,7 +669,45 @@ DetectResult CircleDetector::detect(const cv::Mat& bgr_in) {
 
     const bool mask_enough = !mask_res.empty() &&
                              (p_.expected <= 0 || (int)mask_res.size() >= p_.expected);
-    if (want_hough && !mask_enough) hough_res = detectByHough(bgr, hsv, res.trace);
+
+    // ---- Hough 兜底降频 --------------------------------------------------
+    // 问题：mask 少找到一个盘时（遮挡/光照漂移），旧逻辑每帧都跑 Hough，
+    //       而 Hough 要 28~75ms —— 帧率被拖到 12fps 上下，画面却可能只是"少一个盘"。
+    //
+    // 但**不能一律降频**：Hough 有时确实能补上第二个盘，压掉它就是降召回。
+    // 所以策略是"只在证明无用之后才退让"：
+    //   ① Hough 补上了盘       -> 立刻清零，下一帧继续跑（它在挣自己的开销）
+    //   ② 连续 N 次没补上      -> 进入冷却，隔几帧再试
+    //   ③ mask 检出数变了（场景变）-> 立刻清零，马上重试
+    // 这样既不盲降召回，又能把"确实白烧"的那部分开销拿掉。
+    const int mask_count = (int)mask_res.size();
+    if (mask_count != prev_mask_count_) {     // ③ 场景变了 -> 立即允许重试
+        hough_cooldown_left_  = 0;
+        hough_useless_streak_ = 0;
+        prev_mask_count_      = mask_count;
+    }
+
+    last_used_hough_ = false;
+    last_hough_helpful_ = false;
+    if (want_hough && !mask_enough) {
+        if (p_.hough_cooldown_frames <= 0 || hough_cooldown_left_ <= 0) {
+            hough_res = detectByHough(bgr, hsv, res.trace);
+            last_used_hough_ = true;
+        } else {
+            --hough_cooldown_left_;
+            if (p_.trace) {
+                char b[176];
+                std::snprintf(b, sizeof(b),
+                              "hough: 跳过（冷却中，还剩 %d 帧；mask=%d，期望 %d）",
+                              hough_cooldown_left_, mask_count,
+                              p_.expected > 0 ? p_.expected : -1);
+                res.trace.push_back(b);
+            }
+        }
+    } else {
+        hough_cooldown_left_  = 0;   // mask 达标 -> 立刻恢复兜底能力
+        hough_useless_streak_ = 0;
+    }
 
     std::vector<CircleResult> all = mask_res;
     all.insert(all.end(), hough_res.begin(), hough_res.end());
@@ -715,6 +753,32 @@ DetectResult CircleDetector::detect(const cv::Mat& bgr_in) {
 
     res.circles = kept;
     res.method_used = !mask_res.empty() ? "mask" : (!hough_res.empty() ? "hough" : "none");
+
+    // ---- 判定这次 Hough 有没有"挣到自己的开销" ----------------------------
+    // 判据：合并去重后，最终数量是否比 mask 单独给出的更多。
+    //   补上了 -> 有用：清零无用计数与冷却，下一帧继续允许兜底
+    //   没补上 -> 无用：累计；达到上限才开始冷却（隔 hough_cooldown_frames 帧再试）
+    if (last_used_hough_) {
+        const int mask_kept = (int)std::min<size_t>(mask_res.size(),
+                                                    (size_t)(limit > 0 ? limit : mask_res.size()));
+        last_hough_helpful_ = (int)kept.size() > mask_kept;
+        if (last_hough_helpful_) {
+            hough_useless_streak_ = 0;
+            hough_cooldown_left_  = 0;
+        } else if (++hough_useless_streak_ >= p_.hough_useless_limit) {
+            hough_cooldown_left_ = std::max(0, p_.hough_cooldown_frames);
+            if (p_.trace) {
+                char b[160];
+                std::snprintf(b, sizeof(b),
+                              "hough: 连续 %d 次未补上盘 -> 进入冷却 %d 帧",
+                              hough_useless_streak_, hough_cooldown_left_);
+                res.trace.push_back(b);
+            }
+        }
+    } else if (!hough_res.empty()) {
+        last_hough_helpful_ = true;
+    }
+
     res.latency_ms = nowMs() - t0;
     if (p_.keep_debug) res.mask = mask_img;
     return res;
@@ -835,6 +899,13 @@ void drawOverlay(const cv::Mat& bgr, const DetectResult& res, cv::Mat& out,
         const cv::Size ts = cv::getTextSize(msg, cv::FONT_HERSHEY_SIMPLEX, 0.9 * k, 2, &base);
         text(out, msg, {(W - ts.width) / 2, H / 2}, 0.9 * k, cv::Scalar(80, 80, 255), 2);
     }
+}
+
+void renderOverlay(OverlayJob& job) {
+    if (job.frame.empty()) return;
+    cv::Mat out;
+    drawOverlay(job.frame, job.det, out, job.opt);
+    job.frame = std::move(out);   // 绘制结果接管，省一次拷贝
 }
 
 // ---------------------------------------------------------------------------
