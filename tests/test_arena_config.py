@@ -511,7 +511,12 @@ def test_real_dice_manifest_and_arena_config_compose():
     merged = with_global_defaults(manifest, arena)
     for slot in ("tts_local", "tts_remote", "asr", "vision_adjudicator"):
         assert merged["providers"][slot], f"slot {slot} must resolve via the arena"
-    assert merged["participants"] == {"player": "LEFT", "agent": "RIGHT"}
+    # The player/agent sides describe how the table is physically laid out (the
+    # arm moved to the agent side), so assert the *inheritance* rather than a
+    # specific mapping: pinning LEFT/RIGHT here would fail on every re-arrange
+    # without signalling anything about this test's actual subject.
+    assert "participants" in arena
+    assert merged["participants"] == arena["participants"]
     assert "voice" in merged
     assert "speed" in merged
     enabled = [m for m in games.all() if m.get("enabled", False)]

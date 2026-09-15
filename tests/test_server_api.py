@@ -516,6 +516,12 @@ class ServerApiTests(unittest.TestCase):
             "vision_adjudicator": "vision_dummy",
             "llm": "llm_dummy",
         }
+        # Pin the player/agent sides in the fixture.  The real dice manifest
+        # inherits them from backend/config.json, whose layout is a deployment
+        # property that changes with the table (the arm moved to the agent
+        # side); inheriting it here would make these endpoint tests fail on
+        # every re-arrange without testing anything about the endpoints.
+        dice_manifest["participants"] = {"player": "LEFT", "agent": "RIGHT"}
         games.register(dice_manifest)
         server.GAMES = games
         cls.httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
