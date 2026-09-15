@@ -159,15 +159,15 @@ prev_mask_count_        last_used_hough_
 修法：`CandidateSet` 带上预计算的 `hsv`，`validateShape` 接收它。
 **纯去重复计算，不改变任何判据。**
 
-### 3.6 配置与回退
+### 3.6 实现状态
 
-```json
-"pipeline": { "enabled": true }
-```
+流水线是**唯一路径**，没有配置开关。
 
-`enabled: false` 时走顺序路径（同一份 A/B 实现），用于：
-- 逐帧一致性验证（两条路径对拍）
-- 出问题时的即时回退开关
+改造期间曾同时保留顺序路径 + `pipeline_enabled` / `capture_thread` 配置
+与 `--no-pipeline` / `--no-capture-thread` 开关，用于逐帧对拍验证。
+验证通过后已全部删除以保持代码简洁（净减 69 行）。
+
+需要回退到改造前版本：`git reset --hard pre-pipeline`（带注释的 tag）。
 
 ## 4. 精度保证
 
@@ -252,10 +252,14 @@ prev_mask_count_        last_used_hough_
 | RTSP 标注（流水线下拉流抓帧） | ✅ 圆环/十字/长短轴/标签/HUD/掩码小窗完整 |
 | 编码线程绘制耗时 | 11.1 ms |
 
-### 7.5 回退开关
+### 7.5 瘦身
 
-```
---no-pipeline        关 A|B，走顺序路径
---no-capture-thread  关采集线程
-两个都加 = 完全回到改造前行为
-```
+验证通过后删除了顺序路径与全部回退开关（`pipeline_enabled` /
+`capture_thread` / `--no-pipeline` / `--no-capture-thread`），
+以及只为诊断存在的计数器（wait/pump/finish 分段）。
+
+- 代码：3384 -> 3315 行（净减 69）
+- 性能：瘦身前 25.5/25.6/25.6 vs 瘦身后 25.5/25.5/25.6 fps（无变化）
+- 一致性：与瘦身前逐帧逐位对拍，5 组参数全部一致
+
+回退改造前版本用 `git reset --hard pre-pipeline`。

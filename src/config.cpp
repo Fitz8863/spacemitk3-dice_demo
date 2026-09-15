@@ -150,9 +150,7 @@ bool load_config(const std::string& path, AppConfig& c, std::string& error) {
             !get_dbl(root, "hough_min_dist_frac", c.hough_min_dist_frac, error) ||
             !get_int(root, "hough_cooldown_frames", c.hough_cooldown_frames, error) ||
             !get_int(root, "hough_useless_limit", c.hough_useless_limit, error) ||
-            !get_dbl(root, "smooth_alpha", c.smooth_alpha, error) ||
-            !get_bool(root, "pipeline_enabled", c.pipeline_enabled, error) ||
-            !get_bool(root, "capture_thread", c.capture_thread, error)) return false;
+            !get_dbl(root, "smooth_alpha", c.smooth_alpha, error)) return false;
 
         // ---- rtsp ----
         cv::FileNode rtsp;

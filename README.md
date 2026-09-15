@@ -243,7 +243,6 @@ $ printf '{"work_width": "abc"}' > b.json && ./build/circle_detect --config b.js
 | | `require_ring` / `ring_*` | 环带验证 |
 | 推流 | `rtsp.enabled/host/port/path` | RTSP 推流地址与开关 |
 | 叠加 | `overlay.hud/mask_inset/crosshair/axes` | 画面上画什么 |
-| 流水线 | `pipeline_enabled` / `capture_thread` | A\|B 与采集是否独立成线程（见 docs/pipeline-threading.md） |
 | 输出 | `debug_dir` / `save_video` / `out_json` / `show` / `summary` / `quiet` / `verbose` | |
 
 > `--no-rtsp` / `--no-hud` / `--no-ellipse` / `--no-fill-holes`
@@ -457,13 +456,17 @@ stdout 是 JSON Lines，一帧一行，方便被上层服务消费：
 > `result_fps` 偏低是正常的 —— B 比主循环快时，旧结果会被 latest-only
 > 覆盖丢弃（这是设计意图，避免延迟累积）。
 
-### 回退
+### 线程数与调参
 
-```
---no-pipeline        关 A|B，走顺序路径
---no-capture-thread  关采集线程
-两个都加 = 完全回到改造前行为（逐帧对拍验证就是这么做的）
-```
+流水线是**唯一路径**，没有开关 —— 早期为了逐帧对拍保留过 `--no-pipeline`
+之类的回退开关，验证完成后已删除以保持代码简洁。
+需要回退到改造前版本用 git：`git reset --hard pre-pipeline`。
+
+线程分工可以从 summary 里看均衡度：
+
+  avg_a_ms   A 阶段（像素->候选，主线程）
+  avg_b_ms   B 阶段（候选->结果，B 线程）—— 明显大于 A 说明 B 是瓶颈
+  cap_ms     采集（采集线程）—— 接近 33ms 说明已顶到相机 30fps 上限
 
 ## 4.1 CPU 占用（纯识别，不含编码/推流）
 

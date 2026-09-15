@@ -67,13 +67,6 @@ struct AppConfig {
 
     double smooth_alpha = 0.0;
 
-    // 多线程流水线：A（像素->候选）与 B（候选->结果）分两个线程重叠执行。
-    // false 时走顺序路径（同一份实现），用于逐帧对拍验证与即时回退。
-    // 详见 docs/pipeline-threading.md
-    bool pipeline_enabled = true;
-    // 采集也独立成线程：实测把采集留在主循环时，MJPEG 解码会与 B 线程争抢，
-    // 取帧从 18.5ms 涨到 35.3ms，反而拖垮流水线。
-    bool capture_thread = true;
 
     // ---- RTSP 推流 -------------------------------------------------------
     // H.264 硬编 → MediaMTX；用 RTSP 或 WebRTC 观看
