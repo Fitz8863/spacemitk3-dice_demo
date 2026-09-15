@@ -68,6 +68,20 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
   `vision_profile` 节点；不要新增外置 `vision_profile.json`。视觉 runtime 的硬件、RTSP
   和 MediaMTX WebRTC 基础地址统一由 `vision/yolov8_adjudicator/config.json` 提供，游戏
   只声明自己的视频 path。
+- **多游戏视觉架构（2026-09-15 起）**：同一套裁决器服务多个游戏，每个游戏的裁决参数
+  （`class_map`/规则/`stable_frames`/`confidence`/`grouping`/`divider_detection`/
+  `expected_count`/`video.path`/prompt）**全部写在自己 manifest 的 `vision_profile` 里**，
+  不需要 per-game 的 runtime config 文件（那里只放硬件与部署属性）。
+  **★ 签名契约**：resident runtime 的缓存键是 `view_id`（各游戏都是 `"default"`），
+  所以 `_runtime_signature()` 是唯一把两个游戏区分开的东西——它必须覆盖每个会改变
+  runtime 行为的 profile 字段，**外加 runtime config 文件的 mtime+size**。漏掉任一项，
+  第二个游戏就会复用上一个游戏的进程（用错的分界线门控/每侧数量/RTSP 挂载点）。
+  **共用摄像头下「切换游戏必然重建 runtime」是设计取舍不是缺陷**：不允许双 runtime
+  共存，因为两者会抢同一个 `/dev/video1`。
+  **接入新视觉游戏**：写 `backend/games/<id>/manifest.json`（含 `vision_profile`）+
+  `backend/games/<id>/pipeline.py`（约 15 行薄壳，调 `core.vision_pipeline.run_vision_game`
+  并传入自己的结果投影）+ 结果投影（数值型参照 `games/dice/result.py`，类别型直接用
+  `core.participants.project_categorical_result`）+ 前端模块。**`core/` 无需改动。**
 - 裁决器通过 `--event-fd` 输出结构化 JSONL 事件，后端从独立管道读取事件；stdout/stderr 只保存诊断日志。2026-08-27 已在 K3 编译并完成结构化事件/SSE/LLM 全链路验证；旧二进制仍兼容 `[RESULT]`。
 - 裁决主接口为 `GET/POST /api/adjudicate...`；`/api/analyze...` 仅作为旧客户端迁移别名。
 - 已在 K3 验证裁决器注册、`/api/adjudicate` 结构化事件、取消与子进程退出；本地回归测试以仓库 `tests/` 为准，板端硬件测试需在 K3 上重新执行。

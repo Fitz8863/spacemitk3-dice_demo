@@ -120,6 +120,35 @@ main/
 
 当前部署基础地址为 `http://127.0.0.1:8889`；骰子页面最终播放 `http://127.0.0.1:8889/dice/`。YOLO 发布的 RTSP 路径只供 MediaMTX 接管，浏览器不直接使用。
 
+### 3.3 接入第二个视觉游戏（2026-09-15 起）
+
+裁决参数**全部按游戏走 manifest**，不需要 per-game 的 runtime config 文件——那里只放
+"这台板子+这张桌子"的属性（摄像头、分辨率、帧率、EP 绑核、焦距、RTSP 地址）。
+
+接入清单：
+
+| 步骤 | 位置 |
+| --- | --- |
+| 声明 `vision_profile`（`class_map`/规则/`stable_frames`/`confidence`/`grouping`/`video.path`/prompt） | `backend/games/<id>/manifest.json` |
+| 薄壳 pipeline（约 15 行）：调 `core.vision_pipeline.run_vision_game` 并传入自己的投影 | `backend/games/<id>/pipeline.py` |
+| 结果投影：数值型参照 `games/dice/result.py`；类别型直接用 `core.participants.project_categorical_result` | 游戏自己的 result 模块 |
+| 前端游戏模块（阶段文案/按键/渲染） | `web/games/<id>.js` + 在 `web/app.js` 注册 |
+
+**`backend/core/` 无需改动。**
+
+**★ 签名契约（必须理解）**：resident runtime 的缓存键是 `view_id`，而每个游戏的单视图
+profile 都用 `"default"`——所以 `_runtime_signature()`（`provider.py`）是**唯一**把两个游戏
+区分开的东西。它必须覆盖每个会改变 runtime 行为的 profile 字段（`game_id`、`model`、
+`stable_frames`、`confidence`、`divider_detection`、`expected_count`、解析后的
+`region_position`/`region_orientation`、`grouping`、`video.path`、`camera`、profile 的
+`runtime` 块），**外加 runtime config 文件的 `mtime_ns`+`size`**。漏掉任何一项，第二个
+游戏就会复用上一个游戏的进程，带着错的分界线门控/每侧数量/RTSP 挂载点运行。
+
+**共用摄像头下的取舍**：两个游戏共用同一个 `/dev/video1`，因此**不允许双 runtime 共存**
+（会抢设备）。缓存键坚持 `view_id`、签名变化即"拆旧建新"，切换游戏必然重建一次
+（付摄像头打开 + 模型加载）。这是设计选择，不是缺陷。要支持双游戏同时常驻，前提是
+各自有独立摄像头设备。
+
 ## 4. 服务启动时发生什么
 
 1. `scripts/start_web.sh` 通过 `backend/componentctl.py referenced tts` 收集当前游戏 manifest 引用到的全部 TTS provider（本地槽 `providers.tts_local`、远程槽 `providers.tts_remote` 与台词级 `provider` 覆盖），骰子当前为 `tts_moss_nano` + `tts_gptsovits`，逐个启动。

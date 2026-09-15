@@ -7,6 +7,42 @@
 
 ## 当前实现覆盖（2026-09-01）
 
+2026-09-15（晚 II）**多游戏视觉架构改造**（为"再加一个用同一套裁决器的游戏"铺路；
+本次**不构建**石头剪刀布本体）。核实出三处缺口并逐一修掉：
+**① ★ resident runtime 跨游戏串味（最严重）**：`_runtime_cache` 的键是 **`view_id`**
+（每个游戏的单视图 profile 都用 `"default"`），而重启判据 `_runtime_signature()` 只覆盖
+`model`/`stable_frames`/`confidence`/`camera`/`runtime`——**不含 `game_id`，也不含
+`divider_detection`/`expected_count`/`grouping`/`video.path`**。于是两个游戏只要这五项相同
+就会**复用同一个进程**：用错的分界线门控、每侧期望数量与 RTSP 挂载点。已补全签名
+（region 部分比较 `region_split()` 解析出的**生效值** `region_position`/`region_orientation`，
+而非可能缺省的原始 `divider` 块）。**★ 有意不把缓存键改成 `(game_id, view_id)`**：两个游戏
+共用 `/dev/video1`，双 runtime 共存会抢同一个 V4L2 设备；「一个 `view_id` 一个 runtime、
+签名变则拆旧建新」是共用摄像头下唯一正确的选择。代价是切换游戏必然重建（付一次摄像头
+打开+模型加载），这是固有成本不是缺陷。
+**② runtime config 文件纳入签名**：`conf`/`zoom`/`focus`/摄像头设备/RTSP 端点只存在于
+`vision/yolov8_adjudicator/config.json` 且只经 `--config` 生效。此前改它**必须重启后端**，
+与 manifest 热加载的语义不一致。现在把该文件 `mtime_ns`+`size` 纳入签名 → **保存后下一回合
+自动重建 runtime 即生效**（读不到文件时降级为空串，绝不拒绝启动）。**这是行为变化，需知悉。**
+**③ 裁决流程与结果投影硬编码在 dice**：新增 `core/vision_pipeline.py` 的
+`run_vision_game(..., game_id, projector)`，把「解析裁决器槽位 → 解析 LLM 槽位并软降级 →
+构造请求 → 调 `adjudicate`（含旧接口 `TypeError` 兼容分支）→ 诊断结果直通 → 投影」
+整段收拢；`games/dice/pipeline.py` 退化为 20 行薄壳（`run()` 签名与模块路径不变，tests 里
+7 处直接调用它）。`core/participants.py` 新增 `project_roles()`（校验 winner 与
+`outcome.value` 一致后映射 `winner_role`/`player_side`/`agent_side`，每个视觉游戏都要的那
+一半）与 `project_categorical_result()`（读 `left_<field>`/`right_<field>` **字符串类别**，
+投影出 `player_choice`/`agent_choice`，**刻意不做数值/范围校验**——胜负仍由
+`categorical_relation` 规则引擎判定）。`dice/result.py` 改为先取角色字段再叠加骰子专有证据，
+**对外签名与返回完全不变**（验收标准：`tests/test_participants.py` 一行未改且 25 项全绿）。
+**④ `/api/health` 不再硬编码 `"dice"`**：新增 `_primary_vision_game_id()`（优先第一个启用且带
+`vision_profile` 的游戏 → 其次第一个带 profile 的 → 都没有时回落 `"dice"` 保留历史值）。
+**接入新视觉游戏的成本**：manifest（含 `vision_profile`）+ 约 15 行薄壳 pipeline + 结果投影
+（数值型参照 dice，类别型直接用 `project_categorical_result`）+ 前端模块；**`core/` 零改动**。
+`rps` 的 `vision_profile` 在**规则层本就能跑**（`categorical_relation` 路径完整、`class_map`
+支持字符串），本次仍未启用它（其状态机只有 1 态、前端是占位）。全量 pytest
+**539 → 565 passed / 1 skipped**（新增 `tests/test_multi_game_vision.py` 19 条）。
+**未做**（明确边界）：rps 游戏本体、per-game runtime config 文件、按游戏配硬件参数
+（摄像头/焦距/分辨率/EP 绑核）、视觉槽位唯一性封口、双 runtime 常驻。
+
 2026-09-15 **开盖语音与屏幕倒计时对齐**（订正下面「2026-09-02 起游戏调度升级为后端权威状态机」
 那段里的"停→开盖→**4 秒过场**节奏"——那是本次改动前的描述）。用户把 `open_reveal` 的第二句
 从 TTS 换成预录 `audio/warm_准备好了没有？三，二，一,开盖.wav` 并加了 `await: true`，结果语音的
