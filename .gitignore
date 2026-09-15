@@ -25,6 +25,7 @@ __pycache__/
 # Local AI tool state
 .mimosa/
 .zcode/
+.v2c/
 
 # Local runtime secrets / generated media
 .env
@@ -47,3 +48,8 @@ tts/qwen3-tts/qwen3-tts-0.6b/*.onnx
 tts/qwen3-tts/qwen3-tts-0.6b/*.gguf
 tts/qwen3-tts/qwen3-tts-0.6b/*.bin
 tts/qwen3-tts/voice_presets/source_audio/
+
+# Local model comparison copies.  The deployed detector is models/best.q.onnx
+# (referenced by vision/yolov8_adjudicator/config.json and tracked); any other
+# export kept beside it is a local artifact for old/new comparisons.
+vision/yolov8_adjudicator/models/best_old.q.onnx
