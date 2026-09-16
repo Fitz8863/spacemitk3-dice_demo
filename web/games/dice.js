@@ -37,7 +37,7 @@ export function register(engine) {
     countdown: ['同步倒计时', ''],
     shaking: ['摇骰进行中', '双方同时摇骰，准备好后可提前停止。'],
     open: ['你准备好了吗？听语音倒计时同时开盖', ''],
-    analysis: ['正在判定胜负', '视觉裁决器正在识别骰子点数，随后由大模型复核。'],
+    analysis: ['正在判定胜负', '视觉裁决器正在识别骰子点数并判定胜负。'],
     result: ['本局结果', ''],
   };
 
@@ -305,7 +305,11 @@ export function register(engine) {
       $('stepDetect').querySelector('span').textContent = '✓';
       $('stepJudge').classList.add('active');
       $('stepJudge').querySelector('span').textContent = '…';
-      $('analysisStatus').textContent = 'YOLOv8 结果已稳定，正在调用大模型复核…';
+      // 后端在 verifying 事件里带上 llm 标志：浏览器侧拿不到复核开关
+      // （公开的游戏 manifest 会剥掉整段 llm），所以只能由事件告知。
+      $('analysisStatus').textContent = event.llm === false
+        ? 'YOLOv8 结果已稳定，正在判定胜负…'
+        : 'YOLOv8 结果已稳定，正在调用大模型复核…';
     } else if (event.phase === 'holding') {
       const remaining = Number(event.remaining_ms);
       $('stepDetect').classList.add('active');

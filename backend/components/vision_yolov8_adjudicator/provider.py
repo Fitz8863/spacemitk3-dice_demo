@@ -979,9 +979,17 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 if yolo is None: raise RuntimeError("no strict majority across views")
             else:
                 yolo = computed[0] if computed else evaluate_rule(rule, normalized)
-            on_event({"event":"phase", "phase":"verifying"}); cfg = profile.get("llm", {})
+            # Read the switch *before* announcing the phase.  This event drives
+            # copy that names the LLM, and the browser cannot work it out on its
+            # own: the browser-safe game projection strips the whole ``llm``
+            # section (prompts never reach the page).  Announcing first and
+            # checking afterwards made a detector-only round display
+            # 「正在调用大模型复核」.
+            cfg = profile.get("llm", {})
             cfg = cfg if isinstance(cfg, Mapping) else {}
-            status, out = ("timeout", None) if cfg.get("enabled", True) else ("disabled", None)
+            llm_enabled = bool(cfg.get("enabled", True))
+            on_event({"event": "phase", "phase": "verifying", "llm": llm_enabled})
+            status, out = ("timeout", None) if llm_enabled else ("disabled", None)
             reask = None
             if cfg.get("enabled", True):
                 paths = []

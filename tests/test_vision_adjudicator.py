@@ -2280,3 +2280,49 @@ def test_adjudication_reuses_the_stream_started_at_game_entry(tmp_path: Path):
     assert [c["command"] for c in runtime.commands] == [
         "START_ADJUDICATION", "FINAL_RESULT", "STOP_ADJUDICATION",
     ]
+
+
+def test_verifying_phase_reports_whether_the_llm_is_consulted(tmp_path: Path):
+    """`verifying` 相位驱动着点名大模型的界面文案。
+
+    前端**无法**从公开的游戏 manifest 判断复核是否开启——浏览器安全投影会把
+    `llm` 整段剥掉（提示词不下发）。所以"这一局的判定到底有没有叫大模型"只能
+    由这个事件告知；否则纯 YOLO 的一局里页面会写着「正在调用大模型复核」。
+    """
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"jpeg")
+
+    class Runtime:
+        def start(self, *a, **k):
+            self.events_data = iter([{
+                "event": "observation", "stable": True, "yolo_outcome": "LEFT",
+                "snapshot": {"path": str(image)},
+            }])
+
+        def send(self, c):
+            pass
+
+        def events(self):
+            return self.events_data
+
+    def verifying_events(enabled):
+        events = []
+        profile = {
+            "game_id": "x",
+            "vision": {"stable_frames": 1},
+            "llm": {"enabled": enabled, "system_prompt": "s",
+                    "user_prompt_template": "u", "allowed_outcomes": ["LEFT"]},
+            "lifecycle": {"post_result_hold_seconds": 0},
+        }
+        VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime()).adjudicate(
+            VisionAdjudicationRequest("x", profile, "r", 2),
+            on_log=lambda x: None, on_event=events.append, is_cancelled=lambda: False,
+        )
+        return [e for e in events if e.get("phase") == "verifying"]
+
+    off = verifying_events(False)
+    assert off, "verifying 相位仍然要发出（界面用它推进步骤）"
+    assert off[0].get("llm") is False, "关闭复核时必须明确告知，页面才能不谎称调用大模型"
+
+    on = verifying_events(True)
+    assert on and on[0].get("llm") is True

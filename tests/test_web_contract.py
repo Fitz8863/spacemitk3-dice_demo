@@ -703,3 +703,32 @@ def test_frontend_renders_reask_and_tie_upheld_sources():
     assert "yolo_reask_fallback" in js
     assert "tie_upheld" in js
     assert "双方点数相同，判定平局" in js
+
+
+def test_frontend_verifying_copy_follows_the_llm_flag():
+    """步骤文案必须跟随事件里的 llm 标志，而不是无条件说"调用大模型"。
+
+    纯 YOLO 的一局（当前 dice 就是）里，页面曾写着「正在调用大模型复核…」，
+    与事实不符。
+    """
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    verifying = js.split("} else if (event.phase === 'verifying')", 1)[1].split(
+        "} else if (event.phase === 'holding')", 1
+    )[0]
+    assert "event.llm" in verifying, "必须按 llm 标志分支"
+    # 关闭复核时不得出现点名大模型的措辞。
+    assert "大模型" not in verifying.split("event.llm", 1)[0]
+
+
+def test_static_analysis_copy_never_promises_a_disabled_llm():
+    """静态文案（manifest 与前端兜底）要与 llm.enabled 一致。"""
+    manifest = json.loads(
+        (ROOT / "backend/games/dice/manifest.json").read_text(encoding="utf-8")
+    )
+    enabled = bool((manifest.get("vision_profile") or {}).get("llm", {}).get("enabled", True))
+    copy = manifest["state_machine"]["states"]["analysis"]["ui"]["copy"]
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    fallback = js.split("analysis: [", 1)[1].split("]", 1)[0]
+    if not enabled:
+        assert "大模型" not in copy, f"复核已关闭，静态文案不能承诺大模型：{copy!r}"
+        assert "大模型" not in fallback, f"前端兜底文案不能承诺大模型：{fallback!r}"
