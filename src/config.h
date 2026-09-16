@@ -16,6 +16,7 @@ struct AppConfig {
     int fps = 25;
     int intra_threads = 2;
     std::string ep_affinity = "12;13";
+    bool ep_enabled = true;
     std::size_t queue_depth = 2;
     float conf = 0.50f;
     float kpt_conf = 0.30f;

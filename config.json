@@ -7,6 +7,7 @@
   "fps": 25,
   "intra_threads": 2,
   "ep_affinity": "12;13",
+  "ep_enabled": true,
   "conf": 0.25,
   "kpt_conf": 0.30,
   "iou": 0.45,

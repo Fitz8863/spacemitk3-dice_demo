@@ -36,6 +36,7 @@ void usage(const char* executable) {
               << "  --width N --height N --fps N\n"
               << "  --intra-threads N   SpaceMIT EP intra threads\n"
               << "  --ep-affinity LIST  SpaceMIT EP cores, e.g. 12;13\n"
+              << "  --no-ep             pure CPU inference (bypass SpaceMIT EP)\n"
               << "  --conf FLOAT --kpt-conf FLOAT --iou FLOAT\n"
               << "  --queue-depth N     compatibility queue depth setting\n"
               << "  --focus N --zoom N  optional V4L2 controls (-1=unchanged)\n"
@@ -132,6 +133,8 @@ bool parse_args(int argc, char** argv, AppConfig& config,
             self_test = true;
         } else if (key == "--no-display") {
             no_display = true;
+        } else if (key == "--no-ep") {
+            config.ep_enabled = false;
         } else if (key == "--no-yolov8") {
             config.yolov8_enabled = false;
         } else {
@@ -214,7 +217,7 @@ int main(int argc, char** argv) {
 
     Yolov8PoseDetector detector;
     if (!detector.init(config.model, config.intra_threads, config.ep_affinity,
-                       config.class_names)) return 5;
+                       config.class_names, config.ep_enabled)) return 5;
 
     if (self_test) {
         try {

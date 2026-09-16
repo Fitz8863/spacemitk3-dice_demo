@@ -37,7 +37,8 @@ Yolov8PoseDetector::~Yolov8PoseDetector() = default;
 
 bool Yolov8PoseDetector::init(const std::string& model_path, int intra_threads,
                               const std::string& ep_affinity,
-                              const std::vector<std::string>& class_names) {
+                              const std::vector<std::string>& class_names,
+                              bool ep_enabled) {
     try {
         impl_ = std::make_unique<Impl>();
         impl_->class_names = class_names;
@@ -47,13 +48,15 @@ bool Yolov8PoseDetector::init(const std::string& model_path, int intra_threads,
         options.SetIntraOpNumThreads(threads);
         options.SetInterOpNumThreads(1);
         options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-        std::unordered_map<std::string, std::string> ep_options;
-        ep_options["SPACEMIT_EP_INTRA_THREAD_NUM"] = std::to_string(threads);
-        ep_options["SPACEMIT_EP_INTER_THREAD_NUM"] = "1";
-        if (!ep_affinity.empty()) {
-            ep_options["SPACEMIT_EP_INTRA_THREAD_AFFINITY"] = ep_affinity;
+        if (ep_enabled) {
+            std::unordered_map<std::string, std::string> ep_options;
+            ep_options["SPACEMIT_EP_INTRA_THREAD_NUM"] = std::to_string(threads);
+            ep_options["SPACEMIT_EP_INTER_THREAD_NUM"] = "1";
+            if (!ep_affinity.empty()) {
+                ep_options["SPACEMIT_EP_INTRA_THREAD_AFFINITY"] = ep_affinity;
+            }
+            Ort::SessionOptionsSpaceMITEnvInit(options, ep_options);
         }
-        Ort::SessionOptionsSpaceMITEnvInit(options, ep_options);
         impl_->session = std::make_unique<Ort::Session>(impl_->env, model_path.c_str(), options);
 
         Ort::AllocatorWithDefaultOptions allocator;
@@ -67,7 +70,8 @@ bool Yolov8PoseDetector::init(const std::string& model_path, int intra_threads,
         impl_->output_name = impl_->session->GetOutputNameAllocated(0, allocator).get();
         const auto output_shape =
             impl_->session->GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
-        std::cout << "Model loaded with SpaceMIT EP: " << model_path << "\n";
+        std::cout << "Model loaded with " << (ep_enabled ? "SpaceMIT EP" : "CPU EP (SpaceMIT EP disabled)")
+                  << ": " << model_path << "\n";
         print_shape("input " + impl_->input_name, impl_->input_shape);
         print_shape("output0 " + impl_->output_name, output_shape);
         if (impl_->input_shape.size() != 4 || impl_->input_shape[1] != 3 ||

@@ -69,6 +69,22 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 target_compile_options(${PROJECT_NAME} PRIVATE -O3 -ffast-math -Wall -Wextra -Wpedantic)
 
+# 诊断工具（手动运行，不进 CTest）：NPU 与 CPU 同输入输出对比
+add_executable(ep_probe tools/ep_probe.cpp
+    src/opencl_preprocess.cpp)
+target_include_directories(ep_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${OpenCV_INCLUDE_DIRS}
+    ${SPACEMIT_ORT_INCLUDE_DIR}
+    ${SPACEMIT_ORT_ENV_INCLUDE_DIR})
+target_link_libraries(ep_probe PRIVATE
+    ${OpenCV_LIBS}
+    OpenCL::OpenCL
+    ${SPACEMIT_ORT_LIBRARY}
+    ${SPACEMIT_EP_LIBRARY}
+    Threads::Threads
+    dl)
+
 include(CTest)
 if(BUILD_TESTING)
     add_executable(affinity_test tests/affinity_test.cpp src/affinity.cpp)

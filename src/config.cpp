@@ -137,6 +137,7 @@ bool load_config(const std::string& path, AppConfig& config, std::string& error)
             !read_int(root, "fps", config.fps) ||
             !read_int(root, "intra_threads", config.intra_threads) ||
             !read_required_string(root, "ep_affinity", config.ep_affinity, error) ||
+            !read_bool(root, "ep_enabled", config.ep_enabled) ||
             !read_size(root, "queue_depth", config.queue_depth) ||
             !read_float(root, "conf", config.conf) ||
             !read_float(root, "kpt_conf", config.kpt_conf) ||

@@ -42,6 +42,7 @@ ctest --test-dir build --output-on-failure
 | `kpt_conf` | 0.30 | 关键点绘制阈值，低于该值的点与相关骨架线不画 |
 | `iou` | 0.45 | NMS IoU 阈值 |
 | `intra_threads` / `ep_affinity` | 2 / "12;13" | SpaceMIT EP 线程数与绑核（数量必须一致） |
+| `ep_enabled` | true | **int8 量化模型在 NPU 上分类分支输出异常（空场景误检 person，`tools/ep_probe` 可复现对比），当前必须配 FP32 模型才可开启；量化模型请设 false 走纯 CPU** |
 | `rtsp.path` | /dice/pose | MediaMTX 挂载路径 |
 | `decoder` | auto | MJPEG 解码：auto/hw(spacemitdec)/sw |
 | `class_names` | ["person"] | 必须与模型类别数一致（1 类） |
