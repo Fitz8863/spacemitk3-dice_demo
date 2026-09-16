@@ -6,6 +6,8 @@ build/
 .cache/
 models/*.onnx
 !models/yolov8n-pose.q.onnx
+!models/yolov8n_hand.q.onnx
+!models/yolov8n_hand.fp32.onnx
 config.local.json
 compile_commands.json
 .shaders/

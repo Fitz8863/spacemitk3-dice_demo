@@ -4,9 +4,10 @@
 #include <array>
 #include <string>
 
-// COCO 人体骨架关键点数（nose/eyes/ears/shoulders/elbows/wrists/hips/knees/ankles），
-// 对应 pose 模型输出 [1, 5+17*3, 8400] 中的 17 组 (x,y,conf)。
-constexpr int kPoseKeypointCount = 17;
+// 关键点数由模型输出通道推导（channels = 5 + 3*kpt）：
+// 56 → COCO 人体 17 点；68 → 机械手 21 点（MediaPipe hand 布局）。
+// 数组按上限分配，实际点数见 PoseDetection::keypoint_count。
+constexpr int kMaxKeypoints = 21;
 
 struct PoseKeypoint {
     float x = 0.0f;
@@ -22,5 +23,6 @@ struct PoseDetection {
     float confidence = 0.0f;
     int class_id = -1;
     std::string label;
-    std::array<PoseKeypoint, kPoseKeypointCount> keypoints{};
+    int keypoint_count = 0;
+    std::array<PoseKeypoint, kMaxKeypoints> keypoints{};
 };

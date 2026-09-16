@@ -30,6 +30,7 @@ struct Yolov8PoseDetector::Impl {
     std::string output_name;
     std::vector<int64_t> input_shape;
     std::vector<std::string> class_names;
+    int keypoint_count = 0;
 };
 
 Yolov8PoseDetector::Yolov8PoseDetector() = default;
@@ -78,14 +79,14 @@ bool Yolov8PoseDetector::init(const std::string& model_path, int intra_threads,
             impl_->input_shape[2] != kModelInputHeight || impl_->input_shape[3] != kModelInputWidth) {
             throw std::runtime_error("expected input shape [1,3,640,640]");
         }
-        constexpr int expected_channels =
-            kPoseBoxChannels + kPoseClassChannels + 3 * kPoseKeypointCount;
-        if (output_shape.size() != 3 || output_shape[0] != 1 ||
-            output_shape[1] != expected_channels || output_shape[2] <= 0) {
-            throw std::runtime_error("expected single pose output [1," +
-                                     std::to_string(expected_channels) +
-                                     ",anchors] (4 box + 1 class + 17*3 keypoints)");
+        impl_->keypoint_count = keypoint_count_from_channels(output_shape.size() == 3
+                                                                 ? output_shape[1]
+                                                                 : -1);
+        if (output_shape.size() != 3 || output_shape[0] != 1 || output_shape[2] <= 0) {
+            throw std::runtime_error("expected single pose output [1,C,anchors]");
         }
+        std::cout << "Output head: " << output_shape[1] << " channels = 4 box + 1 class + "
+                  << impl_->keypoint_count << " keypoints\n";
         std::cout << "SpaceMIT EP affinity: " << (ep_affinity.empty() ? "runtime default" : ep_affinity) << "\n";
         std::cout << "Configured class names: " << impl_->class_names.size() << "\n";
         if (impl_->class_names.size() != 1) {
@@ -124,9 +125,10 @@ std::vector<PoseDetection> Yolov8PoseDetector::infer(
     auto info = outputs[0].GetTensorTypeAndShapeInfo();
     const OutputView detection{outputs[0].GetTensorData<float>(), info.GetShape()};
 
-    debug_dump_pose(detection);
+    debug_dump_pose(detection, impl_->keypoint_count);
     std::vector<PoseCandidate> candidates = decode_pose_output(
-        detection, conf_threshold, scale, pad_x, pad_y, image_width, image_height);
+        detection, impl_->keypoint_count, conf_threshold, scale, pad_x, pad_y,
+        image_width, image_height);
     const std::vector<int> kept = class_aware_nms(candidates, iou_threshold, std::max(1, max_detections));
 
     std::vector<PoseDetection> detections;
@@ -141,6 +143,7 @@ std::vector<PoseDetection> Yolov8PoseDetector::infer(
         pose.confidence = candidate.score;
         pose.class_id = candidate.class_id;
         pose.label = label_for_class(candidate.class_id, impl_->class_names);
+        pose.keypoint_count = candidate.keypoint_count;
         pose.keypoints = candidate.keypoints;
         detections.push_back(std::move(pose));
     }

@@ -69,12 +69,22 @@ std::vector<int> class_aware_nms(const std::vector<PoseCandidate>& candidates,
     return kept;
 }
 
+int keypoint_count_from_channels(int64_t channels) {
+    const int64_t head = kPoseBoxChannels + kPoseClassChannels;
+    if (channels < head + 3 || (channels - head) % 3 != 0 ||
+        (channels - head) / 3 > kMaxKeypoints) {
+        throw std::runtime_error("unexpected YOLOv8-pose channel count: " + std::to_string(channels));
+    }
+    return static_cast<int>((channels - head) / 3);
+}
+
 std::vector<PoseCandidate> decode_pose_output(
-    const OutputView& detection, float conf_threshold, float scale, int pad_x,
-    int pad_y, int image_width, int image_height) {
-    constexpr int expected_channels = kPoseBoxChannels + kPoseClassChannels + 3 * kPoseKeypointCount;
-    if (detection.shape.size() != 3 || detection.shape[0] != 1 ||
-        detection.shape[1] != expected_channels || detection.shape[2] <= 0) {
+    const OutputView& detection, int keypoint_count, float conf_threshold,
+    float scale, int pad_x, int pad_y, int image_width, int image_height) {
+    if (keypoint_count < 1 || keypoint_count > kMaxKeypoints ||
+        detection.shape.size() != 3 || detection.shape[0] != 1 ||
+        detection.shape[1] != kPoseBoxChannels + kPoseClassChannels + 3 * keypoint_count ||
+        detection.shape[2] <= 0) {
         throw std::runtime_error("unexpected YOLOv8-pose detection output shape");
     }
     const int anchors = static_cast<int>(detection.shape[2]);
@@ -93,8 +103,9 @@ std::vector<PoseCandidate> decode_pose_output(
         candidate.box = map_model_rect(model_box, scale, pad_x, pad_y, image_width, image_height);
         candidate.score = score;
         candidate.class_id = 0;
+        candidate.keypoint_count = keypoint_count;
         if (candidate.box.width < 1.0f || candidate.box.height < 1.0f) continue;
-        for (int kpt = 0; kpt < kPoseKeypointCount; ++kpt) {
+        for (int kpt = 0; kpt < keypoint_count; ++kpt) {
             const size_t kpt_index = static_cast<size_t>(kpt_base + kpt * 3) * anchors + anchor;
             PoseKeypoint& point = candidate.keypoints[static_cast<size_t>(kpt)];
             point.confidence = data[kpt_index + 2 * anchors];
@@ -108,12 +119,12 @@ std::vector<PoseCandidate> decode_pose_output(
     return candidates;
 }
 
-void debug_dump_pose(const OutputView& detection) {
+void debug_dump_pose(const OutputView& detection, int keypoint_count) {
     static const bool enabled = std::getenv("YOLO_POSE_DEBUG") != nullptr;
     static bool dumped = false;
     if (!enabled || dumped) return;
     dumped = true;
-    if (detection.shape.size() != 3 || detection.shape[0] != 1) return;
+    if (detection.shape.size() != 3 || detection.shape[0] != 1 || keypoint_count < 1) return;
     const int channels = static_cast<int>(detection.shape[1]);
     const int anchors = static_cast<int>(detection.shape[2]);
     if (channels < kPoseBoxChannels + kPoseClassChannels || anchors <= 0) return;
@@ -136,15 +147,16 @@ void debug_dump_pose(const OutputView& detection) {
     };
     const auto box = stats(data, kPoseBoxChannels);
     const auto score = stats(data + static_cast<size_t>(kPoseBoxChannels) * anchors, kPoseClassChannels);
-    const auto kpt_xy = stats(data + static_cast<size_t>(kpt_base) * anchors, kPoseKeypointCount * 2);
-    const auto kpt_conf = stats(data + static_cast<size_t>(kpt_base + kPoseKeypointCount * 2) * anchors,
-                                kPoseKeypointCount);
+    const auto kpt_xy = stats(data + static_cast<size_t>(kpt_base) * anchors, keypoint_count * 2);
+    const auto kpt_conf = stats(data + static_cast<size_t>(kpt_base + keypoint_count * 2) * anchors,
+                                keypoint_count);
     int over_conf = 0;
     const float* score_row = data + static_cast<size_t>(kPoseBoxChannels) * anchors;
     for (int a = 0; a < anchors; ++a) {
         if (score_row[a] >= 0.25f) ++over_conf;
     }
-    std::cout << "[debug] pose anchors=" << anchors << " channels=" << channels << "\n"
+    std::cout << "[debug] pose anchors=" << anchors << " channels=" << channels
+              << " kpt=" << keypoint_count << "\n"
               << "[debug] box rows    min=" << box[0] << " max=" << box[1] << " mean=" << box[2] << "\n"
               << "[debug] class row   min=" << score[0] << " max=" << score[1] << " mean=" << score[2]
               << " (values>=0.25: " << over_conf << ")\n"

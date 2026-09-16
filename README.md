@@ -6,10 +6,16 @@ OpenCL 前处理（letterbox 640 FP32）→ SpaceMIT EP（NPU）推理 → 骨�
 
 ## 模型
 
-`models/yolov8n-pose.q.onnx`：SpaceMIT PPQ 量化（QDQ），输入 `[1,3,640,640]`，
-单输出 `[1,56,8400]` = 4 box + 1 类置信 + 17 关键点 ×3。
-box 与关键点坐标已在图内解码为 640 域像素坐标，类别分与关键点置信度已在图内 sigmoid；
-后处理只做阈值筛选 + NMS + letterbox 反映射。
+关键点数由输出通道自动推导（`channels = 4 box + 1 cls + 3*kpt`），骨架绘制按点数自动选：
+
+| 模型 | 输出 | 布局 | NPU(SpaceMIT EP) |
+|---|---|---|---|
+| `models/yolov8n_hand.q.onnx`（当前默认，21 点机械手/hand，自训练经 PPQ 量化） | `[1,68,8400]` | 1 类 hand + 21 点 | **正常**（ep_probe 实测 cls NPU≈CPU） |
+| `models/yolov8n_hand.fp32.onnx`（21 点 FP32 原版） | `[1,68,8400]` | 同上 | 正常 |
+| `models/yolov8n-pose.q.onnx`（官方 zoo COCO 17 点量化版） | `[1,56,8400]` | 1 类 person + 17 点 | **分类分支输出异常**（空场景误检 person，`tools/ep_probe` 可复现），只能 `ep_enabled=false` 走 CPU |
+
+box 与关键点坐标均在图内解码为 640 域像素坐标，cls/kpt 置信度均在图内 sigmoid；
+后处理只做阈值筛选 + NMS + letterbox 反映射。换模型需同步改 `class_names`（hand/person）。
 
 ## 构建（板端）
 

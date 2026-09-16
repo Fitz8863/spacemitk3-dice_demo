@@ -1,5 +1,5 @@
 {
-  "model": "models/yolov8n-pose.q.onnx",
+  "model": "models/yolov8n_hand.q.onnx",
   "camera": "/dev/video1",
   "device": "",
   "width": 1280,
@@ -7,7 +7,7 @@
   "fps": 25,
   "intra_threads": 2,
   "ep_affinity": "12;13",
-  "ep_enabled": false,
+  "ep_enabled": true,
   "conf": 0.25,
   "kpt_conf": 0.30,
   "iou": 0.45,
@@ -29,6 +29,6 @@
     "path": "/dice/pose"
   },
   "class_names": [
-    "person"
+    "hand"
   ]
 }
