@@ -1,0 +1,13 @@
+build/
+*.log
+*.core
+*.dump
+*.part
+.cache/
+models/*.onnx
+!models/yolov8n-pose.q.onnx
+config.local.json
+compile_commands.json
+.shaders/
+.zcode/
+.v2c/
