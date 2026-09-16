@@ -276,6 +276,7 @@ int main(int argc, char** argv) {
     std::atomic<uint64_t> preprocessed_count{0};
     std::atomic<uint64_t> inferred_count{0};
     std::atomic<uint64_t> displayed_count{0};
+    std::atomic<uint64_t> infer_us_accum{0};
     std::string stage_error;
     std::mutex stage_error_mutex;
     auto report_stage_error = [&](const char* stage, const std::exception& exception) {
@@ -379,6 +380,8 @@ int main(int argc, char** argv) {
                     prepared->prepared.pad_y, prepared->width, prepared->height);
                 result->infer_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - infer_start).count();
+                infer_us_accum.fetch_add(static_cast<uint64_t>(result->infer_ms * 1000.0),
+                                         std::memory_order_relaxed);
                 if (result_queue.push(std::move(result))) {
                     dropped_result.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -396,6 +399,7 @@ int main(int argc, char** argv) {
     uint64_t last_preprocessed = 0;
     uint64_t last_inferred = 0;
     uint64_t last_displayed = 0;
+    uint64_t last_infer_us = 0;
     double display_fps = 0.0;
     double preprocess_fps = 0.0;
     double infer_fps = 0.0;
@@ -439,6 +443,14 @@ int main(int argc, char** argv) {
                 const uint64_t current_preprocessed = preprocessed_count.load(std::memory_order_relaxed);
                 const uint64_t current_inferred = inferred_count.load(std::memory_order_relaxed);
                 const uint64_t current_displayed = displayed_count.load(std::memory_order_relaxed);
+                const uint64_t current_infer_us = infer_us_accum.load(std::memory_order_relaxed);
+                const uint64_t window_inferred = current_inferred - last_inferred;
+                std::ostringstream infer_ms_text;
+                infer_ms_text.setf(std::ios::fixed);
+                infer_ms_text.precision(1);
+                infer_ms_text << (window_inferred ? (current_infer_us - last_infer_us) / 1000.0 /
+                                                        static_cast<double>(window_inferred)
+                                                  : 0.0);
                 preprocess_fps = (current_preprocessed - last_preprocessed) / elapsed;
                 infer_fps = (current_inferred - last_inferred) / elapsed;
                 display_fps = (current_displayed - last_displayed) / elapsed;
@@ -446,12 +458,14 @@ int main(int argc, char** argv) {
                     preprocess_fps, infer_fps, display_fps, last_result->detections.size(),
                     config.ep_affinity);
                 std::cout << status_text
+                          << " infer_ms=" << infer_ms_text.str()
                           << " drop(cap/pre/res)=" << dropped_capture.load()
                           << "/" << dropped_prepared.load()
                           << "/" << dropped_result.load() << std::endl;
                 last_preprocessed = current_preprocessed;
                 last_inferred = current_inferred;
                 last_displayed = current_displayed;
+                last_infer_us = current_infer_us;
                 last_stats = now;
             }
             // Draw the cached status on every display frame. Previously this
