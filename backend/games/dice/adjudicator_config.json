@@ -9,7 +9,7 @@
   "ep_affinity": "14;15",
   "queue_depth": 2,
   "focus": -1,
-  "zoom": 150,
+  "zoom": 100,
   "video": {
     "webrtc_base_url": "http://127.0.0.1:8889"
   },
