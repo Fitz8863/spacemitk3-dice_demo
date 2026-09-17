@@ -16,6 +16,26 @@ class ProfileError(ValueError):
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_RUNTIME_CONFIG = PROJECT_ROOT / "vision" / "yolov8_adjudicator" / "config.json"
 
+# Top-level keys a hardware runtime config understands: every key the C++
+# runtime reads (vision/yolov8_adjudicator/src/main.cpp, load_config) plus
+# the Python-side ``video`` (``video.webrtc_base_url`` is consumed by the
+# provider) and the sanctioned ``_note`` comment key.  Anything else is
+# silently ignored by both parsers -- a typo such as ``ep_afinity`` would
+# quietly run without EP affinity -- so it is reported here as a warning
+# instead of refusing to load.
+RUNTIME_CONFIG_KNOWN_KEYS = frozenset({
+    "model", "camera", "device", "width", "height", "fps", "intra_threads",
+    "ep_affinity", "conf", "stable_frames", "focus", "zoom", "max_frames",
+    "dump_input", "self_test", "display_enabled", "no_display",
+    "yolov8_enabled", "divider_detection", "queue_depth", "rtsp",
+    "video", "_note",
+})
+
+# Warn once per (file, unknown-key set) per process: the health metadata
+# path calls load_runtime_config on every /api/health request, so without
+# dedup a single typo would flood the log.
+_unknown_key_warnings: set[tuple[str, tuple[str, ...]]] = set()
+
 
 def resolve_project_path(value: str, project_root: Path = PROJECT_ROOT) -> Path:
     if not isinstance(value, str) or not value.strip():
@@ -90,6 +110,16 @@ def resolve_runtime_config_path(
 def load_runtime_config(path: Path) -> dict[str, Any]:
     """Load and minimally validate the hardware runtime configuration."""
     payload = _read_object(Path(path), "vision runtime config")
+    unknown = sorted(set(payload) - RUNTIME_CONFIG_KNOWN_KEYS)
+    if unknown:
+        marker = (str(Path(path).resolve()), tuple(unknown))
+        if marker not in _unknown_key_warnings:
+            _unknown_key_warnings.add(marker)
+            print(
+                f"[vision] runtime config {path}: unknown keys are ignored by "
+                f"the C++ runtime: {', '.join(unknown)}",
+                flush=True,
+            )
     if "rtsp" in payload and not isinstance(payload["rtsp"], dict):
         raise ProfileError("runtime config rtsp must be an object")
     video = payload.get("video", {})

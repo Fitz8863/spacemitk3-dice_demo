@@ -75,6 +75,40 @@ def test_component_points_to_single_runtime_config_and_loads_hardware_defaults()
     assert "video" not in component
 
 
+def test_runtime_config_unknown_keys_warn_once_and_still_load(tmp_path: Path, capsys):
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps({
+        "camera": "/dev/video0",
+        "ep_afinity": "14;15",  # typo for ep_affinity: both parsers would
+        # silently ignore it and run without EP affinity.
+        "_note": "tuning copy",
+    }))
+    runtime = load_runtime_config(config)
+    assert runtime["camera"] == "/dev/video0"
+    first = capsys.readouterr().out
+    assert "ep_afinity" in first
+    assert "unknown keys" in first
+    # The same (file, unknown-key set) warns once per process: the health
+    # metadata path reloads this file on every /api/health request.
+    load_runtime_config(config)
+    assert "ep_afinity" not in capsys.readouterr().out
+
+
+def test_runtime_config_known_keys_do_not_warn(tmp_path: Path, capsys):
+    config = tmp_path / "runtime.json"
+    config.write_text(json.dumps({
+        "camera": "/dev/video0",
+        "intra_threads": 2,
+        "queue_depth": 2,
+        "video": {"webrtc_base_url": "http://127.0.0.1:8889"},
+        "rtsp": {"enabled": True, "host": "127.0.0.1", "port": 8554},
+        "_note": "tuning copy",
+    }))
+    runtime = load_runtime_config(config)
+    assert runtime["rtsp"]["port"] == 8554
+    assert "unknown keys" not in capsys.readouterr().out
+
+
 def test_profile_allows_component_owned_webrtc_base_url_and_validates_timeout(tmp_path: Path):
     profile = _minimal_profile()
     profile["video"].pop("webrtc_base_url")
