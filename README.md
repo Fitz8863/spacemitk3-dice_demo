@@ -30,8 +30,8 @@
   "width": 1280,
   "height": 720,
   "fps": 25,
-  "intra_threads": 2,
-  "ep_affinity": "12;13",
+  "intra_threads": 1,
+  "ep_affinity": "12",
   "conf": 0.35,
   "iou": 0.45,
   "max_detections": 100,
@@ -58,7 +58,7 @@
 }
 ```
 
-`ep_affinity` 通过 SpaceMIT EP 选项 `SPACEMIT_EP_INTRA_THREAD_AFFINITY` 设置。配置中的核数量必须与 `intra_threads` 一致。当前默认是 `intra_threads=2`、`ep_affinity="12;13"`，只绑定 EP 推理线程；不会把整个进程的所有线程都绑定到 12、13。
+`ep_affinity` 通过 SpaceMIT EP 选项 `SPACEMIT_EP_INTRA_THREAD_AFFINITY` 设置。配置中的核数量必须与 `intra_threads` 一致。当前默认是 `intra_threads=1`、`ep_affinity="12"`，只绑定 EP 推理线程；不会把整个进程的所有线程都绑定到该核。
 
 `queue_depth` 目前保留用于兼容配置，但单路低延迟实现使用固定深度 1 的 latest-only 槽位，不会阻塞等待旧帧完成。
 
