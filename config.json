@@ -40,6 +40,8 @@
 
   "require_ring": true,
   "ring_val_max": 130,
+  "ring_sat_max": 90,
+  "ring_gray_margin": 45,
   "ring_min_ratio": 0.55,
 
   "hough_dp": 1.2,

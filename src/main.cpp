@@ -142,7 +142,8 @@ void usage() {
         "  --close-ksize N / --open-ksize N   形态学核\n"
         "  --min-radius-frac F / --max-radius-frac F\n"
         "  --min-circularity F / --min-fill-ratio F / --min-inlier-ratio F\n"
-        "  --ring-val-max N / --ring-ratio F   环带暗判据 V 阈值（默认 130）/ 覆盖比例下限\n"
+        "  --ring-val-max N / --ring-sat-max N / --ring-ratio F\n"
+        "                             环带判据：暗(V<N,默认130) 或 灰(S<N且比盘面暗,默认90) / 覆盖比例\n"
         "  --hough-cooldown N  Hough 兜底跑一次后冷却 N 帧（默认 5，0=不降频）\n"
         "  --max-axis-ratio F  长短轴比上限（斜视）\n"
         "  --expected N        期望圆个数，不够时触发 Hough 兜底\n"
@@ -450,6 +451,37 @@ int runSelfTest(const CircleParams& base) {
         if (dump_next_trace) { trace(res); dump_next_trace = false; }
     }
 
+    std::puts("[self-test] 9) 浅灰环的盘（环 V~175/S~68，不满足绝对暗度）-> 去饱和通道应接受");
+    {
+        // 回归用例（2026-09-18 实时翻车）：现场换了一个浅灰环的盘，环 V~150-190
+        // 在 ring_val_max=130 之外，纯暗度判据的覆盖在 0.55 门槛上颤抖 ->
+        // 时检时不检。灰环的"低饱和"（S~14-68 vs 地垫 S~184-201）才是跨盘种
+        // 稳定的身份信号 —— 本用例锁住"去饱和通道"。
+        const int W = 1280, H = 720;
+        const double cxL = 0.35 * W, cy = 0.60 * H, r = 0.10 * H;
+        cv::Mat mat(720, 1280, CV_8UC3);
+        mat(cv::Rect(0, 0, 640, 720)).setTo(cv::Scalar(40, 40, 200));
+        mat(cv::Rect(640, 0, 640, 720)).setTo(cv::Scalar(200, 90, 30));
+        cv::circle(mat, cv::Point((int)cxL, (int)cy), (int)(r * 1.35),
+                   cv::Scalar(128, 140, 175), -1);   // 浅灰环：V=175(>130 不暗) S=68(<90 灰)
+        cv::circle(mat, cv::Point((int)cxL, (int)cy), (int)r,
+                   cv::Scalar(240, 240, 240), -1);   // 白垫
+        CircleParams p2 = p;
+        p2.expected = 1;
+        CircleDetector det(p2);
+        DetectResult res = det.detect(mat);
+        std::printf("        检出 %zu 个 (method=%s)\n",
+                    res.circles.size(), res.method_used.c_str());
+        check(res.circles.size() == 1, "浅灰环盘被接受");
+        if (!res.circles.empty()) {
+            const double e = std::hypot(res.circles[0].cx - cxL, res.circles[0].cy - cy);
+            std::printf("        圆心误差 = %.2f px (容差 %.1f)\n", e, 0.15 * r);
+            check(e < 0.15 * r, "圆心准确");
+            check(res.circles[0].method == "mask", "走的是 mask 路径（不是 Hough 兜底）");
+        }
+        if (dump_next_trace) { trace(res); dump_next_trace = false; }
+    }
+
     std::printf("[self-test] %s（失败 %d 项）\n", fails == 0 ? "全部通过" : "存在失败", fails);
     return fails == 0 ? 0 : 1;
 }
@@ -552,6 +584,8 @@ int main(int argc, char** argv) {
         else if (k == "--min-fill-ratio")  { if (!val(v)) return 2; a.min_fill_ratio = std::atof(v); }
         else if (k == "--min-inlier-ratio"){ if (!val(v)) return 2; a.min_inlier_ratio = std::atof(v); }
         else if (k == "--ring-val-max") { if (!val(v)) return 2; a.ring_val_max = std::atoi(v); }
+        else if (k == "--ring-sat-max") { if (!val(v)) return 2; a.ring_sat_max = std::atoi(v); }
+        else if (k == "--ring-gray-margin") { if (!val(v)) return 2; a.ring_gray_margin = std::atoi(v); }
         else if (k == "--ring-ratio")  { if (!val(v)) return 2; a.ring_min_ratio = std::atof(v); }
         else if (k == "--hough-dp")    { if (!val(v)) return 2; a.hough_dp = std::atof(v); }
         else if (k == "--hough-param2"){ if (!val(v)) return 2; a.hough_param2 = std::atof(v); }
@@ -590,6 +624,8 @@ int main(int argc, char** argv) {
     p.min_fill_ratio    = a.min_fill_ratio;
     p.min_inlier_ratio  = a.min_inlier_ratio;
     p.ring_val_max      = a.ring_val_max;
+    p.ring_sat_max      = a.ring_sat_max;
+    p.ring_gray_margin  = a.ring_gray_margin;
     p.ring_min_ratio    = a.ring_min_ratio;
     p.require_ring      = a.require_ring;
     p.ellipse_fit       = a.ellipse_fit;

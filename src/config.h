@@ -54,6 +54,8 @@ struct AppConfig {
 
     bool   require_ring = true;
     int    ring_val_max = 130;   // 环带"暗"判据：V 低于此值才算深色环（实测环 ~85 / 地垫 ~208）
+    int    ring_sat_max = 90;    // 环带"灰"判据 S 上限（浅灰环盘 S~14-68；地垫 S~184-201）
+    int    ring_gray_margin = 45; // 灰判据需比盘面暗：V < rim_v - 此值（把白像素排除出灰通道）
     double ring_min_ratio = 0.55;
 
     double hough_dp = 1.2;

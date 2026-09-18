@@ -448,7 +448,8 @@ bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Mat& hsv,
     // 单点半径采样会整条整条地 miss。
     const double kDarkFrac[] = {0.94, 0.98, 1.02, 1.06, 1.10};
     int rim_total = 0, rim_white_n = 0, core_total = 0, core_white_n = 0;
-    double in_v_sum = 0;
+    double in_v_sum = 0, rim_v_sum = 0;
+    int white_v_max = 0;   // 候选内部最亮像素 = 白垫峰值亮度（灰通道 V-cap 的基准）
     for (int a = 0; a < kAngles; ++a) {
         const double t = 2.0 * CV_PI * a / kAngles;
         for (double f : kCoreFrac) {
@@ -456,7 +457,9 @@ bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Mat& hsv,
             cv::Vec3b px;
             if (!sample(q.x, q.y, px)) continue;
             ++core_total;
-            in_v_sum += px[2];
+            const int cv_ = use_min ? std::max({px[0], px[1], px[2]}) : px[2];
+            in_v_sum += cv_;
+            if (cv_ > white_v_max) white_v_max = cv_;
             if (isWhite(px)) ++core_white_n;
         }
         for (double f : kRimFrac) {
@@ -464,6 +467,9 @@ bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Mat& hsv,
             cv::Vec3b px;
             if (!sample(q.x, q.y, px)) continue;
             ++rim_total;
+            const int rv = use_min ? std::max({px[0], px[1], px[2]}) : px[2];
+            rim_v_sum += rv;
+            if (rv > white_v_max) white_v_max = rv;
             if (isWhite(px)) ++rim_white_n;
         }
     }
@@ -494,17 +500,37 @@ bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Mat& hsv,
         }
         if (valid > 0 && hits * 2 >= valid) ++angle_hit;
 
-        int dark_min = 255;
+        // 环像素的"灰"通道：S 低（去饱和，排除彩色地垫）且 V 明显低于候选内部
+        // 最亮值（= 白垫峰值；排除候选自身的白像素蹭到采样带——纯 S 低会把白
+        // 方块也放进来，自检场景 3 当场抓住过）。用峰值而非 rim 均值：掩码是
+        // "白垫+灰环"一体时 rim 会落在环上被拖低，峰值始终是垫子的白。
+        const double gray_v_cap = white_v_max > 0
+                                      ? white_v_max - p_.ring_gray_margin : 1e9;
+        int dark_min = 255, sat_min = 255;
         bool dark_valid = false;
         for (double f : kDarkFrac) {
             const cv::Point2f q = shapePoint(c, M, t, f);
             cv::Vec3b px;
             if (!sample(q.x, q.y, px)) continue;
-            const int v = use_min ? std::max({px[0], px[1], px[2]}) : px[2];
+            int v, s;
+            if (use_min) {          // min 模式采样自 BGR：V=max，S=(max-min)/max*255
+                const int mx = std::max({px[0], px[1], px[2]});
+                const int mn = std::min({px[0], px[1], px[2]});
+                v = mx;
+                s = mx > 0 ? (mx - mn) * 255 / mx : 0;
+            } else {                // hsv 模式采样自 HSV 图：px[1]=S, px[2]=V
+                v = px[2];
+                s = px[1];
+            }
             if (v < dark_min) dark_min = v;
+            if (s < sat_min) sat_min = s;
             dark_valid = true;
         }
-        if (dark_valid && dark_min < p_.ring_val_max) ++angle_dark;
+        // 命中 = "暗"或"灰"：深环走暗度通道（V < ring_val_max）；浅灰环走灰通道
+        // （S < ring_sat_max 且 V < rim_v - margin）。地垫两条都不满足：S~184-201。
+        if (dark_valid && (dark_min < p_.ring_val_max ||
+                           (sat_min < p_.ring_sat_max && dark_min < gray_v_cap)))
+            ++angle_dark;
     }
     if (ring_total < 16) { if (why) *why = "ring band out of image"; return false; }
     const double ring_ratio = double(angle_hit) / kAngles;

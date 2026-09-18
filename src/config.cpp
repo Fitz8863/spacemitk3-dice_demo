@@ -143,6 +143,8 @@ bool load_config(const std::string& path, AppConfig& c, std::string& error) {
             !get_dbl(root, "report_ellipse_at", c.report_ellipse_at, error) ||
             !get_bool(root, "require_ring", c.require_ring, error) ||
             !get_int(root, "ring_val_max", c.ring_val_max, error) ||
+            !get_int(root, "ring_sat_max", c.ring_sat_max, error) ||
+            !get_int(root, "ring_gray_margin", c.ring_gray_margin, error) ||
             !get_dbl(root, "ring_min_ratio", c.ring_min_ratio, error) ||
             !get_dbl(root, "hough_dp", c.hough_dp, error) ||
             !get_dbl(root, "hough_param1", c.hough_param1, error) ||
@@ -198,6 +200,8 @@ bool load_config(const std::string& path, AppConfig& c, std::string& error) {
         if (c.sat_max < 0 || c.sat_max > 255) return bad("sat_max 需在 0..255");
         if (c.val_min < 0 || c.val_min > 255) return bad("val_min 需在 0..255");
         if (c.ring_val_max < 0 || c.ring_val_max > 255) return bad("ring_val_max 需在 0..255");
+        if (c.ring_sat_max < 0 || c.ring_sat_max > 255) return bad("ring_sat_max 需在 0..255");
+        if (c.ring_gray_margin < 0 || c.ring_gray_margin > 255) return bad("ring_gray_margin 需在 0..255");
         if (c.min_radius_frac <= 0 || c.max_radius_frac <= c.min_radius_frac)
             return bad("半径比例区间非法");
         if (c.max_axis_ratio < 1.0) return bad("max_axis_ratio 必须 >= 1");
