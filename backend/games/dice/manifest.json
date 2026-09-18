@@ -174,7 +174,8 @@
 				],
 				"on_intent": {
 					"start_shake": {
-						"to": "shake_countdown"
+						"to": "shake_countdown",
+						"after_speech": true
 					},
 					"back": {
 						"to": "rules"

@@ -154,6 +154,15 @@ class SchemaValidationTests(unittest.TestCase):
         with self.assertRaises(StateMachineError):
             validate_state_machine(payload, "dice")
 
+    def test_after_speech_must_be_a_boolean(self):
+        payload = machine()
+        payload["states"]["ready"]["on_intent"]["start_shake"] = {
+            "to": "shake_countdown",
+            "after_speech": "true",
+        }
+        with self.assertRaises(StateMachineError):
+            validate_state_machine(payload, "dice")
+
     def test_initial_must_name_a_declared_state(self):
         with self.assertRaises(StateMachineError):
             validate_state_machine(machine(initial="nowhere"), "dice")
@@ -381,6 +390,56 @@ class RoundEngineTests(unittest.TestCase):
         # No speech_done is sent; the fallback must keep the round moving.
         self.assertTrue(wait_for(lambda: reached(round_, "analysis"), timeout=20))
         self.assertTrue(wait_for(lambda: self.events_of(round_, "speech_timeout")))
+
+    def _gated_machine(self):
+        payload = machine()
+        payload["states"]["ready"]["on_intent"]["start_shake"] = {
+            "to": "shake_countdown",
+            "after_speech": True,
+        }
+        return payload
+
+    def _in_ready_with_announcement(self, machine_payload, **kwargs):
+        round_ = self.make_round(machine_payload=machine_payload, **kwargs)
+        round_.submit_intent("confirm")
+        self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "ready"))
+        # The opening announcement must be registered before the gate closes.
+        self.assertTrue(
+            wait_for(
+                lambda: [s for s in self.events_of(round_, "speech") if s.get("text") == "准备"]
+            )
+        )
+        return round_
+
+    def test_after_speech_intent_rejected_until_entry_speech_acknowledged(self):
+        round_ = self._in_ready_with_announcement(self._gated_machine())
+        # During the announcement the gated intent is refused with the same
+        # silent code a state-mismatched press already gets.
+        with self.assertRaises(IntentRejectedError):
+            round_.submit_intent("start_shake")
+        self.assertEqual(round_.snapshot()["state"], "ready")
+        directive = next(s for s in self.events_of(round_, "speech") if s.get("text") == "准备")
+        round_.submit_intent("speech_done", {"directive_id": directive["directive_id"]})
+        round_.submit_intent("start_shake")
+        self.assertTrue(wait_for(lambda: reached(round_, "shake_countdown")))
+
+    def test_after_speech_gate_is_per_intent(self):
+        round_ = self._in_ready_with_announcement(self._gated_machine())
+        # back carries no after_speech: leaving mid-announcement still works.
+        round_.submit_intent("back")
+        self.assertTrue(wait_for(lambda: round_.snapshot()["status"] == "exited"))
+
+    def test_after_speech_gate_releases_when_client_never_acks(self):
+        round_ = self._in_ready_with_announcement(
+            self._gated_machine(), speech_ack_fallback_seconds=0.2
+        )
+        with self.assertRaises(IntentRejectedError):
+            round_.submit_intent("start_shake")
+        # A silent client (no browser to acknowledge) cannot pin the gate
+        # forever: the speech entry expires and the intent is accepted.
+        time.sleep(0.3)
+        round_.submit_intent("start_shake")
+        self.assertTrue(wait_for(lambda: reached(round_, "shake_countdown")))
 
     def test_adjudication_result_routes_and_renders_placeholders(self):
         def adjudicate(manifest, on_event, is_cancelled, on_log):

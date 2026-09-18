@@ -586,6 +586,20 @@ def test_manifest_voice_phrases_cover_every_state_intent():
     assert "确定" in phrases["start_shake"]
 
 
+def test_ready_start_button_waits_for_the_opening_announcement():
+    """ready 的绿键必须等开场播报念完（after_speech，2026-09-18）。
+
+    回归守护：此前播报中途按绿键/Enter 可直接打断台词进入倒计时；现在
+    start_shake 声明 after_speech，这条声明被误删时这里先红。
+    """
+    ready = dice_state("ready")
+    start = ready["on_intent"]["start_shake"]
+    assert start["to"] == "shake_countdown"
+    assert start["after_speech"] is True
+    # back 不设闸：播报中途仍可返回规则页。
+    assert "after_speech" not in ready["on_intent"]["back"]
+
+
 def test_frontend_cancels_the_round_when_the_page_is_hidden():
     """pagehide 保险（方案A）：关标签/刷新即 sendBeacon 取消对局。"""
     app = (ROOT / "web/app.js").read_text(encoding="utf-8")

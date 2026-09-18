@@ -199,6 +199,13 @@ def _validate_state(name: str, state: Any, field: str) -> None:
             if not isinstance(intent_name, str) or not _INTENT_NAME_RE.fullmatch(intent_name):
                 raise _error(f"{field}.on_intent", f"invalid intent name {intent_name!r}")
             _validate_transition(transition, f"{field}.on_intent.{intent_name}")
+            # ``after_speech`` gates the intent behind the state's on_enter
+            # speech; validated here so a quoted "true" cannot silently read
+            # as on.
+            if "after_speech" in transition and not isinstance(transition["after_speech"], bool):
+                raise _error(
+                    f"{field}.on_intent.{intent_name}.after_speech", "must be a boolean"
+                )
     if "on_event" in state:
         events = state["on_event"]
         if not isinstance(events, dict) or not events:

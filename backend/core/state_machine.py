@@ -54,12 +54,15 @@ _TERMINAL_STATUSES = {"exited", "cancelled", "error"}
 class IntentRejectedError(DiceArenaError):
     """The intent is not accepted in the round's current state."""
 
-    def __init__(self, round_id: str, state: str, intent: str) -> None:
-        super().__init__(
-            f"intent {intent!r} is not accepted in state {state!r}",
-            "ROUND_INTENT_REJECTED",
-            409,
-        )
+    def __init__(self, round_id: str, state: str, intent: str, *, gated: bool = False) -> None:
+        if gated:
+            message = (
+                f"intent {intent!r} is gated until the state's entry speech "
+                f"finishes in state {state!r}"
+            )
+        else:
+            message = f"intent {intent!r} is not accepted in state {state!r}"
+        super().__init__(message, "ROUND_INTENT_REJECTED", 409)
 
 
 class RoundClosedError(DiceArenaError):
@@ -125,6 +128,11 @@ class GameRound:
         # directive_id -> monotonic deadline for the speech gate; entries are
         # released by speech_done and expire lazily if a client disappears.
         self._active_speech: dict[str, float] = {}
+        # Directive ids issued by the current state's on_enter actions.  A
+        # transition declared with ``after_speech`` is refused while any of
+        # these is still unacknowledged, so the state's opening announcement
+        # must finish before that intent takes effect.
+        self._entry_speech: set[str] = set()
         self._worker: threading.Thread | None = None
 
     # ---- lifecycle -----------------------------------------------------
@@ -160,6 +168,16 @@ class GameRound:
             transition = (state.get("on_intent") or {}).get(name)
             if transition is None:
                 raise IntentRejectedError(self.id, self.state, name)
+            if (
+                isinstance(transition, dict)
+                and transition.get("after_speech")
+                and self._entry_speech_active_locked()
+            ):
+                # The state asked this intent to wait for its opening
+                # announcement.  A press during playback is normal gameplay
+                # at the wrong moment, not an error: it is refused with the
+                # same silent code the frontend already swallows.
+                raise IntentRejectedError(self.id, self.state, name, gated=True)
             # The transition only applies if no other transition wins the
             # race between reading it here and applying it below.
             expected_generation = self._generation
@@ -288,6 +306,18 @@ class GameRound:
         for directive_id in expired:
             del self._active_speech[directive_id]
 
+    def _entry_speech_active_locked(self) -> bool:
+        """True while the current state's on_enter speech is unacknowledged.
+
+        Uses the same lazy expiry as the ASR speech gate, so a client that
+        vanished without acknowledging cannot pin an ``after_speech`` intent
+        forever either.
+        """
+        self._prune_speech_locked()
+        return any(
+            directive_id in self._active_speech for directive_id in self._entry_speech
+        )
+
     # ---- transitions ----------------------------------------------------
 
     def _enter_state(self, name: str) -> None:
@@ -296,6 +326,7 @@ class GameRound:
                 return
             self.state = name
             self._generation += 1
+            self._entry_speech = set()
             generation = self._generation
             state = self.machine["states"][name]
             self._emit_locked({
@@ -359,7 +390,7 @@ class GameRound:
                 if not self._worker_alive(generation):
                     return
                 if action.get("action") == "speech":
-                    directive = self._emit_speech(action)
+                    directive = self._emit_speech(action, entry_generation=generation)
                     if action.get("await"):
                         if not self._wait_speech_done(generation, directive["directive_id"]):
                             return
@@ -443,8 +474,15 @@ class GameRound:
 
     # ---- actions --------------------------------------------------------
 
-    def _emit_speech(self, action: Mapping[str, Any]) -> dict[str, Any]:
-        """Resolve one speech action against the current context and emit it."""
+    def _emit_speech(self, action: Mapping[str, Any], *, entry_generation: int | None = None) -> dict[str, Any]:
+        """Resolve one speech action against the current context and emit it.
+
+        ``entry_generation`` is set only for a state's on_enter speech: the
+        directive is registered as that state's entry speech **atomically with
+        the emission**, so an ``after_speech`` intent cannot slip in between
+        the event and the registration.  The generation guard keeps a
+        superseded worker from polluting the successor state's set.
+        """
         with self.condition:
             context = {
                 key: value
@@ -480,6 +518,12 @@ class GameRound:
         directive["voice"] = entry.get("voice") or voice_default
         directive["speed"] = entry.get("speed") or speed_default
         with self.condition:
+            if (
+                entry_generation is not None
+                and self.status not in _TERMINAL_STATUSES
+                and self._generation == entry_generation
+            ):
+                self._entry_speech.add(directive["directive_id"])
             self._active_speech[directive["directive_id"]] = (
                 time.monotonic() + self._speech_ack_fallback_seconds
             )
