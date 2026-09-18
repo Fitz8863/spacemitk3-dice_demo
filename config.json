@@ -39,7 +39,7 @@
   "report_ellipse_at": 1.08,
 
   "require_ring": true,
-  "ring_dark_margin": 22.0,
+  "ring_val_max": 130,
   "ring_min_ratio": 0.55,
 
   "hough_dp": 1.2,

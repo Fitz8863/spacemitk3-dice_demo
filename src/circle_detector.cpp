@@ -411,9 +411,13 @@ void CircleDetector::radiusRange(const cv::Size& sz, double& rmin, double& rmax)
 // ---------------------------------------------------------------------------
 // 内盘 / 环带采样 + 判据（mask 与 hough 共用，圆与椭圆共用）
 //
-// 物理模型：一个"白色盘面"被一圈"非白环带"包住。
-//   - 内盘：p(t, 0 / 0.32 / 0.50 / 0.68)，要求 >=60% 是白的
-//   - 环带：p(t, 1.08 / 1.16 / 1.24)，要求多数角度上整条射线被非白占据
+// 物理模型：一个"白色盘面"被一圈"深色环带"包住。
+//   - 近边缘带：p(t, 0.62 / 0.78 / 0.92)，要求 >=55% 白（盘心被压住时靠边仍露白）
+//   - 整盘弱要求：p(t, 0 / 0.30 / 0.50 / 0.72 / 0.90)，白比例 >=20%（排除整盘黑/彩）
+//   - 环带非白：p(t, 1.08 / 1.16 / 1.24)，要求多数角度非白（环或地垫都算）
+//   - 环带是"深色环"：p(t, 0.94..1.10 步长 0.04) 逐角度取最小 V < ring_val_max
+//     —— 真实暗环细且贴内（f≈0.95~1.05，V 中位 ~85-127），地垫很亮（~180-225）；
+//        白块贴地垫没有环，最小 V 也有 ~180，两边的间隔足够。
 // 参数 s 是相对形状边界的缩放，所以椭圆盘上环带会自动跟着椭圆走。
 // ---------------------------------------------------------------------------
 bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Mat& hsv,
@@ -437,6 +441,12 @@ bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Mat& hsv,
     // 整体弱要求：只是排除"整个盘都是黑/彩"的情况，不做强约束
     const double kCoreFrac[] = {0.0, 0.30, 0.50, 0.72, 0.90};
     const double kRingFrac[] = {1.08, 1.16, 1.24};
+    // 暗环判据的采样带。★ 实测（2026-09-18，samples 三帧径向 V 剖面）：真实深色环
+    // 比想象的细且贴内 —— 白垫边界外 f≈0.95~1.05 处 V 中位才 103~127，f≥1.08 已经
+    // 是地垫（V 180~225）。所以"暗"必须在 0.94~1.10 这条带上找，并且逐角度取
+    // **最小 V**（沿这条射线只要环上存在暗像素就算命中）—— 环窄、亮度随角度涨落，
+    // 单点半径采样会整条整条地 miss。
+    const double kDarkFrac[] = {0.94, 0.98, 1.02, 1.06, 1.10};
     int rim_total = 0, rim_white_n = 0, core_total = 0, core_white_n = 0;
     double in_v_sum = 0;
     for (int a = 0; a < kAngles; ++a) {
@@ -466,7 +476,10 @@ bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Mat& hsv,
     const double inner_v = in_v_sum / core_total;
 
     // --- 环带 -------------------------------------------------------------
-    int angle_hit = 0, ring_total = 0, ring_nonwhite = 0;
+    // 非白与"暗"共用同一个角度循环：非白看外带 {1.08,1.16,1.24}（环或地垫都算，
+    // 语义 = 周围确实有东西包着）；暗看内带 {0.94..1.10} 的逐角度最小 V。
+    // 暗判据零新增采样循环之外的成本 —— 只是同一批几何采样点上的整数比较。
+    int angle_hit = 0, ring_total = 0, angle_dark = 0;
     double ring_v_sum = 0;
     for (int a = 0; a < kAngles; ++a) {
         const double t = 2.0 * CV_PI * a / kAngles;
@@ -477,13 +490,25 @@ bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Mat& hsv,
             if (!sample(q.x, q.y, px)) continue;
             ++valid; ++ring_total;
             ring_v_sum += px[2];
-            if (!isWhite(px)) { ++hits; ++ring_nonwhite; }
+            if (!isWhite(px)) ++hits;
         }
         if (valid > 0 && hits * 2 >= valid) ++angle_hit;
+
+        int dark_min = 255;
+        bool dark_valid = false;
+        for (double f : kDarkFrac) {
+            const cv::Point2f q = shapePoint(c, M, t, f);
+            cv::Vec3b px;
+            if (!sample(q.x, q.y, px)) continue;
+            const int v = use_min ? std::max({px[0], px[1], px[2]}) : px[2];
+            if (v < dark_min) dark_min = v;
+            dark_valid = true;
+        }
+        if (dark_valid && dark_min < p_.ring_val_max) ++angle_dark;
     }
     if (ring_total < 16) { if (why) *why = "ring band out of image"; return false; }
     const double ring_ratio = double(angle_hit) / kAngles;
-    const double ring_nonwhite_ratio = double(ring_nonwhite) / ring_total;
+    const double ring_dark_ratio = double(angle_dark) / kAngles;
     const double contrast = inner_v - ring_v_sum / ring_total;
 
     char b[288];
@@ -503,18 +528,21 @@ bool CircleDetector::validateShape(const cv::Mat& bgr, const cv::Mat& hsv,
                                      ring_ratio, p_.ring_min_ratio); *why = b; }
             return false;
         }
-        if (contrast < p_.ring_dark_margin && ring_nonwhite_ratio < 0.75) {
-            if (why) { std::snprintf(b, sizeof(b), "ring contrast weak: %.1f < %.1f and nonwhite %.2f < 0.75",
-                                     contrast, p_.ring_dark_margin, ring_nonwhite_ratio); *why = b; }
+        if (ring_dark_ratio < p_.ring_min_ratio) {
+            if (why) { std::snprintf(b, sizeof(b), "ring not dark: %.2f < %.2f (周围非白带不够暗——是亮色地垫而非深色环?)",
+                                     ring_dark_ratio, p_.ring_min_ratio); *why = b; }
             return false;
         }
+        // ★ 故意没有 contrast 下限：盘上放着骰子/阴影会把内盘平均亮度拖低，
+        //   真实帧实测出现过 contrast=-3.3 的好盘（dice_on_both_pads 左盘）。
+        //   身份判别已由上面的暗环覆盖承担，contrast 只作为诊断字段输出。
     }
 
     out.ring_ratio = ring_ratio;
     out.contrast   = contrast;
     if (why) {
-        std::snprintf(b, sizeof(b), "ok rim_white=%.2f core_white=%.2f ring=%.2f contrast=%.1f",
-                      rim_white, core_white, ring_ratio, contrast);
+        std::snprintf(b, sizeof(b), "ok rim_white=%.2f core_white=%.2f ring=%.2f dark=%.2f contrast=%.1f",
+                      rim_white, core_white, ring_ratio, ring_dark_ratio, contrast);
         *why = b;
     }
     return true;

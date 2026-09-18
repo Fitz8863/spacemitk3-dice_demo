@@ -53,7 +53,7 @@ struct AppConfig {
     double report_ellipse_at = 1.08;
 
     bool   require_ring = true;
-    double ring_dark_margin = 22.0;
+    int    ring_val_max = 130;   // 环带"暗"判据：V 低于此值才算深色环（实测环 ~85 / 地垫 ~208）
     double ring_min_ratio = 0.55;
 
     double hough_dp = 1.2;

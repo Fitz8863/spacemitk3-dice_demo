@@ -142,7 +142,7 @@ void usage() {
         "  --close-ksize N / --open-ksize N   形态学核\n"
         "  --min-radius-frac F / --max-radius-frac F\n"
         "  --min-circularity F / --min-fill-ratio F / --min-inlier-ratio F\n"
-        "  --ring-margin F / --ring-ratio F\n"
+        "  --ring-val-max N / --ring-ratio F   环带暗判据 V 阈值（默认 130）/ 覆盖比例下限\n"
         "  --hough-cooldown N  Hough 兜底跑一次后冷却 N 帧（默认 5，0=不降频）\n"
         "  --max-axis-ratio F  长短轴比上限（斜视）\n"
         "  --expected N        期望圆个数，不够时触发 Hough 兜底\n"
@@ -353,6 +353,7 @@ int runSelfTest(const CircleParams& base) {
                         e, tol, res.circles[0].r, r);
             check(e < tol, "左盘圆心仍在容差内");
         }
+        if (dump_next_trace) { trace(res); dump_next_trace = false; }
     }
 
     std::puts("[self-test] 5) 斜视：白垫画成 1.6:1 的椭圆 + 一侧倾斜 25 度 -> 应检出椭圆");
@@ -428,6 +429,25 @@ int runSelfTest(const CircleParams& base) {
         check(used < 10, "无用后确实降频（不是每帧都跑）");
         check(used >= 3, "仍在周期性重试（没有彻底放弃兜底）");
         check(last5 < first2, "降频后耗时下降");
+    }
+
+    std::puts("[self-test] 8) 白盘直接放在地垫上（无深色环）-> 环带暗度判据应拒绝");
+    {
+        // 回归用例（2026-09-18）：环带判据收紧前，白盘 + 一圈亮色地垫
+        // （地垫 V~208、白盘 V~240，contrast 甚至 > 0）会被误认成盘。
+        // 现在"环带必须大半是暗（V < ring_val_max）"应把这种候选拒掉。
+        const int W = 1280, H = 720;
+        const double r = 0.115 * H;
+        cv::Mat mat(720, 1280, CV_8UC3);
+        mat(cv::Rect(0, 0, 640, 720)).setTo(cv::Scalar(40, 40, 200));
+        mat(cv::Rect(640, 0, 640, 720)).setTo(cv::Scalar(200, 90, 30));
+        cv::circle(mat, cv::Point((int)(0.20 * W), (int)(0.62 * H)), (int)r,
+                   cv::Scalar(240, 240, 240), -1);   // 没有外环，直接贴地垫
+        CircleDetector det(p);
+        DetectResult res = det.detect(mat);
+        std::printf("        检出 %zu 个\n", res.circles.size());
+        check(res.circles.empty(), "无深色环的白盘未被误认（ring not dark 拦截）");
+        if (dump_next_trace) { trace(res); dump_next_trace = false; }
     }
 
     std::printf("[self-test] %s（失败 %d 项）\n", fails == 0 ? "全部通过" : "存在失败", fails);
@@ -531,7 +551,7 @@ int main(int argc, char** argv) {
         else if (k == "--min-circularity") { if (!val(v)) return 2; a.min_circularity = std::atof(v); }
         else if (k == "--min-fill-ratio")  { if (!val(v)) return 2; a.min_fill_ratio = std::atof(v); }
         else if (k == "--min-inlier-ratio"){ if (!val(v)) return 2; a.min_inlier_ratio = std::atof(v); }
-        else if (k == "--ring-margin") { if (!val(v)) return 2; a.ring_dark_margin = std::atof(v); }
+        else if (k == "--ring-val-max") { if (!val(v)) return 2; a.ring_val_max = std::atoi(v); }
         else if (k == "--ring-ratio")  { if (!val(v)) return 2; a.ring_min_ratio = std::atof(v); }
         else if (k == "--hough-dp")    { if (!val(v)) return 2; a.hough_dp = std::atof(v); }
         else if (k == "--hough-param2"){ if (!val(v)) return 2; a.hough_param2 = std::atof(v); }
@@ -569,7 +589,7 @@ int main(int argc, char** argv) {
     p.min_circularity   = a.min_circularity;
     p.min_fill_ratio    = a.min_fill_ratio;
     p.min_inlier_ratio  = a.min_inlier_ratio;
-    p.ring_dark_margin  = a.ring_dark_margin;
+    p.ring_val_max      = a.ring_val_max;
     p.ring_min_ratio    = a.ring_min_ratio;
     p.require_ring      = a.require_ring;
     p.ellipse_fit       = a.ellipse_fit;
