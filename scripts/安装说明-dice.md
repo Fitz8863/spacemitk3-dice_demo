@@ -70,12 +70,12 @@ mediamtx 没跑。`systemctl --user status mediamtx` 检查，没装就先装 me
 
 **摄像头识别不到？**
 `ls /dev/video*` 与 `v4l2-ctl --list-devices` 找到 USB 摄像头的设备号，修改
-`vision/yolov8_adjudicator/config.json` 的 `camera` 字段（默认 `/dev/video1`），重启服务。
+`backend/games/dice/adjudicator_config.json` 的 `camera` 字段（默认 `/dev/video1`），重启服务。
 **接了多台摄像头时**，直接运行包根目录的 `./detect.sh`——它会列出每台相机的型号、
 USB 口位置和采集节点（一台相机会占多个 /dev/video 节点，只有采集节点可用于视觉程序）。
 
 **摄像头型号与源部署机不同时（首块新板实测经验）**，还需按相机能力调整
-`vision/yolov8_adjudicator/config.json` 以下字段：
+`backend/games/dice/adjudicator_config.json` 以下字段：
 - `fps`：引擎对 720p@25 有 24fps 特判（源机 C920 通告 24fps）；相机只通告
   25/30fps 时改 `30`；
 - `focus` / `zoom`：固定焦距相机（如 C270）没有这两个控制，改 `-1` 跳过设置
@@ -83,7 +83,7 @@ USB 口位置和采集节点（一台相机会占多个 /dev/video 节点，只�
 
 **网页没有骰子识别实时画面？**
 该画面依赖 RTSP 推流（VPU 硬编码）。若本机 VPU 编码设备与源部署机不一致
-（引擎日志出现 MPP-ERROR 刷屏后崩溃），可把 `vision/yolov8_adjudicator/config.json`
+（引擎日志出现 MPP-ERROR 刷屏后崩溃），可把 `backend/games/dice/adjudicator_config.json`
 的 `rtsp.enabled` 改为 `false` —— 裁决识别不受影响，仅网页画面缺失。
 
 **健康检查里 tts_gptsovits 显示异常？**

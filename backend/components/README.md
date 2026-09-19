@@ -186,9 +186,10 @@ the model, class map, rule, prompts, per-game video path, timeout and
 post-result hold. Do not add a second `vision_profile.json` beside the
 manifest.
 
-The YOLO runtime's deployment defaults live in
-`vision/yolov8_adjudicator/config.json`: camera, inference/EP settings, RTSP
-and the MediaMTX WebRTC base URL. The vision component config only contains
-provider lifecycle/runtime paths and LLM endpoint/model/key settings.
+The YOLO runtime's hardware lives per game: each manifest's
+`vision_profile.runtime_config` (required) points at that game's
+`backend/games/<id>/adjudicator_config.json` — camera, inference/EP
+settings, RTSP and the MediaMTX WebRTC base URL. The vision component
+config only contains provider lifecycle/runtime paths.
 Games still provide only a safe path such as
 `/dice/`; the deployment WebRTC base URL comes from the runtime config.

@@ -1,5 +1,5 @@
 {
-  "_note": "rps 专属的视觉 runtime 硬件配置（骨架期暂存：manifest 的 vision_profile 尚未声明 runtime_config 指向本文件，等视觉模型训练好接回时加一行即生效）。整份替换、不与共享文件做字段级合并：这里没写的键会回落到 C++ 编译期默认值，加字段请整份补齐。与 dice 的差异只有分辨率：1920x1080@30fps 拿更广视角——板上实测 C920 的 1080p 只有 30fps 档（无 25fps），zoom 100 已是该镜头最广端，广角增益全部来自分辨率。",
+  "_note": "rps 专属的视觉 runtime 硬件配置（骨架期暂存：manifest 的 vision_profile 尚未声明，等视觉模型训练好接回时加上 vision_profile 并以 runtime_config 指向本文件即生效——runtime_config 是必填项）。整份替换、不做字段级合并：这里没写的键会回落到 C++ 编译期默认值，加字段请整份补齐。与 dice 的差异只有分辨率：1920x1080@30fps 拿更广视角——板上实测 C920 的 1080p 只有 30fps 档（无 25fps），zoom 100 已是该镜头最广端，广角增益全部来自分辨率。",
   "camera": "/dev/video1",
   "device": "",
   "width": 1920,

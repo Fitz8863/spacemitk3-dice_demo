@@ -495,10 +495,10 @@ def test_dice_declares_its_own_confidence_threshold():
     assert isinstance(confidence, (int, float)) and 0 < confidence < 1
 
     runtime_config = _json.loads(
-        (ROOT / "vision/yolov8_adjudicator/config.json").read_text(encoding="utf-8")
+        (ROOT / "backend/games/dice/adjudicator_config.json").read_text(encoding="utf-8")
     )
-    # The shared runtime config is hardware/deployment only now; a game-owned
-    # threshold must not reappear there, or it silently applies to every game.
+    # The per-game hardware config is hardware-only; a game-owned threshold
+    # must not reappear there either, or the manifest value would silently lose.
     assert "conf" not in runtime_config
 
 
@@ -537,15 +537,12 @@ def _write_runtime_config(path: Path, **overrides) -> Path:
     return path
 
 
-def test_a_game_can_point_at_its_own_hardware_config(tmp_path: Path):
-    """游戏 manifest 可以声明自己的硬件配置文件，且解析优先于共享默认。"""
+def test_a_game_points_at_its_own_hardware_config(tmp_path: Path):
+    """runtime_config 是 runtime 硬件的唯一来源（共享部署默认已删除，
+    组件配置的 runtime.config 指针一并移除）。"""
     from components.vision_yolov8_adjudicator.profile import resolve_runtime_config_path
 
     own = _write_runtime_config(tmp_path / "rps-runtime.json", camera="/dev/video3")
-    component = {"runtime": {"config": "vision/yolov8_adjudicator/config.json"}}
-
-    shared = resolve_runtime_config_path(component)
-    assert shared.name == "config.json"
 
     # A relative path is resolved against the repository root, so the test
     # reaches the file through a path relative to ROOT.
@@ -553,9 +550,9 @@ def test_a_game_can_point_at_its_own_hardware_config(tmp_path: Path):
     if rel is None:
         # tmp_path is outside the repo: assert the rejection instead.
         with pytest.raises(Exception):
-            resolve_runtime_config_path(component, profile={"runtime_config": str(own)})
+            resolve_runtime_config_path({"runtime_config": str(own)})
         return
-    resolved = resolve_runtime_config_path(component, profile={"runtime_config": str(rel)})
+    resolved = resolve_runtime_config_path({"runtime_config": str(rel)})
     assert resolved == own.resolve()
 
 
@@ -563,14 +560,14 @@ def test_per_game_runtime_config_must_stay_inside_the_project():
     """绝对路径与 .. 越界必须被拒绝——否则游戏能把运行时指向任意文件。"""
     from components.vision_yolov8_adjudicator.profile import resolve_runtime_config_path
 
-    component = {"runtime": {"config": "vision/yolov8_adjudicator/config.json"}}
     for bad in ("/etc/passwd", "../../etc/passwd", "backend/../../outside.json"):
         with pytest.raises(Exception):
-            resolve_runtime_config_path(component, profile={"runtime_config": bad})
+            resolve_runtime_config_path({"runtime_config": bad})
 
 
-def test_profile_validation_accepts_and_shape_checks_runtime_config():
-    """runtime_config 是可选字段；声明了就必须是仓库内相对路径。"""
+def test_profile_validation_requires_runtime_config():
+    """runtime_config 必填（共享部署默认 2026-09-20 删除）：不写直接拒载，
+    缺失错误在加载期暴露而不是裁决那一刻 runtime 起不来。"""
     from components.vision_yolov8_adjudicator.profile import ProfileError, validate_profile
 
     def valid_profile():
@@ -578,6 +575,7 @@ def test_profile_validation_accepts_and_shape_checks_runtime_config():
         p = _profile("dice")
         p["vision"]["class_map"] = {"0": "1"}
         p["vision"]["participants"] = ["LEFT", "RIGHT"]
+        p["runtime_config"] = "backend/games/dice/adjudicator_config.json"
         p["llm"] = {
             "enabled": False,
             "context_mode": "single_turn_no_history",
@@ -588,16 +586,20 @@ def test_profile_validation_accepts_and_shape_checks_runtime_config():
         p["video"] = {"enabled": True, "path": "/dice/det"}
         return p
 
-    # Optional: a game with no hardware differences simply omits it.
     validate_profile(valid_profile())
 
-    # Declared: accepted when it is a repository-relative path.
-    declared = valid_profile()
-    declared["runtime_config"] = "vision/yolov8_adjudicator/config.json"
-    validate_profile(declared)
+    # Missing, empty, or non-string: rejected — there is no default to inherit.
+    for bad in (None, "", "   ", 5):
+        broken = valid_profile()
+        if bad is None:
+            broken.pop("runtime_config")
+        else:
+            broken["runtime_config"] = bad
+        with pytest.raises(ProfileError):
+            validate_profile(broken)
 
-    # Rejected shapes: empty, non-string, absolute, and traversal.
-    for bad in ("", "   ", 5, "/abs/path.json", "../escape.json"):
+    # Rejected shapes: absolute and traversal.
+    for bad in ("/abs/path.json", "../escape.json"):
         broken = valid_profile()
         broken["runtime_config"] = bad
         with pytest.raises(ProfileError):

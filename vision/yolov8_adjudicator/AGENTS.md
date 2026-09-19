@@ -28,13 +28,15 @@ If the SDK is outside system paths, add `-DSPACEMIT_ORT_ROOT=/path/to/sdk`.
 Run the model and preprocessing smoke test without a camera:
 
 ```bash
-./build/yolov8_camera --model ../../backend/games/dice/models/best.q.onnx --self-test --no-display
+./build/yolov8_camera --config ../../backend/games/dice/adjudicator_config.json \
+  --model ../../backend/games/dice/models/best.q.onnx --yolov8 --self-test --no-display
 ```
 
 Run a bounded headless camera test with `--device /dev/videoN` or `--camera N`:
 
 ```bash
-./build/yolov8_camera --model ../../backend/games/dice/models/best.q.onnx --camera 1 \
+./build/yolov8_camera --config ../../backend/games/dice/adjudicator_config.json \
+  --model ../../backend/games/dice/models/best.q.onnx --camera 1 \
   --no-display --max-frames 30
 ```
 

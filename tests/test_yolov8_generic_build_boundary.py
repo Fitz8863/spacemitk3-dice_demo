@@ -5,7 +5,16 @@ import json
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "vision" / "yolov8_adjudicator" / "src" / "main.cpp"
 CMAKE = ROOT / "vision" / "yolov8_adjudicator" / "CMakeLists.txt"
-RUNTIME_CONFIG = ROOT / "vision" / "yolov8_adjudicator" / "config.json"
+RUNTIME_CONFIG = ROOT / "backend" / "games" / "dice" / "adjudicator_config.json"
+
+
+def test_shared_runtime_config_stays_deleted():
+    """共享部署默认已于 2026-09-20 删除：runtime_config 必填、每游戏一份。
+
+    复活它会同时复活「游戏忘了声明就静默用别人摄像头」的负价值兜底；
+    要恢复先改 resolver + validate_profile 并回滚本条。
+    """
+    assert not (ROOT / "vision" / "yolov8_adjudicator" / "config.json").exists()
 
 
 def test_runtime_has_adjudicator_directory_and_no_objdetect_directory():
@@ -203,11 +212,12 @@ def test_runtime_has_no_cpp_llm_or_legacy_dice_state_machine():
 
 
 def test_runtime_config_owns_hardware_only_settings():
-    """共享硬件配置只放"这台板子+这张桌子"的属性。
+    """每游戏的硬件配置只放"这台板子+这张桌子"的属性。
 
     LLM 凭证在 LLM 组件；模型/稳定帧/阈值/分界线门控这些**游戏语义**参数在
-    游戏 manifest（并按游戏各自可覆盖）。此前它们混在这份共享文件里、会被
-    所有游戏继承——2026-09-15 起已归位，这里把边界钉住。
+    游戏 manifest（并按游戏各自可覆盖）。此前它们混在共享文件里、会被所有
+    游戏继承——2026-09-15 起归位，这里把边界钉住（共享文件本身已于
+    2026-09-20 删除，现检查的是 dice 的 per-game 硬件文件）。
     """
     config = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
     assert "llm" not in config
@@ -220,10 +230,10 @@ def test_runtime_config_owns_hardware_only_settings():
         "display_enabled",
         "yolov8_enabled",
     ):
-        assert game_owned not in config, f"{game_owned} 属于游戏 manifest，不该在共享硬件配置里"
+        assert game_owned not in config, f"{game_owned} 属于游戏 manifest，不该在硬件配置里"
     # The hardware it does own must stay.
     for hardware in ("camera", "width", "height", "fps", "ep_affinity", "focus", "zoom"):
-        assert hardware in config, f"{hardware} 是硬件属性，必须留在共享配置里"
+        assert hardware in config, f"{hardware} 是硬件属性，必须留在硬件配置里"
     # Without rtsp.enabled the provider never adds --rtsp, i.e. no stream at all.
     assert config["rtsp"]["enabled"] is True
 

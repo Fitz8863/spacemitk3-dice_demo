@@ -119,102 +119,96 @@ main/
 | --- | --- | --- |
 | `backend/components/vision_yolov8_adjudicator/config.json` | Python provider | resident/per-request 模式、runtime 路径、生命周期宽限时间（**不含** LLM 凭证；2026-09-04 起 LLM 配置在 `backend/components/llm_openai_compat/config.json`） |
 | `backend/components/llm_openai_compat/config.json` | LLM 组件 | endpoint、model、api_key、`reasoning_effort` 部署默认（Git 跟踪，**仓库须保持私有**） |
-| `vision/yolov8_adjudicator/config.json` | C++ runtime / **部署默认** | 摄像头、分辨率、帧率、推理线程、EP affinity、焦距/变焦、RTSP 地址、MediaMTX `video.webrtc_base_url`。**只放"这台板子+这张桌子"的属性**：检测阈值等游戏参数在游戏 manifest（见 §3.3） |
-| `backend/games/dice/adjudicator_config.json` | C++ runtime / **dice 专属** | 同上。dice 的 manifest 通过 `runtime_config` 指向它，所以**改上面那份共享文件不会影响 dice**（2026-09-15 起） |
+| `backend/games/<id>/adjudicator_config.json` | C++ runtime / **各游戏专属（必填）** | 摄像头、分辨率、帧率、推理线程、EP affinity、焦距/变焦、RTSP 地址、MediaMTX `video.webrtc_base_url`。**只放"这台板子+这张桌子"的属性**：检测阈值等游戏参数在游戏 manifest（见 §3.3）。共享部署默认 `vision/yolov8_adjudicator/config.json` 已于 2026-09-20 删除 |
 | `backend/components/tts_*/config.json` | 各 TTS provider | 本地 runtime 路径、端口、模型和音色参数 |
 
 视觉组件配置不重复保存摄像头、RTSP 或 WebRTC 基础地址。新增游戏只写自己的 `vision_profile.video.path`，例如 `/dice/` 或 `/rps/`。完整播放地址由基础地址和 path 安全拼接：
 
 ```text
 游戏 manifest vision_profile.video.webrtc_base_url（可选）
-    > vision/yolov8_adjudicator/config.json.video.webrtc_base_url
+    > 该游戏 runtime_config 文件（如 backend/games/dice/adjudicator_config.json）的 video.webrtc_base_url
 ```
 
 当前部署基础地址为 `http://127.0.0.1:8889`；骰子页面最终播放 `http://127.0.0.1:8889/dice/`。YOLO 发布的 RTSP 路径只供 MediaMTX 接管，浏览器不直接使用。
 
 ### 3.3 接入第二个视觉游戏（2026-09-15 起）
 
-裁决参数**全部按游戏走 manifest**。硬件参数默认继承部署级的一份，但**游戏可以声明自己的**——
-需要另一台摄像头、不同分辨率或不同焦距时，在 `vision_profile.runtime_config` 指向该游戏专属的
-硬件配置文件即可（2026-09-15 起支持）：
+裁决参数**全部按游戏走 manifest**。硬件参数同样**每游戏一份**：在 `vision_profile.runtime_config`
+指向该游戏专属的硬件配置文件（**必填**——共享部署默认已于 2026-09-20 删除，不写直接拒载）：
 
 ```jsonc
 "vision_profile": {
   "game_id": "rps",
-  "runtime_config": "backend/games/rps/runtime.json",   // 可选；不写则继承共享默认
+  "runtime_config": "backend/games/rps/adjudicator_config.json",   // 必填；该游戏唯一的硬件来源
   "vision": { "...": "..." }
 }
 ```
 
-**配置解析：三层回退 + 整份替换**
+**配置解析：单源 + 整份替换**
 
 这一节回答两个**互相独立**的问题，混在一起最容易出错：
 
-1. **读哪一份配置文件**——三层回退；
+1. **读哪一份配置文件**——每个游戏一份、manifest 声明、必填；
 2. **同一个键谁说了算**——命令行参数恒压过文件；文件里没有的键回落到 C++ 编译期默认值。
 
 ```mermaid
 flowchart TD
     START["一局开始 · 要启动 YOLO runtime"] --> Q1{"manifest 的 vision_profile<br/>写了 runtime_config 吗"}
     Q1 -->|写了| F1["游戏专属文件<br/>backend/games/dice/adjudicator_config.json"]
-    Q1 -->|没写| Q2{"组件 config 写了<br/>runtime.config 吗"}
-    Q2 -->|写了| F2["共享部署默认<br/>vision/yolov8_adjudicator/config.json"]
-    Q2 -->|没写| F3["打包默认<br/>同一个 vision/yolov8_adjudicator/config.json"]
+    Q1 -->|没写| REJECT["加载期拒载整个游戏<br/>（没有共享默认可继承，2026-09-20 起）"]
 
     F1 --> LAUNCH
-    F2 --> LAUNCH
-    F3 --> LAUNCH
 
     LAUNCH["启动命令行只带一份：--config 选定文件<br/>整份替换 · 不做字段级合并"] --> Q3{"这个键在 manifest 里<br/>有对应字段吗"}
 
     Q3 -->|有| WIN1["命令行参数胜<br/>--model / --conf / --stable-frames /<br/>--divider-detection / --expected-count / --rtsp-path"]
     Q3 -->|没有| Q4{"选定文件里有<br/>这个键吗"}
     Q4 -->|有| WIN2["用文件里的值"]
-    Q4 -->|没有| WIN3["回落 C++ 编译期默认值<br/>conf 0.50 · stable_frames 20 · focus 0<br/>不是回落到共享文件"]
+    Q4 -->|没有| WIN3["回落 C++ 编译期默认值<br/>conf 0.50 · stable_frames 20 · focus 0<br/>不是回落到别的游戏的文件"]
 
     style F1 fill:#d4edda
     style LAUNCH fill:#e2e3f1
     style WIN3 fill:#fff3cd
+    style REJECT fill:#f8d7da
 ```
 
 **两个反直觉点（都踩过）**：
 
-- **缺键不回退到共享文件。** 三层回退只决定"读哪一份"；一旦选定，那份就是**唯一**来源。
-  所以"我只改一个值、其余继承共享"做不到，必须整份复制。以 `stable_frames` 为例：共享文件写
+- **缺键不回退到别的文件。** 每游戏一份、选定了就是**唯一**来源。
+  所以"我只改一个值、其余继承"做不到，必须整份复制。以 `stable_frames` 为例：另一份文件写
   30、C++ 默认是 **20**——游戏那份里漏写它，拿到的是 20 而不是 30。
 - **命令行参数再压一层。** `--model`/`--conf`/`--stable-frames`/`--divider-detection`/
   `--expected-count`/`--rtsp-path` 由 manifest 生成，**无论哪份文件被读都会再覆盖一次**。
-  因此这些键写在配置文件里是**死的**（已从两份文件删除）：`model`、`stable_frames`、`conf`、
+  因此这些键写在配置文件里是**死的**（已从各游戏文件删除）：`model`、`stable_frames`、`conf`、
   `divider_detection`、`rtsp.path`、`display_enabled`、`yolov8_enabled`。
 
-**声明的路径是强制的**：解析或读取失败会**直接报错**（日志给出具体文件名），不会静默改用共享
-配置——否则就是悄悄用了别的游戏的摄像头与 RTSP 设置。实测：把 `runtime_config` 指向不存在的
+**声明的路径是强制的**：解析或读取失败会**直接报错**（日志给出具体文件名），不会静默起
+runtime——否则就是悄悄用了别的游戏的摄像头与 RTSP 设置。实测：把 `runtime_config` 指向不存在的
 文件 → **不起 runtime**，日志 `ProfileError("unable to read vision runtime config: ...")`。
 
-**dice 现状**：`runtime_config` 指向 `backend/games/dice/adjudicator_config.json`，因此
-**改 `vision/yolov8_adjudicator/config.json` 对 dice 没有任何影响**——那份共享文件现在只是未来
-新游戏的默认模板。dice 的配置文件里有一个 `_note` 键写着这件事（两个解析器都忽略未知键，已用
-真实二进制 self-test 验证）。
+**dice 现状**：`runtime_config` 指向 `backend/games/dice/adjudicator_config.json`，配置文件里有
+一个 `_note` 键说明整份替换语义（两个解析器都忽略未知键，已用真实二进制 self-test 验证）。
+rps 的硬件文件已备好（1080p@30 广角）等视觉模型接回。
 
 **改硬件参数时的落点**：
 
 | 想改什么 | 改哪个文件 |
 | --- | --- |
 | dice 的摄像头/分辨率/帧率/焦距/变焦/EP 绑核/RTSP 端点 | `backend/games/dice/adjudicator_config.json` |
-| 未来新游戏的这些参数（未声明 `runtime_config` 时） | `vision/yolov8_adjudicator/config.json` |
-| 两个游戏共用的部署项（如 MediaMTX WebRTC 基址，未按游戏覆盖时） | 同上 |
+| rps 的这些参数 | `backend/games/rps/adjudicator_config.json`（视觉接入前暂存） |
+| MediaMTX WebRTC 基址 | 各游戏 `adjudicator_config.json` 的 `video.webrtc_base_url`（要统一就逐份改） |
 
 | 归属 | 字段 | 放哪 |
 | --- | --- | --- |
 | **游戏** | `model`（模型文件在 `backend/games/<id>/models/`）/ `class_map`/规则/`stable_frames`/`confidence`/`grouping`/`divider*`/`expected_count`/`video.path`/prompt/超时/节奏 | 游戏 manifest 的 `vision_profile`（摄像头也可用 `multi_view.views[].camera` 按视角配） |
-| **硬件/部署**（默认共享，可按游戏覆盖） | 摄像头设备、分辨率、帧率、EP 绑核、线程数、队列深度、焦距、变焦、RTSP host/port、WebRTC 基址 | `vision/yolov8_adjudicator/config.json`，或该游戏自己的 `runtime_config` 文件 |
+| **硬件/部署**（每游戏一份，必填） | 摄像头设备、分辨率、帧率、EP 绑核、线程数、队列深度、焦距、变焦、RTSP host/port、WebRTC 基址 | 该游戏自己的 `runtime_config` 文件（`backend/games/<id>/adjudicator_config.json`） |
 
 接入清单：
 
 | 步骤 | 位置 |
 | --- | --- |
 | 声明 `vision_profile`（`model`/`class_map`/规则/`stable_frames`/`confidence`/`grouping`/`video.path`/prompt） | `backend/games/<id>/manifest.json`（模型文件放 `backend/games/<id>/models/`） |
-| （可选）声明自己的硬件文件 `runtime_config` | 同上 + `backend/games/<id>/runtime.json` |
+| 声明自己的硬件文件 `runtime_config`（必填） | 同上 + `backend/games/<id>/adjudicator_config.json` |
 | 薄壳 pipeline（约 15 行）：调 `core.vision_pipeline.run_vision_game` 并传入自己的投影 | `backend/games/<id>/pipeline.py` |
 | 结果投影：数值型参照 `games/dice/result.py`；类别型直接用 `core.participants.project_categorical_result` | 游戏自己的 result 模块 |
 | 前端游戏模块（阶段文案/按键/渲染） | `web/games/<id>.js` + 在 `web/app.js` 注册 |

@@ -14,7 +14,6 @@ class ProfileError(ValueError):
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_RUNTIME_CONFIG = PROJECT_ROOT / "vision" / "yolov8_adjudicator" / "config.json"
 
 # Top-level keys a hardware runtime config understands: every key the C++
 # runtime reads (vision/yolov8_adjudicator/src/main.cpp, load_config) plus
@@ -63,48 +62,25 @@ def _read_object(path: Path, label: str) -> dict[str, Any]:
 
 
 def resolve_runtime_config_path(
-    component: Mapping[str, Any] | str | Path,
+    profile: Mapping[str, Any] | str | Path,
     project_root: Path = PROJECT_ROOT,
-    *,
-    profile: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Resolve the C++ runtime configuration for one game.
+    """Resolve a game's C++ runtime configuration (per-game, mandatory).
 
-    Resolution order:
-
-    1. ``profile["runtime_config"]`` — a **per-game** hardware file declared by
-       the game manifest.  A game only declares this when it genuinely differs
-       from the deployment defaults (another camera, another RTSP endpoint,
-       different resolution/zoom); otherwise it inherits.
-    2. ``component["runtime"]["config"]`` — the deployment default.
-    3. ``DEFAULT_RUNTIME_CONFIG`` — the packaged location.
-
-    A declared per-game path is *not* silently ignored when it is malformed:
-    arbitrary absolute paths and traversal are rejected by
-    :func:`resolve_project_path`, so a typo cannot quietly fall back to the
-    shared camera.
+    The path comes from the game manifest's ``vision_profile.runtime_config``
+    (required by :func:`validate_profile` since the shared deployment default
+    was removed, 2026-09-20): every game declares its own hardware file, so a
+    typo cannot quietly fall back to another game's camera and RTSP setup.
+    A declared path is *not* silently ignored when it is malformed: absolute
+    paths and traversal are rejected by :func:`resolve_project_path`.
     """
-    declared = None
     if isinstance(profile, Mapping):
         value = profile.get("runtime_config")
-        if isinstance(value, str) and value.strip():
-            declared = value.strip()
-    if declared is not None:
-        return resolve_project_path(declared, project_root)
-    if isinstance(component, Mapping):
-        runtime = component.get("runtime", {})
-        value = runtime.get("config") if isinstance(runtime, Mapping) else None
     else:
-        value = component
-    if value is None:
-        candidate = DEFAULT_RUNTIME_CONFIG
-        root = project_root.resolve()
-        try:
-            candidate.relative_to(root)
-        except ValueError as exc:
-            raise ProfileError("default runtime config must stay inside the project") from exc
-        return candidate
-    return resolve_project_path(str(value), project_root)
+        value = profile
+    if not isinstance(value, str) or not value.strip():
+        raise ProfileError("runtime_config must be a non-empty repository-relative path")
+    return resolve_project_path(value.strip(), project_root)
 
 
 def load_runtime_config(path: Path) -> dict[str, Any]:
@@ -176,16 +152,16 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
     game_id = profile.get("game_id")
     if not isinstance(game_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", game_id):
         raise ProfileError("game_id must be a non-empty identifier")
-    # Optional per-game hardware runtime config.  Shape is validated here (the
-    # file's existence is checked when the runtime is resolved, so a bad path
-    # surfaces with a precise error instead of silently using the shared
-    # camera).  Kept optional so a game with no hardware differences inherits
-    # the deployment default rather than duplicating it.
-    if "runtime_config" in profile:
-        declared = profile["runtime_config"]
-        if not isinstance(declared, str) or not declared.strip():
-            raise ProfileError("runtime_config must be a non-empty repository-relative path")
-        resolve_project_path(declared.strip())
+    # Per-game hardware runtime config.  Required since the shared deployment
+    # default was removed (2026-09-20): a game with no hardware differences
+    # declares its own copy instead of silently inheriting another game's
+    # camera and RTSP setup.
+    declared = profile.get("runtime_config")
+    if not isinstance(declared, str) or not declared.strip():
+        raise ProfileError(
+            "runtime_config is required and must be a non-empty repository-relative path"
+        )
+    resolve_project_path(declared.strip())
     vision = profile.get("vision")
     if not isinstance(vision, dict):
         raise ProfileError("vision must be an object")
@@ -368,7 +344,11 @@ def load_component_config(package_dir: Path) -> dict[str, Any]:
         resolve_project_path(runtime["binary"])
     if "working_dir" in runtime:
         resolve_project_path(runtime["working_dir"])
-    resolve_runtime_config_path(payload)
+    if "config" in runtime:
+        raise ProfileError(
+            "runtime.config was removed; each game declares its own hardware "
+            "file through vision_profile.runtime_config"
+        )
     video = payload.get("video", {})
     if not isinstance(video, dict):
         raise ProfileError("component config video must be an object")

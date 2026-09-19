@@ -230,37 +230,40 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4
 
-# 先做模型 / OpenCL 自测
-./build/yolov8_camera --model ../../backend/games/dice/models/best.q.onnx --self-test --no-display
+# 先做模型 / OpenCL 自测（共享默认已删除：--config 指向游戏自己的硬件文件；
+# --yolov8 必带——配置里不再有 yolov8_enabled，缺了 self-test 直接退出码 2）
+./build/yolov8_camera --config ../../backend/games/dice/adjudicator_config.json \
+  --model ../../backend/games/dice/models/best.q.onnx --yolov8 --self-test --no-display
 
 # 再做短时摄像头测试
-./build/yolov8_camera --model ../../backend/games/dice/models/best.q.onnx --camera 1 \
+./build/yolov8_camera --config ../../backend/games/dice/adjudicator_config.json \
+  --model ../../backend/games/dice/models/best.q.onnx --camera 1 \
   --no-display --max-frames 30
 ```
 
 当前迁移的模型是 YOLOv8 raw 输出模型，预期输出 `[1, 10, 8400]`。程序会在 CPU 侧执行 YOLOv8 解码和 NMS，并以模型无关的 detection 列表和稳定帧快照交给游戏 profile 解释；不会在 C++ 中固化骰子数量、分区、求和或胜负规则。
 
-`vision/yolov8_adjudicator/config.json` 原本是 YOLO runtime 的硬件、部署与 WebRTC 基础地址唯一来源，**2026-09-15 起它退回为部署默认模板**：游戏用 `vision_profile.runtime_config` 指向自己的硬件文件后，只读那一份。**dice 现在读 `backend/games/dice/adjudicator_config.json`**，所以改共享文件对 dice 没有影响。`backend/components/vision_yolov8_adjudicator/config.json` 只保存 Provider 的 runtime 路径与生命周期。三者都**不含** LLM 凭证——endpoint/model/api_key 在 `backend/components/llm_openai_compat/config.json`。游戏 manifest 声明自己的 `video.path` 与**检测阈值** `vision.confidence`（阈值是游戏参数），完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
+视觉 runtime 的硬件、部署与 WebRTC 基础地址**每游戏一份**：manifest 的 `vision_profile.runtime_config` 指向该游戏专属的硬件文件（**必填**），**dice 读 `backend/games/dice/adjudicator_config.json`**。共享部署默认 `vision/yolov8_adjudicator/config.json` 已于 2026-09-20 删除（它只剩"游戏忘了声明时的兜底"这一种存在意义，而那个兜底是负价值的静默陷阱）。`backend/components/vision_yolov8_adjudicator/config.json` 只保存 Provider 的 runtime 路径与生命周期。这些都**不含** LLM 凭证——endpoint/model/api_key 在 `backend/components/llm_openai_compat/config.json`。游戏 manifest 声明自己的 `video.path` 与**检测阈值** `vision.confidence`（阈值是游戏参数），完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
 
-> ⚠️ **per-game 硬件文件是"整份替换"，不与共享文件做字段级合并。** runtime 只带 `--config <那一份>`，
-> 里面**没写的键会回落到 C++ 编译期默认值**（`conf` 0.50、`stable_frames` 20、`focus` 0），**不是**
-> 回退到共享文件。所以要做差异就得整份复制。另外删掉了 `model`，**直接跑 CLI 时要自带 `--model`**
-> （C++ 按配置文件所在目录解析相对路径）；生产不受影响，provider 永远传绝对路径。
+> ⚠️ **per-game 硬件文件是"整份替换"，不做字段级合并。** runtime 只带 `--config <那一份>`，
+> 里面**没写的键会回落到 C++ 编译期默认值**（`conf` 0.50、`stable_frames` 20、`focus` 0），
+> **不是**回退到别的游戏的文件。所以要做差异就得整份复制。另外删掉了 `model`，**直接跑 CLI
+> 时要自带 `--model`**（C++ 按配置文件所在目录解析相对路径）；生产不受影响，provider 永远传
+> 绝对路径。
 
 ### 第二个视觉游戏怎么接（2026-09-15 起）
 
-裁决参数**全部按游戏走 manifest**。硬件参数默认继承部署级的一份，但**游戏可以声明自己的**
-（2026-09-15 起）：在 `vision_profile.runtime_config` 写一个仓库相对路径，指向该游戏专属的硬件
-配置文件，就能用另一台摄像头、不同分辨率或不同焦距。**不写就继承共享默认**，所以只有真正有
-硬件差异的游戏才需要这个文件。
+裁决参数**全部按游戏走 manifest**。硬件参数同样每游戏一份：在 `vision_profile.runtime_config`
+写一个仓库相对路径（**必填**——共享默认已删除，不写会在加载期拒载），指向该游戏专属的硬件配置
+文件，就能用另一台摄像头、不同分辨率或不同焦距。
 
-解析优先级：`profile.runtime_config` > 组件 `runtime.config` > 打包默认
-`vision/yolov8_adjudicator/config.json`。声明的路径是**强制**的——解析或读取失败会直接报错并
-在日志里给出文件名，**不会静默改用共享配置**（否则就是悄悄用了别的游戏的摄像头）。
+声明的路径是**强制**的——解析或读取失败会直接报错并在日志里给出文件名，**不会静默起 runtime**
+（否则就是悄悄用了别的游戏的摄像头）。
 
 接入五件事：① 在 `backend/games/<id>/manifest.json` 写 `vision_profile`
 （`class_map`/规则/`stable_frames`/`confidence`/`grouping`/`video.path`/prompt）；
-② 需要不同硬件时加 `runtime_config` 指向 `backend/games/<id>/runtime.json`；
+② 写硬件文件 `backend/games/<id>/adjudicator_config.json` 并用 `runtime_config` 指向它
+（必填，整份复制一份改差异）；
 ③ 写 `backend/games/<id>/pipeline.py` 薄壳（约 15 行，调
 `core.vision_pipeline.run_vision_game` 并传入自己的结果投影）；④ 结果投影（数值型参照
 `games/dice/result.py`，类别型——例如猜拳的手势——直接用
@@ -364,7 +367,8 @@ manifest 的 `providers.tts` 切换。视觉裁决器的模型、类别映射、
 path、超时、裁决前置等待（`lifecycle.pre_adjudication_wait_seconds`，检测开始前的静默等待，
 不占用裁决超时预算）和结果保持时间统一放在游戏 `manifest.json` 的 `vision_profile` 中；不要再创建
 同目录的外置 `vision_profile.json`。视觉 runtime 的摄像头、推理、RTSP 和 MediaMTX
-WebRTC 基础地址只在 `vision/yolov8_adjudicator/config.json` 保存部署默认值。
+WebRTC 基础地址**每游戏一份**，在 `vision_profile.runtime_config` 指向的硬件文件里（必填，
+如 `backend/games/dice/adjudicator_config.json`）。
 
 `vision_yolov8_adjudicator` 是当前 YOLOv8 实现，`role=adjudicator` 表示它在系统里的职责。旧 ID `vision_yolo` 仅作为一次性 registry 迁移别名，不再作为独立组件注册。以后即使新增的空间定位模块也使用 YOLO，也必须注册为 `role=localizer` 并继承 `VisionLocalizerProvider`，不能接入裁决器插槽。
 

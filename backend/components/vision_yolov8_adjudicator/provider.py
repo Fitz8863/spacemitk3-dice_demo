@@ -514,8 +514,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         """
         profile = profile if isinstance(profile, Mapping) else {}
         try:
-            component = load_component_config(COMPONENT_DIR)
-            path = resolve_runtime_config_path(component, profile=profile)
+            path = resolve_runtime_config_path(profile)
             stat = path.stat()
         except Exception:
             declared = profile.get("runtime_config")
@@ -583,32 +582,20 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         """Resolve the deployment WebRTC origin without exposing RTSP details."""
         video = profile.get("video", {})
         profile_base = video.get("webrtc_base_url") if isinstance(video, Mapping) else ""
-        component: Mapping[str, Any] = {}
-        try:
-            component = load_component_config(Path(__file__).parent)
-        except Exception:
-            component = {}
         runtime_base = ""
-        configured_runtime = component.get("runtime", {})
-        profile_declares_config = isinstance(profile, Mapping) and bool(
-            isinstance(profile.get("runtime_config"), str) and profile["runtime_config"].strip()
-        )
-        has_explicit_runtime_config = (
-            isinstance(configured_runtime, Mapping) and configured_runtime.get("config")
-        ) or profile_declares_config
-        if has_explicit_runtime_config:
+        if (
+            isinstance(profile, Mapping)
+            and isinstance(profile.get("runtime_config"), str)
+            and profile["runtime_config"].strip()
+        ):
             try:
-                runtime = load_runtime_config(
-                    resolve_runtime_config_path(component, profile=profile)
-                )
+                runtime = load_runtime_config(resolve_runtime_config_path(profile))
                 runtime_video = runtime.get("video", {})
                 if isinstance(runtime_video, Mapping):
                     runtime_base = runtime_video.get("webrtc_base_url", "")
             except Exception:
                 pass
-        component_video = component.get("video", {})
-        component_base = component_video.get("webrtc_base_url", "") if isinstance(component_video, Mapping) else ""
-        return str(profile_base or runtime_base or component_base or "")
+        return str(profile_base or runtime_base or "")
 
     @staticmethod
     def _video_event(profile: Mapping[str, Any], view_id: str, event: Mapping[str, Any]) -> dict[str, Any] | None:

@@ -66,15 +66,16 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
   仍有原有懒启动兜底）。
 - 游戏视觉配置必须内嵌在 `backend/games/<game_id>/manifest.json` 的
   `vision_profile` 节点；不要新增外置 `vision_profile.json`。视觉 runtime 的硬件、RTSP
-  和 MediaMTX WebRTC 基础地址统一由 `vision/yolov8_adjudicator/config.json` 提供，游戏
-  只声明自己的视频 path。
+  和 MediaMTX WebRTC 基础地址**每游戏一份**，由 `vision_profile.runtime_config` 指向
+  该游戏专属的硬件文件（**必填**；共享部署默认已于 2026-09-20 删除），游戏只声明自己的
+  视频 path。
 - **多游戏视觉架构（2026-09-15 起）**：同一套裁决器服务多个游戏，每个游戏的裁决参数
   （`class_map`/规则/`stable_frames`/`confidence`/`grouping`/`divider_detection`/
   `expected_count`/`video.path`/prompt）**全部写在自己 manifest 的 `vision_profile` 里**。
-  **硬件参数默认继承部署级的一份**（`vision/yolov8_adjudicator/config.json`：摄像头/分辨率/
-  帧率/EP 绑核/焦距/RTSP 地址），需要差异时游戏在 `vision_profile.runtime_config` 指向**自己的
-  硬件文件**（仓库相对路径；解析优先级 profile > 组件 > 打包默认）。**声明的路径是强制的**：
-  读不到就报错，绝不静默回退到共享配置（那等于悄悄用别的游戏的摄像头）。
+  **硬件参数每游戏一份**（`backend/games/<id>/adjudicator_config.json`：摄像头/分辨率/
+  帧率/EP 绑核/焦距/RTSP 地址），manifest 用 `vision_profile.runtime_config` 声明
+  （仓库相对路径、必填）。**声明的路径是强制的**：
+  读不到就报错，绝不静默回退（那等于悄悄用别的游戏的摄像头）。
   **★ 签名契约**：resident runtime 的缓存键是 `view_id`（各游戏都是 `"default"`），
   所以 `_runtime_signature()` 是唯一把两个游戏区分开的东西——它必须覆盖每个会改变
   runtime 行为的 profile 字段，**外加运行时配置文件的路径与 mtime+size**。漏掉任一项，
@@ -118,11 +119,14 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4
 
-# 无摄像头自测（模型/OpenCL 冒烟，作为必需验证，无 ctest）
-./build/yolov8_camera --model ../../backend/games/dice/models/best.q.onnx --self-test --no-display
+# 无摄像头自测（模型/OpenCL 冒烟，作为必需验证，无 ctest；--config 指向游戏硬件文件，
+# --yolov8 必带——配置里不再有 yolov8_enabled，缺了 self-test 直接退出码 2）
+./build/yolov8_camera --config ../../backend/games/dice/adjudicator_config.json \
+  --model ../../backend/games/dice/models/best.q.onnx --yolov8 --self-test --no-display
 
 # 短时有界摄像头测试
-./build/yolov8_camera --model ../../backend/games/dice/models/best.q.onnx --camera 1 --no-display --max-frames 30
+./build/yolov8_camera --config ../../backend/games/dice/adjudicator_config.json \
+  --model ../../backend/games/dice/models/best.q.onnx --camera 1 --no-display --max-frames 30
 ```
 
 ### TTS 手工验证
@@ -209,7 +213,7 @@ select → rules → ready → countdown → shaking → open → analysis → r
 
 - **胜负只能由 K3 YOLOv8 detection + Python profile/provider 产生**，禁止网页随机结果兜底。具体稳定帧、规则、LLM 一致/覆盖/超时回退策略由游戏 manifest 的 `vision_profile` 声明。
 - **LLM key 存放于** `backend/components/llm_openai_compat/config.json` 的顶层 `api_key`（该文件是扁平结构：`endpoint`/`model`/`api_key`/`reasoning_effort`，**没有** `llm` 子段；2026-09-04 大模型模块化后从视觉组件迁出，视觉组件 config 现在只剩 `runtime`/`events`）。该文件被 Git 跟踪，**仓库必须保持私有**；若将来要公开仓库，先在服务商处轮换 key。不要把 key 写进 `web/`、API 响应或日志；提交推送包含真实 key 的文件前先与用户确认。**注意：该仓库目前实际是公开的**（见 `AI_PROJECT_CONTEXT.md` 的密钥说明）。
-- **不要回滚/覆盖用户本地修改**：`git status` 里 `vision/yolov8_adjudicator/config.json` 常处于未提交的本地修改状态（涉及 LLM 配置），操作前重新确认，提交时只提交本次任务相关文件。
+- **不要回滚/覆盖用户本地修改**：`git status` 里各游戏的 `adjudicator_config.json`（如 `backend/games/dice/adjudicator_config.json` 的 zoom/focus）常处于未提交的本地调参状态，操作前重新确认，提交时只提交本次任务相关文件。
 - **CPU/EP 亲和性不要混用**：TTS 用 preferred cores `8,9,10,11,12,13`；YOLO EP affinity 是 `14;15`（`config.json` 的 `ep_affinity`）。`taskset`/环境变量只证明配置意图，不证明 AI Core 实际利用率。
 - **不要声称未实现的功能**：当前没有机械臂、没有 ROS2、没有 WebSocket、TTS 不是逐 PCM 流式、底层模型支持 voice cloning 但接口未开放参考音频上传。
 - **一次只允许一个 YOLOv8 分析任务**（`create_job()` 里 `active_job_id` 单任务锁），避免争用摄像头/算力。

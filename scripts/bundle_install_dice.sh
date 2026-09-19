@@ -165,11 +165,11 @@ else
 fi
 
 # 摄像头提示 (设备号因外设而异, 提前给出排查入口)
-CAM="$(python3 -c "import json; print(json.load(open('$BUNDLE_DIR/vision/yolov8_adjudicator/config.json'))['camera'])")"
+CAM="$(python3 -c "import json; print(json.load(open('$BUNDLE_DIR/backend/games/dice/adjudicator_config.json'))['camera'])")"
 if [[ ! -e "$CAM" ]]; then
     warn "配置的摄像头设备 $CAM 当前不存在。"
     warn "用 'ls /dev/video*' 或 'v4l2-ctl --list-devices' 找到 USB 摄像头后,"
-    warn "修改 vision/yolov8_adjudicator/config.json 的 camera 字段再启动。"
+    warn "修改 backend/games/dice/adjudicator_config.json 的 camera 字段再启动。"
 fi
 
 [[ "${DICE_NO_START:-0}" == "1" ]] && { say "DICE_NO_START=1, 自检到此结束, 未启动服务。"; exit 0; }

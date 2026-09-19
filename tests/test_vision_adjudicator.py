@@ -56,18 +56,23 @@ def test_profile_loads_dice_and_composes_mediamtx_url():
     # line as the divider signal (see detect_red_blue_divider in the runtime).
     assert profile["vision"]["divider_detection"] is True
     component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
-    runtime = load_runtime_config(resolve_runtime_config_path(component))
+    _ = component  # component config holds lifecycle only; hardware is per-game
+    runtime = load_runtime_config(resolve_runtime_config_path(profile))
     assert compose_video_url(runtime["video"]["webrtc_base_url"], profile["video"]["path"]) == (
         "http://127.0.0.1:8889/dice/det"
     )
 
 
-def test_component_points_to_single_runtime_config_and_loads_hardware_defaults():
-    component_dir = ROOT / "backend" / "components" / "vision_yolov8_adjudicator"
-    component = load_component_config(component_dir)
-    runtime_path = resolve_runtime_config_path(component)
+def test_runtime_config_is_declared_per_game_and_loads_hardware_defaults():
+    """runtime.config 已从组件配置移除（2026-09-20）：硬件配置由各游戏
+    manifest 的 vision_profile.runtime_config 声明（必填）。"""
+    manifest = json.loads((ROOT / "backend/games/dice/manifest.json").read_text())
+    profile = manifest["vision_profile"]
+    component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
+    assert "config" not in component["runtime"]
+    runtime_path = resolve_runtime_config_path(profile)
     runtime = load_runtime_config(runtime_path)
-    assert runtime_path == ROOT / "vision" / "yolov8_adjudicator" / "config.json"
+    assert runtime_path == ROOT / "backend" / "games" / "dice" / "adjudicator_config.json"
     assert runtime["camera"] == "/dev/video1"
     assert runtime["rtsp"]["port"] == 8554
     assert runtime["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
@@ -128,6 +133,7 @@ def test_profile_rejects_full_url_in_game_path(tmp_path: Path):
     valid = {
         "schema_version": 1,
         "game_id": "bad",
+        "runtime_config": "backend/games/dice/adjudicator_config.json",
         "vision": {"model": "vision/model.onnx", "class_map": {"0": "x"}, "participants": ["A"], "stable_frames": 1},
         "llm": {"system_prompt": "judge", "user_prompt_template": "judge", "allowed_outcomes": ["A"], "context_mode": "single_turn_no_history"},
     }
@@ -196,15 +202,24 @@ def test_video_event_uses_profile_webrtc_base_url():
     assert event == {"event": "video", "url": "http://example.test:8889/rps/", "view_id": "default"}
 
 
-def test_video_event_uses_component_webrtc_base_when_profile_has_only_path():
-    profile = {"video": {"enabled": True, "path": "/rps/"}}
+def test_video_event_uses_runtime_config_webrtc_base_when_profile_has_only_path():
+    """profile 只写 path 时，WebRTC 基址来自它声明的 per-game 硬件配置
+    （组件配置的 video 回退层已随共享默认一起移除）。"""
+    profile = {
+        "video": {"enabled": True, "path": "/rps/"},
+        "runtime_config": "backend/games/rps/adjudicator_config.json",
+    }
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
-            "components.vision_yolov8_adjudicator.provider.load_component_config",
-            lambda _path: {"video": {"webrtc_base_url": "http://component.test:8889"}},
+            "components.vision_yolov8_adjudicator.provider.resolve_runtime_config_path",
+            lambda profile_arg: Path("runtime.json"),
+        )
+        monkeypatch.setattr(
+            "components.vision_yolov8_adjudicator.provider.load_runtime_config",
+            lambda _path: {"video": {"webrtc_base_url": "http://runtime.test:8889"}},
         )
         event = VisionYolov8Adjudicator._video_event(profile, "default", {"event": "video"})
-    assert event == {"event": "video", "url": "http://component.test:8889/rps/", "view_id": "default"}
+    assert event == {"event": "video", "url": "http://runtime.test:8889/rps/", "view_id": "default"}
 
 
 def test_provider_prefers_game_adjudication_timeout_over_request_fallback():
@@ -631,6 +646,7 @@ def _minimal_profile():
     return {
         "schema_version": 1,
         "game_id": "bad",
+        "runtime_config": "backend/games/dice/adjudicator_config.json",
         "vision": {"model": "vision/model.onnx", "class_map": {"0": "x"}, "participants": ["A"], "stable_frames": 1},
         "llm": {"system_prompt": "judge", "user_prompt_template": "judge", "allowed_outcomes": ["A"], "context_mode": "single_turn_no_history"},
         "video": {"path": "/bad/", "webrtc_base_url": "http://localhost:8889"},
@@ -688,10 +704,20 @@ def test_component_config_does_not_require_mediamtx(tmp_path: Path):
     assert load_component_config(tmp_path)["runtime"]["mode"] == "resident"
 
 
+def test_component_config_rejects_removed_runtime_config_pointer(tmp_path: Path):
+    """runtime.config 已随共享默认一起删除：写回即拒载，防止悬空指针静默失效。"""
+    (tmp_path / "config.json").write_text(json.dumps({
+        "schema_version": 1,
+        "runtime": {"mode": "resident", "config": "vision/yolov8_adjudicator/config.json"},
+    }))
+    with pytest.raises(ProfileError, match="runtime.config was removed"):
+        load_component_config(tmp_path)
+
+
 def test_runtime_config_exposes_mediamtx_base_and_component_has_no_duplicate_video():
-    component_dir = ROOT / "backend" / "components" / "vision_yolov8_adjudicator"
-    config = load_component_config(component_dir)
-    runtime = load_runtime_config(resolve_runtime_config_path(config))
+    manifest = json.loads((ROOT / "backend/games/dice/manifest.json").read_text())
+    config = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
+    runtime = load_runtime_config(resolve_runtime_config_path(manifest["vision_profile"]))
     assert runtime["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
     assert "video" not in config
     assert "rtsp" not in config
@@ -1345,13 +1371,16 @@ os.close(a.control_fd)
     from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess
     runtime = YoloRuntimeProcess()
     runtime.start(
-        {"runtime": {"binary": str(script), "working_dir": str(tmp_path)}},
+        {
+            "runtime": {"binary": str(script), "working_dir": str(tmp_path)},
+            "runtime_config": "backend/games/dice/adjudicator_config.json",
+        },
         "default",
         prewarm=True,
     )
     try:
         event = next(runtime.events())
-        assert event["config"].endswith("vision/yolov8_adjudicator/config.json")
+        assert event["config"].endswith("backend/games/dice/adjudicator_config.json")
     finally:
         runtime.stop()
 

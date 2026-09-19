@@ -48,12 +48,13 @@ def load_runtime_defaults(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load component deployment settings and this game's runtime config.
 
-    ``profile`` lets a game manifest point at its own hardware file
-    (``runtime_config``); without it the component's deployment default applies.
+    ``profile`` is the game manifest's vision profile; its ``runtime_config``
+    file is the single source of runtime hardware (the shared deployment
+    default was removed, so there is nothing to fall back to).
     """
     directory = component_dir or Path(__file__).parent
     component = load_component_config(directory)
-    runtime_path = resolve_runtime_config_path(component, profile=profile)
+    runtime_path = resolve_runtime_config_path(profile)
     return component, load_runtime_config(runtime_path)
 
 
@@ -175,14 +176,16 @@ class YoloRuntimeProcess:
                 pass
         if not component_config:
             try:
-                component_config, runtime_config = load_runtime_defaults(Path(__file__).parent)
+                component_config, runtime_config = load_runtime_defaults(
+                    Path(__file__).parent, profile
+                )
             except Exception:
                 component_config = {}
                 runtime_config = {}
 
         # Game profiles own the model and camera semantics.  Forward only
         # those validated, non-secret values as command-line overrides; the
-        # component config remains the deployment default.  Resolving the
+        # per-game runtime config file is the single hardware source.  Resolving the
         # model against the repository root is important because the C++
         # process runs with its own working directory.
         project_root = Path(__file__).resolve().parents[3]
@@ -245,16 +248,14 @@ class YoloRuntimeProcess:
 
         control_read, control_write = os.pipe()
         event_read, event_write = os.pipe()
-        # Resolve the config file this launch uses.  A path the game profile
-        # declared is **mandatory**: if it cannot be resolved we must fail
-        # loudly instead of launching without --config, because the C++ would
-        # then read config.json from its own working directory — i.e. silently
-        # run with another game's camera and RTSP setup.
+        # Resolve the config file this launch uses.  The path the game
+        # profile declares is **mandatory**: without one there is no fallback
+        # (the shared deployment default was removed), and launching without
+        # --config would make the C++ read config.json from its own working
+        # directory — a nonexistent file — and die.
         runtime_config_path = None
         try:
-            runtime_config_path = resolve_runtime_config_path(
-                component_config, profile=profile
-            ).resolve()
+            runtime_config_path = resolve_runtime_config_path(profile).resolve()
         except Exception:
             if declared_runtime_config:
                 raise

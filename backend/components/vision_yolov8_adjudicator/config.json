@@ -3,7 +3,6 @@
   "runtime": {
     "binary": "vision/yolov8_adjudicator/build/yolov8_camera",
     "working_dir": "vision/yolov8_adjudicator",
-    "config": "vision/yolov8_adjudicator/config.json",
     "mode": "resident",
     "prewarm_camera": true,
     "terminate_grace_seconds": 5

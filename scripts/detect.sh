@@ -92,5 +92,5 @@ if [[ "$found" -eq 0 ]]; then
     exit 1
 fi
 
-SAY "dice 视觉: 把要用的采集节点填入 vision/yolov8_adjudicator/config.json 的 \"camera\" 字段,"
+SAY "dice 视觉: 把要用的采集节点填入 backend/games/dice/adjudicator_config.json 的 \"camera\" 字段,"
 SAY "然后 scripts/stop_web.sh && scripts/start_web.sh 重启生效。"
