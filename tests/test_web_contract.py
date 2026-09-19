@@ -12,6 +12,12 @@ def dice_manifest():
     )
 
 
+def rps_manifest():
+    return json.loads(
+        (ROOT / "backend/games/rps/manifest.json").read_text(encoding="utf-8")
+    )
+
+
 def dice_state(name):
     return dice_manifest()["state_machine"]["states"][name]
 
@@ -598,6 +604,40 @@ def test_ready_start_button_waits_for_the_opening_announcement():
     assert start["after_speech"] is True
     # back 不设闸：播报中途仍可返回规则页。
     assert "after_speech" not in ready["on_intent"]["back"]
+
+
+def test_rps_skeleton_contract_pins_the_confirmed_flow_decisions():
+    """rps 骨架契约（2026-09-18 与用户确认的决策，防误删/误加）：
+
+    - enabled 且不带 vision_profile（骨架期不拉摄像头，视觉随模型再接回）
+    - confirm 不设 after_speech（老玩家可跳过规则宣读直接开始）
+    - play 口令 await（念到「布」亮手势，念完即裁决），analysis 双路由齐全
+    - 再来一局直接回 play（不重读规则）
+    - asr 短语覆盖全部可按键意图（镜像 dice 那条契约）
+    """
+    manifest = rps_manifest()
+    assert manifest["enabled"] is True
+    assert "vision_profile" not in manifest
+    assert "providers" not in manifest  # 继承全局（本地 TTS 唯一约束）
+    states = manifest["state_machine"]["states"]
+    rules = states["rules"]
+    assert "after_speech" not in rules["on_intent"]["confirm"]
+    assert rules["on_intent"]["confirm"]["to"] == "play"
+    chant = states["play"]["on_enter"][0]
+    assert chant["await"] is True
+    analysis = states["analysis"]
+    assert analysis["on_event"]["adjudication.result"]["to"] == "result"
+    assert analysis["on_event"]["adjudication.diagnosis"]["to"] == "analysis_failed"
+    assert states["result"]["on_intent"]["new_round"]["to"] == "play"
+    phrases = manifest["asr"]["phrases"]
+    missing = []
+    for state_name, state in states.items():
+        for intent in (state.get("on_intent") or {}):
+            if intent == "speech_done":
+                continue
+            if intent not in phrases:
+                missing.append(f"{state_name}.{intent}")
+    assert not missing, f"语音不可达的意图（asr.phrases 缺条目）: {missing}"
 
 
 def test_frontend_cancels_the_round_when_the_page_is_hidden():

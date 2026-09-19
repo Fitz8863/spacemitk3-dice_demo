@@ -2,62 +2,84 @@
   "id": "rps",
   "name": "猜拳",
   "icon": "✊",
-  "description": "石头 · 剪刀 · 布（占位，待接识别模型）",
-  "enabled": false,
-  "participants": {
-    "player": "LEFT",
-    "agent": "RIGHT"
+  "description": "石头 · 剪刀 · 布",
+  "enabled": true,
+  "asr": {
+    "phrases": {
+      "confirm": ["确认", "确定", "OK", "明白了", "准备好了", "yes", "confirm", "got it", "start"],
+      "repeat": ["重复", "再来一遍", "再听一次", "repeat", "again", "say it again", "one more time"],
+      "new_round": ["再来一局", "再来一句", "下一局", "next round", "play again", "new round", "one more round", "one more game"],
+      "retry": ["重试", "重新", "重新来一遍", "retry", "try again"],
+      "back": ["返回", "退出", "back", "go back", "exit", "quit"]
+    }
   },
-  "voice": "default",
-  "speed": 1.0,
   "state_machine": {
     "schema_version": 1,
     "initial": "rules",
     "states": {
       "rules": {
-        "ui": {"view": "rules", "title": "游戏规则", "copy": "猜拳游戏尚未接入识别模型，敬请期待。"},
+        "ui": {"view": "rules", "title": "游戏规则", "copy": "听完规则后按 Enter 开始；随时可以按绿色按钮直接开始，按 ↓ 可以再听一次。"},
         "on_enter": [
-          {"action": "speech", "mode": "tts_local", "text": "猜拳游戏尚未接入识别模型，敬请期待。"}
+          {"action": "speech", "mode": "tts_local", "text": "欢迎来到石头剪刀布。双方听口令出拳，念到布时同时亮出手势：石头赢剪刀，剪刀赢布，布赢石头，相同的手势是平局。明白了就请按绿色按钮开始。"}
         ],
         "on_intent": {
+          "confirm": {"to": "play"},
+          "repeat": {
+            "actions": [
+              {"action": "speech", "mode": "tts_local", "text": " 欢迎来到石头剪刀布。双方听口令出拳，念到布时同时亮出手势：石头赢剪刀，剪刀赢布，布赢石头，相同的手势是平局。明白了就请按绿色按钮开始。"}
+            ]
+          },
+          "back": {"exit": true}
+        }
+      },
+      "play": {
+        "ui": {"view": "play", "title": "出拳", "copy": "听口令出拳，念到「布」时同时亮出手势。"},
+        "on_enter": [
+          {"action": "speech", "mode": "tts_local", "text": "石头，剪刀，布。", "await": true}
+        ],
+        "duration": 0.4,
+        "on_expire": {"to": "analysis"}
+      },
+      "analysis": {
+        "ui": {"view": "analysis", "title": "正在判定胜负", "copy": "视觉裁决器正在识别双方手势并判定胜负。"},
+        "on_enter": [
+          {"action": "speech", "mode": "tts_local", "text": "正在判定胜负"},
+          {"action": "adjudicate"}
+        ],
+        "on_event": {
+          "adjudication.result": {"to": "result"},
+          "adjudication.diagnosis": {"to": "analysis_failed"}
+        }
+      },
+      "analysis_failed": {
+        "ui": {"view": "analysis", "title": "本次裁决未完成", "copy": ""},
+        "on_enter": [
+          {"action": "speech", "mode": "tts_local", "text": "本次识别未完成，可选择按蓝色按钮重新识别。"}
+        ],
+        "on_intent": {
+          "retry": {"to": "analysis"},
+          "new_round": {"to": "play"},
+          "back": {"exit": true}
+        }
+      },
+      "result": {
+        "ui": {"view": "result", "title": "本局结果", "copy": ""},
+        "on_enter": [
+          {
+            "action": "speech",
+            "select_by": "winner_role",
+            "cases": {
+              "PLAYER": {"mode": "tts_local", "text": "你出了{player_choice}，Agent出了{agent_choice}，恭喜你赢了，要不再来一局？"},
+              "AGENT": {"mode": "tts_local", "text": "你出了{player_choice}，Agent出了{agent_choice}，很遗憾你输了，要不再来一局？"},
+              "TIE": {"mode": "tts_local", "text": "双方都出了{player_choice}，本局平局，再来一局？"}
+            }
+          }
+        ],
+        "on_intent": {
+          "new_round": {"to": "play"},
           "back": {"exit": true}
         }
       }
     }
-  },
-  "providers": {
-    "tts_local": "tts_qwen3"
-  },
-  "vision_profile": {
-    "schema_version": 1,
-    "game_id": "rps",
-    "vision": {
-      "model": "vision/yolov8_adjudicator/models/best.q.onnx",
-      "class_map": {"0": "rock", "1": "scissors", "2": "paper"},
-      "participants": ["LEFT", "RIGHT"],
-      "participant_assignment": "x_midpoint",
-      "stable_frames": 15,
-      "divider_detection": false
-    },
-    "multi_view": {"enabled": false, "min_views": 1, "yolo_fusion": "majority_vote", "llm_images": "all_stable_views"},
-    "rule": {
-      "kind": "categorical_relation",
-      "relations": {"rock": "scissors", "scissors": "paper", "paper": "rock"},
-      "tie_value": "TIE"
-    },
-    "llm": {
-      "enabled": true,
-      "transport": "openai_compatible",
-      "input_mode": "stable_frame_and_prompt",
-      "image_source": "stable_frame",
-      "context_mode": "single_turn_no_history",
-      "timeout_seconds": 3,
-      "system_prompt": "You are a strict rock-paper-scissors judge. Use only the supplied image. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
-      "user_prompt_template": "Inspect the supplied stable frame, identify both players' gestures, and return {\"winner\":\"LEFT|RIGHT|TIE\"}.",
-      "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]
-    },
-    "video": {"enabled": true, "protocol": "webrtc", "path": "/rps/", "autoplay": true, "muted": true},
-    "lifecycle": {"post_result_hold_seconds": 3},
-    "timeouts": {"adjudication_seconds": 120}
   }
 }
