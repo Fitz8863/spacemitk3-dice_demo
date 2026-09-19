@@ -1,8 +1,8 @@
-# Board-only runtime payloads; provision these on the target board.
+# Board-only runtime payloads; provision these on the target board:
 # sherpa-onnx shared libraries + headers extracted from the riscv64 wheel
-# (include/ + lib/), and the matcha model directory (ONNX models, lexicon,
-# rule FSTs, espeak-ng-data).
-matcha-model/
+# (include/ + lib/).  The matcha model directory (ONNX models, lexicon,
+# rule FSTs, espeak-ng-data) ships with the repo -- every file is under
+# the 100MB GitHub limit.
 runtime/
 
 # CMake build outputs

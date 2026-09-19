@@ -1,0 +1,41 @@
+{
+  "format_version": 2,
+  "checkpoint_path": "MOSS-Audio-Tokenizer-Nano",
+  "files": {
+    "encode": "moss_audio_tokenizer_encode.onnx",
+    "decode_full": "moss_audio_tokenizer_decode_full.onnx"
+  },
+  "external_data_files": {
+    "moss_audio_tokenizer_encode.onnx": [
+      "moss_audio_tokenizer_encode.data"
+    ],
+    "moss_audio_tokenizer_decode_full.onnx": [
+      "moss_audio_tokenizer_decode_shared.data"
+    ]
+  },
+  "codec_config": {
+    "sample_rate": 48000,
+    "channels": 2,
+    "downsample_rate": 3840,
+    "num_quantizers": 16
+  },
+  "onnx": {
+    "opset": 17,
+    "encode_input_names": [
+      "waveform",
+      "input_lengths"
+    ],
+    "encode_output_names": [
+      "audio_codes",
+      "audio_code_lengths"
+    ],
+    "decode_input_names": [
+      "audio_codes",
+      "audio_code_lengths"
+    ],
+    "decode_output_names": [
+      "audio",
+      "audio_lengths"
+    ]
+  }
+}

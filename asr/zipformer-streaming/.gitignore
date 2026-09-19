@@ -1,9 +1,11 @@
 # 编译产物
 build/
 
-# 模型与测试音频（约 330MB，且 GitHub 单文件上限 100MB，无法推送；
-# 下载方式见 README「常见问题」——重新下载/解压模型）
-sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/
+# 模型：小于 100MB 的文件随仓库（decoder/joiner/词表/test_wavs）；
+# 两个 encoder（int8 174MB / q 120MB）超过 GitHub 单文件上限留在板端，
+# 下载方式见 README「常见问题」——重新下载/解压模型
+sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/encoder-epoch-99-avg-1.int8.onnx
+sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/encoder-epoch-99-avg-1.q.onnx
 *.tar.gz
 
 # 杂项

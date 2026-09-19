@@ -1,5 +1,10 @@
 # Board-only runtime payloads; provision these on the target board.
-models/
+# Model files under the 100MB GitHub limit ship with the repo (the whole
+# audio tokenizer package, plus the small manifests/tokenizer of the 100M
+# model); the three main 100M ONNX exports (124-187MB each) stay local.
+models/MOSS-TTS-Nano-100M-ONNX-xslim-dynq/moss_tts_prefill.onnx
+models/MOSS-TTS-Nano-100M-ONNX-xslim-dynq/moss_tts_decode_step.onnx
+models/MOSS-TTS-Nano-100M-ONNX-xslim-dynq/moss_tts_local_fixed_sampled_frame.gelu.onnx
 python/
 lib/
 
