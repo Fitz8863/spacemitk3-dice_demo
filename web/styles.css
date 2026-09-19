@@ -102,6 +102,11 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .countdown-number { font-size: 240px; line-height: .9; font-weight: 900; letter-spacing: -.06em; }
 .countdown-number.pop { animation: countPop .45s ease both; }
 
+/* 猜拳出拳页的三个拳形（rps）。结果页记分牌里的单拳复用 .die 的底色与
+   尺寸变量， emoji 直接当内容，不进点阵网格。 */
+.rps-throw { font-size: 92px; line-height: 1; letter-spacing: .12em; margin-bottom: 18px; }
+.rps-gesture { --die-size: 56px; width: var(--die-size); height: var(--die-size); display: grid; place-items: center; font-size: 38px; line-height: 1; border-radius: calc(var(--die-size) * .2); background: #d9e2ec; }
+
 /* 摇骰：舞台（.shake-cup）承载落地阴影；.shake-bounce 负责上下颠并给立方体
    透视；换点数交给 .die-cube 的翻滚。两个动画周期不同（.62s / 1.8s），免得
    机械同步露出破绽。骰子腾空时地面阴影同时缩小变淡，看得出它在"篓里被摇"。 */
