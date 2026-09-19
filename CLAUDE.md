@@ -119,10 +119,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
 cmake --build build -j4
 
 # 无摄像头自测（模型/OpenCL 冒烟，作为必需验证，无 ctest）
-./build/yolov8_camera --model models/best.q.onnx --self-test --no-display
+./build/yolov8_camera --model ../../backend/games/dice/models/best.q.onnx --self-test --no-display
 
 # 短时有界摄像头测试
-./build/yolov8_camera --model models/best.q.onnx --camera 1 --no-display --max-frames 30
+./build/yolov8_camera --model ../../backend/games/dice/models/best.q.onnx --camera 1 --no-display --max-frames 30
 ```
 
 ### TTS 手工验证

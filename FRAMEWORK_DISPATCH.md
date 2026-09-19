@@ -81,7 +81,7 @@ main/
     "schema_version": 1,
     "game_id": "dice",
     "vision": {
-      "model": "vision/yolov8_adjudicator/models/best.q.onnx",
+      "model": "backend/games/dice/models/best.q.onnx",
       "confidence": 0.45,              // 检测阈值：游戏参数（2026-09-15 起在此）
       "class_map": {"0": "1", "...": "..."},
       "participants": ["LEFT", "RIGHT"],
@@ -206,14 +206,14 @@ flowchart TD
 
 | 归属 | 字段 | 放哪 |
 | --- | --- | --- |
-| **游戏** | `class_map`/规则/`stable_frames`/`confidence`/`grouping`/`divider*`/`expected_count`/`video.path`/prompt/超时/节奏 | 游戏 manifest 的 `vision_profile`（摄像头也可用 `multi_view.views[].camera` 按视角配） |
+| **游戏** | `model`（模型文件在 `backend/games/<id>/models/`）/ `class_map`/规则/`stable_frames`/`confidence`/`grouping`/`divider*`/`expected_count`/`video.path`/prompt/超时/节奏 | 游戏 manifest 的 `vision_profile`（摄像头也可用 `multi_view.views[].camera` 按视角配） |
 | **硬件/部署**（默认共享，可按游戏覆盖） | 摄像头设备、分辨率、帧率、EP 绑核、线程数、队列深度、焦距、变焦、RTSP host/port、WebRTC 基址 | `vision/yolov8_adjudicator/config.json`，或该游戏自己的 `runtime_config` 文件 |
 
 接入清单：
 
 | 步骤 | 位置 |
 | --- | --- |
-| 声明 `vision_profile`（`class_map`/规则/`stable_frames`/`confidence`/`grouping`/`video.path`/prompt） | `backend/games/<id>/manifest.json` |
+| 声明 `vision_profile`（`model`/`class_map`/规则/`stable_frames`/`confidence`/`grouping`/`video.path`/prompt） | `backend/games/<id>/manifest.json`（模型文件放 `backend/games/<id>/models/`） |
 | （可选）声明自己的硬件文件 `runtime_config` | 同上 + `backend/games/<id>/runtime.json` |
 | 薄壳 pipeline（约 15 行）：调 `core.vision_pipeline.run_vision_game` 并传入自己的投影 | `backend/games/<id>/pipeline.py` |
 | 结果投影：数值型参照 `games/dice/result.py`；类别型直接用 `core.participants.project_categorical_result` | 游戏自己的 result 模块 |

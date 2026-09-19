@@ -8,7 +8,7 @@ This repository is a small C++17 SpaceMIT K3 camera-inference application:
 - `src/gstreamer_camera.{h,cpp}` handles V4L2/GStreamer capture, MJPEG decoding, and software-decoder fallback.
 - `src/opencl_preprocess.{h,cpp}` implements NV12-to-YOLO preprocessing on OpenCL.
 - `src/yolov8_detector.{h,cpp}` initializes SpaceMIT ONNX Runtime and performs YOLOv8 decode/NMS.
-- `models/best.q.onnx` is the checked-in inference model.
+- `models/` no longer lives here: per-game inference models are checked in under `../../backend/games/<id>/models/` and reach this binary only through the game profile's `--model` argument.
 - `CMakeLists.txt` defines the `yolov8_camera` executable; `build/` is generated output and should not be edited manually.
 
 There is currently no dedicated test directory or test framework.
@@ -28,13 +28,13 @@ If the SDK is outside system paths, add `-DSPACEMIT_ORT_ROOT=/path/to/sdk`.
 Run the model and preprocessing smoke test without a camera:
 
 ```bash
-./build/yolov8_camera --model models/best.q.onnx --self-test --no-display
+./build/yolov8_camera --model ../../backend/games/dice/models/best.q.onnx --self-test --no-display
 ```
 
 Run a bounded headless camera test with `--device /dev/videoN` or `--camera N`:
 
 ```bash
-./build/yolov8_camera --model models/best.q.onnx --camera 1 \
+./build/yolov8_camera --model ../../backend/games/dice/models/best.q.onnx --camera 1 \
   --no-display --max-frames 30
 ```
 

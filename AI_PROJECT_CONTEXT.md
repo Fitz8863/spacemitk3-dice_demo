@@ -443,7 +443,7 @@ main/
 │   │   ├── tts_qwen3/
 │   │   └── tts_moss_nano/
 │   └── games/                       # 游戏 manifest 与 pipeline
-│       ├── dice/
+│       ├── dice/                    # 含 models/（视觉模型按游戏存放）
 │       └── rps/
 ├── web/
 │   ├── index.html                   # Web 页面结构
@@ -452,7 +452,6 @@ main/
 ├── vision/
 │   └── yolov8_adjudicator/
 │       ├── src/                     # YOLOv8 C++ 源码
-│       ├── models/best.q.onnx       # K3 使用的量化 ONNX 模型
 │       ├── config.json              # 摄像头、推理、RTSP、WebRTC 基础地址默认配置
 │       ├── CMakeLists.txt
 │       └── build/yolov8_camera      # K3 编译产物，不纳入 Git

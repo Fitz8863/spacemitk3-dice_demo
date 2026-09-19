@@ -73,7 +73,7 @@
 		"game_id": "dice",
 		"runtime_config": "backend/games/dice/adjudicator_config.json",
 		"vision": {
-			"model": "vision/yolov8_adjudicator/models/best.q.onnx",
+			"model": "backend/games/dice/models/best.q.onnx",
 			"confidence": 0.45,
 			"class_map": {
 				"0": "1",

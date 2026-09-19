@@ -39,7 +39,7 @@ def _profile(
     that used to collide: same model / stable frames / camera / confidence.
     """
     vision: dict = {
-        "model": "vision/yolov8_adjudicator/models/best.q.onnx",
+        "model": "backend/games/dice/models/best.q.onnx",
         "stable_frames": 30,
         "participants": ["LEFT", "RIGHT"],
         "divider_detection": divider_detection,

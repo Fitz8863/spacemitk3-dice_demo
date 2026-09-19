@@ -213,12 +213,11 @@ POST /api/adjudicate/<job_id>/cancel   取消当前裁决任务
 
 ## 迁移的 YOLOv8 工程
 
-源码、模型和 K3 配置位于：
+源码与 K3 配置位于（模型在各游戏自己的 `backend/games/<id>/models/` 目录）：
 
 ```text
 vision/yolov8_adjudicator/
 ├── src/
-├── models/best.q.onnx
 ├── config.json
 └── CMakeLists.txt
 ```
@@ -232,10 +231,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
 cmake --build build -j4
 
 # 先做模型 / OpenCL 自测
-./build/yolov8_camera --model models/best.q.onnx --self-test --no-display
+./build/yolov8_camera --model ../../backend/games/dice/models/best.q.onnx --self-test --no-display
 
 # 再做短时摄像头测试
-./build/yolov8_camera --model models/best.q.onnx --camera 1 \
+./build/yolov8_camera --model ../../backend/games/dice/models/best.q.onnx --camera 1 \
   --no-display --max-frames 30
 ```
 
