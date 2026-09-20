@@ -76,7 +76,7 @@ ffprobe -rtsp_transport tcp rtsp://127.0.0.1:8554/rps/det
 ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 ```
 
-推流依赖 `rtspclientsink` / `spacemith264enc` 插件路径，与 `yolov8_objdetect` 相同（必要时设置 `GST_PLUGIN_PATH` / `LD_LIBRARY_PATH`，见其 README）。
+`rtspclientsink` 与 `spacemith264enc` 插件现在都在系统 GStreamer 插件目录（`/usr/lib/riscv64-linux-gnu/gstreamer-1.0/`，2026-09-20 实测），**无需再设置 `GST_PLUGIN_PATH` / `LD_LIBRARY_PATH`**，直接 `./build/yolov10_camera` 即可。
 
 ## config.json 参数
 
