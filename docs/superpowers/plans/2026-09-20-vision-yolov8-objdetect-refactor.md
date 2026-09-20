@@ -102,31 +102,35 @@ C++ vision/yolov8_objdetect（纯检测包）          Python 游戏侧
 
 ## 任务分解
 
-### 阶段 A：C++ 功能包化（提交点 A）
-- [ ] A1 `git mv vision/yolov8_adjudicator vision/yolov8_objdetect`
-- [ ] A2 main.cpp：started 事件 protocol→v2、component→vision_yolov8_objdetect
-- [ ] A3 main.cpp：删区域门控全套（Args/validate/parse/usage/函数/主循环）
-- [ ] A4 main.cpp：stable 判定收敛为纯 `detection_signature` 比较；usage/注释中性化
-- [ ] A5 README.md/AGENTS.md 同步
-- [ ] A6 板端：rm -rf build → cmake 重新 configure → build → self-test 通过
-- [ ] A7 提交
+### 阶段 A：C++ 功能包化（提交点 A：5793556 ✅）
+- [x] A1 `git mv vision/yolov8_adjudicator vision/yolov8_objdetect`
+- [x] A2 main.cpp：started 事件 protocol→v2、component→vision_yolov8_objdetect
+- [x] A3 main.cpp：删区域门控全套（Args/validate/parse/usage/函数/主循环）
+- [x] A4 main.cpp：stable 判定收敛为纯 `detection_signature` 比较；usage/注释中性化
+- [x] A5 README.md/AGENTS.md 同步
+- [x] A6 板端：rm -rf build → cmake 重新 configure → build → self-test 通过
+- [x] A7 提交
 
-### 阶段 B：Python 组件化改造（提交点 B）
-- [ ] B1 `git mv backend/components/vision_yolov8_adjudicator backend/components/vision_yolov8_objdetect`
-- [ ] B2 manifest/config/provider/process/profile/rules/参数说明 全部更新
-- [ ] B3 外部接线 8 处更新（config/componentctl/components/games/vision_pipeline/server/scripts×2）
-- [ ] B4 process.py：started 协议握手校验（≠jsonl-events-v2 即报错）
-- [ ] B5 provider.py：复核 `_has_incomplete_expected_counts` 调用链
-      （诊断分支传入的观测是否带 participants——`ordered` vs `normalized`）
-- [ ] B6 测试 9 文件更新；新增：协议握手拒绝 v1、稳定语义（数量不足快速诊断）
-- [ ] B7 开发机 pytest 全量通过（tests/ 全部）
-- [ ] B8 提交
+### 阶段 B：Python 组件化改造（提交点 B：fbcbb7d ✅）
+- [x] B1 `git mv backend/components/vision_yolov8_adjudicator backend/components/vision_yolov8_objdetect`
+- [x] B2 manifest/config/provider/process/profile/rules/参数说明 全部更新
+- [x] B3 外部接线 8 处更新（config/componentctl/components/games/vision_pipeline/server/scripts×2）
+- [x] B4 process.py：started 协议握手校验（≠jsonl-events-v2 即报错）
+- [x] B5 provider.py：复核 `_has_incomplete_expected_counts` 调用链
+      ——结论：`_diagnose_failure` 内部自行 normalize，传原始观测正确，无缺陷
+- [x] B6 测试 9 文件更新；新增：协议握手拒绝 v1、expected_count 不重建 runtime
+- [x] B7 开发机 pytest 全量通过：595 passed（含真实进程测试）
+- [x] B8 提交
 
-### 阶段 C：板端全链路验证（提交点 C）
+### 阶段 C：板端全链路验证（部分完成）
 - [ ] C1 dice 有相机实测：5+5 骰子 → 稳定 → 裁决正确；故意摆 4+5 → 立即诊断重试
+      ——**被占用阻塞**：/dev/video1 由用户运行的 yolov8_seg_camera 持有
 - [ ] C2 rps 有相机实测：divider_detection=false 生效、事件无 divider 字段
-- [ ] C3 文档收尾同步（若 B 阶段后有偏差）
-- [ ] C4 提交
+      ——同上阻塞；rps 配置 self-test 已过（模型临时借用回收站文件），
+      "无 divider 字段"已有源码证据（emit_observation 关闭态传 nullptr + if(divider_assist)）
+- [x] C3 文档收尾同步（A/B 阶段一并完成，无偏差）
+- [x] 板端 web 后端已用新代码重启（旧代码在内存里找旧目录路径，重启前新对局会失败）
+      并通过 /api/health（新组件名注册、无旧名残留）
 
 ## 验证标准（用户已确认"全链路"）
 
