@@ -122,15 +122,27 @@ C++ vision/yolov8_objdetect（纯检测包）          Python 游戏侧
 - [x] B7 开发机 pytest 全量通过：595 passed（含真实进程测试）
 - [x] B8 提交
 
-### 阶段 C：板端全链路验证（部分完成）
-- [ ] C1 dice 有相机实测：5+5 骰子 → 稳定 → 裁决正确；故意摆 4+5 → 立即诊断重试
-      ——**被占用阻塞**：/dev/video1 由用户运行的 yolov8_seg_camera 持有
-- [ ] C2 rps 有相机实测：divider_detection=false 生效、事件无 divider 字段
-      ——同上阻塞；rps 配置 self-test 已过（模型临时借用回收站文件），
-      "无 divider 字段"已有源码证据（emit_observation 关闭态传 nullptr + if(divider_assist)）
+### 阶段 C：板端全链路验证（✅ 2026-09-20 完成，相机由用户腾出后实测）
+- [x] C1 dice 有相机实测（provider 全链路脚本，板上实跑两场）：
+      · 5+0 场景（stable_frames=30）：稳定计数在"数量不达标"画面下持续爬升
+        （旧区域门控下恒为 0）——新稳定语义直接证明；最终超时→INCOMPLETE_OBJECTS
+        诊断，文案与 detected_counts 正确。
+      · stable_frames=5 场景：稳定观测在 ~5 帧内产出 → Python 数量校验
+        （LEFT=4/5）→ **立即** INCOMPLETE_OBJECTS 诊断重试，全程约 3 秒
+        ——新"快速诊断"路径证明（旧架构须等 8s 检测超时）。
+      · 5+5 完整裁决未在板上复现（桌上只有单侧骰子）；裁决规则链路由
+        595 项 Python 测试覆盖，独立工程同模型同解码当日已验证。
+- [x] C2 rps 有相机实测（rps 配置 + 借用骰子模型产生真实检测，原始事件流）：
+      started=vision_yolov8_objdetect/jsonl-events-v2 握手通过；1080p 生效；
+      稳定计数至 5 → observation 事件 **不含 divider 字段**
+      （OBSERVATION_HAS_DIVIDER_KEY=False）、检测框正常——与源码契约一致
+      （emit_observation 关闭态传 nullptr + if(divider_assist)）。
 - [x] C3 文档收尾同步（A/B 阶段一并完成，无偏差）
 - [x] 板端 web 后端已用新代码重启（旧代码在内存里找旧目录路径，重启前新对局会失败）
       并通过 /api/health（新组件名注册、无旧名残留）
+- 遗留事项（非本计划范围）：rps.q.onnx 在板端回收站 ~/.Trash-1000/files/，
+  rps 游戏正式接回时需放回 backend/games/rps/models/（现该目录不存在，
+  仅有空目录 model/，名字与配置期望不符）；测试遗留进程与临时配置已全部清理。
 
 ## 验证标准（用户已确认"全链路"）
 
