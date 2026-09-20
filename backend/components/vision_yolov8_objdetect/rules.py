@@ -363,7 +363,7 @@ def project_result(
 
     result = dict(decision)
     result["profile_id"] = profile_id
-    result["provider_id"] = "vision_yolov8_adjudicator"
+    result["provider_id"] = "vision_yolov8_objdetect"
     result["evidence"] = dict(evidence)
 
     # Keep old dice clients working without making these fields part of the

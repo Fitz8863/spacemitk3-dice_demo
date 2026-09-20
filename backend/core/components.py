@@ -40,7 +40,7 @@ _VISION_ROLES = {"adjudicator", "localizer"}
 # for manifests and clients during migration; it is never registered as a
 # second component.
 COMPONENT_ID_ALIASES = {
-    "vision_yolo": "vision_yolov8_adjudicator",
+    "vision_yolo": "vision_yolov8_objdetect",
 }
 
 

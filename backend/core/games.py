@@ -232,11 +232,11 @@ def load_games(root: Path | None = None) -> GameRegistry:
             profile = manifest.get("vision_profile")
             profile_path = manifest_path.parent / "vision_profile.json"
             if profile is not None:
-                from components.vision_yolov8_adjudicator.profile import validate_profile
+                from components.vision_yolov8_objdetect.profile import validate_profile
 
                 profile = validate_profile(profile)
             elif profile_path.is_file():
-                from components.vision_yolov8_adjudicator.profile import load_profile
+                from components.vision_yolov8_objdetect.profile import load_profile
 
                 profile = load_profile(profile_path)
             else:

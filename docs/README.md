@@ -12,7 +12,7 @@
 | [`../CLAUDE.md`](../CLAUDE.md) | 编程代理修改本仓库时必须遵守的工程约束。 |
 | [`../FRAMEWORK_DISPATCH.md`](../FRAMEWORK_DISPATCH.md) | 从浏览器请求到视觉/TTS provider 的端到端调度说明。 |
 | [`../backend/components/README.md`](../backend/components/README.md) | 可插拔 provider 功能包的目录、manifest 和接口约定。 |
-| [`../vision/yolov8_adjudicator/README.md`](../vision/yolov8_adjudicator/README.md) | YOLOv8 K3 runtime、控制协议、快照和 MediaMTX 播放边界。 |
+| [`../vision/yolov8_objdetect/README.md`](../vision/yolov8_objdetect/README.md) | YOLOv8 K3 runtime、控制协议、快照和 MediaMTX 播放边界。 |
 | [`../backend/components/tts_qwen3/README.md`](../backend/components/tts_qwen3/README.md) | Qwen3-TTS provider 的配置与运行说明。 |
 | [`../backend/components/tts_moss_nano/README.md`](../backend/components/tts_moss_nano/README.md) | MOSS-TTS-Nano provider 的配置与运行说明。 |
 | [`../backend/参数说明.md`](../backend/参数说明.md) | 全局配置 backend/config.json 字段参考（引擎槽位/音色语速/语音总闸、优先级阶梯、本地 TTS 钉死规则）。 |
@@ -21,7 +21,7 @@
 | [`../backend/components/tts_gptsovits/参数说明.md`](../backend/components/tts_gptsovits/参数说明.md) | 远程 GPT-SoVITS 组件配置（服务地址/请求采样参数/音色）全字段参考。 |
 | [`../backend/components/tts_moss_nano/参数说明.md`](../backend/components/tts_moss_nano/参数说明.md) | 本地 MOSS 组件配置（音色克隆/生成参数/EP 绑核）全字段参考，补充其 README 未覆盖的段落。 |
 | [`../backend/components/tts_qwen3/参数说明.md`](../backend/components/tts_qwen3/参数说明.md) | 本地 Qwen3-TTS 组件配置全字段参考。 |
-| [`../backend/components/vision_yolov8_adjudicator/参数说明.md`](../backend/components/vision_yolov8_adjudicator/参数说明.md) | 视觉裁决组件配置 + runtime 硬件配置双文件参考，含游戏 profile 覆盖优先级。 |
+| [`../backend/components/vision_yolov8_objdetect/参数说明.md`](../backend/components/vision_yolov8_objdetect/参数说明.md) | 视觉裁决组件配置 + runtime 硬件配置双文件参考，含游戏 profile 覆盖优先级。 |
 
 ## 配置入口
 
@@ -34,7 +34,7 @@
 ## 历史资料
 
 - [`archive/legacy/CosyVoice-TTS-调用说明.md`](archive/legacy/CosyVoice-TTS-调用说明.md)：旧版 CosyVoice 云端调用手册，保留作追溯，不是当前 TTS 入口。
-- [`archive/vision/README_MIGRATION.md`](archive/vision/README_MIGRATION.md)：YOLOv8 runtime 从旧目录迁移并重命名的记录，当前运行说明以 `vision/yolov8_adjudicator/README.md` 为准。
+- [`archive/vision/README_MIGRATION.md`](archive/vision/README_MIGRATION.md)：YOLOv8 runtime 从旧目录迁移并重命名的记录，当前运行说明以 `vision/yolov8_objdetect/README.md` 为准。
 - [`superpowers/plans/`](superpowers/plans/) 和 [`superpowers/specs/`](superpowers/specs/)：历次架构设计和实现计划，记录当时的决策，不作为当前配置示例的唯一来源。
 
-历史文档中的旧路径（例如 `vision/yolov8_objdetect`）只用于解释迁移过程。新代码、配置和部署命令统一使用 `vision/yolov8_adjudicator`。
+历史文档中的旧路径只用于解释当时的迁移过程，不代表当前目录名。新代码、配置和部署命令统一使用 `vision/yolov8_objdetect`（2026-09-20 由 `yolov8_adjudicator` 更名回归纯目标检测功能包；`archive/vision/README_MIGRATION.md` 记录的是当初首次迁入时"yolov8_objdetect → yolov8_adjudicator"的改名，与本次方向相反）。

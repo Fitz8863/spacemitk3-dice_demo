@@ -15,7 +15,7 @@ flowchart LR
     Job[ComponentJob\n状态、事件、取消]
     Game[游戏 manifest\nproviders + vision_profile]
     Pipeline[dice pipeline\n编排与角色投影]
-    Vision[vision_yolov8_adjudicator\nPython provider]
+    Vision[vision_yolov8_objdetect\nPython provider]
     Runtime[yolov8_camera\nC++ resident runtime]
     Camera[K3 摄像头]
     LLM[云端多模态 LLM\n单轮、无历史]
@@ -51,21 +51,21 @@ main/
 │   │   ├── tts.py、tts_dispatch.py       # TTS 接口和选择调度
 │   │   └── tts_protocol.py               # WAV 长度前缀流协议
 │   ├── components/                       # 可插拔功能包，不按模型名称硬编码
-│   │   ├── vision_yolov8_adjudicator/    # YOLOv8 视觉裁决 provider
+│   │   ├── vision_yolov8_objdetect/    # YOLOv8 视觉裁决 provider
 │   │   ├── tts_gptsovits/                # GPT-SoVITS 远程流式 provider（外部 GPU 主机）
 │   │   ├── tts_moss_nano/                # MOSS-TTS-Nano provider
 │   │   └── tts_qwen3/                    # Qwen3-TTS provider
 │   └── games/
 │       ├── dice/manifest.json            # 当前有效骰子配置和 vision_profile
 │       └── dice/pipeline.py              # 视觉结果到角色结果的上层投影
-├── vision/yolov8_adjudicator/            # K3 C++ runtime、模型和硬件默认配置
+├── vision/yolov8_objdetect/            # K3 C++ runtime、模型和硬件默认配置
 ├── tts/                                  # TTS runtime 源码和板端交付资产
 ├── web/                                  # 浏览器 UI 和游戏状态机
 ├── scripts/                              # Web 服务启停（会调 componentctl）
 └── docs/                                 # 当前文档索引、归档和历史设计记录
 ```
 
-`build/`、`.shaders/`、`.runtime/`、`__pycache__/`、日志、PID、模型和板端依赖属于生成物或部署资产，由 `.gitignore` 排除。旧的 `backend/components/vision_yolo/` 不再是组件；仓库只保留 `vision_yolo → vision_yolov8_adjudicator` 的 registry 迁移别名。
+`build/`、`.shaders/`、`.runtime/`、`__pycache__/`、日志、PID、模型和板端依赖属于生成物或部署资产，由 `.gitignore` 排除。旧的 `backend/components/vision_yolo/` 不再是组件；仓库只保留 `vision_yolo → vision_yolov8_objdetect` 的 registry 迁移别名。
 
 ## 3. 两类配置的边界
 
@@ -76,7 +76,7 @@ main/
 ```jsonc
 {
   // 槽位留空即继承 backend/config.json 的全局默认（dice 现在全部继承）
-  "providers": {"vision_adjudicator": "vision_yolov8_adjudicator"},
+  "providers": {"vision_adjudicator": "vision_yolov8_objdetect"},
   "vision_profile": {
     "schema_version": 1,
     "game_id": "dice",
@@ -115,9 +115,9 @@ main/
 
 | 文件 | 所有者 | 典型字段 |
 | --- | --- | --- |
-| `backend/components/vision_yolov8_adjudicator/config.json` | Python provider | resident/per-request 模式、runtime 路径、生命周期宽限时间（**不含** LLM 凭证；2026-09-04 起 LLM 配置在 `backend/components/llm_openai_compat/config.json`） |
+| `backend/components/vision_yolov8_objdetect/config.json` | Python provider | resident/per-request 模式、runtime 路径、生命周期宽限时间（**不含** LLM 凭证；2026-09-04 起 LLM 配置在 `backend/components/llm_openai_compat/config.json`） |
 | `backend/components/llm_openai_compat/config.json` | LLM 组件 | endpoint、model、api_key、`reasoning_effort` 部署默认（Git 跟踪，**仓库须保持私有**） |
-| `backend/games/<id>/adjudicator_config.json` | C++ runtime / **各游戏专属（必填）** | 摄像头、分辨率、帧率、推理线程、EP affinity、焦距/变焦、RTSP 地址、MediaMTX `video.webrtc_base_url`。**只放"这台板子+这张桌子"的属性**：检测阈值等游戏参数在游戏 manifest（见 §3.3）。共享部署默认 `vision/yolov8_adjudicator/config.json` 已于 2026-09-20 删除 |
+| `backend/games/<id>/adjudicator_config.json` | C++ runtime / **各游戏专属（必填）** | 摄像头、分辨率、帧率、推理线程、EP affinity、焦距/变焦、RTSP 地址、MediaMTX `video.webrtc_base_url`。**只放"这台板子+这张桌子"的属性**：检测阈值等游戏参数在游戏 manifest（见 §3.3）。共享部署默认 `vision/yolov8_objdetect/config.json` 已于 2026-09-20 删除 |
 | `backend/components/tts_*/config.json` | 各 TTS provider | 本地 runtime 路径、端口、模型和音色参数 |
 
 视觉组件配置不重复保存摄像头、RTSP 或 WebRTC 基础地址。新增游戏只写自己的 `vision_profile.video.path`，例如 `/dice/` 或 `/rps/`。完整播放地址由基础地址和 path 安全拼接：
@@ -284,7 +284,7 @@ Content-Type: application/json
     > 兼容别名   providers.vision
     > 全局       backend/config.json 的 providers.vision_adjudicator / .vision
                  （run_game 用 with_global_defaults 垫在游戏 manifest 之下，逐键游戏优先）
-    > 兜底       vision_yolov8_adjudicator
+    > 兜底       vision_yolov8_objdetect
 ```
 
 > 环境变量覆盖层（`DICE_VISION_ADJUDICATOR_PROVIDER` / `DICE_VISION_PROVIDER`）**已于

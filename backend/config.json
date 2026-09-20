@@ -4,7 +4,7 @@
     "tts_local": "tts_moss_nano",
     "tts_remote": "tts_gptsovits",
     "asr": "asr_sensevoice",
-    "vision_adjudicator": "vision_yolov8_adjudicator",
+    "vision_adjudicator": "vision_yolov8_objdetect",
     "llm": "llm_openai_compat"
   },
   "participants": {

@@ -12,19 +12,18 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from core.vision import VisionAdjudicationRequest, VisionAdjudicatorProvider
-from components.vision_yolov8_adjudicator.process import (
+from components.vision_yolov8_objdetect.process import (
     YoloRuntimeProcess,
     _snapshot_path,
-    region_split,
 )
-from components.vision_yolov8_adjudicator.rules import (
+from components.vision_yolov8_objdetect.rules import (
     diagnose_detection_failure,
     evaluate_rule,
     finalize_outcome,
     project_result,
     fuse_yolo_outcomes,
 )
-from components.vision_yolov8_adjudicator.profile import (
+from components.vision_yolov8_objdetect.profile import (
     ProfileError,
     compose_video_url,
     load_component_config,
@@ -278,12 +277,12 @@ def _consume_legacy_log_line(
     return event
 
 
-class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
-    id = "vision_yolov8_adjudicator"
+class VisionYolov8Objdetect(VisionAdjudicatorProvider):
+    id = "vision_yolov8_objdetect"
     type = "vision"
     role = "adjudicator"
-    name = "YOLOv8 Vision Adjudicator"
-    version = "2.0"
+    name = "YOLOv8 Object Detection"
+    version = "3.0"
 
     def __init__(self, manifest: dict[str, Any] | None = None, *, runtime_factory: Callable[..., Any] | None = None, verifier: Any | None = None) -> None:
         super().__init__(manifest)
@@ -553,17 +552,13 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
                 break
         video = profile.get("video", {})
         video_path = video.get("path") if isinstance(video, Mapping) else None
-        # Compare the *resolved* region split (what the runtime is launched
-        # with) rather than the raw divider block, which may be absent.
-        region_position, region_orientation = region_split(vision)
         payload = {
             # Game identity: two profiles that agree on every numeric knob are
             # still different games (different classes, rules and prompts).
+            # expected_count / grouping / divider.position are consumed by the
+            # provider itself (count checks, observation grouping) straight
+            # from each round's profile, so they no longer rebuild the runtime.
             "game_id": profile.get("game_id"),
-            "expected_count": vision.get("expected_count"),
-            "region_position": region_position,
-            "region_orientation": region_orientation,
-            "grouping": vision.get("grouping"),
             "video_path": video_path,
             "camera": view_data.get("camera"),
             "runtime": profile.get("runtime"),
@@ -572,7 +567,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             # mtime+size stamp is what makes editing any of them rebuild the
             # process on the next round — and the resolved path keeps two
             # games' files apart even when the sizes happen to match.
-            "runtime_config": VisionYolov8Adjudicator._runtime_config_stamp(profile),
+            "runtime_config": VisionYolov8Objdetect._runtime_config_stamp(profile),
         }
         return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
 
@@ -629,7 +624,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             video_enabled = bool(profile["video"].get("enabled", True))
         if not video_enabled:
             return None
-        base = VisionYolov8Adjudicator._video_base_url(profile)
+        base = VisionYolov8Objdetect._video_base_url(profile)
         if not isinstance(base, str) or not base.strip():
             return None
         return {"event": "video", "url": compose_video_url(base, path), "view_id": view_id}
@@ -702,7 +697,7 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         local rules already named the cause), so ``source`` is always
         ``local``.
         """
-        from components.vision_yolov8_adjudicator.rules import diagnose_detection_failure
+        from components.vision_yolov8_objdetect.rules import diagnose_detection_failure
 
         normalized_observations = [normalize_observation(profile, item) for item in observations]
         evidence: dict[str, Any] = {"views": [dict(item) for item in normalized_observations]}

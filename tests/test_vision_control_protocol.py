@@ -15,7 +15,7 @@ def test_control_reader_drains_coalesced_jsonl_commands(tmp_path: Path):
     source.write_text(
         textwrap.dedent(
             r"""
-            #include "vision/yolov8_adjudicator/src/control_protocol.h"
+            #include "vision/yolov8_objdetect/src/control_protocol.h"
 
             #include <unistd.h>
 

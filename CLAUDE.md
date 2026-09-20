@@ -9,7 +9,7 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
 **关键文档**（接手先读，本文不重复其全部内容）：
 - `README.md` — 运行与接口说明。
 - `AI_PROJECT_CONTEXT.md` — 最完整的技术上下文（架构、状态机、安全约束、未来机械臂演进）。
-- `vision/yolov8_adjudicator/AGENTS.md` — YOLOv8 C++ 子工程的构建/测试/编码规范。
+- `vision/yolov8_objdetect/AGENTS.md` — YOLOv8 C++ 子工程的构建/测试/编码规范。
 - `tts/qwen3-tts/AGENTS.md` — Qwen3-TTS 子工程的运行/验证/核心亲和性约束。
 - `asr/zipformer-streaming/AGENTS.md` — 板端流式 ASR 子工程的构建/验证/JSONL 事件契约。
 
@@ -51,7 +51,7 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
   所有指令回执，不再仅 `await:true`；无回执 90s 惰性过期），播报期间语音输入无效，
   按键不受限。`asr_zipformer` 功能包按需 spawn `arecord | stream_asr --pcm --jsonl`
   子进程对（无 lifecycle、不进 start_web.sh），麦克风跟随系统默认输入设备。
-- 引擎槽位在**全局配置** `backend/config.json` 选择（当前 `tts_local=tts_moss_nano`、`tts_remote=tts_gptsovits`、`asr=asr_zipformer`、`vision_adjudicator=vision_yolov8_adjudicator`）；游戏 manifest 可按槽位覆盖。`tts_qwen3` 是本地可选 provider。
+- 引擎槽位在**全局配置** `backend/config.json` 选择（当前 `tts_local=tts_moss_nano`、`tts_remote=tts_gptsovits`、`asr=asr_zipformer`、`vision_adjudicator=vision_yolov8_objdetect`）；游戏 manifest 可按槽位覆盖。`tts_qwen3` 是本地可选 provider。
 - 新 TTS 复制一个功能包并继承 `TtsProvider`，最小实现 `health()`、`synthesize()` 即可接入；需要分段低延迟时再覆盖 `stream()`；切换默认 provider 改全局配置 `providers.tts_local` 后重启，前端请求保持不变。Provider 可用 `manifest.lifecycle.start/stop` 声明本地模型进程管理命令，`componentctl.py`/`start_web.sh` 会按"全局槽位 ∪ 各游戏 ∪ 台词钉死"的引用集调度。
 - 当前 YOLO 包是 `type=vision, role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于目标坐标的 YOLO 包应使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得混入裁决器插槽。算法名不是职责接口。
 - **视觉推流生命周期（2026-09-14 起）**：`create_round` 会同步调用 `core/vision_stream.py`
@@ -114,7 +114,7 @@ curl http://127.0.0.1:8080/api/tts/health
 
 ### YOLOv8 C++（板端，riscv64 工具链）
 ```bash
-cd /home/spacemit/projects/dice-game/main/vision/yolov8_adjudicator
+cd /home/spacemit/projects/dice-game/main/vision/yolov8_objdetect
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4
@@ -143,7 +143,7 @@ file /tmp/dice-tts.wav   # 期望 RIFF/WAVE, 24 kHz, 16-bit, mono
 代码职责分离，但 Web 与后端部署在同一 Python 服务里（同源，无 CORS；分析进度使用 SSE，不是 WebSocket）：
 
 1. **`backend/server.py`** — 轻量 `ThreadingHTTPServer`，同时提供 `web/` 静态文件和 `/api/*`；负责路由、provider 选择和 `ComponentJob` 生命周期，不包含具体 YOLO/TTS 实现。
-2. **`vision/yolov8_adjudicator/build/yolov8_camera`** — resident 通用 YOLO runtime，摄像头和视频链路常驻；**进入游戏（`create_round`）时即以 prewarm 模式拉起**，此时只采集 + 推 RTSP、不跑推理，control-fd 收到 `START_ADJUDICATION` 后才过模型；Python provider 负责游戏规则和云端 LLM。这条流何时结束由全局 `vision_always_on` 决定（热加载，见 `backend/参数说明.md`）。
+2. **`vision/yolov8_objdetect/build/yolov8_camera`** — resident 通用 YOLO runtime，摄像头和视频链路常驻；**进入游戏（`create_round`）时即以 prewarm 模式拉起**，此时只采集 + 推 RTSP、不跑推理，control-fd 收到 `START_ADJUDICATION` 后才过模型；Python provider 负责游戏规则和云端 LLM。这条流何时结束由全局 `vision_always_on` 决定（热加载，见 `backend/参数说明.md`）。
 3. **`tts/qwen3-tts/runtime/bin/llama-server`** — 独立常驻进程，监听 `127.0.0.1:18080`，后端通过 `/v1/audio/speech` 代理。
 
 数据流（详见 `AI_PROJECT_CONTEXT.md` 的 mermaid 图）：

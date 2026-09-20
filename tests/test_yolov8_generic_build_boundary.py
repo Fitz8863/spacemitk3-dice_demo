@@ -3,8 +3,8 @@ import json
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "vision" / "yolov8_adjudicator" / "src" / "main.cpp"
-CMAKE = ROOT / "vision" / "yolov8_adjudicator" / "CMakeLists.txt"
+SOURCE = ROOT / "vision" / "yolov8_objdetect" / "src" / "main.cpp"
+CMAKE = ROOT / "vision" / "yolov8_objdetect" / "CMakeLists.txt"
 RUNTIME_CONFIG = ROOT / "backend" / "games" / "dice" / "adjudicator_config.json"
 
 
@@ -14,12 +14,12 @@ def test_shared_runtime_config_stays_deleted():
     复活它会同时复活「游戏忘了声明就静默用别人摄像头」的负价值兜底；
     要恢复先改 resolver + validate_profile 并回滚本条。
     """
-    assert not (ROOT / "vision" / "yolov8_adjudicator" / "config.json").exists()
+    assert not (ROOT / "vision" / "yolov8_objdetect" / "config.json").exists()
 
 
-def test_runtime_has_adjudicator_directory_and_no_objdetect_directory():
-    assert SOURCE.parent.parent.name == "yolov8_adjudicator"
-    assert not (ROOT / "vision" / "yolov8_objdetect").exists()
+def test_runtime_uses_objdetect_directory_and_no_adjudicator_directory():
+    assert SOURCE.parent.parent.name == "yolov8_objdetect"
+    assert not (ROOT / "vision" / "yolov8_adjudicator").exists()
 
 
 def test_divider_assist_runs_only_during_active_adjudication():
@@ -39,10 +39,9 @@ def test_generic_control_path_is_not_gated_by_dice_judgment():
     source = SOURCE.read_text(encoding="utf-8")
     assert "judge_dice" not in source
     assert "DiceJudgment" not in source
-    # The gate is generic detector evidence plus profile data (region count and
-    # split), never a game-specific judgment.
-    assert "const bool evidence_usable = region_ok && divider_ready;" in source
-    assert "const bool region_gate = a.expected_count > 0;" in source
+    # The stability gate is pure detection evidence (non-empty frame plus a
+    # located divider when assistance is on), never a game-specific judgment.
+    assert "const bool evidence_usable = !item->detections.empty() && divider_ready;" in source
 
 
 def test_generic_control_path_runs_configured_divider_assist():
@@ -96,77 +95,57 @@ def test_runtime_emits_category_stability_progress():
     assert '\\"stable_frames\\":' in source
 
 
-def test_stability_streak_only_advances_on_frames_a_profile_can_adjudicate():
-    """A frame missing objects, the divider, or the profile's layout resets it.
+def test_stability_streak_only_advances_on_frames_the_consumer_can_use():
+    """A frame missing objects or the divider resets it; game completeness moved out.
 
-    Three conditions gate the streak: a located divider, the profile's object
-    count in each region, and an unchanged per-region class multiset.  Counting
-    frames that fail them let the stable_frames gate be satisfied with evidence
-    the profile must reject -- first the visible "48/30" overrun, then stable
-    observations rejected downstream as incomplete while the detection timeout
-    never got its budget.
+    Two conditions gate the streak (jsonl-events-v2 semantics): a located
+    divider when assistance is on, and an unchanged whole-frame class multiset
+    with at least one detection.  Per-side completeness such as "five dice per
+    side" is the Python provider's count check on the stable observation, so
+    the runtime must not carry any region gate of its own.
     """
     source = SOURCE.read_text(encoding="utf-8")
-    start = source.index("const bool region_gate = a.expected_count > 0;")
+    start = source.index("const std::string signature = detection_signature(item->detections);")
     end = source.index("if (evidence_usable &&", start)
     streak = source[start:end]
-    assert "const bool evidence_usable = region_ok && divider_ready;" in streak
+    assert "const bool evidence_usable = !item->detections.empty() && divider_ready;" in streak
     assert "if (!evidence_usable) {" in streak
     assert "generic_stable_count.store(0);" in streak
-    # The layout check uses the profile's count and the frame's effective split,
-    # and feeds a per-region signature so any point-value change on either side
-    # restarts the streak.
-    assert "region_layout_usable(item->detections, item->width, item->height," in streak
-    assert "a.expected_count, region_boundary," in streak
-    assert "&region_signature_text)" in streak
+    # Stability compares the whole-frame class multiset only.
+    assert "const std::string signature = detection_signature(item->detections);" in streak
     # The observation gate reuses the same predicate.
     assert "stable_count >= a.stable_frames" in source
-    assert "!item->detections.empty() && divider_ready &&" not in source
+    # No region gate may come back: the count/split checks live in Python now.
+    for forbidden in ("region_layout_usable", "expected_count", "region_position",
+                      "region_orientation", '"--expected-count"', '"--region-position"',
+                      '"--region-orientation"'):
+        assert forbidden not in source, forbidden
 
 
-def test_stability_split_uses_the_located_divider_over_the_configured_ratio():
-    """The gate must split where the scene splits, not where the manifest says.
+def test_region_gate_lives_in_python_not_the_runtime():
+    """Per-side completeness is the provider's concern since jsonl-events-v2.
 
-    ``vision.divider.position`` is only a fallback: as long as the gate used it
-    unconditionally the detected boundary -- the thing that actually keeps the
-    split right when the camera moves -- never reached the count check, so
-    ``grouping: divider_regions`` changed whether the divider gated a frame but
-    never where left ended.  The profile's ``--region-position`` may therefore
-    appear only as the fallback assignment.
+    The runtime is a pure object detector: it never learns how many objects a
+    side needs or where the split falls.  ``expected_count`` stays in the game
+    manifest and is validated by ``_has_incomplete_expected_counts`` on the
+    stable observation, so an incomplete layout is a fast diagnosed retry
+    instead of a silent streak reset.
     """
     source = SOURCE.read_text(encoding="utf-8")
-    start = source.index("double region_boundary = a.region_position;")
-    end = source.index("if (evidence_usable &&", start)
-    split = source[start:end]
-    # The fallback is the launch argument, overridden by a located divider.
-    assert "if (a.divider_detection_enabled && divider_assist.valid) {" in split
-    assert "region_boundary = detected / region_extent;" in split
-    assert "a.expected_count, region_boundary," in split
-    # The configured ratio can no longer reach the count check directly.
-    assert "a.expected_count, a.region_position," not in source
-    # And the fallback stays inside the frame, so a degenerate divider cannot
-    # silently push every detection into one region.
-    assert "detected > 0.0 && detected < region_extent" in split
-
-
-def test_region_count_gate_is_profile_data_and_off_by_default():
-    """The runtime learns the count from the profile, never from a game rule.
-
-    ``--expected-count 0`` (the default) preserves the generic behaviour every
-    profile without ``vision.expected_count`` relies on, so adding the gate
-    cannot change another game's stability semantics.
-    """
-    source = SOURCE.read_text(encoding="utf-8")
-    assert "int expected_count = 0;" in source
-    assert '"--expected-count"' in source
-    assert '"--region-position"' in source
-    assert '"--region-orientation"' in source
-    start = source.index("static bool region_layout_usable(")
-    end = source.index("// Ultralytics-style vivid palette", start)
-    gate = source[start:end]
-    assert "int expected_count" in gate
-    assert "regions[0].size() == expected" in gate
-    assert "regions[1].size() == expected" in gate
+    for forbidden in (
+        "int expected_count",
+        '"--expected-count"',
+        '"--region-position"',
+        '"--region-orientation"',
+        "static bool region_layout_usable(",
+    ):
+        assert forbidden not in source, forbidden
+    provider = (ROOT / "backend" / "components" / "vision_yolov8_objdetect" / "provider.py").read_text(encoding="utf-8")
+    assert "_has_incomplete_expected_counts(profile, normalized)" in provider
+    # And the launcher no longer forwards region arguments to the runtime.
+    process = (ROOT / "backend" / "components" / "vision_yolov8_objdetect" / "process.py").read_text(encoding="utf-8")
+    assert '"--expected-count"' not in process
+    assert '"--region-position"' not in process
 
 
 def test_stability_streak_stops_once_the_stable_observation_is_sent():

@@ -20,8 +20,8 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from core.vision import VisionAdjudicationRequest  # noqa: E402
-from components.vision_yolov8_adjudicator.provider import (  # noqa: E402
-    VisionYolov8Adjudicator,
+from components.vision_yolov8_objdetect.provider import (  # noqa: E402
+    VisionYolov8Objdetect,
 )
 
 
@@ -73,16 +73,16 @@ def test_runtime_signature_separates_each_game_owned_field(label, overrides_a, o
     """任一「游戏自有」字段不同，签名就必须不同——否则会复用错进程。"""
     profile_a = _profile(**{"game_id": "dice", **overrides_a})
     profile_b = _profile(**{"game_id": "rps", **overrides_b})
-    signature_a = VisionYolov8Adjudicator._runtime_signature(profile_a, "default")
-    signature_b = VisionYolov8Adjudicator._runtime_signature(profile_b, "default")
+    signature_a = VisionYolov8Objdetect._runtime_signature(profile_a, "default")
+    signature_b = VisionYolov8Objdetect._runtime_signature(profile_b, "default")
     assert signature_a != signature_b, f"{label} 没有参与签名"
 
 
 def test_runtime_signature_is_stable_for_the_same_profile():
     """同一份 profile 必须给出同一签名，否则每回合都会白重建 runtime。"""
     profile = _profile("dice")
-    first = VisionYolov8Adjudicator._runtime_signature(profile, "default")
-    second = VisionYolov8Adjudicator._runtime_signature(_profile("dice"), "default")
+    first = VisionYolov8Objdetect._runtime_signature(profile, "default")
+    second = VisionYolov8Objdetect._runtime_signature(_profile("dice"), "default")
     assert first == second
 
 
@@ -147,7 +147,7 @@ def test_second_game_rebuilds_the_runtime_instead_of_reusing_it(tmp_path: Path):
         created.append(runtime)
         return runtime
 
-    provider = VisionYolov8Adjudicator(runtime_factory=factory)
+    provider = VisionYolov8Objdetect(runtime_factory=factory)
     profile_a = _profile("dice", video_path="/dice/det")
     profile_b = _profile("rps", video_path="/rps/")
 
@@ -178,7 +178,7 @@ def test_same_game_reuses_its_runtime_across_rounds(tmp_path: Path):
         created.append(runtime)
         return runtime
 
-    provider = VisionYolov8Adjudicator(runtime_factory=factory)
+    provider = VisionYolov8Objdetect(runtime_factory=factory)
     profile = _profile("dice")
 
     _adjudicate(provider, profile, "round-1", tmp_path, 0)
@@ -191,13 +191,13 @@ def test_same_game_reuses_its_runtime_across_rounds(tmp_path: Path):
 # ---- editing the shared runtime config must reach the runtime --------------
 
 def test_runtime_signature_changes_when_the_runtime_config_changes(tmp_path: Path, monkeypatch):
-    """改 vision/yolov8_adjudicator/config.json 的 conf/zoom 后下一回合应重建。
+    """改 vision/yolov8_objdetect/config.json 的 conf/zoom 后下一回合应重建。
 
     该文件只通过 ``--config`` 影响 runtime；此前改它必须重启后端，与
     manifest 热加载的语义不一致。签名纳入该文件的 mtime+size 后，
     保存即生效。
     """
-    import components.vision_yolov8_adjudicator.provider as vision_provider
+    import components.vision_yolov8_objdetect.provider as vision_provider
 
     config_file = tmp_path / "runtime-config.json"
     config_file.write_text('{"conf": 0.45}\n', encoding="utf-8")
@@ -208,20 +208,20 @@ def test_runtime_signature_changes_when_the_runtime_config_changes(tmp_path: Pat
     )
 
     profile = _profile("dice")
-    before = VisionYolov8Adjudicator._runtime_signature(profile, "default")
+    before = VisionYolov8Objdetect._runtime_signature(profile, "default")
 
     # Same path, unchanged file: the verdict must stay stable.
-    assert VisionYolov8Adjudicator._runtime_signature(profile, "default") == before
+    assert VisionYolov8Objdetect._runtime_signature(profile, "default") == before
 
     # New size (and mtime) => different verdict.
     config_file.write_text('{"conf": 0.30, "zoom": 150}\n', encoding="utf-8")
-    after = VisionYolov8Adjudicator._runtime_signature(profile, "default")
+    after = VisionYolov8Objdetect._runtime_signature(profile, "default")
     assert after != before, "runtime config 变化没有触发重建"
 
 
 def test_runtime_signature_survives_an_unreadable_runtime_config(monkeypatch):
     """读不到 runtime config 时降级为空指纹，绝不因此拒绝启动。"""
-    import components.vision_yolov8_adjudicator.provider as vision_provider
+    import components.vision_yolov8_objdetect.provider as vision_provider
 
     def _boom(_component, **_kwargs):
         raise OSError("no such file")
@@ -229,7 +229,7 @@ def test_runtime_signature_survives_an_unreadable_runtime_config(monkeypatch):
     monkeypatch.setattr(vision_provider, "resolve_runtime_config_path", _boom)
     profile = _profile("dice")
     # Still produces a usable signature instead of raising.
-    signature = VisionYolov8Adjudicator._runtime_signature(profile, "default")
+    signature = VisionYolov8Objdetect._runtime_signature(profile, "default")
     assert "dice" in signature
 
 
@@ -267,9 +267,9 @@ def test_shared_pipeline_serves_a_non_dice_game():
     adjudicator = _FakeAdjudicator({
         "winner": "LEFT", "left_values": [2], "right_values": [1],
     })
-    components = _FakeRegistry({"vision_yolov8_adjudicator": adjudicator})
+    components = _FakeRegistry({"vision_yolov8_objdetect": adjudicator})
     manifest = {
-        "providers": {"vision_adjudicator": "vision_yolov8_adjudicator"},
+        "providers": {"vision_adjudicator": "vision_yolov8_objdetect"},
         "participants": {"player": "LEFT", "agent": "RIGHT"},
         "vision_profile": _profile("rps"),
     }
@@ -296,9 +296,9 @@ def test_shared_pipeline_rejects_a_profile_for_another_game():
     """profile 的 game_id 与调用游戏不符时必须拒绝，不能拿骰子的参数跑猜拳。"""
     from core.vision_pipeline import run_vision_game
 
-    components = _FakeRegistry({"vision_yolov8_adjudicator": _FakeAdjudicator({})})
+    components = _FakeRegistry({"vision_yolov8_objdetect": _FakeAdjudicator({})})
     manifest = {
-        "providers": {"vision_adjudicator": "vision_yolov8_adjudicator"},
+        "providers": {"vision_adjudicator": "vision_yolov8_objdetect"},
         "participants": {"player": "LEFT", "agent": "RIGHT"},
         "vision_profile": _profile("dice"),
     }
@@ -317,10 +317,10 @@ def test_shared_pipeline_passes_a_diagnosed_result_straight_through():
 
     diagnosis = {"diagnosed": True, "diagnosis": {"reason_code": "NO_OBJECTS_DETECTED"}}
     components = _FakeRegistry(
-        {"vision_yolov8_adjudicator": _FakeAdjudicator(diagnosis)}
+        {"vision_yolov8_objdetect": _FakeAdjudicator(diagnosis)}
     )
     manifest = {
-        "providers": {"vision_adjudicator": "vision_yolov8_adjudicator"},
+        "providers": {"vision_adjudicator": "vision_yolov8_objdetect"},
         "participants": {"player": "LEFT", "agent": "RIGHT"},
         "vision_profile": _profile("dice"),
     }
@@ -480,7 +480,7 @@ def test_dice_declares_its_own_confidence_threshold():
     """检测阈值是每游戏自己的运行参数：住在该游戏的 adjudicator_config.json，
     manifest 不再携带（写回会被拒载）。
 
-    此前 `conf: 0.45` 只写在共享的 `vision/yolov8_adjudicator/config.json` 里，
+    此前 `conf: 0.45` 只写在共享的 `vision/yolov8_objdetect/config.json` 里，
     是唯一一个「游戏自有却不在 manifest」的裁决参数——多游戏架构下会被所有
     游戏继承。2026-09-15 归到 manifest，2026-09-20 随共享默认删除再迁入
     dice 专属的硬件/运行配置文件。
@@ -510,7 +510,7 @@ def test_confidence_reaches_the_runtime_via_the_config_file():
     转发逻辑内联在 ``YoloRuntimeProcess.start()`` 里，因此这里断言源码契约
     （仓库既有测试也用这种源码断言方式）。
     """
-    source = (ROOT / "backend/components/vision_yolov8_adjudicator/process.py").read_text(
+    source = (ROOT / "backend/components/vision_yolov8_objdetect/process.py").read_text(
         encoding="utf-8"
     )
     # No manifest field forwards these anymore: they live in the config file.
@@ -520,8 +520,11 @@ def test_confidence_reaches_the_runtime_via_the_config_file():
     assert '"--conf"' not in source
     assert '"--model"' not in source
     assert '"--stable-frames"' not in source
-    # The region gate stays manifest-driven (the provider consumes it too).
-    assert '"--expected-count"' in source
+    # The region gate moved to the provider (jsonl-events-v2): none of its
+    # arguments may reach the runtime command line again.
+    assert '"--expected-count"' not in source
+    assert '"--region-position"' not in source
+    assert '"--region-orientation"' not in source
 
 
 # ---- per-game hardware runtime config --------------------------------------
@@ -547,7 +550,7 @@ def _write_runtime_config(path: Path, **overrides) -> Path:
 def test_a_game_points_at_its_own_hardware_config(tmp_path: Path):
     """runtime_config 是 runtime 硬件的唯一来源（共享部署默认已删除，
     组件配置的 runtime.config 指针一并移除）。"""
-    from components.vision_yolov8_adjudicator.profile import resolve_runtime_config_path
+    from components.vision_yolov8_objdetect.profile import resolve_runtime_config_path
 
     own = _write_runtime_config(tmp_path / "rps-runtime.json", camera="/dev/video3")
 
@@ -565,7 +568,7 @@ def test_a_game_points_at_its_own_hardware_config(tmp_path: Path):
 
 def test_per_game_runtime_config_must_stay_inside_the_project():
     """绝对路径与 .. 越界必须被拒绝——否则游戏能把运行时指向任意文件。"""
-    from components.vision_yolov8_adjudicator.profile import resolve_runtime_config_path
+    from components.vision_yolov8_objdetect.profile import resolve_runtime_config_path
 
     for bad in ("/etc/passwd", "../../etc/passwd", "backend/../../outside.json"):
         with pytest.raises(Exception):
@@ -575,7 +578,7 @@ def test_per_game_runtime_config_must_stay_inside_the_project():
 def test_profile_validation_requires_runtime_config():
     """runtime_config 必填（共享部署默认 2026-09-20 删除）：不写直接拒载，
     缺失错误在加载期暴露而不是裁决那一刻 runtime 起不来。"""
-    from components.vision_yolov8_adjudicator.profile import ProfileError, validate_profile
+    from components.vision_yolov8_objdetect.profile import ProfileError, validate_profile
 
     def valid_profile():
         """A profile that passes full validation (the shared helper is minimal)."""
@@ -619,7 +622,7 @@ def test_declared_per_game_config_is_never_silently_dropped(tmp_path: Path):
     否则 `--config` 根本不会被传，C++ 会去读工作目录下的 config.json ——
     也就是悄悄用了别的游戏的摄像头与 RTSP 设置。
     """
-    import components.vision_yolov8_adjudicator.process as process
+    import components.vision_yolov8_objdetect.process as process
 
     captured = {}
 
@@ -651,7 +654,7 @@ def test_declared_per_game_config_is_never_silently_dropped(tmp_path: Path):
 
 def test_declared_per_game_config_reaches_the_command_line(tmp_path: Path):
     """声明成功时，命令行里的 --config 必须指向那个文件。"""
-    import components.vision_yolov8_adjudicator.process as process
+    import components.vision_yolov8_objdetect.process as process
 
     own_dir = ROOT / "backend" / "games" / "dice"
     own = own_dir / "_tmp_probe_runtime.json"

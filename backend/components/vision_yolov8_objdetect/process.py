@@ -13,7 +13,7 @@ import subprocess
 import threading
 
 from core.llm import LlmProvider, VerificationResult
-from components.vision_yolov8_adjudicator.profile import (
+from components.vision_yolov8_objdetect.profile import (
     load_component_config,
     load_runtime_config,
     resolve_runtime_config_path,
@@ -58,37 +58,12 @@ def load_runtime_defaults(
     return component, load_runtime_config(runtime_path)
 
 
-def region_split(vision: Mapping[str, Any]) -> tuple[float, str]:
-    """Return the configured fallback region boundary and axis for a profile.
-
-    Both the runtime's count gate and the provider's grouping prefer the
-    divider they locate in the frame itself and only use this value when the
-    scene offers no boundary, so the fallback has to describe the same regions
-    ``normalize_observation`` would pick without one -- otherwise a frame could
-    satisfy one half of the pipeline and be rejected by the other, exactly the
-    mismatch that let occluded scenes count as stable.
-    ``normalize_observation`` splits at ``width * position`` only for
-    ``divider_regions`` profiles (midpoint otherwise) and treats every
-    orientation other than ``horizontal`` as vertical, so this mirrors those
-    values.  Out-of-range or malformed values fall back to the default instead
-    of failing the launch; the runtime validates its own arguments.
-    """
-    grouping = str(
-        vision.get("grouping") or vision.get("participant_assignment") or "x_midpoint"
-    )
-    if grouping != "divider_regions":
-        return 0.5, "vertical"
-    divider = vision.get("divider")
-    if not isinstance(divider, Mapping):
-        return 0.5, "vertical"
-    try:
-        position = float(divider.get("position", 0.5))
-    except (TypeError, ValueError):
-        position = 0.5
-    if not 0.0 <= position <= 1.0:
-        position = 0.5
-    orientation = "horizontal" if str(divider.get("orientation", "vertical")) == "horizontal" else "vertical"
-    return position, orientation
+# The runtime's ``started`` event declares this protocol.  v2 tightened the
+# stable-observation semantics to pure class-multiset stability (game-level
+# completeness such as "five per side" moved to this provider's count checks),
+# so a v1 binary must fail fast at handshake instead of silently feeding
+# looser observations into the rule layer.
+EVENTS_PROTOCOL = "jsonl-events-v2"
 
 
 class YoloRuntimeProcess:
@@ -112,6 +87,7 @@ class YoloRuntimeProcess:
         self._stdout_thread: threading.Thread | None = None
         self._on_log: Any = lambda _line: None
         self._runtime_exit_emitted = False
+        self._protocol_checked = False
         self._lifecycle_lock = threading.Lock()
 
     def start(
@@ -133,6 +109,7 @@ class YoloRuntimeProcess:
         self.stop()
         self._on_log = on_log if callable(on_log) else (lambda _line: None)
         self._runtime_exit_emitted = False
+        self._protocol_checked = False
         injected_binary = self._binary_injected
         runtime = profile.get("runtime", {}) if isinstance(profile, Mapping) else {}
         binary = runtime.get("binary") if isinstance(runtime, Mapping) else None
@@ -183,30 +160,13 @@ class YoloRuntimeProcess:
                 component_config = {}
                 runtime_config = {}
 
-        # Game profiles own the game semantics the provider itself consumes
-        # (region gate count, grouping).  Model / confidence / stable_frames /
-        # divider_detection live in the game's runtime config file and reach
-        # the C++ through --config; validate_profile rejects them in the
-        # manifest, so nothing forwards them here.
+        # Game profiles own the semantics this provider itself consumes
+        # (grouping, expected-count validation).  Model / confidence /
+        # stable_frames / divider_detection live in the game's runtime config
+        # file and reach the C++ through --config; validate_profile rejects
+        # them in the manifest, so nothing forwards them here.  The runtime
+        # takes no region arguments since the region gate moved to Python.
         runtime_overrides: list[str] = []
-        vision = profile.get("vision", {}) if isinstance(profile, Mapping) else {}
-        if isinstance(vision, Mapping):
-            # The region count gate is profile data, never a game rule: the
-            # runtime only learns "N objects per region" plus the provider's own
-            # split, so a frame the provider would reject as incomplete can no
-            # longer advance the stability streak.
-            expected_count = vision.get("expected_count")
-            if (
-                isinstance(expected_count, int)
-                and not isinstance(expected_count, bool)
-                and expected_count > 0
-            ):
-                position, orientation = region_split(vision)
-                runtime_overrides.extend([
-                    "--expected-count", str(expected_count),
-                    "--region-position", str(position),
-                    "--region-orientation", orientation,
-                ])
 
         # A multi-view profile selects the camera per view.  Single-view
         # profiles intentionally inherit the component/C++ camera default.
@@ -320,6 +280,21 @@ class YoloRuntimeProcess:
             except (TypeError, ValueError):
                 continue
             if isinstance(event, dict):
+                # Handshake: the first ``started`` event pins the event
+                # protocol.  A runtime declaring anything other than
+                # EVENTS_PROTOCOL has different stable-observation semantics
+                # than this provider assumes, so fail fast instead of
+                # misreading its observations.  Streams without a
+                # ``started`` event (test doubles, legacy stdout runtimes)
+                # stay untouched.
+                if not self._protocol_checked and event.get("event") == "started":
+                    self._protocol_checked = True
+                    declared = event.get("protocol")
+                    if declared != EVENTS_PROTOCOL:
+                        raise RuntimeError(
+                            "YOLO runtime event protocol mismatch: expected "
+                            f"{EVENTS_PROTOCOL!r}, runtime declared {declared!r}"
+                        )
                 yield event
         # EOF on the event pipe means the child is exiting.  Its inherited
         # write end closes just before the process becomes reapable, so wait

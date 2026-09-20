@@ -4,7 +4,7 @@
 
 - `web/`：大屏 Web 前端，完成游戏列表、规则确认、同步倒计时、双方摇骰、同时开盖、视觉分析动画、胜负播报和再来一局；摇骰阶段为 10 秒，最后 3 秒使用红色高对比倒计时和浏览器提示音；各游戏的 `manifest.json` 集中维护 TTS 文案与默认音色/语速。
 - `backend/server.py`：K3 板端轻量 HTTP bridge；通过视觉裁决功能包调度 YOLOv8 runtime，并使用独立结构化事件通道和 SSE 将进度/结果推送给网页。
-- `vision/yolov8_adjudicator/`：通用 YOLOv8 K3 摄像头 runtime，负责 OpenCL 前处理、SpaceMIT ONNX Runtime EP、GStreamer 摄像头、稳定检测、场景几何辅助和快照；游戏规则与 LLM 复核由 Python provider 调度。
+- `vision/yolov8_objdetect/`：通用 YOLOv8 K3 摄像头 runtime，负责 OpenCL 前处理、SpaceMIT ONNX Runtime EP、GStreamer 摄像头、稳定检测、场景几何辅助和快照；游戏规则与 LLM 复核由 Python provider 调度。
 - `tts/qwen3-tts/`：迁移的 Qwen3-TTS 0.6B + SpaceMIT `llama-server` 服务；网页通过后端代理获取 24 kHz 单声道 WAV。
 - `tts/moss-tts-nano/`：迁移的 MOSS-TTS-Nano SpaceMIT EP runtime 源码与板端交付目录，布局与 `tts/qwen3-tts/` 一致；模型、riscv64 Python 包和 native 库按该目录 `.gitignore` 保留为板端运行时文件。
 - `backend/components/tts_moss_nano/`：MOSS-TTS-Nano 组件适配器；调用仓库内 runtime，按文本 chunk 流式返回 WAV。
@@ -70,7 +70,7 @@ python3 backend/tts_debug.py <provider_id>
 `--player ffplay`；设置 `DICE_TTS_PLAYER` 可固定默认播放器。调试脚本只会停止
 本次会话自己启动的 TTS，不会停止已由网页或其他服务运行的 provider。
 
-`web/` 前端和 `backend/server.py` 都只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。网页请求 `/api/adjudicate` 后，bridge 会通过 `vision_yolov8_adjudicator` 启动或复用 `vision/yolov8_adjudicator/build/yolov8_camera`；YOLO runtime 只输出稳定检测证据，LLM 请求由 Python provider 发起。浏览器在板端通过 `127.0.0.1` 访问时，可以正常申请摄像头权限；如果从其他设备通过 HTTP IP 访问，浏览器可能因非安全上下文限制摄像头权限，但实际识别仍使用 K3 板端摄像头。
+`web/` 前端和 `backend/server.py` 都只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。网页请求 `/api/adjudicate` 后，bridge 会通过 `vision_yolov8_objdetect` 启动或复用 `vision/yolov8_objdetect/build/yolov8_camera`；YOLO runtime 只输出稳定检测证据，LLM 请求由 Python provider 发起。浏览器在板端通过 `127.0.0.1` 访问时，可以正常申请摄像头权限；如果从其他设备通过 HTTP IP 访问，浏览器可能因非安全上下文限制摄像头权限，但实际识别仍使用 K3 板端摄像头。
 
 大模型的 endpoint、model 和 API key 统一配置在 `backend/components/llm_openai_compat/config.json`（2026-09-04 大模型模块化后从视觉组件迁出；视觉组件 config 现在只剩 `runtime`/`events`）。该文件被 Git 跟踪，**仓库必须保持私有**；不要把 key 写进网页或日志。修改后重启 `scripts/start_web.sh` 生效。如果没有配置 key，`/api/health` 会显示 `llm_configured:false`，进入开盖后的视觉裁决阶段会明确提示未配置，而不是使用随机骰子或直接判定胜负。
 
@@ -216,7 +216,7 @@ POST /api/adjudicate/<job_id>/cancel   取消当前裁决任务
 源码与 K3 配置位于（模型在各游戏自己的 `backend/games/<id>/models/` 目录）：
 
 ```text
-vision/yolov8_adjudicator/
+vision/yolov8_objdetect/
 ├── src/
 ├── config.json
 └── CMakeLists.txt
@@ -225,7 +225,7 @@ vision/yolov8_adjudicator/
 在 SpaceMIT K3 板端编译：
 
 ```bash
-cd <repo-root>/vision/yolov8_adjudicator
+cd <repo-root>/vision/yolov8_objdetect
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4
 cmake --build build -j4
@@ -243,7 +243,7 @@ cmake --build build -j4
 
 当前迁移的模型是 YOLOv8 raw 输出模型，预期输出 `[1, 10, 8400]`。程序会在 CPU 侧执行 YOLOv8 解码和 NMS，并以模型无关的 detection 列表和稳定帧快照交给游戏 profile 解释；不会在 C++ 中固化骰子数量、分区、求和或胜负规则。
 
-视觉 runtime 的配置**每游戏一份**：manifest 的 `vision_profile.runtime_config` 指向该游戏专属的运行配置文件（**必填**），**dice 读 `backend/games/dice/adjudicator_config.json`**——它持有 C++ 消费的全部参数（模型 `model`、检测阈值 `conf`、稳定帧数 `stable_frames`、分界线检测 `divider_detection` + 摄像头/EP/焦距/RTSP 硬件）。共享部署默认 `vision/yolov8_adjudicator/config.json` 已于 2026-09-20 删除（它只剩"游戏忘了声明时的兜底"这一种存在意义，而那个兜底是负价值的静默陷阱）。`backend/components/vision_yolov8_adjudicator/config.json` 只保存 Provider 的 runtime 路径与生命周期。这些都**不含** LLM 凭证——endpoint/model/api_key 在 `backend/components/llm_openai_compat/config.json`。游戏 manifest 声明自己的 `video.path`，完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
+视觉 runtime 的配置**每游戏一份**：manifest 的 `vision_profile.runtime_config` 指向该游戏专属的运行配置文件（**必填**），**dice 读 `backend/games/dice/adjudicator_config.json`**——它持有 C++ 消费的全部参数（模型 `model`、检测阈值 `conf`、稳定帧数 `stable_frames`、分界线检测 `divider_detection` + 摄像头/EP/焦距/RTSP 硬件）。共享部署默认 `vision/yolov8_objdetect/config.json` 已于 2026-09-20 删除（它只剩"游戏忘了声明时的兜底"这一种存在意义，而那个兜底是负价值的静默陷阱）。`backend/components/vision_yolov8_objdetect/config.json` 只保存 Provider 的 runtime 路径与生命周期。这些都**不含** LLM 凭证——endpoint/model/api_key 在 `backend/components/llm_openai_compat/config.json`。游戏 manifest 声明自己的 `video.path`，完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
 
 > ⚠️ **per-game 运行配置文件是"整份替换"，不做字段级合并。** runtime 只带 `--config <那一份>`，
 > 里面**没写的键会回落到 C++ 编译期默认值**（`conf` 0.50、`stable_frames` 20、`focus` 0），
@@ -352,7 +352,7 @@ provider.py         # Component 子类，实现统一接口
 当前组件：
 
 ```text
-vision_yolov8_adjudicator -> vision/adjudicator，按游戏 profile 执行稳定帧、多视角投票、胜负规则和 LLM 复核
+vision_yolov8_objdetect -> vision/adjudicator，按游戏 profile 执行稳定帧、多视角投票、胜负规则和 LLM 复核
 tts_qwen3     -> tts provider，代理 Qwen3-TTS
 tts_moss_nano -> tts provider，代理仓库内 `tts/moss-tts-nano` 的 MOSS-TTS-Nano SpaceMIT EP runtime，支持 chunk 级 WAV 流式
 tts_gptsovits -> tts provider，HTTP 客户端调用 Tailscale 内另一台 GPU 主机上的 GPT-SoVITS v2ProPlus（9873 按音色名调用），真流式 PCM 实时包装为 WAV 帧
@@ -372,13 +372,13 @@ path、超时、裁决前置等待（`lifecycle.pre_adjudication_wait_seconds`�
 WebRTC 基础地址**每游戏一份**，在 `vision_profile.runtime_config` 指向的硬件文件里（必填，
 如 `backend/games/dice/adjudicator_config.json`）。
 
-`vision_yolov8_adjudicator` 是当前 YOLOv8 实现，`role=adjudicator` 表示它在系统里的职责。旧 ID `vision_yolo` 仅作为一次性 registry 迁移别名，不再作为独立组件注册。以后即使新增的空间定位模块也使用 YOLO，也必须注册为 `role=localizer` 并继承 `VisionLocalizerProvider`，不能接入裁决器插槽。
+`vision_yolov8_objdetect` 是当前 YOLOv8 实现，`role=adjudicator` 表示它在系统里的职责。旧 ID `vision_yolo` 仅作为一次性 registry 迁移别名，不再作为独立组件注册。以后即使新增的空间定位模块也使用 YOLO，也必须注册为 `role=localizer` 并继承 `VisionLocalizerProvider`，不能接入裁决器插槽。
 
 游戏通过 `manifest.json` 的 `providers` 选择具体实现：
 
 ```json
 "providers": {
-  "vision_adjudicator": "vision_yolov8_adjudicator",
+  "vision_adjudicator": "vision_yolov8_objdetect",
   "tts": "tts_moss_nano"
 }
 ```
@@ -420,7 +420,7 @@ class TtsNew(TtsProvider):
 
 ```json
 "providers": {
-  "vision_adjudicator": "vision_yolov8_adjudicator",
+  "vision_adjudicator": "vision_yolov8_objdetect",
   "tts": "tts_new"
 }
 ```

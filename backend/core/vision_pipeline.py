@@ -46,7 +46,7 @@ def run_vision_game(
     and stays here.
     """
     provider_id = resolve_provider_id(
-        manifest, "vision_adjudicator", "vision_yolov8_adjudicator"
+        manifest, "vision_adjudicator", "vision_yolov8_objdetect"
     )
     profile = manifest.get("vision_profile")
     if not isinstance(profile, Mapping) or profile.get("game_id") != game_id:

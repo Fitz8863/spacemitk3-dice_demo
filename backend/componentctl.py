@@ -66,7 +66,7 @@ def _selected_provider_id(provider_slot: str, game_id: str) -> str:
     provider_id = resolve_provider_id(manifest, provider_slot)
     if not provider_id:
         provider_id = arena_slot_value(load_arena_config(), provider_slot)
-    fallbacks = {"tts_local": "tts_qwen3", "vision_adjudicator": "vision_yolov8_adjudicator"}
+    fallbacks = {"tts_local": "tts_qwen3", "vision_adjudicator": "vision_yolov8_objdetect"}
     return provider_id or fallbacks.get(provider_slot, "")
 
 

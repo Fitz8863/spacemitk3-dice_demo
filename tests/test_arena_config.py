@@ -52,7 +52,7 @@ VALID_ARENA = {
         "tts_local": "tts_moss_nano",
         "tts_remote": "tts_gptsovits",
         "asr": "asr_zipformer",
-        "vision_adjudicator": "vision_yolov8_adjudicator",
+        "vision_adjudicator": "vision_yolov8_objdetect",
     },
     "participants": {"player": "LEFT", "agent": "RIGHT"},
     "voice": "default",
@@ -165,7 +165,7 @@ class MergeTests(unittest.TestCase):
 
     def test_game_without_providers_gets_global_slots(self):
         merged = with_global_defaults({"id": "dice"}, VALID_ARENA)
-        self.assertEqual(merged["providers"]["vision_adjudicator"], "vision_yolov8_adjudicator")
+        self.assertEqual(merged["providers"]["vision_adjudicator"], "vision_yolov8_objdetect")
 
     def test_voice_speed_underlay_only_when_absent(self):
         merged = with_global_defaults({"voice": "announcer"}, VALID_ARENA)
@@ -326,14 +326,14 @@ class RunGameDefaultsTests(unittest.TestCase):
             result = run_game(
                 registry, "dice", lambda _l: None, lambda: False, lambda _e: None,
                 30, components=None,
-                defaults={"providers": {"vision_adjudicator": "vision_yolov8_adjudicator"}},
+                defaults={"providers": {"vision_adjudicator": "vision_yolov8_objdetect"}},
             )
         self.assertEqual(result, {"ok": True})
         # The game slot wins; the arena fills what the manifest leaves open.
         self.assertEqual(recorded["manifest"]["providers"]["tts_local"], "tts_moss_nano")
         self.assertEqual(
             recorded["manifest"]["providers"]["vision_adjudicator"],
-            "vision_yolov8_adjudicator",
+            "vision_yolov8_objdetect",
         )
 
 

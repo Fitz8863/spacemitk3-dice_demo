@@ -67,7 +67,7 @@ from core.tts_protocol import (
     encode_end_frame,
     encode_error_frame,
 )
-from components.vision_yolov8_adjudicator.profile import (
+from components.vision_yolov8_objdetect.profile import (
     compose_video_url,
     load_component_config,
     load_runtime_config,
@@ -1133,7 +1133,7 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             adjudicator_id = _selected_provider_id(
-                vision_game_id, "vision_adjudicator", "vision_yolov8_adjudicator"
+                vision_game_id, "vision_adjudicator", "vision_yolov8_objdetect"
             )
             adjudicator_health = _provider_health(
                 adjudicator_id, "vision", "adjudicator"

@@ -116,7 +116,7 @@ say "视觉链路自检通过 (采集/解码/转换/编码/RTSP 推流元素齐�
 # ---------------------------------------------------------------------------
 KEY_FILES=(
     asr/sensevoice/build/bin/asr_pipe_demo
-    vision/yolov8_adjudicator/build/yolov8_camera
+    vision/yolov8_objdetect/build/yolov8_camera
     backend/components/tts_moss_nano/launcher.py
 )
 for f in "${KEY_FILES[@]}"; do
@@ -190,7 +190,7 @@ h = json.load(urllib.request.urlopen(sys.argv[1] + "/api/health", timeout=8))
 # 只报告选中的槽位与关键组件 —— 未选槽的备用引擎不跑属正常, 逐条列
 # "异常"只会误导。
 selected = {h.get("tts_provider"), h.get("tts_remote_provider"),
-            "asr_sensevoice", "vision_yolov8_adjudicator", "llm_openai_compat"}
+            "asr_sensevoice", "vision_yolov8_objdetect", "llm_openai_compat"}
 idle, shown = [], []
 try:
     arena = json.load(open(f"{sys.argv[2]}/backend/config.json"))

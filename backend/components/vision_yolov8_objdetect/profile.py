@@ -16,7 +16,7 @@ class ProfileError(ValueError):
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 # Top-level keys a hardware runtime config understands: every key the C++
-# runtime reads (vision/yolov8_adjudicator/src/main.cpp, load_config) plus
+# runtime reads (vision/yolov8_objdetect/src/main.cpp, load_config) plus
 # the Python-side ``video`` (``video.webrtc_base_url`` is consumed by the
 # provider) and the sanctioned ``_note`` comment key.  Anything else is
 # silently ignored by both parsers -- a typo such as ``ep_afinity`` would

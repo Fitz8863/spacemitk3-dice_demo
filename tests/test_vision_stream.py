@@ -22,7 +22,7 @@ class _Round:
 
 
 class _Provider:
-    id = "vision_yolov8_adjudicator"
+    id = "vision_yolov8_objdetect"
 
     def __init__(self, *, result: bool = True, raises: Exception | None = None) -> None:
         self.result = result
@@ -68,7 +68,7 @@ def _profile() -> dict:
     }
 
 
-def _manifest(profile: dict | None = None, slot: str | None = "vision_yolov8_adjudicator") -> dict:
+def _manifest(profile: dict | None = None, slot: str | None = "vision_yolov8_objdetect") -> dict:
     manifest: dict = {"id": "dice"}
     if profile is not None:
         manifest["vision_profile"] = profile

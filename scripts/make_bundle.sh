@@ -43,7 +43,7 @@ REQUIRED_DIRS=(
     tts/matcha-tts/build-cpp
     tts/matcha-tts/matcha-model
     tts/matcha-tts/runtime
-    vision/yolov8_adjudicator/build
+    vision/yolov8_objdetect/build
 )
 for d in "${REQUIRED_DIRS[@]}"; do
     [[ -d "$ROOT_DIR/$d" ]] || die "缺少板端资产目录: $d (应在源板上运行)"

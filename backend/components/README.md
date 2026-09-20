@@ -130,10 +130,10 @@ Current package manifest:
 
 ```json
 {
-  "id": "vision_yolov8_adjudicator",
+  "id": "vision_yolov8_objdetect",
   "type": "vision",
   "role": "adjudicator",
-  "entry": "provider.py:VisionYolov8Adjudicator",
+  "entry": "provider.py:VisionYolov8Objdetect",
   "capabilities": [
     "stable_frame_detection",
     "multiview_majority_vote",
@@ -169,7 +169,7 @@ Games select adapters through semantic slots:
 
 ```json
 "providers": {
-  "vision_adjudicator": "vision_yolov8_adjudicator",
+  "vision_adjudicator": "vision_yolov8_objdetect",
   "tts": "tts_new"
 }
 ```

@@ -15,7 +15,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from core.vision import VisionAdjudicationRequest  # noqa: E402
-from components.vision_yolov8_adjudicator.profile import (  # noqa: E402
+from components.vision_yolov8_objdetect.profile import (  # noqa: E402
     ProfileError,
     compose_video_url,
     load_component_config,
@@ -23,7 +23,7 @@ from components.vision_yolov8_adjudicator.profile import (  # noqa: E402
     load_runtime_config,
     resolve_runtime_config_path,
 )
-from components.vision_yolov8_adjudicator.rules import (  # noqa: E402
+from components.vision_yolov8_objdetect.rules import (  # noqa: E402
     RuleError,
     diagnose_detection_failure,
     evaluate_rule,
@@ -31,14 +31,14 @@ from components.vision_yolov8_adjudicator.rules import (  # noqa: E402
     fuse_yolo_outcomes,
     project_result,
 )
-from components.vision_yolov8_adjudicator.process import (  # noqa: E402
+from components.vision_yolov8_objdetect.process import (  # noqa: E402
     SnapshotError,
     build_rtsp_args,
     verify_snapshot,
 )
-from components.vision_yolov8_adjudicator import provider as vision_provider  # noqa: E402
-from components.vision_yolov8_adjudicator.provider import (  # noqa: E402
-    VisionYolov8Adjudicator,
+from components.vision_yolov8_objdetect import provider as vision_provider  # noqa: E402
+from components.vision_yolov8_objdetect.provider import (  # noqa: E402
+    VisionYolov8Objdetect,
     detected_divider_ratio,
     normalize_observation,
     resolve_runtime_binary,
@@ -52,7 +52,7 @@ def test_profile_loads_dice_and_composes_mediamtx_url():
     assert profile["game_id"] == "dice"
     assert profile["llm"]["context_mode"] == "single_turn_no_history"
     assert profile["video"]["path"] == "/dice/det"
-    component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
+    component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_objdetect")
     _ = component  # component config holds lifecycle only; hardware is per-game
     runtime = load_runtime_config(resolve_runtime_config_path(profile))
     assert compose_video_url(runtime["video"]["webrtc_base_url"], profile["video"]["path"]) == (
@@ -65,7 +65,7 @@ def test_runtime_config_is_declared_per_game_and_loads_hardware_defaults():
     manifest 的 vision_profile.runtime_config 声明（必填）。"""
     manifest = json.loads((ROOT / "backend/games/dice/manifest.json").read_text())
     profile = manifest["vision_profile"]
-    component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
+    component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_objdetect")
     assert "config" not in component["runtime"]
     runtime_path = resolve_runtime_config_path(profile)
     runtime = load_runtime_config(runtime_path)
@@ -195,7 +195,7 @@ def test_compose_video_url_rejects_path_traversal():
 
 def test_video_event_uses_profile_webrtc_base_url():
     profile = {"video": {"enabled": True, "path": "/rps/", "webrtc_base_url": "http://example.test:8889"}}
-    event = VisionYolov8Adjudicator._video_event(profile, "default", {"event": "video"})
+    event = VisionYolov8Objdetect._video_event(profile, "default", {"event": "video"})
     assert event == {"event": "video", "url": "http://example.test:8889/rps/", "view_id": "default"}
 
 
@@ -208,20 +208,20 @@ def test_video_event_uses_runtime_config_webrtc_base_when_profile_has_only_path(
     }
     with pytest.MonkeyPatch.context() as monkeypatch:
         monkeypatch.setattr(
-            "components.vision_yolov8_adjudicator.provider.resolve_runtime_config_path",
+            "components.vision_yolov8_objdetect.provider.resolve_runtime_config_path",
             lambda profile_arg: Path("runtime.json"),
         )
         monkeypatch.setattr(
-            "components.vision_yolov8_adjudicator.provider.load_runtime_config",
+            "components.vision_yolov8_objdetect.provider.load_runtime_config",
             lambda _path: {"video": {"webrtc_base_url": "http://runtime.test:8889"}},
         )
-        event = VisionYolov8Adjudicator._video_event(profile, "default", {"event": "video"})
+        event = VisionYolov8Objdetect._video_event(profile, "default", {"event": "video"})
     assert event == {"event": "video", "url": "http://runtime.test:8889/rps/", "view_id": "default"}
 
 
 def test_provider_prefers_game_adjudication_timeout_over_request_fallback():
     profile = {"timeouts": {"adjudication_seconds": 7}}
-    assert VisionYolov8Adjudicator._adjudication_timeout(profile, 120) == 7
+    assert VisionYolov8Objdetect._adjudication_timeout(profile, 120) == 7
 
 
 def test_profile_accepts_yolo_and_unified_llm_timeouts(tmp_path: Path):
@@ -323,7 +323,7 @@ def test_provider_timeout_reports_local_diagnosis_without_llm(tmp_path: Path):
     events = []
     verifier = Verifier()
     runtime = Runtime()
-    result = VisionYolov8Adjudicator(
+    result = VisionYolov8Objdetect(
         runtime_factory=lambda _view_id: runtime, verifier=verifier
     ).adjudicate(
         VisionAdjudicationRequest("dice", profile, "local-diagnosis", 120),
@@ -445,7 +445,7 @@ def test_provider_forwards_reasoning_effort_to_verification(tmp_path: Path):
         image = tmp_path / filename
         image.write_bytes(b"jpeg")
         calls.clear()
-        VisionYolov8Adjudicator(
+        VisionYolov8Objdetect(
             runtime_factory=lambda _view_id: runtime_with(image), verifier=Verifier(verdict)
         ).adjudicate(
             VisionAdjudicationRequest("dice", profile, "effort", 30),
@@ -510,7 +510,7 @@ def test_provider_logs_verification_failure_detail(tmp_path: Path):
         "timeouts": {"yolo_detection_seconds": 1, "adjudication_seconds": 30},
         "lifecycle": {"post_result_hold_seconds": 0},
     }
-    result = VisionYolov8Adjudicator(
+    result = VisionYolov8Objdetect(
         runtime_factory=lambda _view_id: Runtime(), verifier=Verifier()
     ).adjudicate(
         VisionAdjudicationRequest("dice", profile, "verify-log", 30),
@@ -537,7 +537,7 @@ def test_dice_pipeline_preserves_diagnosis_without_projecting_winner():
 
     manifest = {
         "participants": {"player": "LEFT", "agent": "RIGHT"},
-        "providers": {"vision_adjudicator": "vision_yolov8_adjudicator"},
+        "providers": {"vision_adjudicator": "vision_yolov8_objdetect"},
         "vision_profile": {"game_id": "dice"},
     }
     result = dice_pipeline.run(
@@ -584,7 +584,7 @@ class _SlotComponents:
 
 _SLOT_MANIFEST = {
     "participants": {"player": "LEFT", "agent": "RIGHT"},
-    "providers": {"vision_adjudicator": "vision_yolov8_adjudicator"},
+    "providers": {"vision_adjudicator": "vision_yolov8_objdetect"},
     "vision_profile": {"game_id": "dice"},
 }
 
@@ -708,7 +708,7 @@ def test_component_config_rejects_removed_runtime_config_pointer(tmp_path: Path)
     """runtime.config 已随共享默认一起删除：写回即拒载，防止悬空指针静默失效。"""
     (tmp_path / "config.json").write_text(json.dumps({
         "schema_version": 1,
-        "runtime": {"mode": "resident", "config": "vision/yolov8_adjudicator/config.json"},
+        "runtime": {"mode": "resident", "config": "vision/yolov8_objdetect/config.json"},
     }))
     with pytest.raises(ProfileError, match="runtime.config was removed"):
         load_component_config(tmp_path)
@@ -716,7 +716,7 @@ def test_component_config_rejects_removed_runtime_config_pointer(tmp_path: Path)
 
 def test_runtime_config_exposes_mediamtx_base_and_component_has_no_duplicate_video():
     manifest = json.loads((ROOT / "backend/games/dice/manifest.json").read_text())
-    config = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
+    config = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_objdetect")
     runtime = load_runtime_config(resolve_runtime_config_path(manifest["vision_profile"]))
     assert runtime["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
     assert "video" not in config
@@ -725,7 +725,7 @@ def test_runtime_config_exposes_mediamtx_base_and_component_has_no_duplicate_vid
 
 def test_provider_health_no_longer_reports_llm_state():
     """LLM configuration moved to the llm component; vision health is silent about it."""
-    health = VisionYolov8Adjudicator().health()
+    health = VisionYolov8Objdetect().health()
     assert "llm_configured" not in health
     # ``ok`` now reports the real deployment condition instead of being
     # hardcoded, so assert the relationship rather than a fixed value.
@@ -739,7 +739,7 @@ def test_provider_health_reports_ready_and_binary_for_the_launch_path():
     this payload while the server kept reading them, so ``/api/health``
     reported ``yolo_ready: false`` forever.  Nothing caught it; this does.
     """
-    health = VisionYolov8Adjudicator().health()
+    health = VisionYolov8Objdetect().health()
     binary = resolve_runtime_binary()
     assert health["ready"] is (binary.is_file() and os.access(binary, os.X_OK))
     assert health["ok"] is health["ready"]
@@ -747,7 +747,7 @@ def test_provider_health_reports_ready_and_binary_for_the_launch_path():
     # The reported path must be the one the launcher would execute: the
     # component config's runtime.binary resolved against the repository root.
     component = load_component_config(
-        ROOT / "backend" / "components" / "vision_yolov8_adjudicator"
+        ROOT / "backend" / "components" / "vision_yolov8_objdetect"
     )
     assert Path(health["binary"]) == (ROOT / component["runtime"]["binary"]).resolve()
 
@@ -759,7 +759,7 @@ def test_provider_health_fails_closed_when_the_binary_is_missing(monkeypatch):
         "resolve_runtime_binary",
         lambda *args, **kwargs: Path("/nonexistent/yolov8_camera"),
     )
-    health = VisionYolov8Adjudicator().health()
+    health = VisionYolov8Objdetect().health()
     assert health["ready"] is False
     assert health["ok"] is False
     assert health["binary"] == "/nonexistent/yolov8_camera"
@@ -771,8 +771,8 @@ def test_provider_health_reports_config_errors_in_band(monkeypatch):
         raise ProfileError("vision component config must declare runtime.binary")
 
     monkeypatch.setattr(vision_provider, "resolve_runtime_binary", explode)
-    health = VisionYolov8Adjudicator().health()
-    assert health["id"] == "vision_yolov8_adjudicator"
+    health = VisionYolov8Objdetect().health()
+    assert health["id"] == "vision_yolov8_objdetect"
     assert health["ok"] is False
     assert health["ready"] is False
     assert health["binary"] == ""
@@ -922,7 +922,7 @@ def test_project_result_adds_generic_and_dice_compatibility_fields():
         {"rule": "numeric_compare", "participants": {"LEFT": [6, 4], "RIGHT": [3, 5]}},
     )
     assert result["profile_id"] == "dice"
-    assert result["provider_id"] == "vision_yolov8_adjudicator"
+    assert result["provider_id"] == "vision_yolov8_objdetect"
     assert result["outcome"]["value"] == "LEFT"
     assert result["left_values"] == [6, 4]
     assert result["right_sum"] == 8
@@ -972,7 +972,7 @@ def test_provider_runs_one_round_and_holds_result(tmp_path: Path):
             return type("R", (), {"status":"success","outcome":"LEFT","error":None})()
     profile={"game_id":"dice","vision":{"stable_frames":1},"llm":{"enabled":True,"timeout_seconds":0.29,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT","TIE"]},"video":{"path":"/dice/","webrtc_base_url":"http://127.0.0.1:8889"},"multi_view":{"enabled":False,"min_views":1},"lifecycle":{"post_result_hold_seconds":0},"timeouts":{"adjudication_seconds":15}}
     events=[]; verifier=Verifier()
-    result=VisionYolov8Adjudicator(runtime_factory=factory, verifier=verifier).adjudicate(VisionAdjudicationRequest("dice",profile,"r1",2),on_log=lambda x:None,on_event=events.append,is_cancelled=lambda:False)
+    result=VisionYolov8Objdetect(runtime_factory=factory, verifier=verifier).adjudicate(VisionAdjudicationRequest("dice",profile,"r1",2),on_log=lambda x:None,on_event=events.append,is_cancelled=lambda:False)
     assert result["decision_source"] == "consensus"; assert verifier.calls == 1
     assert verifier.timeout_seconds == pytest.approx(0.29)
     assert any(r.commands and r.commands[0]["command"] == "START_ADJUDICATION" for r in runtimes)
@@ -1018,7 +1018,7 @@ def test_post_result_hold_is_not_consumed_by_adjudication_deadline(tmp_path: Pat
         events.append(event)
         event_times.append((event.get("event"), time.monotonic()))
 
-    VisionYolov8Adjudicator(runtime_factory=lambda _view_id: Runtime()).adjudicate(
+    VisionYolov8Objdetect(runtime_factory=lambda _view_id: Runtime()).adjudicate(
         VisionAdjudicationRequest("x", profile, "r", 1),
         on_log=lambda _line: None,
         on_event=record_event,
@@ -1070,7 +1070,7 @@ def test_pre_adjudication_wait_delays_start_and_preserves_deadline(tmp_path: Pat
     runtime = Runtime()
     started_at = time.monotonic()
 
-    result = VisionYolov8Adjudicator(runtime_factory=lambda _view_id: runtime).adjudicate(
+    result = VisionYolov8Objdetect(runtime_factory=lambda _view_id: runtime).adjudicate(
         VisionAdjudicationRequest("x", profile, "r", 1),
         on_log=lambda _line: None,
         on_event=events.append,
@@ -1124,7 +1124,7 @@ def test_pre_adjudication_wait_cancellation_sends_no_commands():
     resident = dict(base, runtime={"mode": "resident", "prewarm_camera": True})
     resident_runtime = Runtime()
     with pytest.raises(RuntimeError, match="cancelled"):
-        VisionYolov8Adjudicator(runtime_factory=lambda _vid: resident_runtime).adjudicate(
+        VisionYolov8Objdetect(runtime_factory=lambda _vid: resident_runtime).adjudicate(
             VisionAdjudicationRequest("x", resident, "cancelled", 1),
             on_log=lambda _line: None,
             on_event=lambda _event: None,
@@ -1138,7 +1138,7 @@ def test_pre_adjudication_wait_cancellation_sends_no_commands():
     per_request = dict(base, runtime={"mode": "per_request"})
     per_request_runtime = Runtime()
     with pytest.raises(RuntimeError, match="cancelled"):
-        VisionYolov8Adjudicator(runtime_factory=lambda _vid: per_request_runtime).adjudicate(
+        VisionYolov8Objdetect(runtime_factory=lambda _vid: per_request_runtime).adjudicate(
             VisionAdjudicationRequest("x", per_request, "cancelled", 1),
             on_log=lambda _line: None,
             on_event=lambda _event: None,
@@ -1160,7 +1160,7 @@ def test_provider_multiview_sends_single_llm_request(tmp_path: Path):
         def __init__(self): self.calls=0
         def verify(self, **kw): self.calls+=1; return type("R",(),{"status":"success","outcome":"LEFT","error":None})()
     profile={"game_id":"x","vision":{"stable_frames":1},"llm":{"enabled":True,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT"]},"multi_view":{"enabled":True,"min_views":2,"views":[{"id":"a"},{"id":"b"}]},"lifecycle":{"post_result_hold_seconds":0}}
-    v=V(); p=VisionYolov8Adjudicator(runtime_factory=lambda vid:Runtime(vid),verifier=v)
+    v=V(); p=VisionYolov8Objdetect(runtime_factory=lambda vid:Runtime(vid),verifier=v)
     out=p.adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
     assert out["outcome"]["value"] == "LEFT" and v.calls == 1
 
@@ -1184,7 +1184,7 @@ def test_provider_reasks_llm_on_disagreement(tmp_path: Path):
     # The re-ask flips back to the detector: the first dissent was a fluke.
     v = V(["LEFT", "TIE"])
     (tmp_path / "a.jpg").write_bytes(b"a")  # each round's cleanup unlinks it
-    out = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime(), verifier=v).adjudicate(
+    out = VisionYolov8Objdetect(runtime_factory=lambda vid: Runtime(), verifier=v).adjudicate(
         VisionAdjudicationRequest("x", profile, "r", 2),
         on_log=lambda x: None, on_event=lambda e: None, is_cancelled=lambda: False,
     )
@@ -1195,7 +1195,7 @@ def test_provider_reasks_llm_on_disagreement(tmp_path: Path):
     # The dissent is stable, but a tie is arithmetic fact and stays a tie.
     v = V(["LEFT", "LEFT"])
     (tmp_path / "a.jpg").write_bytes(b"a")
-    out = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime(), verifier=v).adjudicate(
+    out = VisionYolov8Objdetect(runtime_factory=lambda vid: Runtime(), verifier=v).adjudicate(
         VisionAdjudicationRequest("x", profile, "r", 2),
         on_log=lambda x: None, on_event=lambda e: None, is_cancelled=lambda: False,
     )
@@ -1212,7 +1212,7 @@ def test_provider_reasks_llm_on_disagreement(tmp_path: Path):
         def stop(self): pass
     v = V(["LEFT", "LEFT"])
     (tmp_path / "a.jpg").write_bytes(b"a")
-    out = VisionYolov8Adjudicator(runtime_factory=lambda vid: RuntimeLeft(), verifier=v).adjudicate(
+    out = VisionYolov8Objdetect(runtime_factory=lambda vid: RuntimeLeft(), verifier=v).adjudicate(
         VisionAdjudicationRequest("x", profile, "r", 2),
         on_log=lambda x: None, on_event=lambda e: None, is_cancelled=lambda: False,
     )
@@ -1234,7 +1234,7 @@ def test_provider_cleans_runtime_snapshots_after_llm(tmp_path: Path):
             assert image.exists()
             return type("R", (), {"status":"success", "outcome":"LEFT", "error":None})()
     profile={"game_id":"x","vision":{"stable_frames":1},"llm":{"enabled":True,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT","RIGHT"]},"lifecycle":{"post_result_hold_seconds":0}}
-    VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime(), verifier=V()).adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
+    VisionYolov8Objdetect(runtime_factory=lambda vid: Runtime(), verifier=V()).adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
     assert not image.exists()
 
 
@@ -1267,7 +1267,7 @@ def test_provider_applies_vision_expected_count_to_rule():
         "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]},
         "lifecycle": {"post_result_hold_seconds": 0},
     }
-    result = VisionYolov8Adjudicator(runtime_factory=lambda vid: runtime).adjudicate(
+    result = VisionYolov8Objdetect(runtime_factory=lambda vid: runtime).adjudicate(
         VisionAdjudicationRequest("x", profile, "r", 2),
         on_log=lambda _: None, on_event=lambda _: None, is_cancelled=lambda: False,
     )
@@ -1324,7 +1324,7 @@ import argparse, json, os, sys
 p=argparse.ArgumentParser(); p.add_argument('--config'); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--snapshot-dir',default='/tmp'); p.add_argument('--view-id',default='default'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--no-display',action='store_true'); p.add_argument('--rtsp',action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path'); a=p.parse_args()
 def emit(e): os.write(a.event_fd, (json.dumps(e)+'\\n').encode())
 print('diagnostic line that is not JSON', flush=True)
-emit({'event':'started','phase':'starting'}); emit({'event':'ready','phase':'idle'}); emit({'event':'video','url':'rtsp://private/cam'})
+emit({'event':'started','protocol':'jsonl-events-v2','phase':'starting'}); emit({'event':'ready','phase':'idle'}); emit({'event':'video','url':'rtsp://private/cam'})
 buf=b''
 while True:
     chunk=os.read(a.control_fd, 4096)
@@ -1342,7 +1342,7 @@ while True:
         encoding="utf-8",
     )
     script.chmod(0o755)
-    from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess
+    from components.vision_yolov8_objdetect.process import YoloRuntimeProcess
     runtime = YoloRuntimeProcess(binary=script)
     runtime.start({}, "front", prewarm=True, snapshot_dir=tmp_path / "snapshots")
     try:
@@ -1362,13 +1362,13 @@ def test_runtime_process_passes_explicit_runtime_config_for_profile_binary(tmp_p
         """#!/usr/bin/env python3
 import argparse, json, os, sys
 p=argparse.ArgumentParser(); p.add_argument('--config', required=True); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--view-id',default='default'); p.add_argument('--no-display',action='store_true'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--rtsp',action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path'); a=p.parse_args()
-os.write(a.event_fd, (json.dumps({'event':'started','config':a.config})+'\\n').encode())
+os.write(a.event_fd, (json.dumps({'event':'started','protocol':'jsonl-events-v2','config':a.config})+'\\n').encode())
 os.close(a.control_fd)
 """,
         encoding="utf-8",
     )
     script.chmod(0o755)
-    from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess
+    from components.vision_yolov8_objdetect.process import YoloRuntimeProcess
     runtime = YoloRuntimeProcess()
     runtime.start(
         {
@@ -1385,34 +1385,30 @@ os.close(a.control_fd)
         runtime.stop()
 
 
-def test_runtime_process_forwards_region_count_gate_with_provider_split(tmp_path: Path):
-    """The runtime's region gate must receive the provider's own split values.
-
-    A frame may only advance the stability streak when each region holds the
-    profile's expected object count.  The runtime learns that count and the
-    region boundary from the profile, so the two checks can never disagree.
+def test_runtime_launches_without_region_arguments(tmp_path: Path):
+    """The region gate moved to Python (jsonl-events-v2): the launcher must
+    not forward any region/expected-count argument to the runtime, and a
+    profile declaring them still launches identically.
     """
-    script = tmp_path / "region_runtime.py"
+    script = tmp_path / "plain_runtime.py"
     script.write_text(
         """#!/usr/bin/env python3
-import argparse, json, os
+import argparse, json, os, sys
 p=argparse.ArgumentParser()
 p.add_argument('--config'); p.add_argument('--model'); p.add_argument('--stable-frames'); p.add_argument('--conf')
-p.add_argument('--expected-count', type=int); p.add_argument('--region-position'); p.add_argument('--region-orientation')
 p.add_argument('--divider-detection', action='store_true'); p.add_argument('--no-divider-detection', action='store_true')
 p.add_argument('--control-fd', type=int); p.add_argument('--event-fd', type=int); p.add_argument('--view-id', default='default')
 p.add_argument('--no-display', action='store_true'); p.add_argument('--prewarm', action='store_true')
 p.add_argument('--rtsp', action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path')
 p.add_argument('--snapshot-dir'); p.add_argument('--camera'); p.add_argument('--device')
 a=p.parse_args()
-os.write(a.event_fd, (json.dumps({'event':'started','expected_count':a.expected_count,
-    'region_position':a.region_position,'region_orientation':a.region_orientation})+'\\n').encode())
+os.write(a.event_fd, (json.dumps({'event':'started','protocol':'jsonl-events-v2'})+'\\n').encode())
 os.close(a.control_fd)
 """,
         encoding="utf-8",
     )
     script.chmod(0o755)
-    from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess
+    from components.vision_yolov8_objdetect.process import YoloRuntimeProcess
 
     def started(profile):
         runtime = YoloRuntimeProcess(binary=script)
@@ -1422,35 +1418,42 @@ os.close(a.control_fd)
         finally:
             runtime.stop()
 
-    dice = started({"vision": {
+    # A full dice-style profile with every former region knob launches the
+    # same way as a plain one: the knobs are provider-side data now.
+    event = started({"vision": {
         "stable_frames": 30, "expected_count": 5,
         "grouping": "divider_regions", "divider_detection": True,
-    }})
-    assert dice["expected_count"] == 5
-    assert dice["region_position"] == "0.5"
-    assert dice["region_orientation"] == "vertical"
-
-    positioned = started({"vision": {
-        "expected_count": 2, "grouping": "divider_regions",
         "divider": {"position": 0.35, "orientation": "horizontal"},
     }})
-    assert positioned["expected_count"] == 2
-    assert positioned["region_position"] == "0.35"
-    assert positioned["region_orientation"] == "horizontal"
+    assert event["event"] == "started"
 
-    # A midpoint profile keeps the default split even with a stale divider
-    # block, and a profile without expected_count forwards no gate at all.
-    midpoint = started({"vision": {
-        "expected_count": 3, "grouping": "x_midpoint",
-        "divider": {"position": 0.35, "orientation": "horizontal"},
-    }})
-    assert midpoint["region_position"] == "0.5"
-    assert midpoint["region_orientation"] == "vertical"
 
-    plain = started({"vision": {"stable_frames": 15, "divider_detection": False}})
-    assert plain["expected_count"] is None
-    assert plain["region_position"] is None
-    assert plain["region_orientation"] is None
+def test_runtime_process_rejects_wrong_event_protocol(tmp_path: Path):
+    """A v1 runtime has looser stable semantics than this provider assumes.
+
+    The handshake must fail fast instead of letting the old binary feed
+    region-gated observations into the Python count checks that replaced them.
+    """
+    script = tmp_path / "v1_runtime.py"
+    script.write_text(
+        """#!/usr/bin/env python3
+import argparse, json, os, time
+p=argparse.ArgumentParser(); p.add_argument('--config'); p.add_argument('--control-fd',type=int); p.add_argument('--event-fd',type=int); p.add_argument('--view-id',default='default'); p.add_argument('--no-display',action='store_true'); p.add_argument('--prewarm',action='store_true'); p.add_argument('--rtsp',action='store_true'); p.add_argument('--rtsp-host'); p.add_argument('--rtsp-port'); p.add_argument('--rtsp-path'); p.add_argument('--snapshot-dir'); a=p.parse_args()
+os.write(a.event_fd, (json.dumps({'event':'started','protocol':'jsonl-events-v1'})+'\\n').encode())
+os.close(a.control_fd)
+time.sleep(30)
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    from components.vision_yolov8_objdetect.process import YoloRuntimeProcess
+    runtime = YoloRuntimeProcess(binary=script)
+    runtime.start({}, "default", prewarm=True)
+    try:
+        with pytest.raises(RuntimeError, match="protocol mismatch"):
+            list(runtime.events())
+    finally:
+        runtime.stop()
 
 
 def test_runtime_process_forwards_diagnostics_and_reports_exit(tmp_path: Path):
@@ -1467,7 +1470,7 @@ raise SystemExit(7)
         encoding="utf-8",
     )
     script.chmod(0o755)
-    from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess
+    from components.vision_yolov8_objdetect.process import YoloRuntimeProcess
     logs = []
     runtime = YoloRuntimeProcess(binary=script)
     runtime.start({}, "front", prewarm=True, on_log=logs.append)
@@ -1493,7 +1496,7 @@ time.sleep(60)
         encoding="utf-8",
     )
     script.chmod(0o755)
-    from components.vision_yolov8_adjudicator.process import YoloRuntimeProcess
+    from components.vision_yolov8_objdetect.process import YoloRuntimeProcess
 
     runtime = YoloRuntimeProcess(binary=script)
     runtime.start({}, "front", prewarm=True)
@@ -1521,7 +1524,7 @@ def test_provider_sends_final_result_and_stops_resident_runtime(tmp_path: Path):
         def verify(self, **kwargs): return type("R",(),{"status":"success","outcome":"LEFT","error":None})()
     runtime = Runtime()
     profile={"game_id":"x","vision":{"stable_frames":1},"llm":{"enabled":True,"system_prompt":"s","user_prompt_template":"u","allowed_outcomes":["LEFT"]},"lifecycle":{"post_result_hold_seconds":0}}
-    VisionYolov8Adjudicator(runtime_factory=lambda vid: runtime, verifier=Verifier()).adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
+    VisionYolov8Objdetect(runtime_factory=lambda vid: runtime, verifier=Verifier()).adjudicate(VisionAdjudicationRequest("x",profile,"r",2),on_log=lambda x:None,on_event=lambda e:None,is_cancelled=lambda:False)
     assert [c["command"] for c in runtime.commands] == ["START_ADJUDICATION", "FINAL_RESULT", "STOP_ADJUDICATION"]
     assert runtime.commands[1]["outcome"] == {"kind":"winner","value":"LEFT"}
     assert runtime.commands[1]["decision_source"] == "consensus"
@@ -1579,7 +1582,7 @@ def test_provider_reuses_resident_runtime_for_two_rounds_without_stale_observati
         },
         "lifecycle": {"post_result_hold_seconds": 0},
     }
-    provider = VisionYolov8Adjudicator(runtime_factory=lambda vid: runtime, verifier=verifier)
+    provider = VisionYolov8Objdetect(runtime_factory=lambda vid: runtime, verifier=verifier)
 
     first = provider.adjudicate(
         VisionAdjudicationRequest("x", profile, "round-1", 2),
@@ -1644,7 +1647,7 @@ def test_provider_ignores_stale_idle_event_before_current_round_detection(tmp_pa
         "lifecycle": {"post_result_hold_seconds": 0},
     }
     logs = []
-    result = VisionYolov8Adjudicator(runtime_factory=lambda _view_id: Runtime(), verifier=Verifier()).adjudicate(
+    result = VisionYolov8Objdetect(runtime_factory=lambda _view_id: Runtime(), verifier=Verifier()).adjudicate(
         VisionAdjudicationRequest("x", profile, "stale-idle", 2),
         on_log=logs.append, on_event=lambda _: None, is_cancelled=lambda: False,
     )
@@ -1695,7 +1698,7 @@ def test_provider_ignores_stale_cancelled_event_before_current_round_detection(t
     }
     runtime = Runtime()
     events = []
-    result = VisionYolov8Adjudicator(runtime_factory=lambda _view_id: runtime, verifier=Verifier()).adjudicate(
+    result = VisionYolov8Objdetect(runtime_factory=lambda _view_id: runtime, verifier=Verifier()).adjudicate(
         VisionAdjudicationRequest("x", profile, "stale-cancelled", 2),
         on_log=lambda _: None, on_event=events.append, is_cancelled=lambda: False,
     )
@@ -1741,7 +1744,7 @@ def test_provider_reports_incomplete_stable_observation_without_cancelling_resid
         "lifecycle": {"post_result_hold_seconds": 0},
     }
     runtime = Runtime()
-    result = VisionYolov8Adjudicator(runtime_factory=lambda _view_id: runtime).adjudicate(
+    result = VisionYolov8Objdetect(runtime_factory=lambda _view_id: runtime).adjudicate(
         VisionAdjudicationRequest("dice", profile, "incomplete-stable", 2),
         on_log=lambda _: None, on_event=lambda _: None, is_cancelled=lambda: False,
     )
@@ -1781,7 +1784,7 @@ def test_provider_cancel_keeps_resident_runtime_warm():
         "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
         "lifecycle": {"post_result_hold_seconds": 0},
     }
-    provider = VisionYolov8Adjudicator(runtime_factory=lambda vid: runtime)
+    provider = VisionYolov8Objdetect(runtime_factory=lambda vid: runtime)
     with pytest.raises(RuntimeError, match="cancelled"):
         provider.adjudicate(
             VisionAdjudicationRequest("x", profile, "cancelled", 1),
@@ -1839,7 +1842,7 @@ def test_resident_round_emits_video_before_waiting_for_observation(tmp_path: Pat
         if event.get("event") == "video":
             video_ready.set()
 
-    provider = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime())
+    provider = VisionYolov8Objdetect(runtime_factory=lambda vid: Runtime())
     worker = threading.Thread(
         target=lambda: provider.adjudicate(
             VisionAdjudicationRequest("x", profile, "resident-video", 2),
@@ -1867,7 +1870,7 @@ def test_provider_shutdown_stops_and_cleans_resident_runtimes(tmp_path: Path):
     runtime = Runtime()
     snapshot_dir = tmp_path / "resident"
     snapshot_dir.mkdir()
-    provider = VisionYolov8Adjudicator(runtime_factory=lambda vid: runtime)
+    provider = VisionYolov8Objdetect(runtime_factory=lambda vid: runtime)
     provider._runtime_cache["default"] = runtime
     provider._runtime_snapshot_dirs["default"] = snapshot_dir
     provider._runtime_signatures["default"] = "signature"
@@ -2097,7 +2100,7 @@ def test_multiview_missing_yolo_vote_uses_profile_rule_for_all_views(tmp_path: P
         "multi_view": {"enabled": True, "min_views": 2, "views": [{"id": "front"}, {"id": "side"}]},
         "lifecycle": {"post_result_hold_seconds": 0},
     }
-    result = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime(vid)).adjudicate(
+    result = VisionYolov8Objdetect(runtime_factory=lambda vid: Runtime(vid)).adjudicate(
         VisionAdjudicationRequest("dice", profile, "mixed-votes", 2),
         on_log=lambda _: None, on_event=lambda _: None, is_cancelled=lambda: False,
     )
@@ -2124,7 +2127,7 @@ def test_provider_marks_disabled_llm_as_yolo_only_not_timeout(tmp_path: Path):
         "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
         "lifecycle": {"post_result_hold_seconds": 0},
     }
-    result = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime()).adjudicate(
+    result = VisionYolov8Objdetect(runtime_factory=lambda vid: Runtime()).adjudicate(
         VisionAdjudicationRequest("x", profile, "llm-disabled", 2),
         on_log=lambda _: None,
         on_event=lambda _: None,
@@ -2178,7 +2181,7 @@ def test_round_llm_arrives_on_the_request_not_the_constructor(tmp_path: Path):
         "llm": {"enabled": True, "allowed_outcomes": ["LEFT", "RIGHT"]},
         "lifecycle": {"post_result_hold_seconds": 0},
     }
-    result = VisionYolov8Adjudicator(
+    result = VisionYolov8Objdetect(
         runtime_factory=lambda vid: Runtime(), verifier=ConstructorVerifier()
     ).adjudicate(
         VisionAdjudicationRequest("x", profile, "request-llm", 2, llm_provider=request_llm),
@@ -2213,7 +2216,7 @@ def test_missing_llm_provider_disables_verification_not_the_round(tmp_path: Path
         "lifecycle": {"post_result_hold_seconds": 0},
     }
     logs: list[str] = []
-    result = VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime()).adjudicate(
+    result = VisionYolov8Objdetect(runtime_factory=lambda vid: Runtime()).adjudicate(
         VisionAdjudicationRequest("x", profile, "no-llm", 2),
         on_log=logs.append, on_event=lambda _: None, is_cancelled=lambda: False,
     )
@@ -2263,7 +2266,7 @@ def _resident_profile(events=None):
 
 def test_start_streaming_spawns_a_prewarmed_runtime_once():
     runtime = _StreamRuntime()
-    provider = VisionYolov8Adjudicator(runtime_factory=lambda _vid: runtime)
+    provider = VisionYolov8Objdetect(runtime_factory=lambda _vid: runtime)
     assert provider.start_streaming(_resident_profile()) is True
     assert runtime.start_calls == 1
     # Prewarm is what keeps capture/RTSP up without entering the detector.
@@ -2281,7 +2284,7 @@ def test_start_streaming_survives_a_broken_runtime():
         def stop(self):
             pass
 
-    provider = VisionYolov8Adjudicator(runtime_factory=lambda _vid: Boom())
+    provider = VisionYolov8Objdetect(runtime_factory=lambda _vid: Boom())
     # A busy or unplugged camera must not break game entry.
     assert provider.start_streaming(_resident_profile()) is False
 
@@ -2294,19 +2297,38 @@ def test_start_streaming_rebuilds_when_the_launch_signature_changes():
         created.append(runtime)
         return runtime
 
-    provider = VisionYolov8Adjudicator(runtime_factory=factory)
+    provider = VisionYolov8Objdetect(runtime_factory=factory)
     provider.start_streaming(_resident_profile())
+    # A different game identity is a different launch, so the runtime rebuilds.
     changed = _resident_profile()
-    changed["vision"] = dict(changed["vision"], expected_count=7)
+    changed["game_id"] = "y"
     provider.start_streaming(changed)
     assert len(created) == 2
     # The stale process is released rather than left holding the camera.
     assert created[0].stop_calls == 1
 
 
+def test_start_streaming_reuses_runtime_across_expected_count_changes():
+    """expected_count is provider-side data since jsonl-events-v2.
+
+    The runtime no longer receives region arguments, so changing the count
+    must NOT rebuild the warm process; the provider applies it on the next
+    round straight from the profile.
+    """
+    runtime = _StreamRuntime()
+    provider = VisionYolov8Objdetect(runtime_factory=lambda _vid: runtime)
+    provider.start_streaming(_resident_profile())
+    changed = _resident_profile()
+    changed["vision"] = dict(changed["vision"], expected_count=7,
+                             grouping="divider_regions",
+                             divider={"position": 0.35, "orientation": "horizontal"})
+    provider.start_streaming(changed)
+    assert runtime.start_calls == 1
+
+
 def test_stop_streaming_releases_the_cached_runtime():
     runtime = _StreamRuntime()
-    provider = VisionYolov8Adjudicator(runtime_factory=lambda _vid: runtime)
+    provider = VisionYolov8Objdetect(runtime_factory=lambda _vid: runtime)
     provider.start_streaming(_resident_profile())
     provider.stop_streaming()
     assert runtime.stop_calls == 1
@@ -2323,7 +2345,7 @@ def test_adjudication_reuses_the_stream_started_at_game_entry(tmp_path: Path):
          "snapshot": {"path": str(snapshot)}},
     ]
     runtime = _StreamRuntime(events=events)
-    provider = VisionYolov8Adjudicator(runtime_factory=lambda _vid: runtime)
+    provider = VisionYolov8Objdetect(runtime_factory=lambda _vid: runtime)
 
     profile = _resident_profile()
     assert provider.start_streaming(profile) is True
@@ -2377,7 +2399,7 @@ def test_verifying_phase_reports_whether_the_llm_is_consulted(tmp_path: Path):
                     "user_prompt_template": "u", "allowed_outcomes": ["LEFT"]},
             "lifecycle": {"post_result_hold_seconds": 0},
         }
-        VisionYolov8Adjudicator(runtime_factory=lambda vid: Runtime()).adjudicate(
+        VisionYolov8Objdetect(runtime_factory=lambda vid: Runtime()).adjudicate(
             VisionAdjudicationRequest("x", profile, "r", 2),
             on_log=lambda x: None, on_event=events.append, is_cancelled=lambda: False,
         )

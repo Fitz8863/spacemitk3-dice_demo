@@ -299,7 +299,7 @@ def test_extract_content_accepts_array_of_text_parts():
 
 
 def test_packaged_config_carries_the_migrated_deepseek_values():
-    """The llm transport moved here from vision_yolov8_adjudicator config."""
+    """The llm transport moved here from vision_yolov8_objdetect config."""
     provider = LlmOpenAiCompat()
     assert provider._endpoint == "https://api.deepseek.com/v1"
     # The previous experimental name (deepseek-v4-flash-vision-exp) is no longer
