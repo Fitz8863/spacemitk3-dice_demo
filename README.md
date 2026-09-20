@@ -19,7 +19,7 @@ USB 摄像头 V4L2 MJPEG 1280x720@25
   -> OpenCL GPU：Y/UV 上传 + NV12->RGB + resize + letterbox + CHW + FP32/255
   -> SpaceMIT ONNX Runtime EP（可 --no-ep 回退 CPU）
   -> YOLOv10 output0 [1, 300, 6]
-  -> conf 过滤（+ no_gesture 过滤）+ letterbox 反算，免 NMS
+  -> conf 过滤（+ no_gesture 过滤）+ RPS 折叠 + letterbox 反算，免 NMS
   -> OpenCV 显示 / RTSP 推流
 ```
 
@@ -85,6 +85,8 @@ ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 | `model` | ONNX 模型路径；相对路径以程序启动目录为基准。 |
 | `classes` | 类别名数组，下标即模型输出 `class_id`，用于画面标签和 `filter_no_gesture` 定位；须与模型内嵌 `names` 顺序一致。缺省时使用内置的 34 类列表。 |
 | `filter_no_gesture` | `true`（默认）时丢弃 `no_gesture` 类的检测框（HaGRID 的兜底类，画出来全是噪声）。`--show-no-gesture` 临时关闭。 |
+| `rps_mode` | `true`（默认）启用石头剪刀布折叠：把 34 类手势映射到 Rock/Paper/Scissors，映射外类别丢弃；`false` 或 `--no-rps` 保留原始 34 类标签。 |
+| `rps_map` | RPS 折射表：游戏标签 → 源手势类名数组（见下节）。写错（未知类名/空标签/源类重复映射）启动即报错。 |
 | `camera` / `device` | 摄像头设备路径或编号；`device` 非空时优先。 |
 | `width` / `height` / `fps` | 摄像头请求规格；25fps 请求失败会自动回退到设备可协商帧率。 |
 | `intra_threads` / `ep_affinity` | SpaceMIT EP 线程数与绑核（`14;15`），数量必须一致。 |
@@ -98,6 +100,24 @@ ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 | `rtsp.enabled/host/port/path` | RTSP 推流开关与目标 MediaMTX；默认 `rtsp://127.0.0.1:8554/rps/det`。 |
 
 命令行参数在 JSON 加载后覆盖同名配置（`--model/--conf/--classes/--no-ep/--no-display/--max-frames/--rtsp-path` 等，`--help` 查看全部）。
+
+## 石头剪刀布模式（rps_mode）
+
+模型本身是 34 类 HaGRID 手势；RPS 模式（默认开启）把它折叠成三个游戏类别，映射表在 `config.json` 的 `rps_map`（游戏标签 → 源手势类名数组）：
+
+```json
+"rps_map": {
+  "Rock":     ["fist"],
+  "Paper":    ["palm", "stop", "stop_inverted"],
+  "Scissors": ["peace", "peace_inverted", "three2"]
+}
+```
+
+- 多个源手势可共享同一游戏标签（张开手掌/停下都算布）；启动日志会打印解析结果 `RPS mode: ...`。
+- 不在映射表里的类别（grabbing、like、ok……）直接丢弃，画面只出现 Rock/Paper/Scissors。
+- 画框颜色按**游戏标签**分配（三个标签各一色，不随源类变），标签文本也是游戏标签。
+- 映射写错（未知类名、空标签、一个源类映射到两个标签）在启动时报错退出，不会静默用错映射。
+- `rps_mode: false` 或 `--no-rps` 恢复原始 34 类行为（画面显示源类名、按类配色）。
 
 ## 命令行速查
 
