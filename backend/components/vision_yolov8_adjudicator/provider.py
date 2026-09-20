@@ -528,17 +528,19 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
         The cache is keyed by ``view_id``, and every game's single-view profile
         uses the id ``"default"`` — so this signature is the *only* thing
         keeping two games apart.  It must therefore cover every profile-owned
-        value that changes what the resident process does, not just the ones
-        that look like "hardware": ``divider_detection``, ``expected_count``,
-        the resolved region split, the ``grouping`` mode and the RTSP path are
-        all forwarded to the runtime on its command line.
+        value that changes what the resident process does: the resolved region
+        split, the ``grouping`` mode, the per-side count and the RTSP path are
+        all forwarded to the runtime on its command line, and the game's
+        runtime config file (model / confidence / stable_frames /
+        divider_detection / camera hardware) participates through its
+        path+mtime+size stamp.
 
-        Missing any of them let a second game whose model / stable frames /
-        camera agreed with the first reuse the first game's process, running
-        with the wrong divider gate, the wrong per-side count and the wrong
-        RTSP mount.  Keeping this list complete is what makes one shared camera
-        safe here: a differing signature tears the old process down and builds
-        a new one instead of silently inheriting it.
+        Missing any of them let a second game whose profile agreed with the
+        first reuse the first game's process, running with the wrong divider
+        gate, the wrong per-side count and the wrong RTSP mount.  Keeping this
+        list complete is what makes one shared camera safe here: a differing
+        signature tears the old process down and builds a new one instead of
+        silently inheriting it.
         """
         vision = profile.get("vision", {})
         vision = vision if isinstance(vision, Mapping) else {}
@@ -558,10 +560,6 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             # Game identity: two profiles that agree on every numeric knob are
             # still different games (different classes, rules and prompts).
             "game_id": profile.get("game_id"),
-            "model": vision.get("model"),
-            "stable_frames": vision.get("stable_frames"),
-            "confidence": vision.get("confidence", vision.get("conf")),
-            "divider_detection": vision.get("divider_detection"),
             "expected_count": vision.get("expected_count"),
             "region_position": region_position,
             "region_orientation": region_orientation,
@@ -569,10 +567,11 @@ class VisionYolov8Adjudicator(VisionAdjudicatorProvider):
             "video_path": video_path,
             "camera": view_data.get("camera"),
             "runtime": profile.get("runtime"),
-            # Editing this game's runtime config must rebuild the process on the
-            # next round (camera / conf / zoom / focus / RTSP all live there),
-            # and the stamp carries the resolved path so a per-game file is
-            # never confused with the shared deployment default.
+            # The game's runtime config file carries the model / confidence /
+            # stable_frames / divider_detection / camera hardware, so its
+            # mtime+size stamp is what makes editing any of them rebuild the
+            # process on the next round — and the resolved path keeps two
+            # games' files apart even when the sizes happen to match.
             "runtime_config": VisionYolov8Adjudicator._runtime_config_stamp(profile),
         }
         return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)

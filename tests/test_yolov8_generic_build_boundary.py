@@ -212,28 +212,26 @@ def test_runtime_has_no_cpp_llm_or_legacy_dice_state_machine():
 
 
 def test_runtime_config_owns_hardware_only_settings():
-    """每游戏的硬件配置只放"这台板子+这张桌子"的属性。
+    """游戏的 runtime 配置文件持有 C++ 消费的全部参数（2026-09-20 起）。
 
-    LLM 凭证在 LLM 组件；模型/稳定帧/阈值/分界线门控这些**游戏语义**参数在
-    游戏 manifest（并按游戏各自可覆盖）。此前它们混在共享文件里、会被所有
-    游戏继承——2026-09-15 起归位，这里把边界钉住（共享文件本身已于
-    2026-09-20 删除，现检查的是 dice 的 per-game 硬件文件）。
+    归属轴是「C++ runtime 消费 vs Python 框架消费」：model/conf/
+    stable_frames/divider_detection + 摄像头/EP/焦距等硬件住这里
+    （backend/games/<id>/adjudicator_config.json）；class_map/grouping/
+    expected_count 这些游戏语义（Python 规则引擎消费）留在 manifest。
     """
     config = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
     assert "llm" not in config
     assert "rejudge_on_change" not in config
-    for game_owned in (
-        "model",
-        "stable_frames",
-        "conf",
-        "divider_detection",
-        "display_enabled",
-        "yolov8_enabled",
-    ):
-        assert game_owned not in config, f"{game_owned} 属于游戏 manifest，不该在硬件配置里"
-    # The hardware it does own must stay.
+    # Game semantics consumed by the Python rule engine stay in the manifest.
+    for python_owned in ("class_map", "grouping", "expected_count"):
+        assert python_owned not in config, f"{python_owned} 属于游戏 manifest（Python 消费）"
+    # The C++-consumed runtime parameters moved here from the manifest.
+    for runtime_param in ("model", "conf", "stable_frames", "divider_detection"):
+        assert runtime_param in config, f"{runtime_param} 是 runtime 参数，必须在此文件里"
+    assert 0 < config["conf"] < 1
+    # The hardware it owns must stay.
     for hardware in ("camera", "width", "height", "fps", "ep_affinity", "focus", "zoom"):
-        assert hardware in config, f"{hardware} 是硬件属性，必须留在硬件配置里"
+        assert hardware in config, f"{hardware} 是硬件属性，必须留在此文件里"
     # Without rtsp.enabled the provider never adds --rtsp, i.e. no stream at all.
     assert config["rtsp"]["enabled"] is True
 

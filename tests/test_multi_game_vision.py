@@ -28,7 +28,6 @@ from components.vision_yolov8_adjudicator.provider import (  # noqa: E402
 def _profile(
     game_id: str,
     *,
-    divider_detection: bool = True,
     grouping: str = "divider_regions",
     expected_count: int | None = None,
     video_path: str = "/dice/det",
@@ -36,13 +35,12 @@ def _profile(
     """A resident profile; the shared fields stay identical across games.
 
     Only the fields a game genuinely owns differ, which is exactly the shape
-    that used to collide: same model / stable frames / camera / confidence.
+    that used to collide: same grouping / camera / video path.  Model /
+    confidence / stable_frames / divider_detection live in each game's
+    runtime config file (covered by its stamp), not here.
     """
     vision: dict = {
-        "model": "backend/games/dice/models/best.q.onnx",
-        "stable_frames": 30,
         "participants": ["LEFT", "RIGHT"],
-        "divider_detection": divider_detection,
         "grouping": grouping,
     }
     if expected_count is not None:
@@ -64,7 +62,6 @@ def _profile(
 SIGNATURE_CASES = [
     # (字段说明, 游戏 A 的覆盖, 游戏 B 的覆盖)
     ("game_id", {"game_id": "dice"}, {"game_id": "rps"}),
-    ("divider_detection", {"divider_detection": True}, {"divider_detection": False}),
     ("grouping", {"grouping": "divider_regions"}, {"grouping": "x_midpoint"}),
     ("expected_count", {"expected_count": 5}, {"expected_count": None}),
     ("video_path", {"video_path": "/dice/det"}, {"video_path": "/rps/"}),
@@ -151,8 +148,8 @@ def test_second_game_rebuilds_the_runtime_instead_of_reusing_it(tmp_path: Path):
         return runtime
 
     provider = VisionYolov8Adjudicator(runtime_factory=factory)
-    profile_a = _profile("dice", divider_detection=True, video_path="/dice/det")
-    profile_b = _profile("rps", divider_detection=False, video_path="/rps/")
+    profile_a = _profile("dice", video_path="/dice/det")
+    profile_b = _profile("rps", video_path="/rps/")
 
     result_a = _adjudicate(provider, profile_a, "round-a", tmp_path, 0)
     assert result_a["outcome"]["value"] == "LEFT"
@@ -480,41 +477,51 @@ def test_primary_vision_game_uses_a_disabled_game_when_that_is_all_there_is(monk
 # ---- detection threshold belongs to the game, not the shared runtime config
 
 def test_dice_declares_its_own_confidence_threshold():
-    """检测阈值是游戏参数：骰子（小方块）与手势需要的阈值不同。
+    """检测阈值是每游戏自己的运行参数：住在该游戏的 adjudicator_config.json，
+    manifest 不再携带（写回会被拒载）。
 
     此前 `conf: 0.45` 只写在共享的 `vision/yolov8_adjudicator/config.json` 里，
     是唯一一个「游戏自有却不在 manifest」的裁决参数——多游戏架构下会被所有
-    游戏继承。现在它归 dice 自己的 `vision_profile.vision.confidence`。
+    游戏继承。2026-09-15 归到 manifest，2026-09-20 随共享默认删除再迁入
+    dice 专属的硬件/运行配置文件。
     """
     import json as _json
 
     manifest = _json.loads(
         (ROOT / "backend/games/dice/manifest.json").read_text(encoding="utf-8")
     )
-    confidence = manifest["vision_profile"]["vision"].get("confidence")
-    assert isinstance(confidence, (int, float)) and 0 < confidence < 1
+    assert "confidence" not in manifest["vision_profile"]["vision"]
 
     runtime_config = _json.loads(
         (ROOT / "backend/games/dice/adjudicator_config.json").read_text(encoding="utf-8")
     )
-    # The per-game hardware config is hardware-only; a game-owned threshold
-    # must not reappear there either, or the manifest value would silently lose.
-    assert "conf" not in runtime_config
+    confidence = runtime_config.get("conf")
+    assert isinstance(confidence, (int, float)) and 0 < confidence < 1
+    # 其余三个搬进来的运行参数也在文件里。
+    assert runtime_config["stable_frames"] > 0
+    assert runtime_config["divider_detection"] is True
+    assert runtime_config["model"]
 
 
-def test_confidence_reaches_the_runtime_command_line():
-    """manifest 的 confidence 必须真的转发成 --conf，否则只是装饰。
+def test_confidence_reaches_the_runtime_via_the_config_file():
+    """manifest 不再向命令行转发 --conf/--model/--stable-frames——这些参数
+    经 --config 选定的文件进入 C++。转发路径若复活，manifest 键会静默变死。
 
-    转发逻辑内联在 ``YoloRuntimeProcess.start()`` 里，没有可单独调用的辅助
-    函数，因此这里断言源码里的转发契约（仓库既有测试也用这种源码断言方式）。
+    转发逻辑内联在 ``YoloRuntimeProcess.start()`` 里，因此这里断言源码契约
+    （仓库既有测试也用这种源码断言方式）。
     """
     source = (ROOT / "backend/components/vision_yolov8_adjudicator/process.py").read_text(
         encoding="utf-8"
     )
-    # Reads the manifest field (confidence first, legacy conf spelling second)...
-    assert 'vision.get("confidence", vision.get("conf"))' in source
-    # ...and forwards it as the runtime's --conf override.
-    assert '"--conf"' in source
+    # No manifest field forwards these anymore: they live in the config file.
+    assert 'vision.get("model")' not in source
+    assert 'vision.get("stable_frames")' not in source
+    assert 'vision.get("confidence"' not in source
+    assert '"--conf"' not in source
+    assert '"--model"' not in source
+    assert '"--stable-frames"' not in source
+    # The region gate stays manifest-driven (the provider consumes it too).
+    assert '"--expected-count"' in source
 
 
 # ---- per-game hardware runtime config --------------------------------------

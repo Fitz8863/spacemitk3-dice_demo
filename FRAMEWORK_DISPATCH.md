@@ -81,15 +81,13 @@ main/
     "schema_version": 1,
     "game_id": "dice",
     "vision": {
-      "model": "backend/games/dice/models/best.q.onnx",
-      "confidence": 0.45,              // 检测阈值：游戏参数（2026-09-15 起在此）
-      "class_map": {"0": "1", "...": "..."},
+      "class_map": {"0": "1", "...": "..."},   // 类别 ID→游戏值（Python 规则引擎消费）
       "participants": ["LEFT", "RIGHT"],
-      "expected_count": 5,             // 每侧恰好 5 个才算稳定
-      "stable_frames": 30,
-      "grouping": "divider_regions",   // 按分界线切分左右
-      "divider_detection": true
+      "expected_count": 5,             // 每侧恰好 5 个才算稳定（provider 也要校验数量）
+      "grouping": "divider_regions"     // 按分界线切分左右（Python region_split 消费）
     },
+    // model / conf / stable_frames / divider_detection 已迁至本游戏
+    // adjudicator_config.json（2026-09-20），见下节。
     "multi_view": {"enabled": true, "min_views": 1},
     "rule": {"kind": "numeric_compare"},
     "llm": {"enabled": false, "timeout_seconds": 10, "allowed_outcomes": ["LEFT", "RIGHT", "TIE"], "...": "..."},
@@ -161,7 +159,7 @@ flowchart TD
 
     LAUNCH["启动命令行只带一份：--config 选定文件<br/>整份替换 · 不做字段级合并"] --> Q3{"这个键在 manifest 里<br/>有对应字段吗"}
 
-    Q3 -->|有| WIN1["命令行参数胜<br/>--model / --conf / --stable-frames /<br/>--divider-detection / --expected-count / --rtsp-path"]
+    Q3 -->|有| WIN1["命令行参数胜<br/>--expected-count / --region-position /<br/>--region-orientation / --rtsp-path"]
     Q3 -->|没有| Q4{"选定文件里有<br/>这个键吗"}
     Q4 -->|有| WIN2["用文件里的值"]
     Q4 -->|没有| WIN3["回落 C++ 编译期默认值<br/>conf 0.50 · stable_frames 20 · focus 0<br/>不是回落到别的游戏的文件"]
@@ -177,10 +175,11 @@ flowchart TD
 - **缺键不回退到别的文件。** 每游戏一份、选定了就是**唯一**来源。
   所以"我只改一个值、其余继承"做不到，必须整份复制。以 `stable_frames` 为例：另一份文件写
   30、C++ 默认是 **20**——游戏那份里漏写它，拿到的是 20 而不是 30。
-- **命令行参数再压一层。** `--model`/`--conf`/`--stable-frames`/`--divider-detection`/
-  `--expected-count`/`--rtsp-path` 由 manifest 生成，**无论哪份文件被读都会再覆盖一次**。
-  因此这些键写在配置文件里是**死的**（已从各游戏文件删除）：`model`、`stable_frames`、`conf`、
-  `divider_detection`、`rtsp.path`、`display_enabled`、`yolov8_enabled`。
+- **manifest 与 runtime 配置各管一半。** `model`/`conf`/`stable_frames`/`divider_detection`
+  （C++ 消费的运行参数）住在各游戏的 `adjudicator_config.json`，**写回 manifest 会被校验器
+  拒载**；`class_map`/`grouping`/`expected_count`（Python 规则引擎消费的游戏语义）留在
+  manifest。命令行只再压一层：`--expected-count`/`--region-*`/`--rtsp-path` 由 manifest 生成，
+  **无论哪份文件被读都会覆盖一次**。
 
 **声明的路径是强制的**：解析或读取失败会**直接报错**（日志给出具体文件名），不会静默起
 runtime——否则就是悄悄用了别的游戏的摄像头与 RTSP 设置。实测：把 `runtime_config` 指向不存在的
@@ -200,8 +199,9 @@ rps 的硬件文件已备好（1080p@30 广角）等视觉模型接回。
 
 | 归属 | 字段 | 放哪 |
 | --- | --- | --- |
-| **游戏** | `model`（模型文件在 `backend/games/<id>/models/`）/ `class_map`/规则/`stable_frames`/`confidence`/`grouping`/`divider*`/`expected_count`/`video.path`/prompt/超时/节奏 | 游戏 manifest 的 `vision_profile`（摄像头也可用 `multi_view.views[].camera` 按视角配） |
-| **硬件/部署**（每游戏一份，必填） | 摄像头设备、分辨率、帧率、EP 绑核、线程数、队列深度、焦距、变焦、RTSP host/port、WebRTC 基址 | 该游戏自己的 `runtime_config` 文件（`backend/games/<id>/adjudicator_config.json`） |
+| **游戏**（Python 框架消费） | `class_map`/规则/`grouping`/`divider*`/`expected_count`/`video.path`/prompt/超时/节奏 | 游戏 manifest 的 `vision_profile`（摄像头也可用 `multi_view.views[].camera` 按视角配） |
+| **runtime 运行参数**（C++ 消费） | 模型（`model`，相对路径按配置文件所在目录解析）、检测阈值（`conf`）、稳定帧数（`stable_frames`）、分界线检测（`divider_detection`） | 该游戏自己的 `runtime_config` 文件（`backend/games/<id>/adjudicator_config.json`） |
+| **硬件/部署**（每游戏一份，必填） | 摄像头设备、分辨率、帧率、EP 绑核、线程数、队列深度、焦距、变焦、RTSP host/port、WebRTC 基址 | 同上 |
 
 接入清单：
 

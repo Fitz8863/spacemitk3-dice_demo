@@ -243,13 +243,12 @@ cmake --build build -j4
 
 当前迁移的模型是 YOLOv8 raw 输出模型，预期输出 `[1, 10, 8400]`。程序会在 CPU 侧执行 YOLOv8 解码和 NMS，并以模型无关的 detection 列表和稳定帧快照交给游戏 profile 解释；不会在 C++ 中固化骰子数量、分区、求和或胜负规则。
 
-视觉 runtime 的硬件、部署与 WebRTC 基础地址**每游戏一份**：manifest 的 `vision_profile.runtime_config` 指向该游戏专属的硬件文件（**必填**），**dice 读 `backend/games/dice/adjudicator_config.json`**。共享部署默认 `vision/yolov8_adjudicator/config.json` 已于 2026-09-20 删除（它只剩"游戏忘了声明时的兜底"这一种存在意义，而那个兜底是负价值的静默陷阱）。`backend/components/vision_yolov8_adjudicator/config.json` 只保存 Provider 的 runtime 路径与生命周期。这些都**不含** LLM 凭证——endpoint/model/api_key 在 `backend/components/llm_openai_compat/config.json`。游戏 manifest 声明自己的 `video.path` 与**检测阈值** `vision.confidence`（阈值是游戏参数），完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
+视觉 runtime 的配置**每游戏一份**：manifest 的 `vision_profile.runtime_config` 指向该游戏专属的运行配置文件（**必填**），**dice 读 `backend/games/dice/adjudicator_config.json`**——它持有 C++ 消费的全部参数（模型 `model`、检测阈值 `conf`、稳定帧数 `stable_frames`、分界线检测 `divider_detection` + 摄像头/EP/焦距/RTSP 硬件）。共享部署默认 `vision/yolov8_adjudicator/config.json` 已于 2026-09-20 删除（它只剩"游戏忘了声明时的兜底"这一种存在意义，而那个兜底是负价值的静默陷阱）。`backend/components/vision_yolov8_adjudicator/config.json` 只保存 Provider 的 runtime 路径与生命周期。这些都**不含** LLM 凭证——endpoint/model/api_key 在 `backend/components/llm_openai_compat/config.json`。游戏 manifest 声明自己的 `video.path`，完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
 
-> ⚠️ **per-game 硬件文件是"整份替换"，不做字段级合并。** runtime 只带 `--config <那一份>`，
+> ⚠️ **per-game 运行配置文件是"整份替换"，不做字段级合并。** runtime 只带 `--config <那一份>`，
 > 里面**没写的键会回落到 C++ 编译期默认值**（`conf` 0.50、`stable_frames` 20、`focus` 0），
-> **不是**回退到别的游戏的文件。所以要做差异就得整份复制。另外删掉了 `model`，**直接跑 CLI
-> 时要自带 `--model`**（C++ 按配置文件所在目录解析相对路径）；生产不受影响，provider 永远传
-> 绝对路径。
+> **不是**回退到别的游戏的文件。所以要做差异就得整份复制。`model` 相对路径按配置文件
+> 所在目录解析——`"models/best.q.onnx"` 即该游戏 `models/` 目录下的同名文件。
 
 ### 第二个视觉游戏怎么接（2026-09-15 起）
 
@@ -261,9 +260,11 @@ cmake --build build -j4
 （否则就是悄悄用了别的游戏的摄像头）。
 
 接入五件事：① 在 `backend/games/<id>/manifest.json` 写 `vision_profile`
-（`class_map`/规则/`stable_frames`/`confidence`/`grouping`/`video.path`/prompt）；
-② 写硬件文件 `backend/games/<id>/adjudicator_config.json` 并用 `runtime_config` 指向它
-（必填，整份复制一份改差异）；
+（`class_map`/规则/`grouping`/`expected_count`/`video.path`/prompt——Python 框架消费的游戏
+语义）；
+② 写运行配置文件 `backend/games/<id>/adjudicator_config.json`（模型 `model`/阈值 `conf`/
+`stable_frames`/`divider_detection` + 摄像头/EP/焦距硬件——C++ 消费的参数）并用
+`runtime_config` 指向它（必填，整份复制一份改差异）；
 ③ 写 `backend/games/<id>/pipeline.py` 薄壳（约 15 行，调
 `core.vision_pipeline.run_vision_game` 并传入自己的结果投影）；④ 结果投影（数值型参照
 `games/dice/result.py`，类别型——例如猜拳的手势——直接用
@@ -272,9 +273,10 @@ cmake --build build -j4
 
 **★ 为什么改这些保存后 runtime 会自动重建**：resident runtime 按 `view_id` 缓存
 （每个游戏的单视图 profile 都是 `"default"`），所以 `_runtime_signature()` 是唯一把两个
-游戏分开的依据。它覆盖 `game_id`/模型/稳定帧/置信度/分界线门控/每侧数量/解析后的分区比例/
-分组模式/`video.path`/摄像头，**以及运行时配置文件的路径与 mtime+size**。因此改这些参数
-（包括直接改那些 JSON 文件里的 `conf`/`zoom`/`camera`）**下一回合即生效——不必重启服务**。
+游戏分开的依据。它覆盖 `game_id`/每侧数量/解析后的分区比例/分组模式/`video.path`/摄像头，
+**以及运行时配置文件的路径与 mtime+size**——模型/阈值/稳定帧/分界线检测住进该文件后，
+改它们同样由这个戳捕获。因此改这些参数（包括直接改那些 JSON 文件里的 `conf`/`zoom`/
+`camera`）**下一回合即生效——不必重启服务**。
 
 **共用摄像头的取舍**：两个游戏共用同一个摄像头设备，所以不允许两个 runtime 同时存在
 （会抢设备）。切换游戏时会拆掉旧的、按新参数重建一次，代价是付一次摄像头打开+模型加载。

@@ -165,8 +165,16 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
     vision = profile.get("vision")
     if not isinstance(vision, dict):
         raise ProfileError("vision must be an object")
-    model = _required_string(vision.get("model"), "vision.model")
-    resolve_project_path(model)
+    # Runtime-operational parameters moved to the game's own adjudicator
+    # config file (2026-09-20): the manifest deliberately no longer carries
+    # them, and a leftover key must fail loudly instead of silently doing
+    # nothing (the command-line forwarding that used to read them is gone).
+    for removed in ("model", "confidence", "conf", "stable_frames", "divider_detection"):
+        if removed in vision:
+            raise ProfileError(
+                f"vision.{removed} was moved to the game's runtime config file "
+                "(vision_profile.runtime_config); the manifest no longer accepts it"
+            )
     if not isinstance(vision.get("class_map"), dict) or not vision["class_map"]:
         raise ProfileError("vision.class_map must be a non-empty object")
     if not isinstance(vision.get("participants"), list) or not vision["participants"]:
@@ -187,9 +195,6 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         position = divider.get("position", 0.5)
         if not isinstance(position, (int, float)) or isinstance(position, bool) or not math.isfinite(position) or not 0 < position < 1:
             raise ProfileError("vision.divider.position must be between 0 and 1")
-    if not isinstance(vision.get("stable_frames"), int) or vision["stable_frames"] <= 0:
-        raise ProfileError("vision.stable_frames must be a positive integer")
-
     llm = profile.get("llm")
     if not isinstance(llm, dict):
         raise ProfileError("llm must be an object")

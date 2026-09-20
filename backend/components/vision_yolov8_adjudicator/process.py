@@ -183,32 +183,14 @@ class YoloRuntimeProcess:
                 component_config = {}
                 runtime_config = {}
 
-        # Game profiles own the model and camera semantics.  Forward only
-        # those validated, non-secret values as command-line overrides; the
-        # per-game runtime config file is the single hardware source.  Resolving the
-        # model against the repository root is important because the C++
-        # process runs with its own working directory.
-        project_root = Path(__file__).resolve().parents[3]
+        # Game profiles own the game semantics the provider itself consumes
+        # (region gate count, grouping).  Model / confidence / stable_frames /
+        # divider_detection live in the game's runtime config file and reach
+        # the C++ through --config; validate_profile rejects them in the
+        # manifest, so nothing forwards them here.
         runtime_overrides: list[str] = []
         vision = profile.get("vision", {}) if isinstance(profile, Mapping) else {}
         if isinstance(vision, Mapping):
-            model = vision.get("model")
-            if isinstance(model, str) and model.strip():
-                model_path = Path(model)
-                if not model_path.is_absolute():
-                    model_path = (project_root / model_path).resolve()
-                runtime_overrides.extend(["--model", str(model_path)])
-            stable_frames = vision.get("stable_frames")
-            if isinstance(stable_frames, int) and not isinstance(stable_frames, bool):
-                runtime_overrides.extend(["--stable-frames", str(stable_frames)])
-            confidence = vision.get("confidence", vision.get("conf"))
-            if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
-                runtime_overrides.extend(["--conf", str(confidence)])
-            divider_detection = vision.get("divider_detection")
-            if isinstance(divider_detection, bool):
-                runtime_overrides.append(
-                    "--divider-detection" if divider_detection else "--no-divider-detection"
-                )
             # The region count gate is profile data, never a game rule: the
             # runtime only learns "N objects per region" plus the provider's own
             # split, so a frame the provider would reject as incomplete can no

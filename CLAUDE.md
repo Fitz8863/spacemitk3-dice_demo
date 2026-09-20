@@ -70,12 +70,12 @@ SpaceMIT K3 板端的「机械臂骰子挑战」交互 Demo。玩家在网页上
   该游戏专属的硬件文件（**必填**；共享部署默认已于 2026-09-20 删除），游戏只声明自己的
   视频 path。
 - **多游戏视觉架构（2026-09-15 起）**：同一套裁决器服务多个游戏，每个游戏的裁决参数
-  （`class_map`/规则/`stable_frames`/`confidence`/`grouping`/`divider_detection`/
-  `expected_count`/`video.path`/prompt）**全部写在自己 manifest 的 `vision_profile` 里**。
-  **硬件参数每游戏一份**（`backend/games/<id>/adjudicator_config.json`：摄像头/分辨率/
-  帧率/EP 绑核/焦距/RTSP 地址），manifest 用 `vision_profile.runtime_config` 声明
-  （仓库相对路径、必填）。**声明的路径是强制的**：
-  读不到就报错，绝不静默回退（那等于悄悄用别的游戏的摄像头）。
+  （`class_map`/规则/`grouping`/`divider*`/`expected_count`/`video.path`/prompt）**全部写在
+  自己 manifest 的 `vision_profile` 里**。模型/检测阈值/稳定帧数/分界线检测（`model`/`conf`/
+  `stable_frames`/`divider_detection`，2026-09-20 迁入）与硬件参数**每游戏一份**
+  （`backend/games/<id>/adjudicator_config.json`：摄像头/分辨率/帧率/EP 绑核/焦距/RTSP 地址），
+  manifest 用 `vision_profile.runtime_config` 声明（仓库相对路径、必填）。**声明的路径是
+  强制的**：读不到就报错，绝不静默回退（那等于悄悄用别的游戏的摄像头）。
   **★ 签名契约**：resident runtime 的缓存键是 `view_id`（各游戏都是 `"default"`），
   所以 `_runtime_signature()` 是唯一把两个游戏区分开的东西——它必须覆盖每个会改变
   runtime 行为的 profile 字段，**外加运行时配置文件的路径与 mtime+size**。漏掉任一项，

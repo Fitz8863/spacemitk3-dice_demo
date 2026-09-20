@@ -52,9 +52,6 @@ def test_profile_loads_dice_and_composes_mediamtx_url():
     assert profile["game_id"] == "dice"
     assert profile["llm"]["context_mode"] == "single_turn_no_history"
     assert profile["video"]["path"] == "/dice/det"
-    # The scene now carries a red/blue mat whose boundary replaces the black
-    # line as the divider signal (see detect_red_blue_divider in the runtime).
-    assert profile["vision"]["divider_detection"] is True
     component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_adjudicator")
     _ = component  # component config holds lifecycle only; hardware is per-game
     runtime = load_runtime_config(resolve_runtime_config_path(profile))
@@ -134,7 +131,7 @@ def test_profile_rejects_full_url_in_game_path(tmp_path: Path):
         "schema_version": 1,
         "game_id": "bad",
         "runtime_config": "backend/games/dice/adjudicator_config.json",
-        "vision": {"model": "vision/model.onnx", "class_map": {"0": "x"}, "participants": ["A"], "stable_frames": 1},
+        "vision": {"class_map": {"0": "x"}, "participants": ["A"]},
         "llm": {"system_prompt": "judge", "user_prompt_template": "judge", "allowed_outcomes": ["A"], "context_mode": "single_turn_no_history"},
     }
     valid["video"] = {"path": "https://x/", "webrtc_base_url": "http://localhost:8889"}
@@ -647,20 +644,23 @@ def _minimal_profile():
         "schema_version": 1,
         "game_id": "bad",
         "runtime_config": "backend/games/dice/adjudicator_config.json",
-        "vision": {"model": "vision/model.onnx", "class_map": {"0": "x"}, "participants": ["A"], "stable_frames": 1},
+        "vision": {"class_map": {"0": "x"}, "participants": ["A"]},
         "llm": {"system_prompt": "judge", "user_prompt_template": "judge", "allowed_outcomes": ["A"], "context_mode": "single_turn_no_history"},
         "video": {"path": "/bad/", "webrtc_base_url": "http://localhost:8889"},
         "timeouts": {"adjudication_seconds": 15},
     }
 
 
-def test_profile_rejects_absolute_model_path(tmp_path: Path):
-    profile = _minimal_profile()
-    profile["vision"]["model"] = "/tmp/model.onnx"
-    path = tmp_path / "vision_profile.json"
-    path.write_text(json.dumps(profile))
-    with pytest.raises(ProfileError, match="path"):
-        load_profile(path)
+def test_profile_rejects_moved_runtime_keys(tmp_path: Path):
+    """model/confidence/stable_frames/divider_detection 已搬到各游戏
+    adjudicator_config.json（2026-09-20）：manifest 写回即拒载，防止静默死键。"""
+    for removed in ("model", "confidence", "conf", "stable_frames", "divider_detection"):
+        profile = _minimal_profile()
+        profile["vision"][removed] = "anything"
+        path = tmp_path / "vision_profile.json"
+        path.write_text(json.dumps(profile))
+        with pytest.raises(ProfileError, match=f"vision.{removed} was moved"):
+            load_profile(path)
 
 
 def test_profile_validates_pre_adjudication_wait_seconds(tmp_path: Path):
@@ -2255,7 +2255,7 @@ def _resident_profile(events=None):
     return {
         "game_id": "x",
         "runtime": {"mode": "resident", "prewarm_camera": True},
-        "vision": {"stable_frames": 1, "participants": ["LEFT", "RIGHT"]},
+        "vision": {"participants": ["LEFT", "RIGHT"]},
         "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
         "lifecycle": {"post_result_hold_seconds": 0},
     }
@@ -2297,7 +2297,7 @@ def test_start_streaming_rebuilds_when_the_launch_signature_changes():
     provider = VisionYolov8Adjudicator(runtime_factory=factory)
     provider.start_streaming(_resident_profile())
     changed = _resident_profile()
-    changed["vision"] = dict(changed["vision"], stable_frames=7)
+    changed["vision"] = dict(changed["vision"], expected_count=7)
     provider.start_streaming(changed)
     assert len(created) == 2
     # The stale process is released rather than left holding the camera.
