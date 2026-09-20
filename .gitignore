@@ -1,0 +1,5 @@
+build/
+data/
+.v2c/
+.shaders/
+*.log
