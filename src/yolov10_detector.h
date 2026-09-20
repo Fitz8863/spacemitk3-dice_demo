@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 struct Detection {
     float x1 = 0, y1 = 0, x2 = 0, y2 = 0, confidence = 0;
@@ -28,4 +30,5 @@ private:
     std::unique_ptr<Impl> impl_;
     void* session_opaque_ = nullptr;
     std::string input_name_, output_name_;
+    std::vector<int64_t> input_shape_, output_shape_;
 };

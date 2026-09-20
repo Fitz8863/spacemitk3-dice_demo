@@ -596,6 +596,8 @@ int main(int argc, char** argv) {
     };
     std::vector<std::string> class_names =
         a.class_names.empty() ? kDefaultClassNames : a.class_names;
+    // -1 = keep every class; otherwise the id that gets dropped from results.
+    int no_gesture_id = -1;
     if (a.filter_no_gesture) {
         const auto it = std::find(class_names.begin(), class_names.end(), "no_gesture");
         if (it == class_names.end()) {
@@ -603,11 +605,8 @@ int main(int argc, char** argv) {
                          "set filter_no_gesture=false or fix config classes\n";
             return 2;
         }
-        const int no_gesture_id = static_cast<int>(it - class_names.begin());
+        no_gesture_id = static_cast<int>(it - class_names.begin());
         std::cout << "Filtering class_id " << no_gesture_id << " (no_gesture)\n";
-        a.filter_no_gesture = no_gesture_id;  // reuse the field as the id to drop
-    } else {
-        a.filter_no_gesture = -1;
     }
 
     std::unique_ptr<OpenClPreprocessor> pre;
@@ -646,10 +645,10 @@ int main(int argc, char** argv) {
             auto ds = detector->infer(prep_result.data->data(), prep_result.data->size(),
                                       a.conf, prep_result.scale, prep_result.pad_x,
                                       prep_result.pad_y, synthetic_width, synthetic_height);
-            if (a.filter_no_gesture >= 0) {
+            if (no_gesture_id >= 0) {
                 ds.erase(std::remove_if(ds.begin(), ds.end(),
                                         [&](const Detection& d) {
-                                            return d.class_id == a.filter_no_gesture;
+                                            return d.class_id == no_gesture_id;
                                         }),
                          ds.end());
             }
@@ -796,11 +795,11 @@ int main(int argc, char** argv) {
                     }
                     throw;
                 }
-                if (a.filter_no_gesture >= 0) {
+                if (no_gesture_id >= 0) {
                     result->detections.erase(
                         std::remove_if(result->detections.begin(), result->detections.end(),
                                        [&](const Detection& d) {
-                                           return d.class_id == a.filter_no_gesture;
+                                           return d.class_id == no_gesture_id;
                                        }),
                         result->detections.end());
                 }

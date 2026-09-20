@@ -128,15 +128,17 @@ ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 
 - 采集/前处理/RTSP 三个模块与 `yolov8_objdetect` 完全同源（零拷贝 NV12、spacemitdec 硬解优先 + 软解回退、latest-only 队列、退出时先 join 采集线程再销毁 GStreamer pipeline）。
 - 本模型不含黑线分界检测、分侧计数、LLM 复核——本工程只做「识别目标 + 推流」。
-- **ORF 图优化级别固定从 `ORT_ENABLE_BASIC` 起步**：该 PPQ 量化图混用 INT8/UINT8 zero point，`ORT_ENABLE_EXTENDED/ALL` 会在图优化阶段报 `QuantizeLinear ... output_dtype INT8 does not match y_zero_point type UINT8`（开发机 ORT 1.30 实测）；BASIC 失败时自动降级 `ORT_DISABLE_ALL` 重试一次。
+- **ORT 图优化级别固定从 `ORT_ENABLE_BASIC` 起步**：该 PPQ 量化图混用 INT8/UINT8 zero point，`ORT_ENABLE_EXTENDED/ALL` 会在图优化阶段报 `QuantizeLinear ... output_dtype INT8 does not match y_zero_point type UINT8`（开发机 ORT 1.30 实测）；BASIC 失败时自动降级 `ORT_DISABLE_ALL` 重试一次。
 - `--no-ep` 走纯 CPU：SpaceMIT EP 对该图的精度/兼容性如有异常（参照 yolov8_posehand 的 EP cls 分支 bug 教训），用它做对照。
 - TCM 冲突排查与 `yolov8_objdetect` 相同：`spacemit-tcm-smi -i` 查看、无进程时 `-c` 清理。
 - 类别过滤：`filter_no_gesture=true` 按 `classes` 里 `no_gesture` 的下标（模型 id 33）整帧过滤，统计行的 `detections` 已不含该类。
 
-## 待办 / 验证记录
+## 板端验证记录（2026-09-20）
 
-- [ ] 板端编译通过
-- [ ] `--self-test --no-display --no-rtsp` 通过
-- [ ] 真机短跑 `--no-display --max-frames 60 --no-rtsp`，确认检出与 `infer_ms`
-- [ ] （如有异常）`--no-ep` 对照 CPU
-- [ ] RTSP `ffprobe rtsp://127.0.0.1:8554/rps/det` + 抓帧核对画框
+- 编译：`cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOpenCV_DIR=/usr/lib/riscv64-linux-gnu/cmake/opencv4 && cmake --build build -j4` 通过，产物 `build/yolov10_camera`。
+- `--self-test --no-display --no-rtsp` 通过：OpenCL PowerVR 前处理 21ms，SpaceMIT EP（BASIC 优化级、affinity 14;15）加载 `[1,3,640,640] → [1,300,6]` 正常。
+- 真机短跑（C920 `/dev/video1`，720p MJPEG 硬解，90/120 帧）：`fps_infer` 约 21~23，`infer_ms` 约 35（EP 2 线程），空场景 0 误检。
+- `--no-ep` CPU 对照：单次推理约 2.6s（纯 CPU 慢属预期），输出与 EP 一致 → EP 对该 PPQ 量化图行为正常（对照了真实照片的 top5 候选与 conf 序列）。
+- RTSP 推流 `rtsp://127.0.0.1:8554/rps/det`：MediaMTX 收流正常，`ffprobe` 得 h264 Main 1280x720，抓帧核对检测框/标签/HUD 完整；SIGTERM 优雅退出、摄像头释放。
+- 结论：检测+推流链路全部验证通过；等有真实手势画面后可进一步调 `conf` 阈值。
+
