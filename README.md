@@ -160,5 +160,7 @@ ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 - 真机短跑（C920 `/dev/video1`，720p MJPEG 硬解，90/120 帧）：`fps_infer` 约 21~23，`infer_ms` 约 35（EP 2 线程），空场景 0 误检。
 - `--no-ep` CPU 对照：单次推理约 2.6s（纯 CPU 慢属预期），输出与 EP 一致 → EP 对该 PPQ 量化图行为正常（对照了真实照片的 top5 候选与 conf 序列）。
 - RTSP 推流 `rtsp://127.0.0.1:8554/rps/det`：MediaMTX 收流正常，`ffprobe` 得 h264 Main 1280x720，抓帧核对检测框/标签/HUD 完整；SIGTERM 优雅退出、摄像头释放。
+- ★ 推理报 `tcm buffer acquire failed for core id N` 时：先 `spacemit-tcm-smi -i` 看占用块，若 PID 已死（`ps -p <PID>` 查无此进程）就是僵尸 TCM，`spacemit-tcm-smi -c` 清理后重启即可（2026-09-20 实测：hand_track 异常退出留下 2 个僵尸块导致本工程起不来，清理后恢复 24fps/35ms）。
+- ★ 板子整体当前被钉在 0-7 核（PID1 起就是，cmdline 无 isolcpus，systemd 无 CPUAffinity/AllowedCPUs 配置——来源待查，2026-09-20 记录）。config 里的 `ep_affinity: "14;15"` 在此状态下实际落在受限核上执行；EP 仍能跑满 24fps/35ms，但若想真正用 A100 核（8-15）需先解除系统级限制。
 - 结论：检测+推流链路全部验证通过；等有真实手势画面后可进一步调 `conf` 阈值。
 
