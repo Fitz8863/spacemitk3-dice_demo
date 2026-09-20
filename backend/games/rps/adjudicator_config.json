@@ -1,5 +1,9 @@
 {
-  "_note": "rps 专属的视觉 runtime 硬件配置（骨架期暂存：manifest 的 vision_profile 尚未声明，等视觉模型训练好接回时加上 vision_profile 并以 runtime_config 指向本文件即生效——runtime_config 是必填项）。整份替换、不做字段级合并：这里没写的键会回落到 C++ 编译期默认值，加字段请整份补齐。与 dice 的差异只有分辨率：1920x1080@30fps 拿更广视角——板上实测 C920 的 1080p 只有 30fps 档（无 25fps），zoom 100 已是该镜头最广端，广角增益全部来自分辨率。",
+  "_note": "rps 专属的视觉 runtime 配置（模型与检测参数 + 硬件）。骨架期暂存：manifest 的 vision_profile 尚未声明，等视觉模型训练好接回时加上 vision_profile 并以 runtime_config 指向本文件即生效（runtime_config 是必填项）。视觉接回清单：训练好的模型放本目录 models/、按效果调 conf/stable_frames、manifest 补 vision_profile（runtime_config 指向本文件 + class_map/participants/grouping 等游戏语义）。整份替换、不做字段级合并：这里没写的键会回落到 C++ 编译期默认值，加字段请整份补齐。model 相对路径按本文件所在目录解析。与 dice 的差异：1080p@30fps 拿更广视角（板上实测 C920 的 1080p 只有 30fps 档，无 25fps；zoom 100 已是该镜头最广端，广角增益全部来自分辨率）；分界线检测关闭（双方位置固定走画面中线，恢复旧 rps 视觉设计值）。",
+  "model": "models/rps.q.onnx",
+  "conf": 0.45,
+  "stable_frames": 15,
+  "divider_detection": false,
   "camera": "/dev/video1",
   "device": "",
   "width": 1920,
