@@ -3,3 +3,4 @@ data/
 .v2c/
 .shaders/
 *.log
+SpaceMITExecutionProvider_SpineSubgraph_*.onnx
