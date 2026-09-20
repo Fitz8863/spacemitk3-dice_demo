@@ -1,4 +1,5 @@
 #include "gstreamer_camera.h"
+#include "rps_mapper.h"
 #include "rtsp_streamer.h"
 #include "opencl_preprocess.h"
 #include "yolov10_detector.h"
@@ -146,6 +147,14 @@ struct Args {
     std::string dump_input;
     std::vector<std::string> class_names;
     bool filter_no_gesture = true;
+    // Rock/paper/scissors mode: collapse the 34-class gesture space onto the
+    // game labels via rps_map; false keeps raw 34-class behavior.
+    bool rps_mode = true;
+    RpsMapper::LabelMap rps_map = {
+        {"Rock", {"fist"}},
+        {"Paper", {"palm", "stop", "stop_inverted"}},
+        {"Scissors", {"peace", "peace_inverted", "three2"}},
+    };
     bool yolov10_enabled = true;
     bool rtsp_enabled = false;
     std::string rtsp_host = "127.0.0.1";
@@ -289,6 +298,39 @@ static bool load_config(const std::string& path, Args& a) {
             a.class_names = std::move(names);
         }
         if (!read_config_bool(root, "filter_no_gesture", a.filter_no_gesture)) return false;
+        if (!read_config_bool(root, "rps_mode", a.rps_mode)) return false;
+        const cv::FileNode rps_map = root["rps_map"];
+        if (!rps_map.empty()) {
+            if (!rps_map.isMap()) {
+                std::cerr << "config rps_map must be a JSON object of label -> class-name array\n";
+                return false;
+            }
+            RpsMapper::LabelMap map;
+            for (auto it = rps_map.begin(); it != rps_map.end(); ++it) {
+                const std::string label = (*it).name();
+                const cv::FileNode sources = *it;
+                if (!sources.isSeq()) {
+                    std::cerr << "config rps_map." << label << " must be an array of class names\n";
+                    return false;
+                }
+                std::vector<std::string> names;
+                for (const cv::FileNode& item : sources) {
+                    if (!item.isString()) {
+                        std::cerr << "config rps_map." << label << " must contain class-name strings\n";
+                        return false;
+                    }
+                    std::string name;
+                    item >> name;
+                    if (name.empty()) {
+                        std::cerr << "config rps_map." << label << " contains an empty class name\n";
+                        return false;
+                    }
+                    names.push_back(std::move(name));
+                }
+                map[label] = std::move(names);
+            }
+            if (!map.empty()) a.rps_map = std::move(map);
+        }
         read_config_value(root, "focus", a.focus);
         read_config_value(root, "zoom", a.zoom);
         read_config_value(root, "max_frames", a.max_frames);
@@ -340,6 +382,7 @@ static void usage(const char* exe) {
               << "  --conf FLOAT       confidence threshold\n"
               << "  --classes LIST     comma-separated class names, e.g. like,ok,peace\n"
               << "  --show-no-gesture  draw the no_gesture class too (config: filter_no_gesture=false)\n"
+              << "  --no-rps           keep raw 34-class labels instead of rock/paper/scissors mapping\n"
               << "  --queue-depth N    keep up to N frames per pipeline queue\n"
               << "  --focus N          fixed manual focus (-1 unchanged)\n"
               << "  --zoom N           zoom absolute value (-1 unchanged)\n"
@@ -464,6 +507,7 @@ static bool parse(int argc, char** argv, Args& a) {
             else if (k == "--conf" && (v = need(i))) a.conf = std::stof(v);
             else if (k == "--classes" && (v = need(i))) a.class_names = split_class_names(v);
             else if (k == "--show-no-gesture") a.filter_no_gesture = false;
+            else if (k == "--no-rps") a.rps_mode = false;
             else if (k == "--queue-depth" && (v = need(i))) {
                 a.queue_depth = static_cast<std::size_t>(std::stoul(v));
             } else if (k == "--focus" && (v = need(i))) a.focus = std::stoi(v);
@@ -523,23 +567,32 @@ static void print_tcm_resource_hint(const std::string& message,
 }
 
 static void draw_detections(cv::Mat& bgr, const std::vector<Detection>& ds,
-                            const std::vector<std::string>& class_names) {
-    for (const auto& d : ds) {
+                            const std::vector<std::string>& class_names,
+                            const RpsMapper& rps_mapper,
+                            const std::vector<RpsMapper::Label>& rps_labels) {
+    for (size_t i = 0; i < ds.size(); ++i) {
+        const auto& d = ds[i];
         cv::Rect r(static_cast<int>(d.x1), static_cast<int>(d.y1),
                    std::max(1, static_cast<int>(d.x2 - d.x1)),
                    std::max(1, static_cast<int>(d.y2 - d.y1)));
-        const size_t class_index =
-            static_cast<size_t>(std::max(0, d.class_id)) % kClassColors.size();
-        const cv::Scalar& color = kClassColors[class_index];
-
-        cv::rectangle(bgr, r, color, 2, cv::LINE_AA);
-        // Prefer the configured class name; without one, show the numeric id.
+        // RPS mode colors by game label (Rock/Paper/Scissors get their own
+        // color regardless of which source class triggered them); raw mode
+        // falls back to the per-class palette.
+        cv::Scalar color;
         std::string class_label;
-        if (d.class_id >= 0 &&
-            static_cast<std::size_t>(d.class_id) < class_names.size()) {
-            class_label = class_names[static_cast<std::size_t>(d.class_id)];
+        if (rps_mapper.enabled() && i < rps_labels.size()) {
+            color = kClassColors[rps_labels[i].color_index % kClassColors.size()];
+            class_label = rps_labels[i].text;
         } else {
-            class_label = "class " + std::to_string(d.class_id);
+            const size_t class_index =
+                static_cast<size_t>(std::max(0, d.class_id)) % kClassColors.size();
+            color = kClassColors[class_index];
+            if (d.class_id >= 0 &&
+                static_cast<std::size_t>(d.class_id) < class_names.size()) {
+                class_label = class_names[static_cast<std::size_t>(d.class_id)];
+            } else {
+                class_label = "class " + std::to_string(d.class_id);
+            }
         }
         std::ostringstream label;
         label << class_label << " " << std::fixed << std::setprecision(2)
@@ -607,6 +660,26 @@ int main(int argc, char** argv) {
         }
         no_gesture_id = static_cast<int>(it - class_names.begin());
         std::cout << "Filtering class_id " << no_gesture_id << " (no_gesture)\n";
+    }
+
+    // Rock/paper/scissors collapsing: build from the model id order so the
+    // mapping survives a classes-array edit. Disabled with rps_mode=false.
+    RpsMapper rps_mapper;
+    if (a.rps_mode) {
+        try {
+            rps_mapper.build(a.rps_map, class_names);
+        } catch (const std::invalid_argument& e) {
+            std::cerr << "rps_map error: " << e.what() << "\n";
+            return 2;
+        }
+        std::cout << "RPS mode: ";
+        for (const auto& [label, sources] : a.rps_map) {
+            std::cout << label << "<={";
+            for (size_t i = 0; i < sources.size(); ++i)
+                std::cout << (i ? "," : "") << sources[i];
+            std::cout << "} ";
+        }
+        std::cout << "\n";
     }
 
     std::unique_ptr<OpenClPreprocessor> pre;
@@ -803,6 +876,7 @@ int main(int argc, char** argv) {
                                        }),
                         result->detections.end());
                 }
+                rps_mapper.filter(result->detections);
                 stats.addInfer(std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
                 stats.inferred.fetch_add(1);
                 if (!result->detections.empty()) stats.detected_frames.fetch_add(1);
@@ -843,7 +917,8 @@ int main(int argc, char** argv) {
         if (item->nv12 && !item->nv12->empty()) {
             cv::cvtColor(*item->nv12, bgr, cv::COLOR_YUV2BGR_NV12);
             if (!a.no_display || rtsp_streamer.running()) {
-                draw_detections(bgr, item->detections, class_names);
+                draw_detections(bgr, item->detections, class_names, rps_mapper,
+                                rps_mapper.labels(item->detections));
                 const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
                 const double fps = elapsed > 0.0 ? shown / elapsed : 0.0;
                 cv::putText(bgr, "DISPLAY " + std::to_string(static_cast<int>(fps)) +
