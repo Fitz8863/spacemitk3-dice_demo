@@ -2,6 +2,7 @@
   "model": "model/yolov10n_gestures.q.onnx",
   "classes": ["grabbing", "grip", "holy", "point", "call", "three3", "timeout", "xsign", "hand_heart", "hand_heart2", "little_finger", "middle_finger", "take_picture", "dislike", "fist", "four", "like", "mute", "ok", "one", "palm", "peace", "peace_inverted", "rock", "stop", "stop_inverted", "three", "three2", "two_up", "two_up_inverted", "three_gun", "thumb_index", "thumb_index2", "no_gesture"],
   "filter_no_gesture": true,
+  "stable_frames": 3,
   "rotate": {
     "enabled": false,
     "direction": "cw",
@@ -10,7 +11,7 @@
   "rps_mode": true,
   "rps_map": {
     "Rock": ["fist", "grabbing", "grip"],
-    "Paper": ["palm", "stop", "stop_inverted"],
+    "Paper": ["palm", "stop", "stop_inverted", "four"],
     "Scissors": ["peace", "peace_inverted", "two_up", "two_up_inverted"]
   },
   "camera": "/dev/video1",

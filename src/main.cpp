@@ -31,6 +31,77 @@
 #include <vector>
 #include <deque>
 
+// Temporal stability gate: forward a detection only after it has been seen
+// in min_hits consecutive frames. Tracks are matched by label + box overlap,
+// so single-frame transition/noise detections (boxes that flash for one
+// frame while the hand moves between gestures) are dropped.
+class DetectionStabilizer {
+public:
+    struct Track {
+        Detection det;
+        std::string key;
+        int hits = 0;
+    };
+
+    explicit DetectionStabilizer(int min_hits) : min_hits_(std::max(1, min_hits)) {}
+
+    // key identifies the detection across frames: the model class id. In RPS
+    // mode source-class flicker within one game label must not break the
+    // track, but keying on class_id is still correct there because the label
+    // filter has already run and only same-label classes remain in flux.
+    static std::string track_key(const Detection& d) {
+        return "cls:" + std::to_string(d.class_id);
+    }
+
+    static float iou(const Detection& a, const Detection& b) {
+        const float ix1 = std::max(a.x1, b.x1), iy1 = std::max(a.y1, b.y1);
+        const float ix2 = std::min(a.x2, b.x2), iy2 = std::min(a.y2, b.y2);
+        const float iw = std::max(0.0f, ix2 - ix1), ih = std::max(0.0f, iy2 - iy1);
+        const float inter = iw * ih;
+        const float area_a = std::max(0.0f, a.x2 - a.x1) * std::max(0.0f, a.y2 - a.y1);
+        const float area_b = std::max(0.0f, b.x2 - b.x1) * std::max(0.0f, b.y2 - b.y1);
+        const float denom = area_a + area_b - inter;
+        return denom > 0.0f ? inter / denom : 0.0f;
+    }
+
+    // dets must already be label-filtered. Returns the subset present for
+    // >= min_hits consecutive frames.
+    std::vector<Detection> update(const std::vector<Detection>& dets) {
+        std::vector<Track> next;
+        next.reserve(dets.size());
+        std::vector<bool> matched(tracks_.size(), false);
+        std::vector<Detection> out;
+        out.reserve(dets.size());
+        for (const auto& d : dets) {
+            const std::string key = track_key(d);
+            // Best-overlap greedy match against last frame's tracks.
+            int best = -1;
+            float best_iou = 0.2f;
+            for (std::size_t t = 0; t < tracks_.size(); ++t) {
+                if (matched[t] || tracks_[t].key != key) continue;
+                const float v = iou(d, tracks_[t].det);
+                if (v > best_iou) {
+                    best_iou = v;
+                    best = static_cast<int>(t);
+                }
+            }
+            Track track;
+            track.key = key;
+            track.det = d;
+            track.hits = best >= 0 ? tracks_[best].hits + 1 : 1;
+            if (best >= 0) matched[best] = true;
+            next.push_back(std::move(track));
+            if (next.back().hits >= min_hits_) out.push_back(d);
+        }
+        tracks_ = std::move(next);
+        return out;
+    }
+
+private:
+    std::vector<Track> tracks_;
+    int min_hits_;
+};
+
 namespace {
 using Clock = std::chrono::steady_clock;
 volatile sig_atomic_t g_signal_stop = 0;
@@ -153,12 +224,16 @@ struct Args {
     std::string dump_input;
     std::vector<std::string> class_names;
     bool filter_no_gesture = true;
+    // Temporal stability gate: a detection is only forwarded after it has
+    // been seen in this many consecutive frames (matched by label + box
+    // overlap). 1 = off. Suppresses single-frame transition/noise flicker.
+    int stable_frames = 3;
     // Rock/paper/scissors mode: collapse the 34-class gesture space onto the
     // game labels via rps_map; false keeps raw 34-class behavior.
     bool rps_mode = true;
     RpsMapper::LabelMap rps_map = {
         {"Rock", {"fist", "grabbing", "grip"}},
-        {"Paper", {"palm", "stop", "stop_inverted"}},
+        {"Paper", {"palm", "stop", "stop_inverted", "four"}},
         {"Scissors", {"peace", "peace_inverted", "two_up", "two_up_inverted"}},
     };
     bool yolov10_enabled = true;
@@ -304,6 +379,7 @@ static bool load_config(const std::string& path, Args& a) {
             a.class_names = std::move(names);
         }
         if (!read_config_bool(root, "filter_no_gesture", a.filter_no_gesture)) return false;
+        read_config_value(root, "stable_frames", a.stable_frames);
         if (!read_config_bool(root, "rotate_90ccw", a.rotate_enabled)) {
             return false;
         }
@@ -424,6 +500,7 @@ static void usage(const char* exe) {
               << "  --no-rps           keep raw 34-class labels instead of rock/paper/scissors mapping\n"
               << "  --rotate MODE      rotate frames before inference/display: none, 90cw, 90ccw, 180\n"
               << "                     (config: rotate{enabled,direction,angle})\n"
+              << "  --stable-frames N  frames a detection must persist before display (1=off)\n"
               << "  --queue-depth N    keep up to N frames per pipeline queue\n"
               << "  --focus N          fixed manual focus (-1 unchanged)\n"
               << "  --zoom N           zoom absolute value (-1 unchanged)\n"
@@ -471,6 +548,10 @@ static bool validate_args(Args& a) {
     }
     if (a.rotate_direction != "cw" && a.rotate_direction != "ccw") {
         std::cerr << "rotate direction must be \"cw\" or \"ccw\"\n";
+        return false;
+    }
+    if (a.stable_frames < 1) {
+        std::cerr << "stable_frames must be >= 1 (1 disables the stability gate)\n";
         return false;
     }
     if (a.intra_threads < 1) {
@@ -561,6 +642,9 @@ static bool parse(int argc, char** argv, Args& a) {
                 a.rotate_enabled = true;
                 a.rotate_direction = "ccw";
                 a.rotate_angle = 90;
+            }
+            else if (k == "--stable-frames" && (v = need(i))) {
+                a.stable_frames = std::stoi(v);
             } else if (k == "--rotate" && (v = need(i))) {
                 const std::string mode = v;
                 if (mode == "none") {
@@ -894,6 +978,7 @@ int main(int argc, char** argv) {
     std::atomic<bool> inference_failed{false};
     std::atomic<bool> camera_stop{false};
     FrameQueue<PreparedFrame> prepared_queue(a.queue_depth);
+    DetectionStabilizer stabilizer(a.stable_frames);
     FrameQueue<InferenceResult> result_queue(a.queue_depth);
     Stats stats;
     const auto start = Clock::now();
@@ -983,6 +1068,11 @@ int main(int argc, char** argv) {
                         result->detections.end());
                 }
                 rps_mapper.filter(result->detections);
+                // Temporal gate: drop detections that just flashed in (hand
+                // mid-transition, sensor noise) before they reach stats/HUD/
+                // drawing. The stabilizer owns cross-frame state; it lives in
+                // this thread only.
+                result->detections = stabilizer.update(result->detections);
                 stats.addInfer(std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
                 stats.inferred.fetch_add(1);
                 if (!result->detections.empty()) stats.detected_frames.fetch_add(1);

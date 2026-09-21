@@ -85,6 +85,7 @@ ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 | `model` | ONNX 模型路径；相对路径以程序启动目录为基准。 |
 | `classes` | 类别名数组，下标即模型输出 `class_id`，用于画面标签和 `filter_no_gesture` 定位；须与模型内嵌 `names` 顺序一致。缺省时使用内置的 34 类列表。 |
 | `filter_no_gesture` | `true`（默认）时丢弃 `no_gesture` 类的检测框（HaGRID 的兜底类，画出来全是噪声）。`--show-no-gesture` 临时关闭。 |
+| `stable_frames` | 时间稳定门限：检测框须**连续 N 帧**出现（按类别+框重叠匹配）才会下发到统计/画面，用于屏蔽手势切换过渡帧和单帧噪声。默认 3（约 125ms@24fps）；`1` 为关闭；命令行 `--stable-frames N`。 |
 | `rps_mode` | `true`（默认）启用石头剪刀布折叠：把 34 类手势映射到 Rock/Paper/Scissors，映射外类别丢弃；`false` 或 `--no-rps` 保留原始 34 类标签。 |
 | `rps_map` | RPS 折射表：游戏标签 → 源手势类名数组（见下节）。写错（未知类名/空标签/源类重复映射）启动即报错。 |
 | `camera` / `device` | 摄像头设备路径或编号；`device` 非空时优先。 |
