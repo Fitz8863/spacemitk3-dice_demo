@@ -674,6 +674,12 @@ static void draw_detections(cv::Mat& bgr, const std::vector<Detection>& ds,
         std::ostringstream label;
         label << class_label << " " << std::fixed << std::setprecision(2)
               << d.confidence;
+        // Box outline first. The dark under-stroke keeps the outline visible
+        // even when the label color is close to the scene background (this
+        // call was accidentally dropped in the RPS-mode rewrite, which left
+        // every frame with labels but no boxes).
+        cv::rectangle(bgr, r, cv::Scalar(0, 0, 0), 5, cv::LINE_AA);
+        cv::rectangle(bgr, r, color, 2, cv::LINE_AA);
         int baseline = 0;
         const auto size = cv::getTextSize(label.str(), cv::FONT_HERSHEY_SIMPLEX,
                                           .6, 1, &baseline);
