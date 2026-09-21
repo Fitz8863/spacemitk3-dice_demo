@@ -9,7 +9,7 @@
   },
   "rps_mode": true,
   "rps_map": {
-    "Rock": ["fist"],
+    "Rock": ["fist", "grabbing", "grip"],
     "Paper": ["palm", "stop", "stop_inverted"],
     "Scissors": ["peace", "peace_inverted", "three2"]
   },

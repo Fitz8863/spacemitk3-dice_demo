@@ -157,7 +157,7 @@ struct Args {
     // game labels via rps_map; false keeps raw 34-class behavior.
     bool rps_mode = true;
     RpsMapper::LabelMap rps_map = {
-        {"Rock", {"fist"}},
+        {"Rock", {"fist", "grabbing", "grip"}},
         {"Paper", {"palm", "stop", "stop_inverted"}},
         {"Scissors", {"peace", "peace_inverted", "three2"}},
     };
