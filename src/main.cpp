@@ -226,6 +226,11 @@ struct Args {
     // been seen in this many consecutive frames (matched by label + box
     // overlap). 1 = off. Suppresses single-frame transition/noise flicker.
     int stable_frames = 3;
+    // Region of interest (fractions of the streamed frame): only detections
+    // whose box center falls inside are kept. Used to exclude the robot arm
+    // from recognition; the ROI border is drawn on the stream for alignment.
+    bool roi_enabled = false;
+    float roi_x = 0.0f, roi_y = 0.0f, roi_w = 1.0f, roi_h = 1.0f;
     // Rock/paper/scissors mode: collapse the 34-class gesture space onto the
     // game labels via rps_map; false keeps raw 34-class behavior.
     bool rps_mode = true;
@@ -373,6 +378,18 @@ static bool load_config(const std::string& path, Args& a) {
         }
         if (!read_config_bool(root, "filter_no_gesture", a.filter_no_gesture)) return false;
         read_config_value(root, "stable_frames", a.stable_frames);
+        const cv::FileNode roi = root["roi"];
+        if (!roi.empty()) {
+            if (!roi.isMap()) {
+                std::cerr << "config roi must be a JSON object {enabled,x,y,w,h}\n";
+                return false;
+            }
+            if (!read_config_bool(roi, "enabled", a.roi_enabled)) return false;
+            read_config_value(roi, "x", a.roi_x);
+            read_config_value(roi, "y", a.roi_y);
+            read_config_value(roi, "w", a.roi_w);
+            read_config_value(roi, "h", a.roi_h);
+        }
         if (!read_config_bool(root, "rotate_90ccw", a.rotate_enabled)) {
             return false;
         }
@@ -534,6 +551,12 @@ static bool validate_args(Args& a) {
     }
     if (a.stable_frames < 1) {
         std::cerr << "stable_frames must be >= 1 (1 disables the stability gate)\n";
+        return false;
+    }
+    if (a.roi_x < 0.0f || a.roi_y < 0.0f || a.roi_w <= 0.0f || a.roi_h <= 0.0f ||
+        a.roi_x + a.roi_w > 1.0f || a.roi_y + a.roi_h > 1.0f) {
+        std::cerr << "config roi must satisfy 0<=x, 0<=y, w>0, h>0, x+w<=1, y+h<=1 "
+                     "(fractions of the streamed frame)\n";
         return false;
     }
     if (a.intra_threads < 1) {
@@ -1033,6 +1056,25 @@ int main(int argc, char** argv) {
                         result->detections.end());
                 }
                 rps_mapper.filter(result->detections);
+                // ROI gate: keep only detections whose center falls inside
+                // the region of interest (fractions of the streamed frame).
+                // Excludes the robot arm's half of the view deterministically.
+                if (a.roi_enabled) {
+                    const float fw = static_cast<float>(result->width);
+                    const float fh = static_cast<float>(result->height);
+                    const float x0 = a.roi_x * fw, y0 = a.roi_y * fh;
+                    const float x1 = (a.roi_x + a.roi_w) * fw;
+                    const float y1 = (a.roi_y + a.roi_h) * fh;
+                    result->detections.erase(
+                        std::remove_if(result->detections.begin(),
+                                       result->detections.end(),
+                                       [&](const Detection& d) {
+                                           const float cx = (d.x1 + d.x2) * 0.5f;
+                                           const float cy = (d.y1 + d.y2) * 0.5f;
+                                           return cx < x0 || cx > x1 || cy < y0 || cy > y1;
+                                       }),
+                        result->detections.end());
+                }
                 // Temporal gate: drop detections that just flashed in (hand
                 // mid-transition, sensor noise) before they reach stats/HUD/
                 // drawing. The stabilizer owns cross-frame state; it lives in
@@ -1083,6 +1125,15 @@ int main(int argc, char** argv) {
             else if (rotate_mode == 2) cv::rotate(bgr, bgr, cv::ROTATE_90_CLOCKWISE);
             else if (rotate_mode == 3) cv::rotate(bgr, bgr, cv::ROTATE_180);
             if (rtsp_streamer.running()) {
+                // ROI border for visual alignment of the region gate.
+                if (a.roi_enabled) {
+                    const cv::Rect roi_r(
+                        static_cast<int>(a.roi_x * bgr.cols),
+                        static_cast<int>(a.roi_y * bgr.rows),
+                        std::max(1, static_cast<int>(a.roi_w * bgr.cols)),
+                        std::max(1, static_cast<int>(a.roi_h * bgr.rows)));
+                    cv::rectangle(bgr, roi_r, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+                }
                 draw_detections(bgr, item->detections, class_names, rps_mapper,
                                 rps_mapper.labels(item->detections));
                 const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();

@@ -1,10 +1,9 @@
 {
   "model": "model/yolov10n_gestures.q.onnx",
-  "classes": ["grabbing", "grip", "holy", "point", "call", "three3", "timeout", "xsign", "hand_heart", "hand_heart2", "little_finger", "middle_finger", "take_picture", "dislike", "fist", "four", "like", "mute", "ok", "one", "palm", "peace", "peace_inverted", "rock", "stop", "stop_inverted", "three", "three2", "two_up", "two_up_inverted", "three_gun", "thumb_index", "thumb_index2", "no_gesture"],
   "filter_no_gesture": true,
   "stable_frames": 3,
   "rotate": {
-    "enabled": false,
+    "enabled": true,
     "direction": "cw",
     "angle": 90
   },
@@ -14,8 +13,14 @@
     "Paper": ["palm", "stop", "stop_inverted", "four"],
     "Scissors": ["peace", "peace_inverted", "two_up", "two_up_inverted"]
   },
+  "roi": {
+    "enabled": true,
+    "x": 0.0,
+    "y": 0.5,
+    "w": 1.0,
+    "h": 0.5
+  },
   "camera": "/dev/video1",
-  "device": "",
   "width": 1920,
   "height": 1080,
   "fps": 25,
@@ -25,11 +30,7 @@
   "conf": 0.25,
   "focus": -1,
   "zoom": 380,
-  "display_enabled": false,
   "yolov10_enabled": true,
-  "max_frames": 0,
-  "dump_input": "",
-  "self_test": false,
   "rtsp": {
     "enabled": true,
     "host": "127.0.0.1",
