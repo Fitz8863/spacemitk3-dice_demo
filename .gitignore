@@ -4,3 +4,4 @@ data/
 .shaders/
 *.log
 SpaceMITExecutionProvider_SpineSubgraph_*.onnx
+.zcode/
