@@ -159,7 +159,8 @@ ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 - 编译：`cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOpenCV_DIR=/usr/lib/riscv64-linux-gnu/cmake/opencv4 && cmake --build build -j4` 通过，产物 `build/yolov10_camera`。
 - `--self-test --no-display --no-rtsp` 通过：OpenCL PowerVR 前处理 21ms，SpaceMIT EP（BASIC 优化级、affinity 14;15）加载 `[1,3,640,640] → [1,300,6]` 正常。
 - 真机短跑（C920 `/dev/video1`，720p MJPEG 硬解，90/120 帧）：`fps_infer` 约 21~23，`infer_ms` 约 35（EP 2 线程），空场景 0 误检。
-- 旋转功能（2026-09-21 追加）：`rotate_90ccw=true` / `--rotate-90ccw` 开关两态各跑 30 帧，`infer_ms` 均 ~37ms 无回退；NV12 分平面重映射实现（整块 `cv::rotate` 会破坏交错 UV 布局，行数不再满足 3/2 关系，OpenCL 预处理会直接拒绝）。开启后推流为 720x1280 竖屏。
+- 旋转功能（2026-09-21 追加）：`rotate_90ccw=true` / `--rotate-90ccw`。V4L2 层面无硬件旋转可用（C920 UVC、VPU mvx M2M、spacemitdec/spacemith264enc 均不支持；videoflip 为纯 CPU），故实现为 **OpenCL kernel 内采样重映射**：letterbox geometry 按旋转帧(720x1280)计算，kernel 内按 `rot(i,j)=src(j,W-1-i)` 回映射到未旋转 NV12 图像，GPU 单次遍历完成旋转+前处理，CPU 零开销。显示/推流侧对 BGR 做 `cv::rotate`。
+- 旋转正确性验证：`--dump-input` 导出旋转开/关两态预处理张量，旋转张量回转后与未旋转张量相关性 0.99964、平均像素差 0.36%（残差=插值+两次抓帧间隔的场景微动）。`pre_ms` 8→16ms（GPU 采样转置致纹理缓存局部性下降），仍在帧预算内。
 - `--no-ep` CPU 对照：单次推理约 2.6s（纯 CPU 慢属预期），输出与 EP 一致 → EP 对该 PPQ 量化图行为正常（对照了真实照片的 top5 候选与 conf 序列）。
 - RTSP 推流 `rtsp://127.0.0.1:8554/rps/det`：MediaMTX 收流正常，`ffprobe` 得 h264 Main 1280x720，抓帧核对检测框/标签/HUD 完整；SIGTERM 优雅退出、摄像头释放。
 - ★ 推理报 `tcm buffer acquire failed for core id N` 时：先 `spacemit-tcm-smi -i` 看占用块，若 PID 已死（`ps -p <PID>` 查无此进程）就是僵尸 TCM，`spacemit-tcm-smi -c` 清理后重启即可（2026-09-20 实测：hand_track 异常退出留下 2 个僵尸块导致本工程起不来，清理后恢复 24fps/35ms）。
