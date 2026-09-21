@@ -31,6 +31,7 @@ export function register(engine) {
 
   let round = null;
   let lastRenderedState = '';
+  let visionStreamToken = 0;
   let participantSides = null;
   let savedRulesMarkup = '';
   let savedDetectLabel = '';
@@ -56,6 +57,56 @@ export function register(engine) {
     analysisNewRound: () => submitIntent('new_round'),
     analysisBackToGames: () => submitIntent('back'),
   };
+
+  // ---- 实时画面（MediaMTX WebRTC iframe，与 dice.js 同款共享面板） ----
+  function stopVisionStream() {
+    visionStreamToken += 1;
+    const panel = $('analysisStreamPanel');
+    const frame = $('analysisStream');
+    if (!panel || !frame) return;
+    frame.onload = null;
+    frame.onerror = null;
+    frame.src = 'about:blank';
+    panel.classList.add('hidden');
+    const status = $('analysisStreamState');
+    if (status) status.textContent = '实时画面已关闭';
+  }
+
+  function startVisionStream(event) {
+    const panel = $('analysisStreamPanel');
+    const frame = $('analysisStream');
+    if (!panel || !frame) return;
+    const configuredUrl = event && typeof event.url === 'string' ? event.url.trim() : '';
+    if (!configuredUrl) return;
+
+    const token = ++visionStreamToken;
+    let streamUrl;
+    try {
+      streamUrl = new URL(configuredUrl, window.location.href);
+      if (!['http:', 'https:'].includes(streamUrl.protocol)) return;
+    } catch (_) {
+      return;
+    }
+    // The MediaMTX WebRTC page reads these options and starts muted playback,
+    // which is allowed when the analysis page opens without a user gesture.
+    streamUrl.searchParams.set('autoplay', '1');
+    streamUrl.searchParams.set('muted', '1');
+    streamUrl.searchParams.set('controls', '0');
+    streamUrl.searchParams.set('playsinline', '1');
+
+    panel.classList.remove('hidden');
+    const status = $('analysisStreamState');
+    if (status) status.textContent = '正在连接实时画面…';
+    frame.onload = () => {
+      if (token !== visionStreamToken || state.phase !== 'analysis') return;
+      if (status) status.textContent = '播放页面已加载，等待手势画面…';
+    };
+    frame.onerror = () => {
+      if (token !== visionStreamToken || state.phase !== 'analysis') return;
+      if (status) status.textContent = '实时画面连接失败，识别仍会继续';
+    };
+    frame.src = streamUrl.toString();
+  }
 
   function analysisFailureVisible() {
     const actions = $('analysisFailureActions');
@@ -96,6 +147,7 @@ export function register(engine) {
   function renderState(stateName, ui) {
     if (stateName === lastRenderedState) return;
     lastRenderedState = stateName;
+    if (stateName !== 'analysis' && stateName !== 'analysis_failed') stopVisionStream();
     const view = ui.view || VIEW_BY_STATE[stateName] || stateName;
     const meta = [ui.title || '', ui.copy || ''];
     setPhase(view, meta[0] || meta[1] ? meta : undefined);
@@ -190,7 +242,9 @@ export function register(engine) {
   }
 
   function handleRoundEvent(event, snapshot) {
-    if (event.event === 'phase' || event.event === 'progress') {
+    if (event.event === 'video') {
+      startVisionStream(event);
+    } else if (event.event === 'phase' || event.event === 'progress') {
       updateAnalysisProgress(event);
     }
   }
@@ -268,6 +322,7 @@ export function register(engine) {
       $('stepDetect').querySelector('strong').textContent = savedDetectLabel;
       savedDetectLabel = '';
     }
+    stopVisionStream();
     participantSides = null;
     Object.entries(handlers).forEach(([id, fn]) => $(id).removeEventListener('click', fn));
     stopSpeech();

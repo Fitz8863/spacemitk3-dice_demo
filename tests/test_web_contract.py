@@ -609,10 +609,13 @@ def test_ready_start_button_can_interrupt_the_opening_announcement():
     assert "after_speech" not in ready["on_intent"]["back"]
 
 
-def test_rps_skeleton_contract_pins_the_confirmed_flow_decisions():
-    """rps 骨架契约（2026-09-18 与用户确认的决策，防误删/误加）：
+def test_rps_vision_contract_pins_the_confirmed_flow_decisions():
+    """rps 视觉契约（2026-09-21 视觉接入后与用户确认的决策，防误删/误加）：
 
-    - enabled 且不带 vision_profile（骨架期不拉摄像头，视觉随模型再接回）
+    - providers 覆盖 vision_adjudicator → vision_yolov10_objdetect（独立
+      视觉包，不走全局默认的 v8 槽位）
+    - vision_profile 声明 runtime_config 指向 rps 自己的 adjudicator_config；
+      video 开启且推流 /rps/det（用户拍板：显示画面）
     - confirm 不设 after_speech（老玩家可跳过规则宣读直接开始）
     - play 口令 await（念到「布」亮手势，念完即裁决），analysis 双路由齐全
     - 再来一局直接回 play（不重读规则）
@@ -620,8 +623,12 @@ def test_rps_skeleton_contract_pins_the_confirmed_flow_decisions():
     """
     manifest = rps_manifest()
     assert manifest["enabled"] is True
-    assert "vision_profile" not in manifest
-    assert "providers" not in manifest  # 继承全局（本地 TTS 唯一约束）
+    assert manifest["providers"]["vision_adjudicator"] == "vision_yolov10_objdetect"
+    profile = manifest["vision_profile"]
+    assert profile["game_id"] == "rps"
+    assert profile["runtime_config"] == "backend/games/rps/adjudicator_config.json"
+    assert profile["video"] == {"enabled": True, "path": "/rps/det"}
+    assert profile["llm"]["enabled"] is False  # 纯视觉裁决，无 LLM 复核
     states = manifest["state_machine"]["states"]
     rules = states["rules"]
     assert "after_speech" not in rules["on_intent"]["confirm"]

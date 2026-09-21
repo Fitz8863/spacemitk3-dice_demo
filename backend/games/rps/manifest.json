@@ -4,6 +4,46 @@
   "icon": "✊",
   "description": "石头 · 剪刀 · 布",
   "enabled": true,
+  "providers": {
+    "vision_adjudicator": "vision_yolov10_objdetect"
+  },
+  "vision_profile": {
+    "schema_version": 1,
+    "game_id": "rps",
+    "runtime_config": "backend/games/rps/adjudicator_config.json",
+    "vision": {
+      "class_map": {
+        "0": "布",
+        "1": "石头",
+        "2": "剪刀"
+      },
+      "participants": ["LEFT", "RIGHT"]
+    },
+    "multi_view": {
+      "enabled": true,
+      "min_views": 1
+    },
+    "llm": {
+      "enabled": false,
+      "context_mode": "single_turn_no_history",
+      "timeout_seconds": 10,
+      "system_prompt": "You are a strict rock-paper-scissors judge. Use only the supplied image. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
+      "user_prompt_template": "Inspect the supplied stable frame and determine the player's gesture. Return {\"winner\":\"LEFT|RIGHT|TIE\"}.",
+      "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]
+    },
+    "video": {
+      "enabled": true,
+      "path": "/rps/det"
+    },
+    "lifecycle": {
+      "pre_adjudication_wait_seconds": 0,
+      "post_result_hold_seconds": 2
+    },
+    "timeouts": {
+      "yolo_detection_seconds": 6,
+      "adjudication_seconds": 15
+    }
+  },
   "asr": {
     "phrases": {
       "confirm": ["确认", "确定", "OK", "明白了", "准备好了", "yes", "confirm", "got it", "start"],

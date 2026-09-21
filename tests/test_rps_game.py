@@ -1,12 +1,14 @@
-"""RPS skeleton tests: outcome logic, stub pipeline, full round flow.
+"""RPS tests: outcome logic, vision pipeline, full round flow.
 
-The stub pipeline is the only adjudicator until the gesture model lands, so
-these tests pin both its event shape (must match the real vision flow) and
-the public result fields every consumer (frontend, speech placeholders)
-depends on.
+The player gesture comes from the vision provider's observe() (the v10
+runtime folds classes in C++ and emits game labels), the agent gesture stays
+a program stub — the robot-arm hook.  These tests drive the pipeline with a
+fake provider and pin the event shape the analysis page renders plus the
+public result fields every consumer (frontend, speech placeholders) needs.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import sys
 import time
@@ -72,58 +74,142 @@ class ResultLogicTests(unittest.TestCase):
         self.assertEqual(result["agent_choice"], "布")
 
 
-class StubPipelineTests(unittest.TestCase):
-    def test_run_emits_staged_progress_and_returns_projected_result(self):
+def _observation(label: str, confidence: float = 0.9) -> dict:
+    return {
+        "event": "observation",
+        "view_id": "default",
+        "stable": True,
+        "width": 1080,
+        "height": 1920,
+        "detections": [
+            {"class_id": 1, "label": label, "confidence": confidence,
+             "bbox": [10, 20, 30, 40]}
+        ],
+    }
+
+
+class _FakeV10Provider:
+    """Test double for the v10 adjudicator: observe() with scripted evidence."""
+
+    def __init__(self, observation):
+        self.observation = observation
+        self.observe_calls = 0
+
+    def observe(self, request, *, on_log, on_event, is_cancelled, timeout_seconds=None):
+        self.observe_calls += 1
+        on_event({"event": "phase", "phase": "detecting"})
+        if isinstance(self.observation, dict) and self.observation.get("diagnosed"):
+            return self.observation
+        return {"observations": {"default": self.observation}}
+
+
+class _FakeComponents:
+    def __init__(self, provider):
+        self.provider = provider
+        self.requested = []
+
+    def require(self, provider_id, expected_type=None, expected_role=None):
+        self.requested.append((provider_id, expected_type, expected_role))
+        if provider_id != "vision_yolov10_objdetect":
+            raise RuntimeError(f"unexpected provider id {provider_id!r}")
+        return self.provider
+
+
+class VisionPipelineTests(unittest.TestCase):
+    def _run(self, provider, is_cancelled=lambda: False):
         events = []
         manifest = rps_manifest()
         manifest["participants"] = {"player": "RIGHT", "agent": "LEFT"}
-        with mock.patch("games.rps.pipeline.time.sleep"):
+        components = _FakeComponents(provider)
+        # monotonic 序列让 hold 循环恰好发一次 holding 就结束（sleep 被
+        # mock 后真实单调钟不会推进，会无限狂发事件）；尾值无限重复，
+        # 前置的 is_cancelled 检查多耗掉一个也不受影响。
+        clock = itertools.chain([0, 1, 10], itertools.repeat(10))
+        with mock.patch("games.rps.pipeline.time.sleep"), mock.patch(
+            "games.rps.pipeline.time.monotonic", side_effect=lambda: next(clock)
+        ):
             result = rps_pipeline.run(
                 lambda line: None,
-                lambda: False,
+                is_cancelled,
                 30.0,
-                components=None,
+                components=components,
                 manifest=manifest,
                 on_event=events.append,
             )
-        # 进度事件的 phase 形状与真实视觉流一致（分析页按这三种渲染）。
-        self.assertEqual(
-            [event.get("phase") for event in events],
-            ["detecting", "verifying", "holding"],
-        )
-        self.assertIn(result["source"], "stub")
-        self.assertIn(result["player_choice"], list(GESTURES))
-        self.assertIn(result["agent_choice"], list(GESTURES))
-        self.assertIn(result["winner_role"], {"PLAYER", "AGENT", "TIE"})
-        self.assertNotIn("diagnosed", result)
+        return result, events, components
 
-    def test_run_stops_emitting_when_cancelled(self):
-        events = []
+    def test_run_maps_folded_label_to_gesture_and_projects_result(self):
+        # 玩家手势来自观测的折叠 label（Rock → 石头），agent 手势是程序随机。
+        provider = _FakeV10Provider(_observation("Rock"))
+        with mock.patch("games.rps.pipeline.random.choice", return_value="剪刀"):
+            result, events, components = self._run(provider)
+        self.assertEqual(components.requested[0][0], "vision_yolov10_objdetect")
+        self.assertEqual(components.requested[0][1], "vision")
+        self.assertEqual(result["source"], "yolo_only")
+        self.assertEqual(result["player_choice"], "石头")
+        self.assertEqual(result["agent_choice"], "剪刀")
+        self.assertEqual(result["winner_role"], "PLAYER")
+        self.assertNotIn("diagnosed", result)
+        # 事件形状：detecting 来自 provider（observe 内部），verifying/
+        # result/holding 由 pipeline 编排——与前端分析页渲染的 phase 集一致。
+        phases = [e.get("phase") for e in events if e.get("event") == "phase"]
+        self.assertEqual(phases, ["detecting", "verifying", "holding"])
+        self.assertTrue(any(e.get("event") == "result" for e in events))
+
+    def test_run_highest_confidence_detection_wins(self):
+        observation = _observation("Paper", 0.3)
+        observation["detections"].append(
+            {"class_id": 2, "label": "Scissors", "confidence": 0.8,
+             "bbox": [50, 60, 80, 90]}
+        )
+        provider = _FakeV10Provider(observation)
+        with mock.patch("games.rps.pipeline.random.choice", return_value="石头"):
+            result, _, _ = self._run(provider)
+        self.assertEqual(result["player_choice"], "剪刀")
+        self.assertEqual(result["winner_role"], "AGENT")
+
+    def test_run_returns_provider_diagnosis_unchanged(self):
+        diagnosis = {
+            "diagnosed": True,
+            "retry_required": True,
+            "diagnosis": {"reason_code": "NO_OBJECTS_DETECTED", "message": "画面中没有手"},
+        }
+        provider = _FakeV10Provider(diagnosis)
+        result, events, _ = self._run(provider)
+        self.assertEqual(result, diagnosis)
+
+    def test_run_rejects_labels_outside_the_fold_table(self):
+        provider = _FakeV10Provider(_observation("call"))
+        with self.assertRaises(RuntimeError):
+            self._run(provider)
+
+    def test_run_requires_observe_on_the_provider(self):
+        class _NoObserve:
+            pass
+
         manifest = rps_manifest()
-        manifest["participants"] = {"player": "RIGHT", "agent": "LEFT"}
-        with mock.patch("games.rps.pipeline.time.sleep"):
+        with self.assertRaises(RuntimeError):
             rps_pipeline.run(
-                lambda line: None,
-                lambda: True,
-                30.0,
-                components=None,
+                lambda line: None, lambda: False, 30.0,
+                components=_FakeComponents(_NoObserve()),
                 manifest=manifest,
-                on_event=events.append,
+                on_event=lambda e: None,
             )
-        self.assertEqual(events, [])
 
 
 class RoundFlowTests(unittest.TestCase):
-    def make_round(self):
+    def make_round(self, player_label="Rock"):
         manifest = rps_manifest()
         manifest["participants"] = {"player": "RIGHT", "agent": "LEFT"}
+        provider = _FakeV10Provider(_observation(player_label))
+        components = _FakeComponents(provider)
 
         def adjudicate(manifest, on_event, is_cancelled, log):
             return rps_pipeline.run(
                 log,
                 is_cancelled,
                 30.0,
-                components=None,
+                components=components,
                 manifest=manifest,
                 on_event=on_event,
             )
@@ -140,14 +226,15 @@ class RoundFlowTests(unittest.TestCase):
     def drive_to_result(self, agent_gesture, player_gesture):
         """Drive one round with scripted gestures: rules → play → analysis → result.
 
-        random.choice 的调用序是先 agent 后 player（机械臂指令位在前），
-        side_effect 因此按 [agent, player] 给。
+        玩家手势来自注入的观测 label（fake provider），agent 手势是
+        random.choice（机械臂指令位）。
         """
+        label = {"石头": "Rock", "剪刀": "Scissors", "布": "Paper"}[player_gesture]
         with mock.patch(
             "games.rps.pipeline.random.choice",
-            side_effect=[agent_gesture, player_gesture],
+            return_value=agent_gesture,
         ), mock.patch("games.rps.pipeline.time.sleep"):
-            round_ = self.make_round()
+            round_ = self.make_round(label)
             self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "rules"))
             # confirm 无 after_speech 闸：不等规则宣读的 speech_done 直接按绿键。
             round_.submit_intent("confirm")
