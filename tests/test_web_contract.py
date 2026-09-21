@@ -615,7 +615,8 @@ def test_rps_vision_contract_pins_the_confirmed_flow_decisions():
     - providers 覆盖 vision_adjudicator → vision_yolov10_objdetect（独立
       视觉包，不走全局默认的 v8 槽位）
     - vision_profile 声明 runtime_config 指向 rps 自己的 adjudicator_config；
-      video 开启且推流 /rps/det（用户拍板：显示画面）
+      video 关闭但 path 保留 /rps/det（用户 2026-09-21 晚拍板：浏览器不显示
+      画面，识别/推流照常；将来要开画面只翻 enabled，路径不动）
     - confirm 不设 after_speech（老玩家可跳过规则宣读直接开始）
     - play 口令 await（念到「布」亮手势，念完即裁决），analysis 双路由齐全
     - 再来一局直接回 play（不重读规则）
@@ -627,7 +628,7 @@ def test_rps_vision_contract_pins_the_confirmed_flow_decisions():
     profile = manifest["vision_profile"]
     assert profile["game_id"] == "rps"
     assert profile["runtime_config"] == "backend/games/rps/adjudicator_config.json"
-    assert profile["video"] == {"enabled": True, "path": "/rps/det"}
+    assert profile["video"] == {"enabled": False, "path": "/rps/det"}
     assert profile["llm"]["enabled"] is False  # 纯视觉裁决，无 LLM 复核
     states = manifest["state_machine"]["states"]
     rules = states["rules"]

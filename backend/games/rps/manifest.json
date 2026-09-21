@@ -32,7 +32,7 @@
       "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]
     },
     "video": {
-      "enabled": true,
+      "enabled": false,
       "path": "/rps/det"
     },
     "lifecycle": {
