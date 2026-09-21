@@ -850,7 +850,7 @@ int main(int argc, char** argv) {
                 // producing a valid vertical NV12 frame of W' x H' = h x w.
                 const int w = frame.nv12.cols;            // source width
                 const int h = (frame.nv12.rows * 2) / 3;  // source height
-                cv::Mat rotated(h + h / 2, w, CV_8UC1);   // dst: h rows x w cols
+                cv::Mat rotated(w + w / 2, h, CV_8UC1);   // dst: portrait NV12, w rows x h cols (Y) + w/2 rows x h cols (UV)
                 const uint8_t* src = frame.nv12.ptr();
                 uint8_t* dst = rotated.ptr();
                 // Y plane: dst row i is source column (h-1-i), top to bottom.
