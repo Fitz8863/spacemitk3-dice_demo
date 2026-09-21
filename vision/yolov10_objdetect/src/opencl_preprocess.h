@@ -1,0 +1,37 @@
+#pragma once
+
+#include <memory>
+#include <opencv2/core/mat.hpp>
+#include <string>
+#include <vector>
+
+class OpenClPreprocessor {
+public:
+    OpenClPreprocessor();
+    struct Result {
+        std::shared_ptr<std::vector<float>> data;
+        float scale = 1.0f; // source pixels per model pixel
+        int pad_x = 0;
+        int pad_y = 0;
+        double ms = 0.0;
+    };
+
+    ~OpenClPreprocessor();
+    bool init(int out_width = 640, int out_height = 640);
+    // NV12 is a CV_8UC1 matrix with height * 3 / 2 rows. The host copy is
+    // split into Y/U/V OpenCL images; color conversion, resize, letterbox and
+    // CHW packing run in the GPU kernel.
+    // rotate: 0 = none, 1 = 90 counter-clockwise, 2 = 90 clockwise, 3 = 180.
+    // crop_w/crop_h: inference crop size in the streamed (rotated) frame —
+    // the model only sees this region, so a hand inside it appears enlarged
+    // in model space (0 = whole frame). roi_x/roi_y: that crop's origin in
+    // the streamed frame (pixels). Result scale/pad are relative to the crop.
+    Result preprocess(const cv::Mat& nv12, int rotate = 0, int crop_w = 0,
+                      int crop_h = 0, float roi_x = 0.0f, float roi_y = 0.0f);
+    const char* device_name() const { return device_name_.c_str(); }
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    std::string device_name_;
+};
