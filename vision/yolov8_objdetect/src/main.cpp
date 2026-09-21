@@ -865,23 +865,52 @@ static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider) {
 
     const int width = channel_diff.cols;
     const int height = channel_diff.rows;
-
-    // A row is usable only when the scene really is red on the left and blue on
-    // the right; this is what rejects rows covered by a hand, a laptop, or table
-    // outside the mat (measured left-half median -33 on such rows).
-    constexpr float kSidePolarity = 25.0f;
     const int half = width / 2;
-    std::vector<int> usable_rows;
-    usable_rows.reserve(height);
+
+    // The mat may be laid out either way: warm on the left (measured
+    // 2026-09-14) or cool on the left (the 2026-09-21 rig).  Count both
+    // polarities first and flip the whole diff when the cool side is on the
+    // left; everything below then stays polarity-normalized (warm-left,
+    // cool-right) and the boundary search keeps its warm-to-cool crossing.
+    struct RowMedians { float left_median; float right_median; };
+    std::vector<RowMedians> row_medians;
+    row_medians.reserve(height);
+    int warm_left_rows = 0;
+    int cool_left_rows = 0;
+    constexpr float kSidePolarity = 25.0f;
     for (int y = 0; y < height; ++y) {
         std::vector<float> left(channel_diff.ptr<float>(y), channel_diff.ptr<float>(y) + half);
         std::vector<float> right(channel_diff.ptr<float>(y) + half, channel_diff.ptr<float>(y) + width);
-        if (left.empty() || right.empty()) continue;
         std::nth_element(left.begin(), left.begin() + left.size() / 2, left.end());
         std::nth_element(right.begin(), right.begin() + right.size() / 2, right.end());
         const float left_median = left[left.size() / 2];
         const float right_median = right[right.size() / 2];
+        row_medians.push_back({left_median, right_median});
         if (left_median > kSidePolarity && right_median < -kSidePolarity) {
+            ++warm_left_rows;
+        } else if (left_median < -kSidePolarity && right_median > kSidePolarity) {
+            ++cool_left_rows;
+        }
+    }
+    if (cool_left_rows > warm_left_rows) {
+        cv::Mat flipped;
+        cv::multiply(channel_diff, -1.0f, flipped);
+        channel_diff = flipped;
+        for (RowMedians& row : row_medians) {
+            row.left_median = -row.left_median;
+            row.right_median = -row.right_median;
+        }
+    }
+
+    // A row is usable only when the scene really is red on the left and blue on
+    // the right (after the normalization above); this is what rejects rows
+    // covered by a hand, a laptop, or table outside the mat (measured left-half
+    // median -33 on such rows).
+    std::vector<int> usable_rows;
+    usable_rows.reserve(height);
+    for (int y = 0; y < height; ++y) {
+        const RowMedians& row = row_medians[static_cast<size_t>(y)];
+        if (row.left_median > kSidePolarity && row.right_median < -kSidePolarity) {
             usable_rows.push_back(y);
         }
     }
@@ -946,8 +975,25 @@ static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider) {
 // line.  Callers (stable-frame gating) only care whether the scene geometry is
 // readable, not which signal proved it.
 static bool detect_scene_divider(const cv::Mat& bgr, DividerLine& divider) {
-    if (detect_red_blue_divider(bgr, divider)) return true;
-    return detect_black_divider(bgr, divider);
+    const char* source = nullptr;
+    if (detect_red_blue_divider(bgr, divider)) source = "red/blue";
+    else if (detect_black_divider(bgr, divider)) source = "black";
+    else return false;
+    // Rate-limited visibility: the divider is otherwise silent, and "line not
+    // detected" support cases need to see where it currently sits.  First
+    // detection or a shift > 2% of the frame logs one stderr line.
+    static float last_logged_ratio = -1.0f;
+    const float ratio = divider.horizontal
+        ? divider.point.y / static_cast<float>(bgr.rows)
+        : divider.point.x / static_cast<float>(bgr.cols);
+    if (std::fabs(ratio - last_logged_ratio) > 0.02f) {
+        std::cerr << "[Divider] " << source
+                  << (divider.horizontal ? " horizontal" : " vertical")
+                  << " at " << std::fixed << std::setprecision(3) << ratio
+                  << std::endl;
+        last_logged_ratio = ratio;
+    }
+    return true;
 }
 
 static void draw_scene_assist(cv::Mat& bgr, const DividerLine& divider,
