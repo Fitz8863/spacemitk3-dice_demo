@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "runtime": {
+    "binary": "vision/yolov10_objdetect/build/yolov10_camera",
+    "working_dir": "vision/yolov10_objdetect",
+    "mode": "resident",
+    "prewarm_camera": true,
+    "terminate_grace_seconds": 5
+  },
+  "events": {
+    "protocol": "jsonl-events-v2"
+  }
+}

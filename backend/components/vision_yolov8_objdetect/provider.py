@@ -721,197 +721,338 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
         on_event({"event": "diagnosis", **result})
         return result
 
-    def adjudicate(self, request: VisionAdjudicationRequest, *, on_log: Callable[[str], None], on_event: Callable[[dict[str, Any]], None], is_cancelled: Callable[[], bool], timeout_seconds: float | None = None) -> dict[str, Any]:
-        profile = request.profile; runtimes = []
+
+
+    def observe(
+        self,
+        request: VisionAdjudicationRequest,
+        *,
+        on_log: Callable[[str], None],
+        on_event: Callable[[dict[str, Any]], None],
+        is_cancelled: Callable[[], bool],
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Collect one round's stable detector observations (v2 contract).
+
+        Runs the observation phase shared with :meth:`adjudicate`: runtime
+        ensure/start, the profile's pre-wait, START_ADJUDICATION, and the
+        stable-observation collection bounded by the game's detection
+        budget.  Two outcomes:
+
+        * no stable evidence in budget — returns the provider's diagnosis
+          contract (``"diagnosed": True``; the complete event has been
+          emitted and runtimes stopped/released exactly as ``adjudicate``
+          does on the same path).  Games route this to their failed-analysis
+          state.
+        * stable evidence — returns ``{"observations": {view_id: obs}}`` with
+          inference already stopped (STOP_ADJUDICATION sent; the resident
+          camera/RTSP pipeline stays warm for the browser).  The caller owns
+          the remaining event choreography (verifying/result/holding/
+          complete); ``adjudicate`` is the rule/LLM realization of that tail.
+        """
+        round_ = _ObservedRound(request=request)
+        try:
+            self._observe(
+                round_,
+                on_log=on_log,
+                on_event=on_event,
+                is_cancelled=is_cancelled,
+                timeout_seconds=timeout_seconds,
+            )
+            if round_.diagnosis is not None:
+                return round_.diagnosis
+            # Inference is done the moment the evidence exists; a resident
+            # runtime keeps streaming while the caller evaluates.
+            for rt in round_.runtimes:
+                try:
+                    rt.send({"command": "STOP_ADJUDICATION", "request_id": request.request_id})
+                except Exception:
+                    pass
+            round_.round_completed = True
+            return {
+                "observations": {vid: dict(obs) for vid, obs in round_.observations.items()}
+            }
+        finally:
+            self._finalize_round(round_)
+
+    def _observe(
+        self,
+        round_: "_ObservedRound",
+        *,
+        on_log: Callable[[str], None],
+        on_event: Callable[[dict[str, Any]], None],
+        is_cancelled: Callable[[], bool],
+        timeout_seconds: float | None = None,
+    ) -> None:
+        """Run the observation phase, filling in the caller's round context.
+
+        The context carries everything the evaluation tail needs (runtimes,
+        views, budget deadline, cleanup bookkeeping); its ``diagnosis`` is
+        set when the phase ended in the diagnosed-failure contract instead
+        of stable observations.  The caller creates the context so the
+        lifecycle bookkeeping in the caller's finally block stays reachable
+        even when this phase raises (a cancelled round must still see
+        CANCEL sent to its resident runtimes).
+        """
+        request = round_.request
+        profile = round_.profile
         keep_warm = self._resident_mode(profile)
         multi = profile.get("multi_view", {}) if isinstance(profile.get("multi_view"), Mapping) else {}
         views = multi.get("views") if multi.get("enabled") else None
         if not isinstance(views, list) or not views: views = [{"id": "default"}]
-        ordered: list[dict[str, Any]] = []
-        cleanup_paths: set[Path] = set()
-        strict_snapshot_roots: dict[str, Path] = {}
-        round_completed = False
-        round_started = False
+        round_.views = views
+        round_.keep_warm = keep_warm
+        runtimes = round_.runtimes
+        def start(v):
+            # A game that preloaded its camera on entry already cached the
+            # runtime, so this is normally a lookup and the round starts
+            # without paying the spawn/model-load latency again.
+            vid = str(v.get("id", "default"))
+            rt = self._ensure_runtime(profile, vid, on_log)
+            if isinstance(rt, YoloRuntimeProcess):
+                root = self._snapshot_root_for(vid)
+                if root is not None:
+                    round_.strict_snapshot_roots[vid] = root.resolve()
+            return rt
+        with ThreadPoolExecutor(max_workers=len(views)) as pool: runtimes.extend(pool.map(start, views))
+        emitted_video_views: set[str] = set()
+        # A resident runtime's startup event is one-shot and may have
+        # already been consumed by an earlier round.  Publish the
+        # profile-owned WebRTC URL synchronously for every new round so
+        # clients can attach to the live stream before detection runs.
+        for view in views:
+            vid = str(view.get("id", "default"))
+            video_event = self._video_event(profile, vid, {"event": "video"})
+            if video_event is not None:
+                on_event(video_event)
+                emitted_video_views.add(vid)
+        pre_wait = float(profile.get("lifecycle", {}).get("pre_adjudication_wait_seconds", 0))
+        if pre_wait > 0:
+            # Game-owned settling window before detection.  Like the
+            # post-result hold, it must not consume the adjudication
+            # budget, which only starts after START_ADJUDICATION below.
+            end = time.monotonic() + pre_wait
+            while time.monotonic() < end:
+                if is_cancelled():
+                    if not keep_warm:
+                        for rt in runtimes:
+                            try:
+                                rt.stop()
+                            except Exception:
+                                pass
+                    raise RuntimeError("cancelled")
+                remaining = max(0, end-time.monotonic()); on_event({"event":"phase", "phase":"pre_wait", "remaining_ms":int(remaining*1000)})
+                time.sleep(min(0.25, remaining))
+        for rt in runtimes:
+            rt.send({"command":"START_ADJUDICATION", "request_id":request.request_id, "profile_id":profile.get("game_id")})
+        round_.round_started = True
+        on_event({"event":"phase", "phase":"detecting"}); observations = {}
+        latest_by_view: dict[str, dict[str, Any]] = {}
+        latest_lock = threading.Lock()
+        def collect(rt, view):
+            vid = str(view.get("id", "default")); found = None; active_seen = False
+            for event in rt.events():
+                if event.get("event") == "video":
+                    video_event = self._video_event(profile, vid, event)
+                    if video_event is not None and vid not in emitted_video_views:
+                        on_event(video_event)
+                        emitted_video_views.add(vid)
+                elif event.get("event") == "progress":
+                    if event.get("phase") == "detecting":
+                        active_seen = True
+                    on_event({**event, "view_id": vid})
+                elif event.get("event") == "runtime_exit":
+                    returncode = event.get("returncode")
+                    raise RuntimeError(
+                        f"YOLO runtime exited before stable observation "
+                        f"(returncode={returncode})"
+                    )
+                elif event.get("event") in {"diagnostic_snapshot", "observation"}:
+                    candidate = dict(event, view_id=vid)
+                    with latest_lock:
+                        latest_by_view[vid] = candidate
+                    if event.get("event") == "observation" and event.get("stable"):
+                        found = candidate
+                        break
+                elif event.get("event") == "phase" and event.get("phase") == "detecting":
+                    active_seen = True
+                elif event.get("event") == "cancelled":
+                    # A resident runtime can leave the previous round's
+                    # CANCEL acknowledgement queued in the event pipe.
+                    # It is only a cancellation for this collector after
+                    # the current round has visibly entered detecting.
+                    if active_seen:
+                        break
+                    continue
+                elif (
+                    event.get("event") == "phase"
+                    and event.get("phase") == "idle"
+                    and active_seen
+                ):
+                    break
+            return vid, found
+        fallback_timeout = float(timeout_seconds or request.timeout_seconds)
+        round_.deadline = time.monotonic() + self._adjudication_timeout(profile, fallback_timeout)
+        yolo_deadline = min(
+            round_.deadline,
+            time.monotonic() + self._yolo_detection_timeout(profile, fallback_timeout),
+        )
+        pool = ThreadPoolExecutor(max_workers=len(runtimes))
+        futures = [pool.submit(collect, rt, view) for rt, view in zip(runtimes, views)]
+        pending = set(futures)
+        timed_out = False
         try:
-            def start(v):
-                # A game that preloaded its camera on entry already cached the
-                # runtime, so this is normally a lookup and the round starts
-                # without paying the spawn/model-load latency again.
-                vid = str(v.get("id", "default"))
-                rt = self._ensure_runtime(profile, vid, on_log)
-                if isinstance(rt, YoloRuntimeProcess):
-                    root = self._snapshot_root_for(vid)
-                    if root is not None:
-                        strict_snapshot_roots[vid] = root.resolve()
-                return rt
-            with ThreadPoolExecutor(max_workers=len(views)) as pool: runtimes.extend(pool.map(start, views))
-            emitted_video_views: set[str] = set()
-            # A resident runtime's startup event is one-shot and may have
-            # already been consumed by an earlier round.  Publish the
-            # profile-owned WebRTC URL synchronously for every new round so
-            # clients can attach to the live stream before detection runs.
-            for view in views:
-                vid = str(view.get("id", "default"))
+            while pending:
+                if is_cancelled():
+                    raise RuntimeError("cancelled")
+                remaining = max(0.0, yolo_deadline - time.monotonic())
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                done, pending = wait(pending, timeout=min(remaining, 0.1))
+                for future in done:
+                    vid, found = future.result()
+                    if found is not None:
+                        observations[vid] = found
+        except RuntimeError:
+            if not keep_warm:
+                for view, rt in zip(views, runtimes):
+                    try:
+                        rt.stop()
+                    except Exception:
+                        pass
+                    vid = str(view.get("id", "default"))
+                    if self._runtime_cache.get(vid) is rt:
+                        self._runtime_cache.pop(vid, None)
+                        self._runtime_signatures.pop(vid, None)
+                        root = self._runtime_snapshot_dirs.pop(vid, None)
+                        if root is not None:
+                            import shutil
+                            shutil.rmtree(root, ignore_errors=True)
+            raise
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        # Cached resident runtimes may have emitted their video event in a
+        # previous round.  Ensure each current view still gets one event,
+        # without duplicating a startup event observed above.
+        for view in views:
+            vid = str(view.get("id", "default"))
+            if vid not in emitted_video_views:
                 video_event = self._video_event(profile, vid, {"event": "video"})
                 if video_event is not None:
                     on_event(video_event)
-                    emitted_video_views.add(vid)
-            pre_wait = float(profile.get("lifecycle", {}).get("pre_adjudication_wait_seconds", 0))
-            if pre_wait > 0:
-                # Game-owned settling window before detection.  Like the
-                # post-result hold, it must not consume the adjudication
-                # budget, which only starts after START_ADJUDICATION below.
-                end = time.monotonic() + pre_wait
-                while time.monotonic() < end:
-                    if is_cancelled():
-                        if not keep_warm:
-                            for rt in runtimes:
-                                try:
-                                    rt.stop()
-                                except Exception:
-                                    pass
-                        raise RuntimeError("cancelled")
-                    remaining = max(0, end-time.monotonic()); on_event({"event":"phase", "phase":"pre_wait", "remaining_ms":int(remaining*1000)})
-                    time.sleep(min(0.25, remaining))
+        if is_cancelled():
+            raise RuntimeError("cancelled")
+        if not observations and not timed_out:
+            timed_out = True
+        if timed_out:
+            # The last diagnostic_snapshot can be queued in the runtime
+            # pipe just after the deadline. Ask the runtime to stop
+            # inference, then give each collector a bounded drain window
+            # before taking its latest evidence.
             for rt in runtimes:
-                rt.send({"command":"START_ADJUDICATION", "request_id":request.request_id, "profile_id":profile.get("game_id")})
-            round_started = True
-            on_event({"event":"phase", "phase":"detecting"}); observations = {}
-            latest_by_view: dict[str, dict[str, Any]] = {}
-            latest_lock = threading.Lock()
-            def collect(rt, view):
-                vid = str(view.get("id", "default")); found = None; active_seen = False
-                for event in rt.events():
-                    if event.get("event") == "video":
-                        video_event = self._video_event(profile, vid, event)
-                        if video_event is not None and vid not in emitted_video_views:
-                            on_event(video_event)
-                            emitted_video_views.add(vid)
-                    elif event.get("event") == "progress":
-                        if event.get("phase") == "detecting":
-                            active_seen = True
-                        on_event({**event, "view_id": vid})
-                    elif event.get("event") == "runtime_exit":
-                        returncode = event.get("returncode")
-                        raise RuntimeError(
-                            f"YOLO runtime exited before stable observation "
-                            f"(returncode={returncode})"
-                        )
-                    elif event.get("event") in {"diagnostic_snapshot", "observation"}:
-                        candidate = dict(event, view_id=vid)
-                        with latest_lock:
-                            latest_by_view[vid] = candidate
-                        if event.get("event") == "observation" and event.get("stable"):
-                            found = candidate
-                            break
-                    elif event.get("event") == "phase" and event.get("phase") == "detecting":
-                        active_seen = True
-                    elif event.get("event") == "cancelled":
-                        # A resident runtime can leave the previous round's
-                        # CANCEL acknowledgement queued in the event pipe.
-                        # It is only a cancellation for this collector after
-                        # the current round has visibly entered detecting.
-                        if active_seen:
-                            break
-                        continue
-                    elif (
-                        event.get("event") == "phase"
-                        and event.get("phase") == "idle"
-                        and active_seen
-                    ):
-                        break
-                return vid, found
-            fallback_timeout = float(timeout_seconds or request.timeout_seconds)
-            deadline = time.monotonic() + self._adjudication_timeout(profile, fallback_timeout)
-            yolo_deadline = min(
-                deadline,
-                time.monotonic() + self._yolo_detection_timeout(profile, fallback_timeout),
+                try:
+                    rt.send({"command": "STOP_ADJUDICATION", "request_id": request.request_id})
+                except Exception:
+                    pass
+            done_after, pending = wait(pending, timeout=0.25)
+            for future in done_after:
+                try:
+                    vid, found = future.result()
+                except Exception:
+                    continue
+                if found is not None:
+                    observations[vid] = found
+            with latest_lock:
+                diagnostic_observations = [dict(latest_by_view[key]) for key in sorted(latest_by_view)]
+            if not diagnostic_observations:
+                diagnostic_observations = [{"view_id": str(view.get("id", "default"))} for view in views]
+            round_.diagnosis = self._diagnose_failure(
+                request,
+                profile,
+                diagnostic_observations,
+                on_event,
             )
-            pool = ThreadPoolExecutor(max_workers=len(runtimes))
-            futures = [pool.submit(collect, rt, view) for rt, view in zip(runtimes, views)]
-            pending = set(futures)
-            timed_out = False
+            self._complete_diagnosed(round_, on_event)
+            return
+        round_.observations = observations
+
+    def _release_round_runtimes(
+        self, round_: "_ObservedRound", on_log: Callable[[str], None] | None = None
+    ) -> None:
+        """Stop and evict the round's runtimes (non-resident mode only).
+
+        The eviction is guarded by the runtime-cache identity check, so for
+        non-resident rounds (whose runtimes are never cached) this is a
+        plain stop, matching the historical behavior of the timeout and
+        success exits.
+        """
+        for view, rt in zip(round_.views, round_.runtimes):
             try:
-                while pending:
-                    if is_cancelled():
-                        raise RuntimeError("cancelled")
-                    remaining = max(0.0, yolo_deadline - time.monotonic())
-                    if remaining <= 0:
-                        timed_out = True
-                        break
-                    done, pending = wait(pending, timeout=min(remaining, 0.1))
-                    for future in done:
-                        vid, found = future.result()
-                        if found is not None:
-                            observations[vid] = found
-            except RuntimeError:
-                if not keep_warm:
-                    for view, rt in zip(views, runtimes):
-                        try:
-                            rt.stop()
-                        except Exception:
-                            pass
-                        vid = str(view.get("id", "default"))
-                        if self._runtime_cache.get(vid) is rt:
-                            self._runtime_cache.pop(vid, None)
-                            self._runtime_signatures.pop(vid, None)
-                            root = self._runtime_snapshot_dirs.pop(vid, None)
-                            if root is not None:
-                                import shutil
-                                shutil.rmtree(root, ignore_errors=True)
-                raise
-            finally:
-                pool.shutdown(wait=False, cancel_futures=True)
-            # Cached resident runtimes may have emitted their video event in a
-            # previous round.  Ensure each current view still gets one event,
-            # without duplicating a startup event observed above.
-            for view in views:
-                vid = str(view.get("id", "default"))
-                if vid not in emitted_video_views:
-                    video_event = self._video_event(profile, vid, {"event": "video"})
-                    if video_event is not None:
-                        on_event(video_event)
-            if is_cancelled():
-                raise RuntimeError("cancelled")
-            if not observations and not timed_out:
-                timed_out = True
-            if timed_out:
-                # The last diagnostic_snapshot can be queued in the runtime
-                # pipe just after the deadline. Ask the runtime to stop
-                # inference, then give each collector a bounded drain window
-                # before taking its latest evidence.
-                for rt in runtimes:
-                    try:
-                        rt.send({"command": "STOP_ADJUDICATION", "request_id": request.request_id})
-                    except Exception:
-                        pass
-                done_after, pending = wait(pending, timeout=0.25)
-                for future in done_after:
-                    try:
-                        vid, found = future.result()
-                    except Exception:
-                        continue
-                    if found is not None:
-                        observations[vid] = found
-                with latest_lock:
-                    diagnostic_observations = [dict(latest_by_view[key]) for key in sorted(latest_by_view)]
-                if not diagnostic_observations:
-                    diagnostic_observations = [{"view_id": str(view.get("id", "default"))} for view in views]
-                diagnosis_result = self._diagnose_failure(
-                    request,
-                    profile,
-                    diagnostic_observations,
-                    on_event,
-                )
-                on_event({"event": "complete", "phase": "complete"})
-                round_completed = True
-                if not keep_warm:
-                    for view, rt in zip(views, runtimes):
-                        try:
-                            rt.stop()
-                        except Exception:
-                            pass
-                return diagnosis_result
+                rt.stop()
+            except Exception as exc:
+                if on_log is not None:
+                    on_log(f"[vision] runtime stop failed: {exc}")
+            vid = str(view.get("id", "default"))
+            if self._runtime_cache.get(vid) is rt:
+                self._runtime_cache.pop(vid, None)
+                self._runtime_signatures.pop(vid, None)
+                root = self._runtime_snapshot_dirs.pop(vid, None)
+                if root is not None:
+                    import shutil
+                    shutil.rmtree(root, ignore_errors=True)
+
+    def _complete_diagnosed(
+        self, round_: "_ObservedRound", on_event: Callable[[dict[str, Any]], None]
+    ) -> None:
+        """Close a diagnosed-failure round: complete event plus release."""
+        on_event({"event": "complete", "phase": "complete"})
+        round_.round_completed = True
+        if not round_.keep_warm:
+            self._release_round_runtimes(round_)
+
+    def _finalize_round(self, round_: "_ObservedRound") -> None:
+        """Post-round bookkeeping shared by every observe()/adjudicate() exit.
+
+        Only unlink paths that crossed the verification boundary in the
+        evaluation tail.  In particular, never trust an arbitrary snapshot
+        path supplied by a failed or malicious runtime event.  If a round
+        failed or was cancelled, explicitly return each resident runtime to
+        idle.  Normal rounds already sent STOP before holding; no process is
+        restarted between requests.
+        """
+        for path in round_.cleanup_paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if round_.round_started and not round_.round_completed:
+            for rt in round_.runtimes:
+                try:
+                    rt.send({"command": "CANCEL", "request_id": round_.request.request_id})
+                except Exception:
+                    pass
+
+    def adjudicate(self, request: VisionAdjudicationRequest, *, on_log: Callable[[str], None], on_event: Callable[[dict[str, Any]], None], is_cancelled: Callable[[], bool], timeout_seconds: float | None = None) -> dict[str, Any]:
+        round_ = _ObservedRound(request=request)
+        try:
+            self._observe(
+                round_,
+                on_log=on_log,
+                on_event=on_event,
+                is_cancelled=is_cancelled,
+                timeout_seconds=timeout_seconds,
+            )
+            if round_.diagnosis is not None:
+                return round_.diagnosis
+            profile = round_.profile
+            multi = profile.get("multi_view", {}) if isinstance(profile.get("multi_view"), Mapping) else {}
+            runtimes = round_.runtimes
+            views = round_.views
+            keep_warm = round_.keep_warm
+            observations = round_.observations
+            deadline = round_.deadline
+            fallback_timeout = float(timeout_seconds or request.timeout_seconds)
             min_views = int(multi.get("min_views", 1))
             if len(observations) < min_views: raise RuntimeError("minimum views not reached")
             ordered = [observations[k] for k in sorted(observations)]
@@ -933,21 +1074,14 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
                         rt.send({"command": "STOP_ADJUDICATION", "request_id": request.request_id})
                     except Exception:
                         pass
-                diagnosis_result = self._diagnose_failure(
+                round_.diagnosis = self._diagnose_failure(
                     request,
                     profile,
                     ordered,
                     on_event,
                 )
-                on_event({"event": "complete", "phase": "complete"})
-                round_completed = True
-                if not keep_warm:
-                    for view, rt in zip(views, runtimes):
-                        try:
-                            rt.stop()
-                        except Exception:
-                            pass
-                return diagnosis_result
+                self._complete_diagnosed(round_, on_event)
+                return round_.diagnosis
             # If every view supplies a runtime verdict, fuse those votes.
             # Otherwise evaluate the declared profile rule for each view so a
             # missing/legacy yolo_outcome cannot discard a camera's evidence.
@@ -985,15 +1119,15 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
                     # fixture directory for compatibility with older callers;
                     # those paths are still absolute, regular image files.
                     view_id = str(observation.get("view_id", "default"))
-                    if view_id in strict_snapshot_roots:
+                    if view_id in round_.strict_snapshot_roots:
                         try:
-                            path = _snapshot_path(observation, strict_snapshot_roots[view_id])
+                            path = _snapshot_path(observation, round_.strict_snapshot_roots[view_id])
                         except Exception:
                             raise ValueError("snapshot.path must stay inside task directory")
                     if path.suffix.lower() not in {".jpg", ".jpeg", ".png"} or not path.is_file():
                         raise ValueError("snapshot.path must reference an existing JPEG or PNG")
                     paths.append(path)
-                    cleanup_paths.add(path)
+                    round_.cleanup_paths.add(path)
                 verifier = self._round_llm(request)
                 model_override = str(cfg.get("model") or "").strip() or None
                 effort_override = str(cfg.get("reasoning_effort") or "").strip() or None
@@ -1057,7 +1191,7 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
                     rt.send(final_command)
                 except Exception as exc:
                     on_log(f"[vision] FINAL_RESULT send failed: {exc}")
-            on_event({"event":"result", **final})
+            on_event({"event": "result", **final})
             # Stop inference immediately after the verdict.  The resident
             # camera/RTSP pipeline remains alive, so the browser can continue
             # displaying the holding frame without spending YOLO cycles.
@@ -1077,37 +1211,34 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
                     if is_cancelled(): raise RuntimeError("cancelled")
                     remaining = max(0, end-time.monotonic()); on_event({"event":"phase", "phase":"holding", "remaining_ms":int(remaining*1000)})
                     time.sleep(min(0.25, remaining))
-            on_event({"event":"complete", "phase":"complete"}); round_completed = True
+            on_event({"event": "complete", "phase": "complete"}); round_.round_completed = True
             if not keep_warm:
-                for view, rt in zip(views, runtimes):
-                    try:
-                        rt.stop()
-                    except Exception as exc:
-                        on_log(f"[vision] runtime stop failed: {exc}")
-                    vid = str(view.get("id", "default"))
-                    if self._runtime_cache.get(vid) is rt:
-                        self._runtime_cache.pop(vid, None)
-                        self._runtime_signatures.pop(vid, None)
-                        root = self._runtime_snapshot_dirs.pop(vid, None)
-                        if root is not None:
-                            import shutil
-                            shutil.rmtree(root, ignore_errors=True)
+                self._release_round_runtimes(round_, on_log)
             return final
         finally:
-            # Only unlink paths that crossed the validation boundary above.
-            # In particular, never trust an arbitrary snapshot path supplied
-            # by a failed or malicious runtime event.
-            for path in cleanup_paths:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            # If a round failed or was cancelled, explicitly return each
-            # resident runtime to idle.  Normal rounds already sent STOP
-            # before holding; no process is restarted between requests.
-            if round_started and not round_completed:
-                for rt in runtimes:
-                    try:
-                        rt.send({"command": "CANCEL", "request_id": request.request_id})
-                    except Exception:
-                        pass
+            self._finalize_round(round_)
+class _ObservedRound:
+    """Live context of one observation phase, shared by observe()/adjudicate().
+
+    ``adjudicate`` is the rule/LLM evaluation tail on top of the same
+    observation phase; the round context keeps every mutable piece (runtimes,
+    budget deadline, cleanup bookkeeping) in one place so the two entry
+    points can never disagree about round lifecycle.
+    """
+
+    def __init__(self, request: VisionAdjudicationRequest) -> None:
+        # The caller creates the context so a mid-phase exception can never
+        # hide it: the finally blocks in observe()/adjudicate() must always
+        # be able to reach its bookkeeping (CANCEL on failure, cleanup).
+        self.request = request
+        self.profile = request.profile
+        self.views: list[Any] = []
+        self.keep_warm = False
+        self.runtimes: list[Any] = []
+        self.observations: dict[str, dict[str, Any]] = {}
+        self.deadline: float = 0.0
+        self.strict_snapshot_roots: dict[str, Path] = {}
+        self.cleanup_paths: set[Path] = set()
+        self.round_started = False
+        self.round_completed = False
+        self.diagnosis: dict[str, Any] | None = None

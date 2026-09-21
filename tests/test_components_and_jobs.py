@@ -154,11 +154,15 @@ class ComponentTests(unittest.TestCase):
         registry = build_registry()
         self.assertEqual(
             registry.provider_ids("vision"),
-            ["vision_yolov8_objdetect"],
+            ["vision_yolov10_objdetect", "vision_yolov8_objdetect"],
         )
         self.assertEqual(
             registry.provider_ids("vision", "adjudicator"),
-            ["vision_yolov8_objdetect"],
+            ["vision_yolov10_objdetect", "vision_yolov8_objdetect"],
+        )
+        self.assertEqual(
+            registry.get_manifest("vision_yolov10_objdetect")["entry"],
+            "provider.py:VisionYolov10Objdetect",
         )
         self.assertEqual(registry.provider_ids("vision", "localizer"), [])
         self.assertEqual(

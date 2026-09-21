@@ -231,14 +231,28 @@ def load_games(root: Path | None = None) -> GameRegistry:
             manifest["providers"] = providers
             profile = manifest.get("vision_profile")
             profile_path = manifest_path.parent / "vision_profile.json"
-            if profile is not None:
-                from components.vision_yolov8_objdetect.profile import validate_profile
-
-                profile = validate_profile(profile)
-            elif profile_path.is_file():
-                from components.vision_yolov8_objdetect.profile import load_profile
-
-                profile = load_profile(profile_path)
+            if profile is not None or profile_path.is_file():
+                # The profile schema is shared across vision components; the
+                # game's declared provider decides which package owns the
+                # validator, so a second vision runtime (v10) validates its
+                # own games without a hardwired v8 import.  Providers
+                # registered in memory only (test doubles) carry no package,
+                # so resolution falls back to the v8 module — the schema they
+                # were built against.  A provider id that exists nowhere
+                # fails later at component resolution, not here.
+                vision_provider_id = resolve_provider_id(
+                    manifest, "vision_adjudicator", "vision_yolov8_objdetect"
+                )
+                try:
+                    profile_module = importlib.import_module(
+                        f"components.{vision_provider_id}.profile"
+                    )
+                except ModuleNotFoundError:
+                    from components.vision_yolov8_objdetect import profile as profile_module
+                if profile is not None:
+                    profile = profile_module.validate_profile(profile)
+                else:
+                    profile = profile_module.load_profile(profile_path)
             else:
                 profile = None
             if profile is not None:
