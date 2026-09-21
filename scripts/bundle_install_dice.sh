@@ -117,13 +117,16 @@ say "视觉链路自检通过 (采集/解码/转换/编码/RTSP 推流元素齐�
 KEY_FILES=(
     asr/sensevoice/build/bin/asr_pipe_demo
     vision/yolov8_objdetect/build/yolov8_camera
+    vision/yolov10_objdetect/build/yolov10_camera
     backend/components/tts_moss_nano/launcher.py
+    backend/games/rps/models/yolov10n_gestures.q.onnx
 )
 for f in "${KEY_FILES[@]}"; do
     [[ -e "$BUNDLE_DIR/$f" ]] || die "包不完整, 缺少: $f"
 done
 [[ -x "$BUNDLE_DIR/${KEY_FILES[0]}" ]] || die "引擎二进制不可执行: ${KEY_FILES[0]}"
 [[ -x "$BUNDLE_DIR/${KEY_FILES[1]}" ]] || die "引擎二进制不可执行: ${KEY_FILES[1]}"
+[[ -x "$BUNDLE_DIR/${KEY_FILES[2]}" ]] || die "引擎二进制不可执行: ${KEY_FILES[2]}"
 ls "$BUNDLE_DIR"/asr/sensevoice/model/*.onnx >/dev/null 2>&1 \
     || die "包不完整, 缺少 SenseVoice 模型"
 ls "$BUNDLE_DIR"/tts/moss-tts-nano/models/*/ >/dev/null 2>&1 \
@@ -190,7 +193,7 @@ h = json.load(urllib.request.urlopen(sys.argv[1] + "/api/health", timeout=8))
 # 只报告选中的槽位与关键组件 —— 未选槽的备用引擎不跑属正常, 逐条列
 # "异常"只会误导。
 selected = {h.get("tts_provider"), h.get("tts_remote_provider"),
-            "asr_sensevoice", "vision_yolov8_objdetect", "llm_openai_compat"}
+            "asr_sensevoice", "vision_yolov8_objdetect", "vision_yolov10_objdetect", "llm_openai_compat"}
 idle, shown = [], []
 try:
     arena = json.load(open(f"{sys.argv[2]}/backend/config.json"))

@@ -187,14 +187,14 @@ runtime——否则就是悄悄用了别的游戏的摄像头与 RTSP 设置。�
 
 **dice 现状**：`runtime_config` 指向 `backend/games/dice/adjudicator_config.json`，配置文件里有
 一个 `_note` 键说明整份替换语义（两个解析器都忽略未知键，已用真实二进制 self-test 验证）。
-rps 的硬件文件已备好（1080p@30 广角）等视觉模型接回。
+rps 的硬件文件同样生效中（1080p@25 + 旋转 90cw + ROI 下半画面，见 §3.3.1）。
 
 **改硬件参数时的落点**：
 
 | 想改什么 | 改哪个文件 |
 | --- | --- |
 | dice 的摄像头/分辨率/帧率/焦距/变焦/EP 绑核/RTSP 端点 | `backend/games/dice/adjudicator_config.json` |
-| rps 的这些参数 | `backend/games/rps/adjudicator_config.json`（视觉接入前暂存） |
+| rps 的这些参数 | `backend/games/rps/adjudicator_config.json`（v10 包消费，含词表与折叠表） |
 | MediaMTX WebRTC 基址 | 各游戏 `adjudicator_config.json` 的 `video.webrtc_base_url`（要统一就逐份改） |
 
 | 归属 | 字段 | 放哪 |
@@ -230,6 +230,31 @@ profile 都用 `"default"`——所以 `_runtime_signature()`（`provider.py`）
 （会抢设备）。缓存键坚持 `view_id`、签名变化即"拆旧建新"，切换游戏必然重建一次
 （付摄像头打开 + 模型加载）。这是设计选择，不是缺陷。要支持双游戏同时常驻，前提是
 各自有独立摄像头设备。
+
+### 3.3.1 按游戏选择视觉组件（2026-09-21 起，双视觉包）
+
+`providers.vision_adjudicator` 是**全局槽位 + 游戏 manifest 覆盖**：不写就用全局默认
+（`backend/config.json`，当前 `vision_yolov8_objdetect`），写了就按游戏路由。两个视觉包：
+
+| | `vision_yolov8_objdetect` | `vision_yolov10_objdetect` |
+| --- | --- | --- |
+| 模型形态 | PPQ v8 图 `[1,C,N]` 外部解码+NMS | v10 end-to-end `[1,300,6]` 免 NMS |
+| 词表 | 无（id 直出，语义在 manifest class_map） | **配置注入**：`classes` 词表 + `rps_map` 折叠表（C++ 内折叠，折叠后的 id 按声明序） |
+| 硬件能力 | 分界线检测（dice 红蓝/黑线） | **OpenCL 旋转**（相机横装）+ **ROI 推理裁剪**（排除机械臂半幅） |
+| 稳定语义 | v2：类别多重集连续 N 帧不变 | 同 v2，但**折叠后**多重集（palm↔stop 同为 Paper 不清零） |
+| 共享 | 协议层（vision-control-v1 / jsonl-events-v2）、resident/prewarm、profile schema、规则引擎——v10 的 Python 组件继承 v8 provider |
+
+裁决入口也有两档，按游戏形态选：
+
+- **双侧证据型**（dice）：pipeline 走 `core.vision_pipeline.run_vision_game` → provider
+  `adjudicate()`——双侧分组、规则评估、（可选）LLM 复核全在 provider。
+- **单侧证据型**（rps：agent 侧被 ROI 排除、胜负一半在画面外）：pipeline 调 provider
+  `observe()` 只拿稳定观测，分组/比较/投影留在游戏侧（`games/<id>/pipeline.py` +
+  `result.py`）。`categorical_relation` 要求两侧都有值，单侧缺失直接 RuleError——这是
+  单侧游戏必须走 `observe()` 的根因。事件编排（verifying/result/holding）由 pipeline 自己发。
+
+> rps 的 agent 手势仍是程序随机——`games/rps/pipeline.py` 里那一行就是将来给机械臂下发
+> 指令的位置（接口形状已固定）。
 
 ## 4. 服务启动时发生什么
 

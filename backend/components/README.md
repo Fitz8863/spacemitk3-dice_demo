@@ -142,6 +142,17 @@ Current package manifest:
 }
 ```
 
+Since 2026-09-21 there are **two** vision adjudicator packages sharing this
+contract: `vision_yolov8_objdetect` (PPQ v8 models, two-sided rule games like
+dice) and `vision_yolov10_objdetect` (end-to-end v10 models, config-injected
+vocabulary with label folding, rotation + ROI capture, single-sided evidence
+games like rock-paper-scissors — see `FRAMEWORK_DISPATCH.md` §3.3.1).  A game
+selects its provider via the `providers.vision_adjudicator` override in its
+manifest; the global slot stays the v8 default.  The v10 package also exposes
+`observe(...)`, the stable-observation entry single-sided pipelines call
+instead of running the two-sided rule tail; `adjudicate()` remains the
+rule/LLM realization on top of the same observation phase.
+
 ## LLM interface
 
 LLM packages use `type=llm`, inherit `core.llm.LlmProvider`, and implement
