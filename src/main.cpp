@@ -540,6 +540,15 @@ static bool parse(int argc, char** argv, Args& a) {
 
 // Ultralytics-style vivid palette. OpenCV colors are BGR. The 34-class list
 // cycles through these six colors.
+// Label colors chosen to stand out on the red/blue game mats: the default
+// Ultralytics palette starts with pure red/orange, which vanish on the red
+// mat (a red "Paper 0.92" tag on a red mat looks like no box was drawn).
+// BGR: cyan / magenta / yellow.
+static const std::array<cv::Scalar, 3> kRpsColors = {
+    cv::Scalar(255, 255, 0),    // cyan    -> Rock
+    cv::Scalar(255, 0, 255),    // magenta -> Paper
+    cv::Scalar(0, 255, 255),    // yellow  -> Scissors
+};
 static const std::array<cv::Scalar, 6> kClassColors = {
     cv::Scalar(56, 56, 255),    // red       #FF3838
     cv::Scalar(151, 157, 255),  // light red #FF9D97
@@ -581,7 +590,7 @@ static void draw_detections(cv::Mat& bgr, const std::vector<Detection>& ds,
         cv::Scalar color;
         std::string class_label;
         if (rps_mapper.enabled() && i < rps_labels.size()) {
-            color = kClassColors[rps_labels[i].color_index % kClassColors.size()];
+            color = kRpsColors[rps_labels[i].color_index % kRpsColors.size()];
             class_label = rps_labels[i].text;
         } else {
             const size_t class_index =
