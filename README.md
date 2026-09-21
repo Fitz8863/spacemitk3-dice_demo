@@ -6,7 +6,7 @@
 
 ```text
 摄像头线程 -> 采集队列 -> OpenCL 前处理线程 -> 推理队列 -> YOLOv10 推理线程
-                                                    \-> 主线程显示/绘制
+                                                    \-> 主线程绘制/标注
                                                     \-> RTSP 最新帧队列 -> GStreamer spacemith264enc(VPU) -> MediaMTX
 ```
 
@@ -20,7 +20,7 @@ USB 摄像头 V4L2 MJPEG 1280x720@25
   -> SpaceMIT ONNX Runtime EP（可 --no-ep 回退 CPU）
   -> YOLOv10 output0 [1, 300, 6]
   -> conf 过滤（+ no_gesture 过滤）+ RPS 折叠 + letterbox 反算，免 NMS
-  -> OpenCV 显示 / RTSP 推流
+  -> RTSP 推流（无桌面显示）
 ```
 
 ## 模型
@@ -32,7 +32,7 @@ USB 摄像头 V4L2 MJPEG 1280x720@25
   - 坐标是 640×640 letterbox 域的像素值（非 cx,cy,w,h，未乘 stride 之前已解码）；
   - `conf` 是图内已 sigmoid 的最大类别分数，范围 [0,1]；
   - 行已按 conf 降序排列（TopK=300），**不需要再做 NMS**。
-- 34 类 HaGRID 手势，类别 id 与标签见 `config.json` 的 `classes`（与模型 metadata `names` 一致）。
+- 34 类 HaGRID 手势，类别 id 与标签使用程序内置的 34 类列表（与模型 metadata `names` 一致）；`config.json` 里不必再写 `classes`，特殊需要时用 `--classes` 或在 config 加 `classes` 数组覆盖。
 
 ### 与 YOLOv8 输出的差异
 
@@ -60,13 +60,13 @@ cd ~/projects/dice-game/yolov10_objdetect
 自测（不占用摄像头，验证 OpenCL 前处理 + 模型加载 + 一次推理）：
 
 ```bash
-./build/yolov10_camera --self-test --no-display --no-rtsp
+./build/yolov10_camera --self-test --no-rtsp
 ```
 
 真机短跑（60 帧后自动退出）：
 
 ```bash
-./build/yolov10_camera --no-display --max-frames 60 --no-rtsp
+./build/yolov10_camera --max-frames 60 --no-rtsp
 ```
 
 RTSP 推流（MediaMTX 已在板上运行）：
@@ -83,25 +83,22 @@ ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 | 参数 | 作用 |
 | --- | --- |
 | `model` | ONNX 模型路径；相对路径以程序启动目录为基准。 |
-| `classes` | 类别名数组，下标即模型输出 `class_id`，用于画面标签和 `filter_no_gesture` 定位；须与模型内嵌 `names` 顺序一致。缺省时使用内置的 34 类列表。 |
 | `filter_no_gesture` | `true`（默认）时丢弃 `no_gesture` 类的检测框（HaGRID 的兜底类，画出来全是噪声）。`--show-no-gesture` 临时关闭。 |
 | `stable_frames` | 时间稳定门限：检测框须**连续 N 帧**出现（按类别+框重叠匹配）才会下发到统计/画面，用于屏蔽手势切换过渡帧和单帧噪声。默认 3（约 125ms@24fps）；`1` 为关闭；命令行 `--stable-frames N`。 |
 | `rps_mode` | `true`（默认）启用石头剪刀布折叠：把 34 类手势映射到 Rock/Paper/Scissors，映射外类别丢弃；`false` 或 `--no-rps` 保留原始 34 类标签。 |
 | `rps_map` | RPS 折射表：游戏标签 → 源手势类名数组（见下节）。写错（未知类名/空标签/源类重复映射）启动即报错。 |
-| `camera` / `device` | 摄像头设备路径或编号；`device` 非空时优先。 |
+| `camera` | 摄像头设备路径，例如 `/dev/video1`。 |
 | `width` / `height` / `fps` | 摄像头请求规格；25fps 请求失败会自动回退到设备可协商帧率。 |
 | `intra_threads` / `ep_affinity` | SpaceMIT EP 线程数与绑核（`14;15`），数量必须一致。 |
 | `conf` | 置信度阈值（模型输出已是概率域，直接比较）。 |
 | `rotate` | 画面旋转配置对象：`{enabled, direction, angle}`。`enabled=true` 时把采集画面旋转后再送识别和推流；`direction` 为 `cw`（顺时针）/`ccw`（逆时针），仅对 90 度有效；`angle` 为 `90` 或 `180`。`width/height` 仍描述采集规格，90 度旋转后识别与推流画面为竖屏（720x1280），180 度尺寸不变。命令行 `--rotate none\|90cw\|90ccw\|180` 可整体覆盖。旧键 `rotate_90ccw: true` 仍兼容（等价于 enabled+ccw+90）。 |
 | `focus` / `zoom` | 手动对焦/变焦；`-1` 表示不修改。 |
-| `display_enabled` | 是否开 HighGUI 窗口；关闭后仍可 RTSP 推流。 |
-| `yolov10_enabled` | `false` 只采集显示画面，跳过 OpenCL/推理。 |
-| `max_frames` | 最多处理帧数，`0` 持续运行。 |
-| `dump_input` | 首帧 640×640 FP32 CHW 输入保存路径；空为不保存。 |
-| `self_test` | 启动后执行一次 OpenCL + 推理自测。 |
+| `yolov10_enabled` | `false` 只采集原始画面推流（透视对齐用），跳过 OpenCL/推理。 |
 | `rtsp.enabled/host/port/path` | RTSP 推流开关与目标 MediaMTX；默认 `rtsp://127.0.0.1:8554/rps/det`。 |
 
-命令行参数在 JSON 加载后覆盖同名配置（`--model/--conf/--classes/--no-ep/--no-display/--max-frames/--rtsp-path` 等，`--help` 查看全部）。
+命令行参数在 JSON 加载后覆盖同名配置（`--model/--conf/--classes/--no-ep/--rtsp-path` 等，`--help` 查看全部）。以下参数仅命令行提供（不在 config.json 中）：`--max-frames N`（处理 N 帧后退出）、`--dump-input PATH`（导出首帧预处理张量）、`--self-test`（自测）、`--device PATH`（显式 V4L2 节点）。
+
+程序默认**无桌面显示**，识别结果只通过 RTSP 推流查看；停止程序用 Ctrl-C。
 
 ## 石头剪刀布模式（rps_mode）
 
@@ -137,10 +134,9 @@ ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 --intra-threads N  SpaceMIT EP 线程数
 --ep-affinity LIST EP 线程绑核，数量必须匹配线程数
 --no-ep            不注册 SpaceMIT EP，纯 CPU 推理（排查 EP 精度/兼容性时对照）
---no-display       不创建窗口
 --max-frames N     处理 N 帧后退出
 --dump-input PATH  保存首帧预处理张量
---no-yolov10       只显示摄像头画面
+--no-yolov10       只推流原始摄像头画面（无检测框）
 --self-test        OpenCL + 模型一次推理自测
 --rtsp/--no-rtsp   开关 RTSP 推流
 --rtsp-host/--rtsp-port/--rtsp-path
@@ -158,7 +154,7 @@ ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 ## 板端验证记录（2026-09-20）
 
 - 编译：`cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOpenCV_DIR=/usr/lib/riscv64-linux-gnu/cmake/opencv4 && cmake --build build -j4` 通过，产物 `build/yolov10_camera`。
-- `--self-test --no-display --no-rtsp` 通过：OpenCL PowerVR 前处理 21ms，SpaceMIT EP（BASIC 优化级、affinity 14;15）加载 `[1,3,640,640] → [1,300,6]` 正常。
+- `--self-test --no-rtsp` 通过：OpenCL PowerVR 前处理 21ms，SpaceMIT EP（BASIC 优化级、affinity 14;15）加载 `[1,3,640,640] → [1,300,6]` 正常。
 - 真机短跑（C920 `/dev/video1`，720p MJPEG 硬解，90/120 帧）：`fps_infer` 约 21~23，`infer_ms` 约 35（EP 2 线程），空场景 0 误检。
 - 旋转功能（2026-09-21 追加，同日扩展为 4 模式）：`rotate{enabled,direction,angle}` / `--rotate none|90cw|90ccw|180`。V4L2 层面无硬件旋转可用（C920 UVC、VPU mvx M2M、spacemitdec/spacemith264enc 均不支持；videoflip 为纯 CPU），故实现为 **OpenCL kernel 内采样重映射**：90 度模式 letterbox geometry 按旋转帧(720x1280)计算、180 度按原尺寸，kernel 内按模式回映射到未旋转 NV12 图像（`90ccw: rot(i,j)=src(j,W-1-i)`，`90cw: rot(i,j)=src(H-1-j,i)`，`180: rot(i,j)=src(H-1-i,W-1-j)`，均已用字母矩阵+np.rot90 验证），GPU 单次遍历完成旋转+前处理，CPU 零开销。显示/推流侧对 BGR 做 `cv::rotate`。
 - 旋转正确性验证：`--dump-input` 导出各模式预处理张量与 numpy 参考对比——90ccw 相关性 0.99960 / 90cw 0.99922 / 180 0.99964（平均差 ≤0.55%，残差=插值+抓帧间隔的场景微动）；90cw 与 90ccw 相关性 -0.61（方向确已互异）；90 模式 letterbox 黑边在左右、180/无旋转在上下，位置正确。`pre_ms` 无旋转 8ms、90 度 16ms（GPU 采样转置致纹理缓存局部性下降），均在帧预算内。

@@ -7,7 +7,7 @@ set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type")
 
 # OpenCV and GStreamer are discovered through normal system search paths.
 # For a non-standard SDK, pass -DOpenCV_DIR=... and/or -DSPACEMIT_ORT_ROOT=....
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui videoio)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio)
 find_package(OpenCL REQUIRED)
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)

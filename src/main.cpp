@@ -5,7 +5,6 @@
 #include "yolov10_detector.h"
 
 #include <opencv2/core.hpp>
-#include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <array>
@@ -212,13 +211,12 @@ struct Args {
     int focus = 0, zoom = 150;
     float conf = 0.25f;
     size_t queue_depth = 2;
-    // Rotate every captured frame before preprocessing/display (mounting the
-    // camera sideways or upside down). Width/height describe the *captured*
-    // frame; the inference/display frame is rotated accordingly.
+    // Rotate every captured frame before preprocessing/streaming (mounting
+    // the camera sideways or upside down). Width/height describe the
+    // *captured* frame; the inference/stream frame is rotated accordingly.
     bool rotate_enabled = false;
     std::string rotate_direction = "cw";  // "cw" | "ccw" (90-degree modes only)
     int rotate_angle = 90;                // 90 | 180
-    bool no_display = false;
     int max_frames = 0;
     bool self_test = false;
     std::string dump_input;
@@ -345,11 +343,6 @@ static bool load_config(const std::string& path, Args& a) {
                 return false;
             }
         }
-        // An explicitly configured device path overrides camera, while an
-        // empty device keeps the camera path/index selected above.
-        std::string configured_device;
-        read_config_value(root, "device", configured_device);
-        if (!configured_device.empty()) a.device = configured_device;
         read_config_value(root, "width", a.width);
         read_config_value(root, "height", a.height);
         read_config_value(root, "fps", a.fps);
@@ -448,16 +441,6 @@ static bool load_config(const std::string& path, Args& a) {
         }
         read_config_value(root, "focus", a.focus);
         read_config_value(root, "zoom", a.zoom);
-        read_config_value(root, "max_frames", a.max_frames);
-        read_config_value(root, "dump_input", a.dump_input);
-        if (!read_config_bool(root, "self_test", a.self_test)) return false;
-        bool display_enabled = !a.no_display;
-        if (!read_config_bool(root, "display_enabled", display_enabled)) return false;
-        if (root["display_enabled"].empty()) {
-            if (!read_config_bool(root, "no_display", a.no_display)) return false;
-        } else {
-            a.no_display = !display_enabled;
-        }
         if (!read_config_bool(root, "yolov10_enabled", a.yolov10_enabled)) return false;
 
         int queue_depth = static_cast<int>(a.queue_depth);
@@ -507,7 +490,6 @@ static void usage(const char* exe) {
               << "  --intra-threads N  SpaceMIT EP threads\n"
               << "  --ep-affinity LIST bind EP threads to cores, e.g. 14;15\n"
               << "  --no-ep            disable SpaceMIT EP, run the model on CPU\n"
-              << "  --no-display       run pipeline without window (config: display_enabled=false)\n"
               << "  --max-frames N     stop after N frames enter preprocess (0=unlimited)\n"
               << "  --dump-input PATH  dump first preprocessed tensor as float32\n"
               << "  --no-yolov10       bypass preprocessing/inference and display camera frames only\n"
@@ -668,7 +650,6 @@ static bool parse(int argc, char** argv, Args& a) {
             else if (k == "--ep-affinity" && (v = need(i))) a.ep_affinity = v;
             else if (k == "--no-ep") a.ep_enabled = false;
             else if (k == "--max-frames" && (v = need(i))) a.max_frames = std::stoi(v);
-            else if (k == "--no-display") a.no_display = true;
             else if (k == "--dump-input" && (v = need(i))) a.dump_input = v;
             else if (k == "--no-yolov10") a.yolov10_enabled = false;
             else if (k == "--self-test") a.self_test = true;
@@ -930,26 +911,15 @@ int main(int argc, char** argv) {
         return 8;
     }
 
-    if (!a.no_display) {
-        try {
-            cv::namedWindow("yolov10-k3", cv::WINDOW_NORMAL);
-            cv::resizeWindow("yolov10-k3", out_width, out_height);
-        } catch (const cv::Exception& e) {
-            std::cerr << "Display initialization failed: " << e.what() << "\n";
-            rtsp_streamer.stop();
-            camera.close();
-            return 7;
-        }
-    }
-
     if (!a.yolov10_enabled) {
+        // Camera-only passthrough: raw (rotated) frames to RTSP, no inference.
         const auto direct_start = Clock::now();
         int frame_count = 0;
         while (!g_signal_stop && (a.max_frames <= 0 || frame_count < a.max_frames)) {
             GstreamerFrame frame;
             if (!camera.read(frame, 1000)) continue;
             ++frame_count;
-            if (a.no_display && !rtsp_streamer.running()) continue;
+            if (!rtsp_streamer.running()) continue;
             cv::Mat bgr;
             if (frame.nv12.empty()) continue;
             cv::cvtColor(frame.nv12, bgr, cv::COLOR_YUV2BGR_NV12);
@@ -957,14 +927,9 @@ int main(int argc, char** argv) {
             else if (rotate_mode == 2) cv::rotate(bgr, bgr, cv::ROTATE_90_CLOCKWISE);
             else if (rotate_mode == 3) cv::rotate(bgr, bgr, cv::ROTATE_180);
             rtsp_streamer.publish(bgr);
-            if (a.no_display) continue;
-            cv::imshow("yolov10-k3", bgr);
-            const int key = cv::waitKey(1) & 0xff;
-            if (key == 'q' || key == 27) break;
         }
         rtsp_streamer.stop();
         camera.close();
-        if (!a.no_display) cv::destroyAllWindows();
         const double elapsed = std::chrono::duration<double>(Clock::now() - direct_start).count();
         std::cout << "Done. camera-only frames=" << frame_count
                   << " elapsed_s=" << elapsed
@@ -1117,7 +1082,7 @@ int main(int argc, char** argv) {
             if (rotate_mode == 1) cv::rotate(bgr, bgr, cv::ROTATE_90_COUNTERCLOCKWISE);
             else if (rotate_mode == 2) cv::rotate(bgr, bgr, cv::ROTATE_90_CLOCKWISE);
             else if (rotate_mode == 3) cv::rotate(bgr, bgr, cv::ROTATE_180);
-            if (!a.no_display || rtsp_streamer.running()) {
+            if (rtsp_streamer.running()) {
                 draw_detections(bgr, item->detections, class_names, rps_mapper,
                                 rps_mapper.labels(item->detections));
                 const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
@@ -1127,14 +1092,9 @@ int main(int argc, char** argv) {
                             {10, 28}, cv::FONT_HERSHEY_SIMPLEX, .75,
                             {0, 255, 255}, 2, cv::LINE_AA);
                 rtsp_streamer.publish(bgr);
-                if (!a.no_display) {
-                    cv::imshow("yolov10-k3", bgr);
-                    const int key = cv::waitKey(1) & 0xff;
-                    if (key == 'q' || key == 27) abort.store(true);
-                }
             }
         } else {
-            std::cerr << "Display frame transfer/YUV conversion failed\n";
+            std::cerr << "Frame transfer/YUV conversion failed\n";
         }
         stats.addDisplay(std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
         stats.presented.fetch_add(1);
@@ -1173,7 +1133,6 @@ int main(int argc, char** argv) {
     result_queue.clear();
     rtsp_streamer.stop();
     camera.close();
-    if (!a.no_display) cv::destroyAllWindows();
 
     const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
     double p = 0.0, i = 0.0, d = 0.0;
