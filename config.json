@@ -29,7 +29,7 @@
   "queue_depth": 2,
   "conf": 0.25,
   "focus": -1,
-  "zoom": 380,
+  "zoom": 100,
   "yolov10_enabled": true,
   "rtsp": {
     "enabled": true,

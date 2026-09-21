@@ -1169,14 +1169,20 @@ int main(int argc, char** argv) {
             else if (rotate_mode == 2) cv::rotate(bgr, bgr, cv::ROTATE_90_CLOCKWISE);
             else if (rotate_mode == 3) cv::rotate(bgr, bgr, cv::ROTATE_180);
             if (rtsp_streamer.running()) {
-                // ROI border for visual alignment of the region gate.
+                // ROI visualization: labelled border around the recognized
+                // region (kept cheap — a full-region overlay costs several
+                // ms/frame on this board and drags the stream down).
                 if (a.roi_enabled) {
                     const cv::Rect roi_r(
                         static_cast<int>(a.roi_x * bgr.cols),
                         static_cast<int>(a.roi_y * bgr.rows),
                         std::max(1, static_cast<int>(a.roi_w * bgr.cols)),
                         std::max(1, static_cast<int>(a.roi_h * bgr.rows)));
-                    cv::rectangle(bgr, roi_r, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+                    cv::rectangle(bgr, roi_r, cv::Scalar(0, 0, 0), 7, cv::LINE_AA);
+                    cv::rectangle(bgr, roi_r, cv::Scalar(80, 255, 80), 3, cv::LINE_AA);
+                    cv::putText(bgr, "ROI", cv::Point(roi_r.x + 12, roi_r.y + 34),
+                                cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(80, 255, 80),
+                                2, cv::LINE_AA);
                 }
                 draw_detections(bgr, item->detections, class_names, rps_mapper,
                                 rps_mapper.labels(item->detections));
