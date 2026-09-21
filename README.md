@@ -91,6 +91,7 @@ ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 | `width` / `height` / `fps` | 摄像头请求规格；25fps 请求失败会自动回退到设备可协商帧率。 |
 | `intra_threads` / `ep_affinity` | SpaceMIT EP 线程数与绑核（`14;15`），数量必须一致。 |
 | `conf` | 置信度阈值（模型输出已是概率域，直接比较）。 |
+| `rotate_90ccw` | `true` 时把采集到的每帧画面**逆时针旋转 90°** 后再送识别和推流（摄像头竖装场景用）。`width/height` 仍描述采集规格（如 1280x720），旋转后识别与推流画面为 720x1280；命令行 `--rotate-90ccw` 可临时开启。 |
 | `focus` / `zoom` | 手动对焦/变焦；`-1` 表示不修改。 |
 | `display_enabled` | 是否开 HighGUI 窗口；关闭后仍可 RTSP 推流。 |
 | `yolov10_enabled` | `false` 只采集显示画面，跳过 OpenCL/推理。 |

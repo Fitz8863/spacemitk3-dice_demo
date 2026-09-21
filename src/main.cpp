@@ -141,6 +141,10 @@ struct Args {
     int focus = 0, zoom = 150;
     float conf = 0.25f;
     size_t queue_depth = 2;
+    // Rotate every captured frame 90 degrees counter-clockwise before
+    // preprocessing/display (mounting the camera sideways). Width/height then
+    // describe the *captured* frame; the rotated frame is height x width.
+    bool rotate_90ccw = false;
     bool no_display = false;
     int max_frames = 0;
     bool self_test = false;
@@ -298,6 +302,7 @@ static bool load_config(const std::string& path, Args& a) {
             a.class_names = std::move(names);
         }
         if (!read_config_bool(root, "filter_no_gesture", a.filter_no_gesture)) return false;
+        if (!read_config_bool(root, "rotate_90ccw", a.rotate_90ccw)) return false;
         if (!read_config_bool(root, "rps_mode", a.rps_mode)) return false;
         const cv::FileNode rps_map = root["rps_map"];
         if (!rps_map.empty()) {
@@ -383,6 +388,8 @@ static void usage(const char* exe) {
               << "  --classes LIST     comma-separated class names, e.g. like,ok,peace\n"
               << "  --show-no-gesture  draw the no_gesture class too (config: filter_no_gesture=false)\n"
               << "  --no-rps           keep raw 34-class labels instead of rock/paper/scissors mapping\n"
+              << "  --rotate-90ccw     rotate frames 90 deg counter-clockwise before inference/display\n"
+              << "                     (config: rotate_90ccw=true)\n"
               << "  --queue-depth N    keep up to N frames per pipeline queue\n"
               << "  --focus N          fixed manual focus (-1 unchanged)\n"
               << "  --zoom N           zoom absolute value (-1 unchanged)\n"
@@ -508,6 +515,7 @@ static bool parse(int argc, char** argv, Args& a) {
             else if (k == "--classes" && (v = need(i))) a.class_names = split_class_names(v);
             else if (k == "--show-no-gesture") a.filter_no_gesture = false;
             else if (k == "--no-rps") a.rps_mode = false;
+            else if (k == "--rotate-90ccw") a.rotate_90ccw = true;
             else if (k == "--queue-depth" && (v = need(i))) {
                 a.queue_depth = static_cast<std::size_t>(std::stoul(v));
             } else if (k == "--focus" && (v = need(i))) a.focus = std::stoi(v);
@@ -749,9 +757,13 @@ int main(int argc, char** argv) {
         std::cerr << "Camera open failed.\n";
         return 3;
     }
+    // The published frame is the rotated one, so its size differs from the
+    // captured size when rotation is enabled.
+    const int out_width = a.rotate_90ccw ? a.height : a.width;
+    const int out_height = a.rotate_90ccw ? a.width : a.height;
     RtspStreamer rtsp_streamer;
     if (a.rtsp_enabled && !rtsp_streamer.start(a.rtsp_host, a.rtsp_port, a.rtsp_path,
-                                                a.width, a.height, camera.negotiated_fps())) {
+                                                out_width, out_height, camera.negotiated_fps())) {
         rtsp_streamer.stop();
         camera.close();
         return 8;
@@ -760,7 +772,7 @@ int main(int argc, char** argv) {
     if (!a.no_display) {
         try {
             cv::namedWindow("yolov10-k3", cv::WINDOW_NORMAL);
-            cv::resizeWindow("yolov10-k3", a.width, a.height);
+            cv::resizeWindow("yolov10-k3", out_width, out_height);
         } catch (const cv::Exception& e) {
             std::cerr << "Display initialization failed: " << e.what() << "\n";
             rtsp_streamer.stop();
@@ -780,6 +792,7 @@ int main(int argc, char** argv) {
             cv::Mat bgr;
             if (frame.nv12.empty()) continue;
             cv::cvtColor(frame.nv12, bgr, cv::COLOR_YUV2BGR_NV12);
+            if (a.rotate_90ccw) cv::rotate(bgr, bgr, cv::ROTATE_90_COUNTERCLOCKWISE);
             rtsp_streamer.publish(bgr);
             if (a.no_display) continue;
             cv::imshow("yolov10-k3", bgr);
@@ -826,8 +839,48 @@ int main(int argc, char** argv) {
             timeout_count = 0;
             auto packet = std::make_shared<PreparedFrame>();
             packet->id = id++;
-            packet->width = frame.nv12.cols;
-            packet->height = (frame.nv12.rows * 2) / 3;
+            if (a.rotate_90ccw) {
+                // NV12 cannot be rotated as one block: the interleaved UV
+                // plane does not survive a 2D permutation (the result is no
+                // longer a valid NV12 layout). Rotate Y and the interleaved
+                // UV plane separately. With ROTATE_90_COUNTERCLOCKWISE
+                // (verified against a 2x2 source: [[1,2],[3,4]] -> [[2,4],[1,3]]):
+                //   dst_y[i][j]  = src_y[j][h-1-i]          (column read)
+                //   dst_u[R][J]  = src_u[J][h/2-1-R]        (+1 column for V)
+                // producing a valid vertical NV12 frame of W' x H' = h x w.
+                const int w = frame.nv12.cols;            // source width
+                const int h = (frame.nv12.rows * 2) / 3;  // source height
+                cv::Mat rotated(h + h / 2, w, CV_8UC1);   // dst: h rows x w cols
+                const uint8_t* src = frame.nv12.ptr();
+                uint8_t* dst = rotated.ptr();
+                // Y plane: dst row i is source column (h-1-i), top to bottom.
+                for (int i = 0; i < w; ++i) {
+                    uint8_t* dst_row = dst + static_cast<size_t>(i) * h;
+                    const int src_col = h - 1 - i;
+                    for (int j = 0; j < h; ++j) {
+                        dst_row[j] = src[static_cast<size_t>(j) * w + src_col];
+                    }
+                }
+                // Interleaved UV plane: dst has w/2 rows of h/2 UV pairs.
+                const uint8_t* src_uv = src + static_cast<size_t>(h) * w;
+                uint8_t* dst_uv = dst + static_cast<size_t>(w) * h;
+                const int half = h / 2;
+                for (int R = 0; R < w / 2; ++R) {
+                    uint8_t* dst_row = dst_uv + static_cast<size_t>(R) * h;
+                    const int src_col_pair = half - 1 - R;
+                    for (int J = 0; J < half; ++J) {
+                        const uint8_t* pair = src_uv + static_cast<size_t>(J) * w + src_col_pair * 2;
+                        dst_row[2 * J] = pair[0];      // U
+                        dst_row[2 * J + 1] = pair[1];  // V
+                    }
+                }
+                frame.nv12 = std::move(rotated);
+                packet->width = frame.nv12.cols;             // = h (rotated width)
+                packet->height = (frame.nv12.rows * 2) / 3;  // = w (rotated height)
+            } else {
+                packet->width = frame.nv12.cols;
+                packet->height = (frame.nv12.rows * 2) / 3;
+            }
             packet->nv12 = std::make_shared<cv::Mat>(std::move(frame.nv12));
             packet->gst_owner = std::move(frame.owner);
             try {
@@ -925,6 +978,7 @@ int main(int argc, char** argv) {
         cv::Mat bgr;
         if (item->nv12 && !item->nv12->empty()) {
             cv::cvtColor(*item->nv12, bgr, cv::COLOR_YUV2BGR_NV12);
+            if (a.rotate_90ccw) cv::rotate(bgr, bgr, cv::ROTATE_90_COUNTERCLOCKWISE);
             if (!a.no_display || rtsp_streamer.running()) {
                 draw_detections(bgr, item->detections, class_names, rps_mapper,
                                 rps_mapper.labels(item->detections));
