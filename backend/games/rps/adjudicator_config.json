@@ -20,7 +20,7 @@
   "stable_frames": 15,
   "rotate": {
     "enabled": true,
-    "direction": "cw",
+    "direction": "ccw",
     "angle": 90
   },
   "roi": {
