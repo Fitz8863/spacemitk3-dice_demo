@@ -81,6 +81,10 @@ def detected_divider_ratio(
     the runtime still emits a placeholder ``point`` of ``[0, 0]`` when it fails
     to locate anything; treating absence as a ratio of 0 would dump every
     detection into the second participant.
+
+    The split axis comes from the divider event itself since the runtime
+    detects both vertical and horizontal red/blue transitions; the configured
+    ``orientation`` only covers frames where nothing was located.
     """
     if not enabled:
         return None
@@ -90,8 +94,11 @@ def detected_divider_ratio(
     point = divider.get("point")
     if not isinstance(point, (list, tuple)) or len(point) < 2:
         return None
-    axis = 1 if orientation == "horizontal" else 0
-    extent = observation.get("height" if orientation == "horizontal" else "width")
+    horizontal = orientation == "horizontal"
+    if divider.get("horizontal") is True:
+        horizontal = True
+    axis = 1 if horizontal else 0
+    extent = observation.get("height" if horizontal else "width")
     if not isinstance(extent, (int, float)) or extent <= 0:
         return None
     coordinate = point[axis]
@@ -168,12 +175,23 @@ def normalize_observation(
         except (TypeError, ValueError):
             position = 0.5
         orientation = str(divider.get("orientation", "vertical"))
+    horizontal_split = orientation == "horizontal"
     if grouping == "divider_regions":
         detected = detected_divider_ratio(
             result, orientation, enabled=vision.get("divider_detection", True) is not False
         )
         if detected is not None:
             position = detected
+        # The runtime's divider carries its own orientation (it detects both
+        # vertical and horizontal red/blue transitions); the configured
+        # orientation only covers frames where nothing was located.
+        observed_divider = result.get("divider")
+        if (
+            isinstance(observed_divider, Mapping)
+            and observed_divider.get("found") is True
+            and observed_divider.get("horizontal") is True
+        ):
+            horizontal_split = True
     for detection in detections:
         if not isinstance(detection, Mapping):
             continue
@@ -198,7 +216,7 @@ def normalize_observation(
                     mapped = int(numeric) if numeric.is_integer() else numeric
                 except (TypeError, ValueError):
                     continue
-        if grouping == "divider_regions" and orientation == "horizontal":
+        if grouping == "divider_regions" and horizontal_split:
             height = result.get("height")
             if not isinstance(height, (int, float)) or height <= 0:
                 height = max(

@@ -1969,6 +1969,58 @@ def test_normalize_divider_regions_honours_a_horizontal_located_divider():
     assert normalize_observation(profile, observation)["participants"] == {"LEFT": [], "RIGHT": [1]}
 
 
+def test_detected_horizontal_divider_wins_over_vertical_config():
+    """The runtime now detects horizontal red/blue splits itself; a divider
+    event carrying horizontal=true switches the split axis even when the
+    profile still declares the default vertical orientation (2026-09-21)."""
+    profile = {
+        "vision": {
+            "class_map": {"0": "1", "1": "2"},
+            "participants": ["LEFT", "RIGHT"],
+            "grouping": "divider_regions",
+            "divider": {"orientation": "vertical", "position": 0.5},
+        },
+        "rule": {"kind": "numeric_compare"},
+    }
+    observation = {
+        "width": 100,
+        "height": 200,
+        # Horizontal boundary at y=100 (ratio 0.5): x coordinates must stop
+        # mattering, y decides the side.
+        "divider": {"found": True, "horizontal": True, "point": [50.0, 100.0]},
+        "detections": [
+            {"class_id": 0, "bbox": [0, 150, 20, 180]},    # bottom -> second side
+            {"class_id": 1, "bbox": [0, 10, 20, 40]},      # top -> first side
+            # A detection straddling the middle vertically but clearly left
+            # of it horizontally proves x is ignored for this split.
+            {"class_id": 0, "bbox": [5, 90, 15, 130]},
+        ],
+    }
+    normalized = normalize_observation(profile, observation)
+    # class 1 ("2") sits above the line -> first side; both class 0 ("1")
+    # detections sit below (y centers 165 and 110) -> second side, proving the
+    # split ignores x entirely.
+    assert normalized["participants"] == {"LEFT": [2], "RIGHT": [1, 1]}
+
+
+def test_detected_divider_ratio_follows_the_events_own_orientation():
+    observation = {
+        "width": 100,
+        "height": 200,
+        "divider": {"found": True, "horizontal": True, "point": [50.0, 60.0]},
+    }
+    # Config says vertical; the event says horizontal -- the event wins and
+    # the ratio comes from point.y / height.
+    assert detected_divider_ratio(observation, "vertical") == pytest.approx(0.3)
+    # Without the flag the configured orientation stays authoritative.
+    plain = {
+        "width": 100,
+        "height": 200,
+        "divider": {"found": True, "point": [60.0, 50.0]},
+    }
+    assert detected_divider_ratio(plain, "vertical") == pytest.approx(0.6)
+
+
 @pytest.mark.parametrize(
     "observation",
     [

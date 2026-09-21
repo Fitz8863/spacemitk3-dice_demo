@@ -189,6 +189,9 @@ struct Args {
     int max_frames = 0;
     bool self_test = false;
     std::string dump_input;
+    // Single-frame divider diagnostics: read one image, run the scene divider
+    // detector, print one JSON line, exit.  No camera/OpenCL/model involved.
+    std::string image_path;
     bool yolov8_enabled = false;
     bool divider_detection_enabled = false;
     bool rtsp_enabled = false;
@@ -394,6 +397,7 @@ static void usage(const char* exe) {
               << "  --yolov8           enable YOLO preprocessing/inference\n"
               << "  --no-yolov8        bypass preprocessing/inference and display camera frames only\n"
               << "  --self-test        initialize OpenCL GPU and model, run one inference\n"
+              << "  --image PATH       run the scene divider detector on one image and print JSON (no camera)\n"
               << "  --rtsp             publish H.264 to RTSP server with SpaceMIT VPU\n"
               << "  --event-fd FD      write structured JSONL events to an inherited FD\n"
               << "  --control-fd FD    read vision-control-v1 JSONL commands from an inherited FD\n"
@@ -517,6 +521,7 @@ static bool parse(int argc, char** argv, Args& a) {
             else if (k == "--yolov8") a.yolov8_enabled = true;
             else if (k == "--no-yolov8") a.yolov8_enabled = false;
             else if (k == "--self-test") a.self_test = true;
+            else if (k == "--image" && (v = need(i))) a.image_path = v;
             else if (k == "--rtsp") a.rtsp_enabled = true;
             else if (k == "--event-fd" && (v = need(i))) a.event_fd = std::stoi(v);
             else if (k == "--control-fd" && (v = need(i))) a.control_fd = std::stoi(v);
@@ -845,13 +850,16 @@ static bool detect_black_divider(const cv::Mat& bgr, DividerLine& divider) {
 // lifts it (mat stripe 94 vs blue 107 at the 1/4 scale), which is why the old
 // detector failed whenever the surface reflected light.  Hue is not affected by
 // illumination the way brightness is, so this stays usable under glare.
-static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider) {
-    if (bgr.empty()) return false;
+// Core detector: a warm-to-cool vertical transition in `bgr`, polarity
+// normalized inside (either mat orientation works).  Returns the refined
+// boundary as a column index in the quarter-scale image, or -1.
+static float detect_warm_cool_vertical_boundary(const cv::Mat& bgr) {
+    if (bgr.empty()) return -1.0f;
 
     constexpr double kDividerScale = 0.25;
     cv::Mat small;
     cv::resize(bgr, small, cv::Size(), kDividerScale, kDividerScale, cv::INTER_AREA);
-    if (small.empty() || small.cols < 8 || small.rows < 8) return false;
+    if (small.empty() || small.cols < 8 || small.rows < 8) return -1.0f;
 
     // Red minus blue, per pixel.  Positive = warm (left), negative = cool.
     // The 8-bit channels must be widened to float first: cv::subtract on CV_8U
@@ -917,7 +925,7 @@ static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider) {
     // Rows occluded by dice/hands/objects are expected; require a third of the
     // frame to still show the split before trusting the boundary.
     constexpr double kMinUsableRowRatio = 0.30;
-    if (usable_rows.size() < static_cast<size_t>(kMinUsableRowRatio * height)) return false;
+    if (usable_rows.size() < static_cast<size_t>(kMinUsableRowRatio * height)) return -1.0f;
 
     // Per-column median of the channel difference over the usable rows.  The
     // median (rather than the mean) keeps dice and hands sitting on the mat from
@@ -951,7 +959,7 @@ static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider) {
             }
         }
     }
-    if (crossing < 0) return false;
+    if (crossing < 0) return -1.0f;
 
     // Sub-pixel refinement between the two straddling columns.
     float boundary = static_cast<float>(crossing) + 0.5f;
@@ -960,13 +968,34 @@ static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider) {
     if (left_value > right_value) {
         boundary = static_cast<float>(crossing) + left_value / (left_value - right_value);
     }
+    return boundary / static_cast<float>(kDividerScale);
+}
 
+static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider) {
+    // Orientation-independent by construction: the vertical (face-off) layout
+    // is tried first, then the transposed view where a horizontal red/blue
+    // split becomes a vertical one.  A transposed hit maps straight back --
+    // transpose coordinates swap, so column boundary there is the row
+    // boundary here.
+    float boundary = detect_warm_cool_vertical_boundary(bgr);
+    if (boundary >= 0.0f) {
+        divider.valid = true;
+        divider.horizontal = false;
+        divider.point = cv::Point2f(boundary, 0.5f * static_cast<float>(bgr.rows));
+        divider.direction = cv::Point2f(0.0f, 1.0f);
+        divider.normal = cv::Point2f(1.0f, 0.0f);
+        return true;
+    }
+    cv::Mat transposed;
+    cv::transpose(bgr, transposed);
+    boundary = detect_warm_cool_vertical_boundary(transposed);
+    if (boundary < 0.0f) return false;
     divider.valid = true;
-    divider.horizontal = false;
-    divider.point = cv::Point2f(boundary / static_cast<float>(kDividerScale),
-                                static_cast<float>(height) / static_cast<float>(kDividerScale) * 0.5f);
-    divider.direction = cv::Point2f(0.0f, 1.0f);
-    divider.normal = cv::Point2f(1.0f, 0.0f);
+    divider.horizontal = true;
+    // Column boundary in the transposed view is the row boundary here.
+    divider.point = cv::Point2f(0.5f * static_cast<float>(bgr.cols), boundary);
+    divider.direction = cv::Point2f(1.0f, 0.0f);
+    divider.normal = cv::Point2f(0.0f, 1.0f);
     return true;
 }
 
@@ -1056,6 +1085,33 @@ int main(int argc, char** argv) {
     } else {
         // Camera-only mode intentionally avoids all YOLOv8/OpenCL/ORT setup.
         std::cerr << "[YOLOv8] disabled; displaying camera frames without preprocessing or inference.\n";
+    }
+    if (!a.image_path.empty()) {
+        // Single-frame divider diagnostics: no camera, no OpenCL, no model —
+        // just the scene geometry path.  Point it at any JPEG/PNG (e.g. a
+        // frame grabbed from the RTSP stream) to answer "why is the divider
+        // not detected" away from the live pipeline.
+        cv::Mat image = cv::imread(a.image_path);
+        if (image.empty()) {
+            std::cerr << "cannot read --image " << a.image_path << "\n";
+            return 2;
+        }
+        DividerLine divider;
+        const bool found = detect_scene_divider(image, divider);
+        std::ostringstream out;
+        out << "{\"image\":\"" << json_escape(a.image_path) << "\""
+            << ",\"width\":" << image.cols << ",\"height\":" << image.rows
+            << ",\"divider\":{\"found\":" << (found ? "true" : "false");
+        if (found) {
+            out << ",\"horizontal\":" << (divider.horizontal ? "true" : "false")
+                << ",\"point\":[" << divider.point.x << "," << divider.point.y << "]"
+                << ",\"split_ratio\":" << std::fixed << std::setprecision(4)
+                << (divider.horizontal ? divider.point.y / image.rows
+                                        : divider.point.x / image.cols);
+        }
+        out << "}}";
+        std::cout << out.str() << std::endl;
+        return found ? 0 : 1;
     }
     if (a.self_test) {
         if (!a.yolov8_enabled) {
