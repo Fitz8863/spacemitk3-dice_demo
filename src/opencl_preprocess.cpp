@@ -25,7 +25,7 @@ __kernel void yuv420_to_yolo(read_only image2d_t yimg, read_only image2d_t uimg,
                              int in_w, int in_h, int out_w, int out_h,
                              int resized_w, int resized_h,
                              float x_scale, float y_scale,
-                             int pad_x, int pad_y) {
+                             int pad_x, int pad_y, int rotate) {
     int x = get_global_id(0), y = get_global_id(1);
     if (x >= out_w || y >= out_h) return;
 
@@ -33,13 +33,22 @@ __kernel void yuv420_to_yolo(read_only image2d_t yimg, read_only image2d_t uimg,
     int ry = y - pad_y;
     float sx = (((float)rx + 0.5f) * x_scale) - 0.5f;
     float sy = (((float)ry + 0.5f) * y_scale) - 0.5f;
+    // (sx, sy) are sample coords in the letterboxed frame. With rotate=1 that
+    // frame is the source rotated 90 CCW: rot(i,j) = src(j, in_w-1-i), so a
+    // rotated-frame point maps back to source (col = in_w-1-sy, row = sx).
+    // Verified against a 4x3 letter matrix and np.rot90(k=1).
+    float sxf = sx, syf = sy;
+    if (rotate) {
+        sxf = (float)in_w - 1.0f - sy;
+        syf = sx;
+    }
     float r, g, b;
     if (rx < 0 || ry < 0 || rx >= resized_w || ry >= resized_h) {
         r = g = b = 114.0f / 255.0f;
     } else {
-        float yy = read_imagef(yimg, smp, (float2)(sx + 0.5f, sy + 0.5f)).x * 255.0f;
-        float u = read_imagef(uimg, smp, (float2)(sx * 0.5f + 0.5f, sy * 0.5f + 0.5f)).x * 255.0f;
-        float v = read_imagef(vimg, smp, (float2)(sx * 0.5f + 0.5f, sy * 0.5f + 0.5f)).x * 255.0f;
+        float yy = read_imagef(yimg, smp, (float2)(sxf + 0.5f, syf + 0.5f)).x * 255.0f;
+        float u = read_imagef(uimg, smp, (float2)(sxf * 0.5f + 0.5f, syf * 0.5f + 0.5f)).x * 255.0f;
+        float v = read_imagef(vimg, smp, (float2)(sxf * 0.5f + 0.5f, syf * 0.5f + 0.5f)).x * 255.0f;
         float c = yy - 16.0f, d = u - 128.0f, e = v - 128.0f;
         r = clamp((1.16438356f * c + 1.79274107f * e) / 255.0f, 0.0f, 1.0f);
         g = clamp((1.16438356f * c - 0.21324861f * d - 0.53290933f * e) / 255.0f, 0.0f, 1.0f);
@@ -290,7 +299,8 @@ bool OpenClPreprocessor::init(int out_width, int out_height) {
     }
 }
 
-OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12) {
+OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12,
+                                                          bool rotate_90ccw) {
     if (!impl_) throw std::runtime_error("OpenCL preprocessor not initialized");
     if (nv12.empty() || nv12.type() != CV_8UC1 || nv12.rows * 2 % 3 != 0) {
         throw std::runtime_error("OpenCL NV12 input must be non-empty CV_8UC1 with height 3/2*h");
@@ -306,7 +316,12 @@ OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12) {
     }
 
     const auto t0 = std::chrono::steady_clock::now();
-    const LetterboxGeometry geometry = calculate_geometry(width, height, impl_->out_w, impl_->out_h);
+    // With rotation the letterboxed/inference frame is the source rotated 90
+    // CCW, i.e. a height x width frame; the kernel maps sample coordinates
+    // back onto the unrotated NV12 images.
+    const LetterboxGeometry geometry = rotate_90ccw
+        ? calculate_geometry(height, width, impl_->out_w, impl_->out_h)
+        : calculate_geometry(width, height, impl_->out_w, impl_->out_h);
     impl_->ensure_io(width, height);
 
     for (int row = 0; row < height; ++row) {
@@ -345,12 +360,18 @@ OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12) {
     set_arg(7, sizeof(int), &impl_->out_h, "clSetKernelArg output height");
     set_arg(8, sizeof(int), &geometry.resized_width, "clSetKernelArg resized width");
     set_arg(9, sizeof(int), &geometry.resized_height, "clSetKernelArg resized height");
-    const float x_scale = width / static_cast<float>(geometry.resized_width);
-    const float y_scale = height / static_cast<float>(geometry.resized_height);
+    // With rotation the letterbox geometry describes the rotated frame, whose
+    // width/height are the source's height/width.
+    const int frame_w = rotate_90ccw ? height : width;
+    const int frame_h = rotate_90ccw ? width : height;
+    const float x_scale = frame_w / static_cast<float>(geometry.resized_width);
+    const float y_scale = frame_h / static_cast<float>(geometry.resized_height);
     set_arg(10, sizeof(float), &x_scale, "clSetKernelArg x scale");
     set_arg(11, sizeof(float), &y_scale, "clSetKernelArg y scale");
     set_arg(12, sizeof(int), &geometry.pad_x, "clSetKernelArg pad x");
     set_arg(13, sizeof(int), &geometry.pad_y, "clSetKernelArg pad y");
+    const int rotate_flag = rotate_90ccw ? 1 : 0;
+    set_arg(14, sizeof(int), &rotate_flag, "clSetKernelArg rotate");
 
     const size_t global[] = {static_cast<size_t>(impl_->out_w),
                              static_cast<size_t>(impl_->out_h)};

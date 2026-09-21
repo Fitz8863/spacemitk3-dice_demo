@@ -723,7 +723,7 @@ int main(int argc, char** argv) {
             constexpr int synthetic_height = 720;
             cv::Mat synthetic_nv12(synthetic_height * 3 / 2, synthetic_width,
                                    CV_8UC1, cv::Scalar(128));
-            const auto prep_result = pre->preprocess(synthetic_nv12);
+            const auto prep_result = pre->preprocess(synthetic_nv12, a.rotate_90ccw);
             if (!prep_result.data || prep_result.data->size() != 3 * 640 * 640) {
                 throw std::runtime_error("OpenCL self-test returned an invalid tensor");
             }
@@ -839,53 +839,18 @@ int main(int argc, char** argv) {
             timeout_count = 0;
             auto packet = std::make_shared<PreparedFrame>();
             packet->id = id++;
-            if (a.rotate_90ccw) {
-                // NV12 cannot be rotated as one block: the interleaved UV
-                // plane does not survive a 2D permutation (the result is no
-                // longer a valid NV12 layout). Rotate Y and the interleaved
-                // UV plane separately. With ROTATE_90_COUNTERCLOCKWISE
-                // (verified against a 2x2 source: [[1,2],[3,4]] -> [[2,4],[1,3]]):
-                //   dst_y[i][j]  = src_y[j][h-1-i]          (column read)
-                //   dst_u[R][J]  = src_u[J][h/2-1-R]        (+1 column for V)
-                // producing a valid vertical NV12 frame of W' x H' = h x w.
-                const int w = frame.nv12.cols;            // source width
-                const int h = (frame.nv12.rows * 2) / 3;  // source height
-                cv::Mat rotated(w + w / 2, h, CV_8UC1);   // dst: portrait NV12, w rows x h cols (Y) + w/2 rows x h cols (UV)
-                const uint8_t* src = frame.nv12.ptr();
-                uint8_t* dst = rotated.ptr();
-                // Y plane: dst row i is source column (h-1-i), top to bottom.
-                for (int i = 0; i < w; ++i) {
-                    uint8_t* dst_row = dst + static_cast<size_t>(i) * h;
-                    const int src_col = h - 1 - i;
-                    for (int j = 0; j < h; ++j) {
-                        dst_row[j] = src[static_cast<size_t>(j) * w + src_col];
-                    }
-                }
-                // Interleaved UV plane: dst has w/2 rows of h/2 UV pairs.
-                const uint8_t* src_uv = src + static_cast<size_t>(h) * w;
-                uint8_t* dst_uv = dst + static_cast<size_t>(w) * h;
-                const int half = h / 2;
-                for (int R = 0; R < w / 2; ++R) {
-                    uint8_t* dst_row = dst_uv + static_cast<size_t>(R) * h;
-                    const int src_col_pair = half - 1 - R;
-                    for (int J = 0; J < half; ++J) {
-                        const uint8_t* pair = src_uv + static_cast<size_t>(J) * w + src_col_pair * 2;
-                        dst_row[2 * J] = pair[0];      // U
-                        dst_row[2 * J + 1] = pair[1];  // V
-                    }
-                }
-                frame.nv12 = std::move(rotated);
-                packet->width = frame.nv12.cols;             // = h (rotated width)
-                packet->height = (frame.nv12.rows * 2) / 3;  // = w (rotated height)
-            } else {
-                packet->width = frame.nv12.cols;
-                packet->height = (frame.nv12.rows * 2) / 3;
-            }
+            // The NV12 buffer stays unrotated; with rotate_90ccw the OpenCL
+            // kernel maps sample coordinates so preprocessing sees the frame
+            // rotated 90 CCW, and the logical frame dims are swapped.
+            const int src_w = frame.nv12.cols;
+            const int src_h = (frame.nv12.rows * 2) / 3;
+            packet->width = a.rotate_90ccw ? src_h : src_w;
+            packet->height = a.rotate_90ccw ? src_w : src_h;
             packet->nv12 = std::make_shared<cv::Mat>(std::move(frame.nv12));
             packet->gst_owner = std::move(frame.owner);
             try {
                 const auto t0 = Clock::now();
-                packet->prep = pre->preprocess(*packet->nv12);
+                packet->prep = pre->preprocess(*packet->nv12, a.rotate_90ccw);
                 if (!a.dump_input.empty() && packet->id == 0) {
                     std::ofstream dump(a.dump_input, std::ios::binary);
                     if (!dump) throw std::runtime_error("cannot open --dump-input path");
@@ -978,6 +943,8 @@ int main(int argc, char** argv) {
         cv::Mat bgr;
         if (item->nv12 && !item->nv12->empty()) {
             cv::cvtColor(*item->nv12, bgr, cv::COLOR_YUV2BGR_NV12);
+            // Detections/geometry are in rotated-frame coordinates, so the
+            // drawn-on picture must be rotated the same way.
             if (a.rotate_90ccw) cv::rotate(bgr, bgr, cv::ROTATE_90_COUNTERCLOCKWISE);
             if (!a.no_display || rtsp_streamer.running()) {
                 draw_detections(bgr, item->detections, class_names, rps_mapper,
