@@ -33,14 +33,22 @@ __kernel void yuv420_to_yolo(read_only image2d_t yimg, read_only image2d_t uimg,
     int ry = y - pad_y;
     float sx = (((float)rx + 0.5f) * x_scale) - 0.5f;
     float sy = (((float)ry + 0.5f) * y_scale) - 0.5f;
-    // (sx, sy) are sample coords in the letterboxed frame. With rotate=1 that
-    // frame is the source rotated 90 CCW: rot(i,j) = src(j, in_w-1-i), so a
-    // rotated-frame point maps back to source (col = in_w-1-sy, row = sx).
-    // Verified against a 4x3 letter matrix and np.rot90(k=1).
+    // (sx, sy) are sample coords in the letterboxed frame. With rotate != 0
+    // that frame is the source rotated; map a rotated-frame point back to
+    // source coords (verified against letter matrices and np.rot90):
+    //   1 = 90 CCW: rot(i,j) = src(j, W-1-i)      -> src = (col W-1-sy, row sx)
+    //   2 = 90 CW : rot(i,j) = src(H-1-j, i)      -> src = (col sy,     row H-1-sx)
+    //   3 = 180   : rot(i,j) = src(H-1-i, W-1-j)  -> src = (col W-1-sx, row H-1-sy)
     float sxf = sx, syf = sy;
-    if (rotate) {
+    if (rotate == 1) {
         sxf = (float)in_w - 1.0f - sy;
         syf = sx;
+    } else if (rotate == 2) {
+        sxf = sy;
+        syf = (float)in_h - 1.0f - sx;
+    } else if (rotate == 3) {
+        sxf = (float)in_w - 1.0f - sx;
+        syf = (float)in_h - 1.0f - sy;
     }
     float r, g, b;
     if (rx < 0 || ry < 0 || rx >= resized_w || ry >= resized_h) {
@@ -300,7 +308,7 @@ bool OpenClPreprocessor::init(int out_width, int out_height) {
 }
 
 OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12,
-                                                          bool rotate_90ccw) {
+                                                          int rotate) {
     if (!impl_) throw std::runtime_error("OpenCL preprocessor not initialized");
     if (nv12.empty() || nv12.type() != CV_8UC1 || nv12.rows * 2 % 3 != 0) {
         throw std::runtime_error("OpenCL NV12 input must be non-empty CV_8UC1 with height 3/2*h");
@@ -316,10 +324,11 @@ OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12,
     }
 
     const auto t0 = std::chrono::steady_clock::now();
-    // With rotation the letterboxed/inference frame is the source rotated 90
-    // CCW, i.e. a height x width frame; the kernel maps sample coordinates
-    // back onto the unrotated NV12 images.
-    const LetterboxGeometry geometry = rotate_90ccw
+    // With a 90-degree rotation the letterboxed/inference frame is the source
+    // rotated (height x width); the kernel maps sample coordinates back onto
+    // the unrotated NV12 images. 180 keeps the source dimensions.
+    const bool swap_dims = (rotate == 1 || rotate == 2);
+    const LetterboxGeometry geometry = swap_dims
         ? calculate_geometry(height, width, impl_->out_w, impl_->out_h)
         : calculate_geometry(width, height, impl_->out_w, impl_->out_h);
     impl_->ensure_io(width, height);
@@ -362,15 +371,15 @@ OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12,
     set_arg(9, sizeof(int), &geometry.resized_height, "clSetKernelArg resized height");
     // With rotation the letterbox geometry describes the rotated frame, whose
     // width/height are the source's height/width.
-    const int frame_w = rotate_90ccw ? height : width;
-    const int frame_h = rotate_90ccw ? width : height;
+    const int frame_w = swap_dims ? height : width;
+    const int frame_h = swap_dims ? width : height;
     const float x_scale = frame_w / static_cast<float>(geometry.resized_width);
     const float y_scale = frame_h / static_cast<float>(geometry.resized_height);
     set_arg(10, sizeof(float), &x_scale, "clSetKernelArg x scale");
     set_arg(11, sizeof(float), &y_scale, "clSetKernelArg y scale");
     set_arg(12, sizeof(int), &geometry.pad_x, "clSetKernelArg pad x");
     set_arg(13, sizeof(int), &geometry.pad_y, "clSetKernelArg pad y");
-    const int rotate_flag = rotate_90ccw ? 1 : 0;
+    const int rotate_flag = rotate;  // 0=none 1=90ccw 2=90cw 3=180
     set_arg(14, sizeof(int), &rotate_flag, "clSetKernelArg rotate");
 
     const size_t global[] = {static_cast<size_t>(impl_->out_w),

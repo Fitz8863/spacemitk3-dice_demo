@@ -141,10 +141,12 @@ struct Args {
     int focus = 0, zoom = 150;
     float conf = 0.25f;
     size_t queue_depth = 2;
-    // Rotate every captured frame 90 degrees counter-clockwise before
-    // preprocessing/display (mounting the camera sideways). Width/height then
-    // describe the *captured* frame; the rotated frame is height x width.
-    bool rotate_90ccw = false;
+    // Rotate every captured frame before preprocessing/display (mounting the
+    // camera sideways or upside down). Width/height describe the *captured*
+    // frame; the inference/display frame is rotated accordingly.
+    bool rotate_enabled = false;
+    std::string rotate_direction = "cw";  // "cw" | "ccw" (90-degree modes only)
+    int rotate_angle = 90;                // 90 | 180
     bool no_display = false;
     int max_frames = 0;
     bool self_test = false;
@@ -302,7 +304,39 @@ static bool load_config(const std::string& path, Args& a) {
             a.class_names = std::move(names);
         }
         if (!read_config_bool(root, "filter_no_gesture", a.filter_no_gesture)) return false;
-        if (!read_config_bool(root, "rotate_90ccw", a.rotate_90ccw)) return false;
+        if (!read_config_bool(root, "rotate_90ccw", a.rotate_enabled)) {
+            return false;
+        }
+        if (a.rotate_enabled) {
+            // Legacy key: the original implementation was 90 CCW.
+            a.rotate_direction = "ccw";
+            a.rotate_angle = 90;
+        }
+        const cv::FileNode rotate = root["rotate"];
+        if (!rotate.empty()) {
+            if (!rotate.isMap()) {
+                std::cerr << "config rotate must be a JSON object "
+                             "{enabled, direction, angle}\n";
+                return false;
+            }
+            if (!read_config_bool(rotate, "enabled", a.rotate_enabled)) return false;
+            std::string direction = a.rotate_direction;
+            read_config_value(rotate, "direction", direction);
+            std::transform(direction.begin(), direction.end(), direction.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (direction != "cw" && direction != "ccw") {
+                std::cerr << "config rotate.direction must be \"cw\" or \"ccw\"\n";
+                return false;
+            }
+            a.rotate_direction = direction;
+            int angle = a.rotate_angle;
+            read_config_value(rotate, "angle", angle);
+            if (angle != 90 && angle != 180) {
+                std::cerr << "config rotate.angle must be 90 or 180\n";
+                return false;
+            }
+            a.rotate_angle = angle;
+        }
         if (!read_config_bool(root, "rps_mode", a.rps_mode)) return false;
         const cv::FileNode rps_map = root["rps_map"];
         if (!rps_map.empty()) {
@@ -388,8 +422,8 @@ static void usage(const char* exe) {
               << "  --classes LIST     comma-separated class names, e.g. like,ok,peace\n"
               << "  --show-no-gesture  draw the no_gesture class too (config: filter_no_gesture=false)\n"
               << "  --no-rps           keep raw 34-class labels instead of rock/paper/scissors mapping\n"
-              << "  --rotate-90ccw     rotate frames 90 deg counter-clockwise before inference/display\n"
-              << "                     (config: rotate_90ccw=true)\n"
+              << "  --rotate MODE      rotate frames before inference/display: none, 90cw, 90ccw, 180\n"
+              << "                     (config: rotate{enabled,direction,angle})\n"
               << "  --queue-depth N    keep up to N frames per pipeline queue\n"
               << "  --focus N          fixed manual focus (-1 unchanged)\n"
               << "  --zoom N           zoom absolute value (-1 unchanged)\n"
@@ -431,6 +465,14 @@ static bool validate_args(Args& a) {
         return false;
     }
     if (a.rtsp_path.front() != '/') a.rtsp_path.insert(a.rtsp_path.begin(), '/');
+    if (a.rotate_angle != 90 && a.rotate_angle != 180) {
+        std::cerr << "rotate angle must be 90 or 180\n";
+        return false;
+    }
+    if (a.rotate_direction != "cw" && a.rotate_direction != "ccw") {
+        std::cerr << "rotate direction must be \"cw\" or \"ccw\"\n";
+        return false;
+    }
     if (a.intra_threads < 1) {
         std::cerr << "--intra-threads must be >= 1\n";
         return false;
@@ -515,7 +557,25 @@ static bool parse(int argc, char** argv, Args& a) {
             else if (k == "--classes" && (v = need(i))) a.class_names = split_class_names(v);
             else if (k == "--show-no-gesture") a.filter_no_gesture = false;
             else if (k == "--no-rps") a.rps_mode = false;
-            else if (k == "--rotate-90ccw") a.rotate_90ccw = true;
+            else if (k == "--rotate-90ccw") {  // legacy alias
+                a.rotate_enabled = true;
+                a.rotate_direction = "ccw";
+                a.rotate_angle = 90;
+            } else if (k == "--rotate" && (v = need(i))) {
+                const std::string mode = v;
+                if (mode == "none") {
+                    a.rotate_enabled = false;
+                } else if (mode == "90ccw") {
+                    a.rotate_enabled = true; a.rotate_direction = "ccw"; a.rotate_angle = 90;
+                } else if (mode == "90cw") {
+                    a.rotate_enabled = true; a.rotate_direction = "cw"; a.rotate_angle = 90;
+                } else if (mode == "180") {
+                    a.rotate_enabled = true; a.rotate_angle = 180;
+                } else {
+                    std::cerr << "--rotate must be none, 90cw, 90ccw, or 180\n";
+                    return false;
+                }
+            }
             else if (k == "--queue-depth" && (v = need(i))) {
                 a.queue_depth = static_cast<std::size_t>(std::stoul(v));
             } else if (k == "--focus" && (v = need(i))) a.focus = std::stoi(v);
@@ -699,6 +759,17 @@ int main(int argc, char** argv) {
         std::cout << "\n";
     }
 
+    // Derived rotation mode: 0 = none, 1 = 90 CCW, 2 = 90 CW, 3 = 180.
+    // 180 keeps the frame dimensions; the 90-degree modes swap them.
+    const int rotate_mode = !a.rotate_enabled ? 0
+        : (a.rotate_angle == 180 ? 3 : (a.rotate_direction == "ccw" ? 1 : 2));
+    const bool swap_dims = (rotate_mode == 1 || rotate_mode == 2);
+    if (rotate_mode != 0) {
+        std::cout << "Rotation: "
+                  << (rotate_mode == 3 ? "180" :
+                      (rotate_mode == 1 ? "90 ccw" : "90 cw")) << "\n";
+    }
+
     std::unique_ptr<OpenClPreprocessor> pre;
     std::unique_ptr<Yolov10Detector> detector;
     if (a.yolov10_enabled) {
@@ -723,7 +794,7 @@ int main(int argc, char** argv) {
             constexpr int synthetic_height = 720;
             cv::Mat synthetic_nv12(synthetic_height * 3 / 2, synthetic_width,
                                    CV_8UC1, cv::Scalar(128));
-            const auto prep_result = pre->preprocess(synthetic_nv12, a.rotate_90ccw);
+            const auto prep_result = pre->preprocess(synthetic_nv12, rotate_mode);
             if (!prep_result.data || prep_result.data->size() != 3 * 640 * 640) {
                 throw std::runtime_error("OpenCL self-test returned an invalid tensor");
             }
@@ -759,8 +830,8 @@ int main(int argc, char** argv) {
     }
     // The published frame is the rotated one, so its size differs from the
     // captured size when rotation is enabled.
-    const int out_width = a.rotate_90ccw ? a.height : a.width;
-    const int out_height = a.rotate_90ccw ? a.width : a.height;
+    const int out_width = swap_dims ? a.height : a.width;
+    const int out_height = swap_dims ? a.width : a.height;
     RtspStreamer rtsp_streamer;
     if (a.rtsp_enabled && !rtsp_streamer.start(a.rtsp_host, a.rtsp_port, a.rtsp_path,
                                                 out_width, out_height, camera.negotiated_fps())) {
@@ -792,7 +863,9 @@ int main(int argc, char** argv) {
             cv::Mat bgr;
             if (frame.nv12.empty()) continue;
             cv::cvtColor(frame.nv12, bgr, cv::COLOR_YUV2BGR_NV12);
-            if (a.rotate_90ccw) cv::rotate(bgr, bgr, cv::ROTATE_90_COUNTERCLOCKWISE);
+            if (rotate_mode == 1) cv::rotate(bgr, bgr, cv::ROTATE_90_COUNTERCLOCKWISE);
+            else if (rotate_mode == 2) cv::rotate(bgr, bgr, cv::ROTATE_90_CLOCKWISE);
+            else if (rotate_mode == 3) cv::rotate(bgr, bgr, cv::ROTATE_180);
             rtsp_streamer.publish(bgr);
             if (a.no_display) continue;
             cv::imshow("yolov10-k3", bgr);
@@ -839,18 +912,18 @@ int main(int argc, char** argv) {
             timeout_count = 0;
             auto packet = std::make_shared<PreparedFrame>();
             packet->id = id++;
-            // The NV12 buffer stays unrotated; with rotate_90ccw the OpenCL
+            // The NV12 buffer stays unrotated; with rotation the OpenCL
             // kernel maps sample coordinates so preprocessing sees the frame
             // rotated 90 CCW, and the logical frame dims are swapped.
             const int src_w = frame.nv12.cols;
             const int src_h = (frame.nv12.rows * 2) / 3;
-            packet->width = a.rotate_90ccw ? src_h : src_w;
-            packet->height = a.rotate_90ccw ? src_w : src_h;
+            packet->width = swap_dims ? src_h : src_w;
+            packet->height = swap_dims ? src_w : src_h;
             packet->nv12 = std::make_shared<cv::Mat>(std::move(frame.nv12));
             packet->gst_owner = std::move(frame.owner);
             try {
                 const auto t0 = Clock::now();
-                packet->prep = pre->preprocess(*packet->nv12, a.rotate_90ccw);
+                packet->prep = pre->preprocess(*packet->nv12, rotate_mode);
                 if (!a.dump_input.empty() && packet->id == 0) {
                     std::ofstream dump(a.dump_input, std::ios::binary);
                     if (!dump) throw std::runtime_error("cannot open --dump-input path");
@@ -945,7 +1018,9 @@ int main(int argc, char** argv) {
             cv::cvtColor(*item->nv12, bgr, cv::COLOR_YUV2BGR_NV12);
             // Detections/geometry are in rotated-frame coordinates, so the
             // drawn-on picture must be rotated the same way.
-            if (a.rotate_90ccw) cv::rotate(bgr, bgr, cv::ROTATE_90_COUNTERCLOCKWISE);
+            if (rotate_mode == 1) cv::rotate(bgr, bgr, cv::ROTATE_90_COUNTERCLOCKWISE);
+            else if (rotate_mode == 2) cv::rotate(bgr, bgr, cv::ROTATE_90_CLOCKWISE);
+            else if (rotate_mode == 3) cv::rotate(bgr, bgr, cv::ROTATE_180);
             if (!a.no_display || rtsp_streamer.running()) {
                 draw_detections(bgr, item->detections, class_names, rps_mapper,
                                 rps_mapper.labels(item->detections));

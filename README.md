@@ -91,7 +91,7 @@ ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 | `width` / `height` / `fps` | 摄像头请求规格；25fps 请求失败会自动回退到设备可协商帧率。 |
 | `intra_threads` / `ep_affinity` | SpaceMIT EP 线程数与绑核（`14;15`），数量必须一致。 |
 | `conf` | 置信度阈值（模型输出已是概率域，直接比较）。 |
-| `rotate_90ccw` | `true` 时把采集到的每帧画面**逆时针旋转 90°** 后再送识别和推流（摄像头竖装场景用）。`width/height` 仍描述采集规格（如 1280x720），旋转后识别与推流画面为 720x1280；命令行 `--rotate-90ccw` 可临时开启。 |
+| `rotate` | 画面旋转配置对象：`{enabled, direction, angle}`。`enabled=true` 时把采集画面旋转后再送识别和推流；`direction` 为 `cw`（顺时针）/`ccw`（逆时针），仅对 90 度有效；`angle` 为 `90` 或 `180`。`width/height` 仍描述采集规格，90 度旋转后识别与推流画面为竖屏（720x1280），180 度尺寸不变。命令行 `--rotate none\|90cw\|90ccw\|180` 可整体覆盖。旧键 `rotate_90ccw: true` 仍兼容（等价于 enabled+ccw+90）。 |
 | `focus` / `zoom` | 手动对焦/变焦；`-1` 表示不修改。 |
 | `display_enabled` | 是否开 HighGUI 窗口；关闭后仍可 RTSP 推流。 |
 | `yolov10_enabled` | `false` 只采集显示画面，跳过 OpenCL/推理。 |
@@ -159,8 +159,8 @@ ffplay -rtsp_transport tcp rtsp://<K3板端IP>:8554/rps/det
 - 编译：`cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOpenCV_DIR=/usr/lib/riscv64-linux-gnu/cmake/opencv4 && cmake --build build -j4` 通过，产物 `build/yolov10_camera`。
 - `--self-test --no-display --no-rtsp` 通过：OpenCL PowerVR 前处理 21ms，SpaceMIT EP（BASIC 优化级、affinity 14;15）加载 `[1,3,640,640] → [1,300,6]` 正常。
 - 真机短跑（C920 `/dev/video1`，720p MJPEG 硬解，90/120 帧）：`fps_infer` 约 21~23，`infer_ms` 约 35（EP 2 线程），空场景 0 误检。
-- 旋转功能（2026-09-21 追加）：`rotate_90ccw=true` / `--rotate-90ccw`。V4L2 层面无硬件旋转可用（C920 UVC、VPU mvx M2M、spacemitdec/spacemith264enc 均不支持；videoflip 为纯 CPU），故实现为 **OpenCL kernel 内采样重映射**：letterbox geometry 按旋转帧(720x1280)计算，kernel 内按 `rot(i,j)=src(j,W-1-i)` 回映射到未旋转 NV12 图像，GPU 单次遍历完成旋转+前处理，CPU 零开销。显示/推流侧对 BGR 做 `cv::rotate`。
-- 旋转正确性验证：`--dump-input` 导出旋转开/关两态预处理张量，旋转张量回转后与未旋转张量相关性 0.99964、平均像素差 0.36%（残差=插值+两次抓帧间隔的场景微动）。`pre_ms` 8→16ms（GPU 采样转置致纹理缓存局部性下降），仍在帧预算内。
+- 旋转功能（2026-09-21 追加，同日扩展为 4 模式）：`rotate{enabled,direction,angle}` / `--rotate none|90cw|90ccw|180`。V4L2 层面无硬件旋转可用（C920 UVC、VPU mvx M2M、spacemitdec/spacemith264enc 均不支持；videoflip 为纯 CPU），故实现为 **OpenCL kernel 内采样重映射**：90 度模式 letterbox geometry 按旋转帧(720x1280)计算、180 度按原尺寸，kernel 内按模式回映射到未旋转 NV12 图像（`90ccw: rot(i,j)=src(j,W-1-i)`，`90cw: rot(i,j)=src(H-1-j,i)`，`180: rot(i,j)=src(H-1-i,W-1-j)`，均已用字母矩阵+np.rot90 验证），GPU 单次遍历完成旋转+前处理，CPU 零开销。显示/推流侧对 BGR 做 `cv::rotate`。
+- 旋转正确性验证：`--dump-input` 导出各模式预处理张量与 numpy 参考对比——90ccw 相关性 0.99960 / 90cw 0.99922 / 180 0.99964（平均差 ≤0.55%，残差=插值+抓帧间隔的场景微动）；90cw 与 90ccw 相关性 -0.61（方向确已互异）；90 模式 letterbox 黑边在左右、180/无旋转在上下，位置正确。`pre_ms` 无旋转 8ms、90 度 16ms（GPU 采样转置致纹理缓存局部性下降），均在帧预算内。
 - `--no-ep` CPU 对照：单次推理约 2.6s（纯 CPU 慢属预期），输出与 EP 一致 → EP 对该 PPQ 量化图行为正常（对照了真实照片的 top5 候选与 conf 序列）。
 - RTSP 推流 `rtsp://127.0.0.1:8554/rps/det`：MediaMTX 收流正常，`ffprobe` 得 h264 Main 1280x720，抓帧核对检测框/标签/HUD 完整；SIGTERM 优雅退出、摄像头释放。
 - ★ 推理报 `tcm buffer acquire failed for core id N` 时：先 `spacemit-tcm-smi -i` 看占用块，若 PID 已死（`ps -p <PID>` 查无此进程）就是僵尸 TCM，`spacemit-tcm-smi -c` 清理后重启即可（2026-09-20 实测：hand_track 异常退出留下 2 个僵尸块导致本工程起不来，清理后恢复 24fps/35ms）。

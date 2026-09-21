@@ -21,11 +21,11 @@ public:
     // NV12 is a CV_8UC1 matrix with height * 3 / 2 rows. The host copy is
     // split into Y/U/V OpenCL images; color conversion, resize, letterbox and
     // CHW packing run in the GPU kernel.
-    // rotate_90ccw: the letterbox/inference frame is the source rotated 90
-    // degrees counter-clockwise (mapping done inside the kernel, so the NV12
-    // buffer itself stays unrotated). Result scale/pad are relative to the
-    // rotated frame.
-    Result preprocess(const cv::Mat& nv12, bool rotate_90ccw = false);
+    // rotate: 0 = none, 1 = 90 counter-clockwise, 2 = 90 clockwise, 3 = 180.
+    // The rotation is a sample-coordinate remap inside the kernel, so the
+    // NV12 buffer itself stays unrotated. Result scale/pad are relative to
+    // the rotated frame (swapped dims for the 90-degree modes).
+    Result preprocess(const cv::Mat& nv12, int rotate = 0);
     const char* device_name() const { return device_name_.c_str(); }
 
 private:
