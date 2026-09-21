@@ -16,6 +16,7 @@ not by loosening the schema.
 from __future__ import annotations
 
 import re
+import sys
 from typing import Any, Mapping
 
 # Kept in sync with TtsProvider.max_text_chars; imported lazily-free as a
@@ -283,9 +284,12 @@ def validate_state_machine(machine: Any, game_id: str) -> dict[str, Any]:
     if unreachable:
         # A state no path reaches is usually leftover code after deleting an
         # upstream node; warn loudly but keep loading so a deliberate reserve
-        # state stays possible.
+        # state stays possible.  This goes to stderr: shell scripts capture
+        # componentctl's stdout as a provider-id list, and a warning line
+        # mixed in becomes a bogus "provider id" (start/stop_web.sh, 2026-09-21).
         print(
             f"[state-machine] game {game_id!r} has unreachable states: {unreachable}",
+            file=sys.stderr,
             flush=True,
         )
     return machine
