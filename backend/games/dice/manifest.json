@@ -170,8 +170,7 @@
 				],
 				"on_intent": {
 					"start_shake": {
-						"to": "shake_countdown",
-						"after_speech": true
+						"to": "shake_countdown"
 					},
 					"back": {
 						"to": "rules"
@@ -208,11 +207,11 @@
 				"tick_seconds": 1.0,
 				"on_intent": {
 					"stop_shake": {
-						"to": "open_reveal"
+						"to": "vision_countdown"
 					}
 				},
 				"on_expire": {
-					"to": "open_reveal"
+					"to": "vision_countdown"
 				}
 			},
 			"open_reveal": {

@@ -592,17 +592,20 @@ def test_manifest_voice_phrases_cover_every_state_intent():
     assert "确定" in phrases["start_shake"]
 
 
-def test_ready_start_button_waits_for_the_opening_announcement():
-    """ready 的绿键必须等开场播报念完（after_speech，2026-09-18）。
+def test_ready_start_button_can_interrupt_the_opening_announcement():
+    """ready 的绿键不必等开场播报念完（2026-09-21 恢复旧行为）。
 
-    回归守护：此前播报中途按绿键/Enter 可直接打断台词进入倒计时；现在
-    start_shake 声明 after_speech，这条声明被误删时这里先红。
+    回归守护：9249ee9（2026-09-18）曾给 start_shake 声明 after_speech 闸
+    （播报未完按绿键 409 静默拒绝），2026-09-21 按用户要求撤销——播报中途
+    按绿键/Enter 直接打断进入倒计时，残留播报由下一状态的入场语音顶替
+    （前端顶替路径停止旧音频并立即回执 speech_done）。这条声明被误加回来
+    时这里先红。
     """
     ready = dice_state("ready")
     start = ready["on_intent"]["start_shake"]
     assert start["to"] == "shake_countdown"
-    assert start["after_speech"] is True
-    # back 不设闸：播报中途仍可返回规则页。
+    assert "after_speech" not in start
+    # back 同样不设闸：播报中途仍可返回规则页。
     assert "after_speech" not in ready["on_intent"]["back"]
 
 
