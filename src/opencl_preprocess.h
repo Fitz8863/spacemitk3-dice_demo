@@ -22,10 +22,12 @@ public:
     // split into Y/U/V OpenCL images; color conversion, resize, letterbox and
     // CHW packing run in the GPU kernel.
     // rotate: 0 = none, 1 = 90 counter-clockwise, 2 = 90 clockwise, 3 = 180.
-    // The rotation is a sample-coordinate remap inside the kernel, so the
-    // NV12 buffer itself stays unrotated. Result scale/pad are relative to
-    // the rotated frame (swapped dims for the 90-degree modes).
-    Result preprocess(const cv::Mat& nv12, int rotate = 0);
+    // crop_w/crop_h: inference crop size in the streamed (rotated) frame —
+    // the model only sees this region, so a hand inside it appears enlarged
+    // in model space (0 = whole frame). roi_x/roi_y: that crop's origin in
+    // the streamed frame (pixels). Result scale/pad are relative to the crop.
+    Result preprocess(const cv::Mat& nv12, int rotate = 0, int crop_w = 0,
+                      int crop_h = 0, float roi_x = 0.0f, float roi_y = 0.0f);
     const char* device_name() const { return device_name_.c_str(); }
 
 private:

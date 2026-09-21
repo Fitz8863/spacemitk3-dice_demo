@@ -185,6 +185,13 @@ struct PreparedFrame {
     uint64_t id = 0;
     int width = 0;
     int height = 0;
+    // Inference crop inside the streamed (rotated) frame: the model only
+    // sees this region; detections come back in crop coords and are shifted
+    // by the origin into streamed-frame coordinates.
+    int crop_w = 0;
+    int crop_h = 0;
+    float crop_ox = 0.0f;
+    float crop_oy = 0.0f;
     OpenClPreprocessor::Result prep;
     std::shared_ptr<cv::Mat> nv12;
     std::shared_ptr<void> gst_owner;
@@ -864,6 +871,27 @@ int main(int argc, char** argv) {
                       (rotate_mode == 1 ? "90 ccw" : "90 cw")) << "\n";
     }
 
+    // Inference crop: with roi enabled the model only sees the ROI region of
+    // the streamed frame, so hands inside it appear ~1/roi fraction larger in
+    // model space. The rect is even-aligned so the letterbox pads stay even.
+    const int stream_w = swap_dims ? a.height : a.width;
+    const int stream_h = swap_dims ? a.width : a.height;
+    const auto even_floor = [](float v) { return std::max(0, static_cast<int>(v) & ~1); };
+    int crop_w = a.roi_enabled ? even_floor(a.roi_w * stream_w) : stream_w;
+    int crop_h = a.roi_enabled ? even_floor(a.roi_h * stream_h) : stream_h;
+    int crop_ox = a.roi_enabled ? even_floor(a.roi_x * stream_w) : 0;
+    int crop_oy = a.roi_enabled ? even_floor(a.roi_y * stream_h) : 0;
+    crop_w = std::min(crop_w, even_floor(stream_w));
+    crop_h = std::min(crop_h, even_floor(stream_h));
+    crop_ox = std::min(crop_ox, stream_w - crop_w);
+    crop_oy = std::min(crop_oy, stream_h - crop_h);
+    std::cout << "Inference crop: " << crop_w << "x" << crop_h << " at +" << crop_ox
+              << ",+" << crop_oy << " (stream " << stream_w << "x" << stream_h
+              << ", hand scale x" << std::fixed << std::setprecision(2)
+              << (static_cast<float>(std::max(stream_w, stream_h)) /
+                  std::max(1, std::max(crop_w, crop_h)))
+              << ")\n";
+
     std::unique_ptr<OpenClPreprocessor> pre;
     std::unique_ptr<Yolov10Detector> detector;
     if (a.yolov10_enabled) {
@@ -888,8 +916,7 @@ int main(int argc, char** argv) {
             constexpr int synthetic_height = 720;
             cv::Mat synthetic_nv12(synthetic_height * 3 / 2, synthetic_width,
                                    CV_8UC1, cv::Scalar(128));
-            const auto prep_result = pre->preprocess(synthetic_nv12, rotate_mode);
-            if (!prep_result.data || prep_result.data->size() != 3 * 640 * 640) {
+            const auto prep_result = pre->preprocess(synthetic_nv12, rotate_mode);            if (!prep_result.data || prep_result.data->size() != 3 * 640 * 640) {
                 throw std::runtime_error("OpenCL self-test returned an invalid tensor");
             }
             for (float value : *prep_result.data) {
@@ -998,11 +1025,17 @@ int main(int argc, char** argv) {
             const int src_h = (frame.nv12.rows * 2) / 3;
             packet->width = swap_dims ? src_h : src_w;
             packet->height = swap_dims ? src_w : src_h;
+            packet->crop_w = crop_w;
+            packet->crop_h = crop_h;
+            packet->crop_ox = static_cast<float>(crop_ox);
+            packet->crop_oy = static_cast<float>(crop_oy);
             packet->nv12 = std::make_shared<cv::Mat>(std::move(frame.nv12));
             packet->gst_owner = std::move(frame.owner);
             try {
                 const auto t0 = Clock::now();
-                packet->prep = pre->preprocess(*packet->nv12, rotate_mode);
+                packet->prep = pre->preprocess(*packet->nv12, rotate_mode,
+                                               packet->crop_w, packet->crop_h,
+                                               packet->crop_ox, packet->crop_oy);
                 if (!a.dump_input.empty() && packet->id == 0) {
                     std::ofstream dump(a.dump_input, std::ios::binary);
                     if (!dump) throw std::runtime_error("cannot open --dump-input path");
@@ -1040,12 +1073,23 @@ int main(int argc, char** argv) {
                 try {
                     result->detections = detector->infer(packet->prep.data->data(), packet->prep.data->size(),
                                                          a.conf, packet->prep.scale, packet->prep.pad_x,
-                                                         packet->prep.pad_y, packet->width, packet->height);
+                                                         packet->prep.pad_y, packet->crop_w, packet->crop_h);
                 } catch (const std::exception& e) {
                     if (is_tcm_resource_error(e.what())) {
                         print_tcm_resource_hint(e.what(), a.ep_affinity);
                     }
                     throw;
+                }
+                // Boxes come back in crop coordinates; shift them into
+                // streamed-frame coordinates so every downstream consumer
+                // (ROI gate, stabilizer, drawing) works in one space.
+                if (packet->crop_ox != 0.0f || packet->crop_oy != 0.0f) {
+                    for (auto& d : result->detections) {
+                        d.x1 += packet->crop_ox;
+                        d.x2 += packet->crop_ox;
+                        d.y1 += packet->crop_oy;
+                        d.y2 += packet->crop_oy;
+                    }
                 }
                 if (no_gesture_id >= 0) {
                     result->detections.erase(

@@ -25,7 +25,8 @@ __kernel void yuv420_to_yolo(read_only image2d_t yimg, read_only image2d_t uimg,
                              int in_w, int in_h, int out_w, int out_h,
                              int resized_w, int resized_h,
                              float x_scale, float y_scale,
-                             int pad_x, int pad_y, int rotate) {
+                             int pad_x, int pad_y, int rotate,
+                             float roi_x, float roi_y) {
     int x = get_global_id(0), y = get_global_id(1);
     if (x >= out_w || y >= out_h) return;
 
@@ -33,22 +34,26 @@ __kernel void yuv420_to_yolo(read_only image2d_t yimg, read_only image2d_t uimg,
     int ry = y - pad_y;
     float sx = (((float)rx + 0.5f) * x_scale) - 0.5f;
     float sy = (((float)ry + 0.5f) * y_scale) - 0.5f;
-    // (sx, sy) are sample coords in the letterboxed frame. With rotate != 0
-    // that frame is the source rotated; map a rotated-frame point back to
-    // source coords (verified against letter matrices and np.rot90):
-    //   1 = 90 CCW: rot(i,j) = src(j, W-1-i)      -> src = (col W-1-sy, row sx)
-    //   2 = 90 CW : rot(i,j) = src(H-1-j, i)      -> src = (col sy,     row H-1-sx)
-    //   3 = 180   : rot(i,j) = src(H-1-i, W-1-j)  -> src = (col W-1-sx, row H-1-sy)
-    float sxf = sx, syf = sy;
+    // (sx, sy) are sample coords inside the inference crop (in the rotated
+    // frame). Move to rotated-frame coords via the ROI origin, then map a
+    // rotated-frame point back to source coords (verified against letter
+    // matrices and np.rot90, including a lower-half ROI offset):
+    //   1 = 90 CCW: rot(i,j) = src(j, W-1-i)      -> src = (col W-1-fy, row fx)
+    //   2 = 90 CW : rot(i,j) = src(H-1-j, i)      -> src = (col fy,     row H-1-fx)
+    //   3 = 180   : rot(i,j) = src(H-1-i, W-1-j)  -> src = (col W-1-fx, row H-1-fy)
+    // where fx = roi_x + sx, fy = roi_y + sy.
+    float fx = roi_x + sx;
+    float fy = roi_y + sy;
+    float sxf = fx, syf = fy;
     if (rotate == 1) {
-        sxf = (float)in_w - 1.0f - sy;
-        syf = sx;
+        sxf = (float)in_w - 1.0f - fy;
+        syf = fx;
     } else if (rotate == 2) {
-        sxf = sy;
-        syf = (float)in_h - 1.0f - sx;
+        sxf = fy;
+        syf = (float)in_h - 1.0f - fx;
     } else if (rotate == 3) {
-        sxf = (float)in_w - 1.0f - sx;
-        syf = (float)in_h - 1.0f - sy;
+        sxf = (float)in_w - 1.0f - fx;
+        syf = (float)in_h - 1.0f - fy;
     }
     float r, g, b;
     if (rx < 0 || ry < 0 || rx >= resized_w || ry >= resized_h) {
@@ -308,7 +313,9 @@ bool OpenClPreprocessor::init(int out_width, int out_height) {
 }
 
 OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12,
-                                                          int rotate) {
+                                                          int rotate, int crop_w,
+                                                          int crop_h, float roi_x,
+                                                          float roi_y) {
     if (!impl_) throw std::runtime_error("OpenCL preprocessor not initialized");
     if (nv12.empty() || nv12.type() != CV_8UC1 || nv12.rows * 2 % 3 != 0) {
         throw std::runtime_error("OpenCL NV12 input must be non-empty CV_8UC1 with height 3/2*h");
@@ -324,13 +331,18 @@ OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12,
     }
 
     const auto t0 = std::chrono::steady_clock::now();
-    // With a 90-degree rotation the letterboxed/inference frame is the source
-    // rotated (height x width); the kernel maps sample coordinates back onto
-    // the unrotated NV12 images. 180 keeps the source dimensions.
+    // The letterboxed/inference frame is the crop (given in streamed/rotated
+    // frame coordinates; falls back to the whole frame). For 90-degree
+    // rotations the streamed frame itself is the source rotated, so the
+    // default crop dims are swapped; the kernel maps sample coordinates back
+    // onto the unrotated NV12 images via the ROI origin.
     const bool swap_dims = (rotate == 1 || rotate == 2);
-    const LetterboxGeometry geometry = swap_dims
-        ? calculate_geometry(height, width, impl_->out_w, impl_->out_h)
-        : calculate_geometry(width, height, impl_->out_w, impl_->out_h);
+    const int def_w = swap_dims ? height : width;
+    const int def_h = swap_dims ? width : height;
+    const int frame_w = crop_w > 0 ? crop_w : def_w;
+    const int frame_h = crop_h > 0 ? crop_h : def_h;
+    const LetterboxGeometry geometry =
+        calculate_geometry(frame_w, frame_h, impl_->out_w, impl_->out_h);
     impl_->ensure_io(width, height);
 
     for (int row = 0; row < height; ++row) {
@@ -371,8 +383,6 @@ OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12,
     set_arg(9, sizeof(int), &geometry.resized_height, "clSetKernelArg resized height");
     // With rotation the letterbox geometry describes the rotated frame, whose
     // width/height are the source's height/width.
-    const int frame_w = swap_dims ? height : width;
-    const int frame_h = swap_dims ? width : height;
     const float x_scale = frame_w / static_cast<float>(geometry.resized_width);
     const float y_scale = frame_h / static_cast<float>(geometry.resized_height);
     set_arg(10, sizeof(float), &x_scale, "clSetKernelArg x scale");
@@ -381,6 +391,8 @@ OpenClPreprocessor::Result OpenClPreprocessor::preprocess(const cv::Mat& nv12,
     set_arg(13, sizeof(int), &geometry.pad_y, "clSetKernelArg pad y");
     const int rotate_flag = rotate;  // 0=none 1=90ccw 2=90cw 3=180
     set_arg(14, sizeof(int), &rotate_flag, "clSetKernelArg rotate");
+    set_arg(15, sizeof(float), &roi_x, "clSetKernelArg roi x");
+    set_arg(16, sizeof(float), &roi_y, "clSetKernelArg roi y");
 
     const size_t global[] = {static_cast<size_t>(impl_->out_w),
                              static_cast<size_t>(impl_->out_h)};
