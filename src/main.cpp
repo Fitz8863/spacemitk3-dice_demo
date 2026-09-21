@@ -159,7 +159,7 @@ struct Args {
     RpsMapper::LabelMap rps_map = {
         {"Rock", {"fist", "grabbing", "grip"}},
         {"Paper", {"palm", "stop", "stop_inverted"}},
-        {"Scissors", {"peace", "peace_inverted", "three2"}},
+        {"Scissors", {"peace", "peace_inverted", "two_up", "two_up_inverted"}},
     };
     bool yolov10_enabled = true;
     bool rtsp_enabled = false;
