@@ -748,6 +748,126 @@ def _round_adjudicate_fn(game_id: str):
     return adjudicate
 
 
+def _round_robot_fn(game_id: str):
+    """Bridge a round's robot actions onto the shared robot-arm provider.
+
+    Slot resolution mirrors the other provider slots (game manifest override
+    over the arena default).  A missing or broken provider never raises into
+    the round: the command returns a failure and the manifest's arm_failed
+    route takes over.
+    """
+
+    def run_robot(action, on_event, is_cancelled, on_log):
+        command = str(action.get("command") or "")
+        timeout = action.get("timeout_seconds")
+        try:
+            provider_id = _game_provider_id(game_id, "robot_arm", "")
+            if not provider_id:
+                return {"status": "failed", "reason": "providers.robot_arm slot is not configured"}
+            provider = COMPONENTS.require(provider_id, expected_type="robot")
+        except DiceArenaError as exc:
+            return {"status": "failed", "reason": exc.message}
+        try:
+            if command == "grasp_cup":
+                return provider.grasp_cup(
+                    on_event=on_event, is_cancelled=is_cancelled, timeout_seconds=timeout
+                )
+            if command == "shake_dice":
+                return provider.shake_dice(
+                    on_event=on_event, is_cancelled=is_cancelled, timeout_seconds=timeout
+                )
+            if command == "feedback":
+                return provider.feedback(
+                    str(action.get("kind") or ""),
+                    on_event=on_event,
+                    is_cancelled=is_cancelled,
+                    timeout_seconds=timeout,
+                )
+            if command == "reset_home":
+                return provider.reset_home(
+                    on_event=on_event, is_cancelled=is_cancelled, timeout_seconds=timeout
+                )
+            return {"status": "failed", "reason": f"unknown robot command {command!r}"}
+        except Exception as exc:
+            return {"status": "failed", "reason": str(exc)}
+
+    return run_robot
+
+
+def _manifest_uses_robot(manifest: dict) -> bool:
+    """True when any state's on_enter declares a robot action."""
+    machine = manifest.get("state_machine") or {}
+    for state in (machine.get("states") or {}).values():
+        if not isinstance(state, dict):
+            continue
+        for action in state.get("on_enter") or []:
+            if isinstance(action, dict) and action.get("action") == "robot":
+                return True
+    return False
+
+
+# Robot rounds arm a best-effort post-round home reset.  The generation guard
+# makes a newer round's own ready.reset_home win when rounds overlap.
+_arm_reset_lock = threading.Lock()
+_arm_reset_generation = 0
+
+
+def _watch_round_arm_reset(round_id: str, game_id: str, generation: int) -> None:
+    """Reset the arm home once this robot-using round reaches a terminal status.
+
+    A round that ends mid-gesture (player leaves at the result page) parks the
+    arm off-home; the next round's ready.reset_home covers it in play, but an
+    idle table should not hold a pose either.  Fire-and-forget: failures only
+    log, and the provider's reset_home must not revive a dead runtime.
+    """
+
+    def watch() -> None:
+        while True:
+            time.sleep(0.5)
+            with _arm_reset_lock:
+                if generation != _arm_reset_generation:
+                    return
+            with rounds_lock:
+                round_ = rounds.get(round_id)
+            if round_ is None:
+                return
+            if round_.status == "running":
+                continue
+            break
+        try:
+            provider_id = _game_provider_id(game_id, "robot_arm", "")
+            if not provider_id:
+                return
+            provider = COMPONENTS.require(provider_id, expected_type="robot")
+            outcome = provider.reset_home(
+                on_event=lambda event: None, is_cancelled=lambda: False
+            )
+            if isinstance(outcome, dict) and outcome.get("status") != "completed":
+                print(f"[robot] post-round reset_home: {outcome.get('reason')}", flush=True)
+        except Exception as exc:
+            print(f"[robot] post-round reset_home failed: {exc!r}", flush=True)
+
+    threading.Thread(target=watch, name=f"arm-reset-{round_id[:8]}", daemon=True).start()
+
+
+def _prewarm_robot_provider(game_id: str) -> None:
+    """Start the robot resident runtime early (rules speech covers its warmup).
+
+    Best-effort: an arm that cannot start only means the first robot command
+    fails into arm_failed; it must never block game entry.
+    """
+    try:
+        provider_id = _game_provider_id(game_id, "robot_arm", "")
+        if not provider_id:
+            return
+        provider = COMPONENTS.require(provider_id, expected_type="robot")
+        ensure_started = getattr(provider, "ensure_started", None)
+        if callable(ensure_started):
+            ensure_started()
+    except Exception as exc:
+        print(f"[robot] resident prewarm failed: {exc!r}", flush=True)
+
+
 def create_round(game_id: str) -> GameRound:
     manifest = require_game(get_games(), game_id)
     if not isinstance(manifest.get("state_machine"), dict):
@@ -772,10 +892,21 @@ def create_round(game_id: str) -> GameRound:
             game_id=game_id,
             manifest=manifest,
             adjudicate_fn=_round_adjudicate_fn(game_id),
+            robot_fn=_round_robot_fn(game_id),
             log=lambda line: print(f"[round:{round_.id[:8]}] {line}", flush=True),
         )
         rounds[round_.id] = round_
     round_.start()
+    if _manifest_uses_robot(manifest):
+        # Entering the game is when the arm's resident runtime comes up: the
+        # rules speech (~30s) comfortably covers its warmup, and the post-round
+        # home reset is armed for however this round ends.
+        global _arm_reset_generation
+        with _arm_reset_lock:
+            _arm_reset_generation += 1
+            arm_reset_generation = _arm_reset_generation
+        _watch_round_arm_reset(round_.id, game_id, arm_reset_generation)
+        _prewarm_robot_provider(game_id)
     # A fresh round has no SSE consumer yet: it starts inside the presence
     # grace window.  A browser subscribing clears it; nothing connecting
     # (curl-driven rounds) is cancelled by the watchdog like any other

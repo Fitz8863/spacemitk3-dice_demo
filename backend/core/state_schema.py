@@ -9,9 +9,9 @@ and re-pointing the edges that referenced it; the validator turns a missed
 re-point into a hard load error instead of silent misbehaviour.
 
 Speech lines are inlined on ``speech`` actions.  Action types are validated
-against a registry-style whitelist so future capabilities (for example a
-``robot`` command) join by extending the whitelist and adding an executor,
-not by loosening the schema.
+against a registry-style whitelist; ``robot`` commands join that registry with
+their own payload shape (see ``ROBOT_COMMANDS``) instead of loosening the
+schema.
 """
 from __future__ import annotations
 
@@ -23,7 +23,14 @@ from typing import Any, Mapping
 # plain constant to keep this module free of the component import graph.
 MAX_SPEECH_TEXT_CHARS = 4000
 
-ACTION_TYPES = {"speech", "adjudicate"}
+ACTION_TYPES = {"speech", "adjudicate", "robot"}
+
+# Robot commands the engine can dispatch, mirrored by the provider base class.
+# ``grasp_cup`` stops before any shaking; ``shake_dice`` covers
+# shake→place→return-home as one physical chain; ``feedback`` performs a
+# result gesture selected by the round's winner_role.
+ROBOT_COMMANDS = {"grasp_cup", "shake_dice", "feedback", "reset_home"}
+ROBOT_FEEDBACK_KINDS = {"win", "lose", "draw"}
 
 # The single context selector supported today: the adjudicated winner maps a
 # result-state announcement to PLAYER/AGENT/TIE speech cases.
@@ -111,6 +118,49 @@ def _validate_speech_content(action: Mapping[str, Any], field: str) -> None:
         )
 
 
+def _validate_robot_action(action: Mapping[str, Any], field: str) -> None:
+    """Validate one robot action payload (command/timeout_seconds/feedback cases)."""
+    if "await" in action:
+        raise _error(f"{field}.await", "robot actions run in the background and cannot await")
+    command = action.get("command")
+    if command not in ROBOT_COMMANDS:
+        raise _error(
+            f"{field}.command", f"must be one of {sorted(ROBOT_COMMANDS)} (got {command!r})"
+        )
+    if command == "feedback":
+        # The gesture is chosen from the adjudicated winner_role; the case
+        # values are gesture names, not speech payloads, so the shared
+        # select_by machinery below cannot validate them.
+        if action.get("select_by") != "winner_role":
+            raise _error(f"{field}.select_by", "robot feedback must select_by winner_role")
+        cases = action.get("cases")
+        if not isinstance(cases, dict):
+            raise _error(f"{field}.cases", "must be an object")
+        missing = SELECT_BY_CASES - set(cases)
+        if missing:
+            raise _error(f"{field}.cases", f"missing outcomes: {sorted(missing)}")
+        for name, kind in cases.items():
+            if name not in SELECT_BY_CASES:
+                raise _error(f"{field}.cases.{name}", f"must be one of {sorted(SELECT_BY_CASES)}")
+            if kind not in ROBOT_FEEDBACK_KINDS:
+                raise _error(
+                    f"{field}.cases.{name}",
+                    f"must be one of {sorted(ROBOT_FEEDBACK_KINDS)} (got {kind!r})",
+                )
+        extra = set(action) - {"action", "command", "select_by", "cases"}
+        if extra:
+            raise _error(field, f"robot feedback accepts no extra keys: {sorted(extra)}")
+        return
+    allowed = {"action", "command"}
+    if command in {"grasp_cup", "shake_dice"}:
+        allowed.add("timeout_seconds")
+        if "timeout_seconds" in action:
+            _require_number(action["timeout_seconds"], f"{field}.timeout_seconds", low=0)
+    extra = set(action) - allowed
+    if extra:
+        raise _error(field, f"robot {command} accepts no extra keys: {sorted(extra)}")
+
+
 def _validate_action(action: Any, field: str) -> None:
     if not isinstance(action, dict):
         raise _error(field, "must be an object")
@@ -120,6 +170,9 @@ def _validate_action(action: Any, field: str) -> None:
             f"{field}.action", f"must be one of {sorted(ACTION_TYPES)} (got {action_type!r})"
         )
     if action_type == "adjudicate":
+        return
+    if action_type == "robot":
+        _validate_robot_action(action, field)
         return
     if "select_by" in action:
         if action.get("select_by") not in SELECT_BY_KEYS:

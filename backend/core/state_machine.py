@@ -25,6 +25,16 @@ Execution model
   the state's ``on_event`` table (``adjudication.result`` /
   ``adjudication.diagnosis``) and becomes the template context for later
   speech placeholders.
+* ``robot`` actions dispatch an injectable robot callable on their own daemon
+  thread and return immediately — physical motion never blocks the worker,
+  so a countdown keeps ticking while the arm grasps.  The command's outcome
+  routes through whichever state is current when it completes, under a
+  command-scoped name (``robot.<command>.completed`` / ``robot.<command>.
+  failed``): with two commands per round the grasp and the shake cannot be
+  mistaken for each other.  A state that declares no route for an outcome is
+  not an error — the round simply continues (the ``robot_unrouted``
+  observation records it).  Cancellation is round-level only: a normal state
+  transition never aborts a physical arm cycle halfway.
 """
 from __future__ import annotations
 
@@ -47,7 +57,7 @@ AWAIT_FALLBACK_SECONDS = 30.0
 # entries expire lazily on read after this many seconds.
 SPEECH_ACK_FALLBACK_SECONDS = 90.0
 
-_RELAYED_PROVIDER_EVENTS = {"phase", "progress", "video", "result", "diagnosis"}
+_RELAYED_PROVIDER_EVENTS = {"phase", "progress", "video", "result", "diagnosis", "robot"}
 _TERMINAL_STATUSES = {"exited", "cancelled", "error"}
 
 
@@ -77,6 +87,13 @@ AdjudicateFn = Callable[
     dict[str, Any],
 ]
 
+# Robot actions receive the resolved action mapping (feedback already carries
+# its ``kind``), a progress-event callback, a cancellation probe, and a logger.
+RobotFn = Callable[
+    [Mapping[str, Any], Callable[[dict[str, Any]], None], Callable[[], bool], Callable[[str], None]],
+    dict[str, Any],
+]
+
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -91,6 +108,7 @@ class GameRound:
         game_id: str,
         manifest: Mapping[str, Any],
         adjudicate_fn: AdjudicateFn | None = None,
+        robot_fn: RobotFn | None = None,
         await_fallback_seconds: float = AWAIT_FALLBACK_SECONDS,
         speech_ack_fallback_seconds: float = SPEECH_ACK_FALLBACK_SECONDS,
         round_id: str | None = None,
@@ -105,6 +123,7 @@ class GameRound:
             dict(self.manifest.get("state_machine") or {}), game_id
         )
         self._adjudicate_fn = adjudicate_fn or self._default_adjudicate_fn
+        self._robot_fn = robot_fn
         self._await_fallback_seconds = await_fallback_seconds
         self._speech_ack_fallback_seconds = speech_ack_fallback_seconds
         self._log = log or (lambda line: print(f"[round:{self.id[:8]}] {line}", flush=True))
@@ -352,9 +371,10 @@ class GameRound:
         *,
         trigger: str,
         expected_generation: int | None = None,
-    ) -> None:
+    ) -> bool:
+        """Apply one transition outcome; False when a newer one superseded it."""
         if not isinstance(transition, dict):
-            return
+            return False
         if expected_generation is not None:
             with self.condition:
                 superseded = (
@@ -364,14 +384,14 @@ class GameRound:
             if superseded:
                 # Another transition (or cancellation) won the race; this
                 # one is silently dropped and the snapshot stays coherent.
-                return
+                return False
         if transition.get("exit") is True:
             with self.condition:
                 self._finish_locked("exited")
-            return
+            return True
         if "to" in transition:
             self._enter_state(str(transition["to"]))
-            return
+            return True
         actions = transition.get("actions") or []
         # Intent-attached actions run on the caller's thread.  They are
         # short replay announcements; awaiting here would block the HTTP
@@ -380,6 +400,7 @@ class GameRound:
             if action.get("action") == "speech":
                 self._emit_speech(action)
         _ = trigger
+        return True
 
     # ---- state worker ---------------------------------------------------
 
@@ -397,6 +418,8 @@ class GameRound:
                 elif action.get("action") == "adjudicate":
                     if not self._run_adjudication(generation):
                         return
+                elif action.get("action") == "robot":
+                    self._start_robot_action(action)
             duration = state.get("duration")
             if isinstance(duration, (int, float)) and duration > 0:
                 if not self._run_timer(generation, name, float(duration), state):
@@ -580,3 +603,92 @@ class GameRound:
         on_log: Callable[[str], None],
     ) -> dict[str, Any]:
         raise RuntimeError("no adjudicate_fn configured for this round")
+
+    # ---- robot actions ---------------------------------------------------
+
+    def _resolve_robot_action(self, action: Mapping[str, Any]) -> dict[str, Any]:
+        """Resolve manifest-level robot action payloads into provider calls."""
+        resolved = dict(action)
+        if resolved.get("command") == "feedback":
+            with self.condition:
+                winner = str((self.result or {}).get("winner_role") or "")
+            kind = (action.get("cases") or {}).get(winner)
+            if not isinstance(kind, str) or not kind:
+                raise RuntimeError(
+                    f"robot feedback has no case for winner_role {winner!r}"
+                )
+            resolved["kind"] = kind
+        return resolved
+
+    def _start_robot_action(self, action: Mapping[str, Any]) -> None:
+        """Dispatch one robot command on its own daemon thread.
+
+        The state worker never blocks on physical motion: the countdown timer
+        (or any other state machinery) keeps running while the arm works, and
+        the command's outcome routes through whichever state is current when
+        it finishes.
+        """
+        if self._robot_fn is None:
+            raise RuntimeError("game declares robot actions but no robot provider is wired")
+        resolved = self._resolve_robot_action(action)
+        command = str(resolved.get("command") or "")
+
+        def is_cancelled() -> bool:
+            # Round-level only: a normal state transition (generation bump)
+            # must never abort a physical arm cycle halfway; cancelling the
+            # round (or reaching a terminal status) interrupts it instead.
+            with self.condition:
+                return self._cancelled or self.status in _TERMINAL_STATUSES
+
+        def run() -> None:
+            try:
+                outcome = self._robot_fn(resolved, self._robot_on_event, is_cancelled, self._log)
+            except Exception as exc:  # provider bugs end in arm_failed, not a dead round
+                outcome = {"status": "failed", "reason": str(exc)}
+            if isinstance(outcome, dict) and outcome.get("status") == "completed":
+                route = f"robot.{command}.completed"
+            else:
+                route = f"robot.{command}.failed"
+            detail: dict[str, Any] = {"event": "robot_result", "route": route, "command": command}
+            if isinstance(outcome, dict):
+                if outcome.get("reason"):
+                    detail["reason"] = str(outcome["reason"])
+                if "elapsed" in outcome:
+                    detail["elapsed"] = outcome["elapsed"]
+            self.emit_observation(detail)
+            self._route_robot_event(route)
+
+        threading.Thread(
+            target=run, name=f"round-{self.id[:8]}-robot", daemon=True
+        ).start()
+
+    def _robot_on_event(self, event: dict[str, Any]) -> None:
+        """Relay robot progress events into the round stream (never advance)."""
+        if isinstance(event, dict) and event.get("event") in _RELAYED_PROVIDER_EVENTS:
+            self._emit(event)
+
+    def _route_robot_event(self, route: str) -> None:
+        """Apply a robot outcome from whichever state the round is in now.
+
+        A command typically outlives its starting state (the grasp starts in
+        shake_countdown and may finish after shaking began), so the route is
+        read from the *current* state; the generation retry resolves the race
+        with a concurrent transition.  A state without a matching route is a
+        normal outcome — e.g. a grasp that finishes during the countdown —
+        and only records a ``robot_unrouted`` observation.
+        """
+        for _ in range(3):
+            with self.condition:
+                if self.status in _TERMINAL_STATUSES:
+                    return
+                generation = self._generation
+                state = self._state_config_locked()
+                transition = (state.get("on_event") or {}).get(route)
+            if not isinstance(transition, dict):
+                self.emit_observation(
+                    {"event": "robot_unrouted", "route": route, "state": self.state}
+                )
+                return
+            if self._apply_transition(transition, trigger=route, expected_generation=generation):
+                return
+        self.emit_observation({"event": "robot_unrouted", "route": route, "state": self.state})

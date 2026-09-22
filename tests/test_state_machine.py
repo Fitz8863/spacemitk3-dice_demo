@@ -176,7 +176,7 @@ class SchemaValidationTests(unittest.TestCase):
     def test_unknown_action_type_is_rejected(self):
         payload = machine()
         payload["states"]["rules"]["on_enter"] = [
-            {"action": "robot", "command": "shake"},
+            {"action": "dance", "command": "twist"},
         ]
         with self.assertRaises(StateMachineError):
             validate_state_machine(payload, "dice")
