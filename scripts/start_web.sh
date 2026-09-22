@@ -18,10 +18,13 @@ START_HEALTH_TIMEOUT="${START_HEALTH_TIMEOUT:-30}"
 # kill the script before it can say what is wrong.  The running server keeps
 # the last good config via hot-reload, so a JSON broken mid-edit only bites
 # at restart time — exactly here.
+# stdout is captured as the provider-id list; stderr is deliberately NOT
+# merged (no 2>&1): state-machine warnings go to stderr and must stay out of
+# the machine-consumed list (head -n1 becomes the primary TTS provider).
+# They still reach the console here through normal stderr passthrough.
 REFERENCED_TTS_PROVIDERS=""
-if ! REFERENCED_TTS_PROVIDERS="$("$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" referenced tts --game dice 2>&1)"; then
-    echo "Warning: cannot resolve referenced TTS providers — a config/manifest JSON may be broken:" >&2
-    printf '%s\n' "$REFERENCED_TTS_PROVIDERS" >&2
+if ! REFERENCED_TTS_PROVIDERS="$("$PYTHON_BIN" "$ROOT_DIR/backend/componentctl.py" referenced tts --game dice)"; then
+    echo "Warning: cannot resolve referenced TTS providers — a config/manifest JSON may be broken" >&2
     REFERENCED_TTS_PROVIDERS=""
 fi
 # The first referenced id is the arena's primary (local-slot) voice.
