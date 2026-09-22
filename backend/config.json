@@ -5,7 +5,8 @@
     "tts_remote": "tts_gptsovits",
     "asr": "asr_sensevoice",
     "vision_adjudicator": "vision_yolov8_objdetect",
-    "llm": "llm_openai_compat"
+    "llm": "llm_openai_compat",
+    "robot_arm": "robot_arm_nero"
   },
   "participants": {
     "player": "RIGHT",

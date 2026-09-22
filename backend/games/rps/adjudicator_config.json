@@ -2,18 +2,60 @@
   "_note": "rps 专属的视觉 runtime 配置（模型与检测参数 + 硬件），由 vision/yolov10_objdetect 二进制消费。manifest 的 vision_profile.runtime_config 指向本文件。整份替换、不做字段级合并：这里没写的键会回落到 C++ 编译期默认值，加字段请整份补齐。model/classes/rps_map 按本文件所在目录解析——classes 是模型词表（34 类 HaGRID），与模型文件成对声明（包内零内置词表）；rps_map 把源手势折叠成游戏标签，折叠发生在 C++ 稳定计数之前（palm↔stop 同为 Paper 不清零稳定计数）。与 dice 的差异：1080p@25、rotate 90cw（相机横装，OpenCL kernel 采样重映射）、ROI 下半画面（确定性排除上半的机械臂，手部目标放大约 1.8 倍）、v10 端到端模型 [1,300,6] 免 NMS。rtsp.path 不在此声明：manifest 的 vision_profile.video.path=/rps/det 经 --rtsp-path 恒压过配置。",
   "model": "models/yolov10n_gestures.q.onnx",
   "classes": [
-    "grabbing", "grip", "holy", "point", "call", "three3", "timeout",
-    "xsign", "hand_heart", "hand_heart2", "little_finger", "middle_finger",
-    "take_picture", "dislike", "fist", "four", "like", "mute", "ok", "one",
-    "palm", "peace", "peace_inverted", "rock", "stop", "stop_inverted",
-    "three", "three2", "two_up", "two_up_inverted", "three_gun",
-    "thumb_index", "thumb_index2", "no_gesture"
+    "grabbing",
+    "grip",
+    "holy",
+    "point",
+    "call",
+    "three3",
+    "timeout",
+    "xsign",
+    "hand_heart",
+    "hand_heart2",
+    "little_finger",
+    "middle_finger",
+    "take_picture",
+    "dislike",
+    "fist",
+    "four",
+    "like",
+    "mute",
+    "ok",
+    "one",
+    "palm",
+    "peace",
+    "peace_inverted",
+    "rock",
+    "stop",
+    "stop_inverted",
+    "three",
+    "three2",
+    "two_up",
+    "two_up_inverted",
+    "three_gun",
+    "thumb_index",
+    "thumb_index2",
+    "no_gesture"
   ],
   "rps_mode": true,
   "rps_map": {
-    "Rock": ["fist", "grabbing", "grip"],
-    "Paper": ["palm", "stop", "stop_inverted", "four"],
-    "Scissors": ["peace", "peace_inverted", "two_up", "two_up_inverted"]
+    "Rock": [
+      "fist",
+      "grabbing",
+      "grip"
+    ],
+    "Paper": [
+      "palm",
+      "stop",
+      "stop_inverted",
+      "four"
+    ],
+    "Scissors": [
+      "peace",
+      "peace_inverted",
+      "two_up",
+      "two_up_inverted"
+    ]
   },
   "filter_no_gesture": true,
   "conf": 0.25,
@@ -30,7 +72,7 @@
     "w": 1.0,
     "h": 0.5
   },
-  "camera": "/dev/video1",
+  "camera": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_9395301F-video-index0",
   "device": "",
   "width": 1920,
   "height": 1080,

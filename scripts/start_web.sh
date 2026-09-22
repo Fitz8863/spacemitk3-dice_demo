@@ -28,6 +28,25 @@ fi
 SELECTED_TTS_PROVIDER="$(printf '%s\n' "$REFERENCED_TTS_PROVIDERS" | head -n1)"
 TTS_AUTOSTART_ENABLED="${TTS_AUTOSTART:-1}"
 
+# Robot arm CAN link, idempotent and non-fatal: the web service itself does
+# not depend on the arm — a missing can0 only disables robot commands at use
+# time (they surface through the game's arm_failed state).  Bring the link up
+# when the kernel interface exists but is down (no sudo here: a passworded
+# sudo needs a human, and the game must still boot); never touch an up bus.
+# After a board reboot the link needs a one-time manual:
+#   sudo ip link set can0 up type can bitrate 1000000
+if [[ -d /sys/class/net/can0 ]]; then
+    if ! ip link show can0 2>/dev/null | grep -q 'state UP'; then
+        if ip link set can0 up type can bitrate 1000000 2>/dev/null; then
+            echo "robot arm: can0 brought up @1Mbps"
+        else
+            echo "Warning: can0 exists but is down and could not be brought up (robot arm unavailable) — run: sudo ip link set can0 up type can bitrate 1000000" >&2
+        fi
+    fi
+else
+    echo "Note: no can0 interface (robot arm not connected or usbcan kernel not loaded)" >&2
+fi
+
 mkdir -p "$(dirname "$PID_FILE")"
 
 is_expected_web() {

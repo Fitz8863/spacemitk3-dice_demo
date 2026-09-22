@@ -69,8 +69,12 @@ def test_runtime_config_is_declared_per_game_and_loads_hardware_defaults():
     assert "config" not in component["runtime"]
     runtime_path = resolve_runtime_config_path(profile)
     runtime = load_runtime_config(runtime_path)
-    assert runtime_path == ROOT / "backend" / "games" / "dice" / "adjudicator_config.json"
-    assert runtime["camera"] == "/dev/video1"
+    assert runtime_path == ROOT / "backend/games/dice/adjudicator_config.json"
+    # 相机走 by-id：D435i（机械臂深度相机）上板后占 video1-6，C920 漂到
+    # video7；节点号会随 USB 口/上电顺序变化，by-id 才是稳定锚点。
+    assert runtime["camera"] == (
+        "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_9395301F-video-index0"
+    )
     assert runtime["rtsp"]["port"] == 8554
     assert runtime["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
     assert "rtsp" not in component
