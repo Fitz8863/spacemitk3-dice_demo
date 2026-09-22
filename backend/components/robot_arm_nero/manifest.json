@@ -1,0 +1,15 @@
+{
+  "id": "robot_arm_nero",
+  "type": "robot",
+  "name": "NERO 机械臂（dice_demo 常驻控制）",
+  "version": "2.0",
+  "entry": "provider.py:RobotArmNeroProvider",
+  "capabilities": [
+    "robot.grasp_cup",
+    "robot.shake_dice",
+    "robot.feedback",
+    "robot.reset_home",
+    "robot.resident"
+  ],
+  "config": "config.json"
+}
