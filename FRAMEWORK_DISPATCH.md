@@ -256,6 +256,32 @@ profile 都用 `"default"`——所以 `_runtime_signature()`（`provider.py`）
 > rps 的 agent 手势仍是程序随机——`games/rps/pipeline.py` 里那一行就是将来给机械臂下发
 > 指令的位置（接口形状已固定）。
 
+### 3.4 机械臂动作接入（2026-09-23 起，robot 动作类型）
+
+dice 的摇骰由机械臂执行：manifest 的 `on_enter` 里写 `{"action":"robot","command":...}`，
+四个命令映射到 `RobotProvider`（`core/robot.py`）实现——当前唯一实现
+`robot_arm_nero`（NERO 臂 × dice_demo 常驻控制进程，配置与部署见其组件
+`参数说明.md`）。
+
+与 `adjudicate` 的三点差异：
+
+- **异步不阻塞**：robot 动作在自己的 daemon 线程派发，状态 worker 立刻继续
+  （三二一倒计时与抓取并行）；**禁 `await`**（schema 加载期拒绝）。
+- **命令级完成路由**：完成事件按命令命名 `robot.<command>.completed/.failed`，
+  由**完成时所在状态**的 `on_event` 路由（带 generation 重试）——一轮两条命令
+  （抓取+摇）时抓取晚完成不会被误当摇完。状态没声明该路由 = `robot_unrouted`
+  观察事件，**不崩局**（dice 特意不声明 grasp 的 completed：抓取提前完成不得
+  打断倒计时）。
+- **取消仅回合级**：正常状态跳转（generation 递增）绝不中断物理动作；只有
+  `cancel()`/终态才 SIGINT 臂进程。反馈手势经 `select_by=winner_role` 解析成
+  win/lose/draw（机械臂视角）。
+
+生命周期：进游戏（create_round，manifest 声明了 robot 动作即算）→ provider
+`ensure_started()` 后台拉起常驻进程（规则宣读覆盖预热）→ 跨回合保活 →
+回合终态 best-effort `reset_home`（代际守卫，新一轮的 ready 动作优先）→
+服务退出发 close。槽位：全局 `providers.robot_arm`（可被游戏 manifest 覆盖），
+缺槽/坏件 = 命令失败进 `arm_failed` 兜底。
+
 ## 4. 服务启动时发生什么
 
 1. `scripts/start_web.sh` 通过 `backend/componentctl.py referenced tts` 收集当前游戏 manifest 引用到的全部 TTS provider（本地槽 `providers.tts_local`、远程槽 `providers.tts_remote` 与台词级 `provider` 覆盖），骰子当前为 `tts_moss_nano` + `tts_gptsovits`，逐个启动。
