@@ -86,6 +86,12 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .btn-green { background: #16a34a; box-shadow: 0 8px 18px rgba(22, 163, 74, .22); }
 .btn-red { background: #dc2626; box-shadow: 0 8px 18px rgba(220, 38, 38, .22); }
 .btn-blue { background: #2563eb; box-shadow: 0 8px 18px rgba(37, 99, 235, .22); }
+.btn-yellow { background: #d97706; box-shadow: 0 8px 18px rgba(217, 119, 6, .22); }
+
+/* 机械臂进度行（倒计时页与摇骰页共用）：🦾 + 当前阶段 + n/10 计数 */
+.arm-progress { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 18px; padding: 10px 22px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); box-shadow: var(--shadow); color: var(--muted); font-size: 20px; }
+.arm-robot { font-size: 24px; }
+.arm-phase-step { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
 
 
 /* 规则 */

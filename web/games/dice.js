@@ -29,13 +29,15 @@ export function register(engine) {
   let round = null;
   let lastRenderedState = '';
   let lastCountdownValue = '';
+  let lastRobotFailureReason = '';
 
   // 后端 ui 文案缺省时的前端兜底（正常路径都来自 manifest state_machine.ui）。
   const phaseMeta = {
     rules: ['游戏规则', '听完规则后按 Enter 确认，按 ↓ 可以再听一次。'],
-    ready: ['准备好了吗？', '人手操作模式已开启，拿起骰盅后点击开始。'],
-    countdown: ['同步倒计时', ''],
-    shaking: ['摇骰进行中', '双方同时摇骰，准备好后可提前停止。'],
+    ready: ['准备好了吗？', '机械臂模式：拿起你的骰盅，点击开始后双方同时摇骰。'],
+    countdown: ['同步倒计时', '机械臂正在抓取骰盅，倒计时结束后双方同时开始摇骰。'],
+    shaking: ['摇骰进行中', '机械臂正在摇骰，请摇动你的骰盅。'],
+    arm_failed: ['机械臂未完成', '蓝色按钮重试机械臂；黄色按钮切换人工摇骰；红色按钮退出本局。'],
     open: ['你准备好了吗？听语音倒计时同时开盖', ''],
     analysis: ['正在判定胜负', '视觉裁决器正在识别骰子点数并判定胜负。'],
     result: ['本局结果', ''],
@@ -196,7 +198,7 @@ export function register(engine) {
     setPhase(view, meta[0] || meta[1] ? meta : undefined);
     // 等玩家操作的状态没有 duration/on_expire，玩家走开后会永远停住；交给引擎
     // 在这些状态挂空闲退出计时器（超时取消回合回列表），离开即解除。
-    setIdleReturn(['rules', 'ready', 'result', 'analysis_failed'].includes(stateName));
+    setIdleReturn(['rules', 'ready', 'result', 'analysis_failed', 'arm_failed'].includes(stateName));
     if (stateName === 'analysis') {
       resetAnalysisSteps();
     } else if (stateName === 'ready' || stateName === 'rules') {
@@ -204,7 +206,80 @@ export function register(engine) {
       agentDice = [];
       updateScores();
     }
+    if (stateName === 'shake_countdown') {
+      enterCountdownView();
+    } else if (stateName === 'shaking') {
+      // shaking 与 manual_shaking 共用 shaking 视图；按后端真实状态名区分布局。
+      enterShakingView(stateName);
+    } else if (stateName === 'arm_failed') {
+      enterArmFailedView();
+    }
   }
+
+  // ---- 机械臂进度 / 视图布局 ----
+  function updateArmProgress(event) {
+    // 抓取发生在倒计时页、摇骰发生在摇骰页：两行同款进度条各自更新。
+    const rows = [
+      { row: $('armCountdownRow'), text: $('armCountdownText'), step: $('armCountdownStep') },
+      { row: $('armShakingRow'), text: $('armShakingText'), step: $('armShakingStep') },
+    ];
+    for (const { row, text, step } of rows) {
+      if (!row || row.classList.contains('hidden')) continue;
+      if (event.zh) text.textContent = event.zh;
+      if (event.phase === 'AUTO_RETRY') {
+        step.textContent = '';
+      } else if (event.progress) {
+        step.textContent = event.progress;
+      }
+    }
+  }
+
+  function resetArmProgressRows() {
+    const rows = [
+      { row: $('armCountdownRow'), text: $('armCountdownText'), step: $('armCountdownStep') },
+      { row: $('armShakingRow'), text: $('armShakingText'), step: $('armShakingStep') },
+    ];
+    for (const { row, text, step } of rows) {
+      if (!row) continue;
+      text.textContent = '机械臂准备中';
+      step.textContent = '';
+    }
+  }
+
+  function enterCountdownView() {
+    // 三二一倒计时 + 抓取进度行（机械臂与口令并行）。
+    const row = $('armCountdownRow');
+    if (row) row.classList.remove('hidden');
+  }
+
+  function enterShakingView(stateName) {
+    const manual = stateName === 'manual_shaking';
+    const title = $('shakingTitle');
+    if (title) title.textContent = manual ? '人工摇骰' : '摇骰进行中';
+    const armRow = $('armShakingRow');
+    if (armRow) armRow.classList.toggle('hidden', manual);
+    const timer = $('shakeTimerRow');
+    if (timer) timer.classList.toggle('hidden', !manual);
+    const stop = $('stopShake');
+    if (stop) stop.classList.toggle('hidden', !manual);
+  }
+
+  function friendlyRobotFailure(reason) {
+    const text = String(reason || '');
+    if (text.includes('Hand start')) {
+      return '机械臂手指位置校验未通过（摇骰后的正常扰动），按蓝色按钮重试即可恢复。';
+    }
+    if (text.includes('interrupted') || text.includes('timed out')) {
+      return '机械臂动作被中断或超时，可按蓝色按钮重试。';
+    }
+    return text ? `机械臂未能完成动作：${text}` : '机械臂未能完成动作，可按蓝色按钮重试。';
+  }
+
+  function enterArmFailedView() {
+    // robot_result 观察事件可能已滑出事件窗，用记录的原因兜底。
+    $('armFailedStatus').textContent = friendlyRobotFailure(lastRobotFailureReason);
+  }
+
 
   // 弹出动画重放：纯 CSS 动画只在元素首次显示时播放，数字变化时摘掉 .pop、
   // 读一次 offsetWidth 触发重排、再加回来，动画即从头播放。
@@ -228,7 +303,8 @@ export function register(engine) {
       const perNumber = Number(event.tick_seconds || 1) * 1000;
       const total = Math.max(1, Math.round(Number(event.duration_seconds || 3) / (event.tick_seconds || 1)));
       renderCountdownNumber(Math.min(total, Math.max(1, Math.ceil(remaining / perNumber))));
-    } else if (lastRenderedState === 'shaking') {
+    } else if (lastRenderedState === 'manual_shaking') {
+      // 人工模式的 30s 兜底倒计时（机械臂模式 shaking 无定时、无此渲染）。
       const seconds = Math.max(1, Math.ceil(remaining / 1000));
       const shakeSeconds = $('shakeSeconds');
       const urgent = seconds <= 3;
@@ -388,6 +464,14 @@ export function register(engine) {
   function handleRoundEvent(event, snapshot) {
     if (event.event === 'video') {
       startVisionStream(event);
+    } else if (event.event === 'robot') {
+      // 机械臂阶段进度（provider 的 phase_started 直译：zh + n/10）。
+      updateArmProgress(event);
+    } else if (event.event === 'robot_result') {
+      // 完成结果只用于失败页文案；路由本身由后端状态机完成。
+      if (typeof event.route === 'string' && event.route.endsWith('.failed')) {
+        lastRobotFailureReason = event.reason || '';
+      }
     } else if (event.event === 'phase' || event.event === 'progress') {
       updateAnalysisProgress(event);
     } else if (event.event === 'result' && snapshot && snapshot.result) {
@@ -431,14 +515,17 @@ export function register(engine) {
     analysisBackToGames: () => submitIntent('back'),
     newRound: () => submitIntent('new_round'),
     backToGames: () => submitIntent('back'),
+    armRetry: () => submitIntent('retry'),
+    armManual: () => submitIntent('manual'),
+    armBack: () => submitIntent('back'),
   };
 
   function onKey(event) {
     if (event.key === 'Escape') {
-      // 红键/Esc 与屏幕上的红色按钮同义：摇骰中就是"停止摇骰"（提前开盖），
-      // 其余可退状态才是返回。走同一个 handler，两条路径不会分叉。
-      if (state.phase === 'shaking') handlers.stopShake();
-      else if (['rules', 'ready', 'result'].includes(state.phase)) submitIntent('back');
+      // 红键/Esc 与屏幕上的红色按钮同义：人工摇骰中是"停止摇骰"（提前进入
+      // 判定），机械臂摇骰中无动作（等待臂完成），其余可退状态才是返回。
+      if (state.phase === 'shaking' && lastRenderedState === 'manual_shaking') handlers.stopShake();
+      else if (['rules', 'ready', 'result', 'arm_failed'].includes(state.phase)) submitIntent('back');
       else if (state.phase === 'analysis' && analysisFailureVisible()) submitIntent('back');
       return;
     }
@@ -447,15 +534,14 @@ export function register(engine) {
       else if (state.phase === 'ready') handlers.startShake();
       return;
     }
-    if (state.phase === 'rules' && event.key === 'ArrowDown') {
-      handlers.repeatRules();
-      return;
-    }
-    if (state.phase === 'analysis' && event.key === 'ArrowDown') {
-      if (analysisFailureVisible()) submitIntent('retry');
+    if (event.key === 'ArrowDown') {
+      if (state.phase === 'rules') handlers.repeatRules();
+      else if (state.phase === 'analysis' && analysisFailureVisible()) submitIntent('retry');
+      else if (state.phase === 'arm_failed') handlers.armRetry();
       return;
     }
     if (event.key === 'ArrowUp') {
+      if (state.phase === 'arm_failed') handlers.armManual();
       return;
     }
   }
@@ -469,6 +555,8 @@ export function register(engine) {
     $('shakeCup').innerHTML = `<div class="shake-bounce">${diceCubeMarkup()}</div>`;
     playerDice = [];
     agentDice = [];
+    lastRobotFailureReason = '';
+    resetArmProgressRows();
     $('analysisFailureActions').classList.add('hidden');
     document.querySelector('.analysis-spinner')?.classList.remove('hidden');
     updateScores();
@@ -517,11 +605,14 @@ export function register(engine) {
         // 注意此处传空的 ui：renderState 会退回用状态名当视图名。当前四个
         // 状态名与视图名不同（shake_countdown/vision_countdown → countdown、
         // open_reveal → open、analysis_failed → analysis），一旦这条路径被走到
-        // 会隐藏全部视图。现有流程走不到：这些状态都很短（2.4–4s），它们的
-        // state_changed 必然还在 60 条事件窗口内，重连快照一定会先派发它。
-        // 新增长状态时若它的事件能滑出窗口，这里需要补一次视图名映射。
+        // 会隐藏全部视图。manual_shaking 的 30s 停留可能滑出 60 条事件窗，
+        // 需要显式映射回 shaking 视图（状态名直传会隐藏全部视图）。
+        const viewOverrides = {
+          manual_shaking: { view: 'shaking' },
+          arm_failed: { view: 'arm_failed' },
+        };
         if (snapshot.state && snapshot.state !== lastRenderedState) {
-          renderState(snapshot.state, {});
+          renderState(snapshot.state, viewOverrides[snapshot.state] || {});
           if (snapshot.state === 'result' && snapshot.result) showResult(snapshot.result);
           else if (snapshot.state === 'analysis_failed' && snapshot.result) showDiagnosis(snapshot.result);
         }
@@ -553,7 +644,7 @@ export function register(engine) {
 
   return {
     id: 'dice',
-    phases: ['select', 'rules', 'ready', 'countdown', 'shaking', 'open', 'analysis', 'result'],
+    phases: ['select', 'rules', 'ready', 'countdown', 'shaking', 'open', 'arm_failed', 'analysis', 'result'],
     progressCount: 6,
     phaseMeta,
     enter,

@@ -112,7 +112,12 @@ def test_frontend_buttons_match_controller_key_colors():
     assert class_of("newRound") == "btn-circle btn-green"
     assert class_of("repeatRules") == "btn-circle btn-blue"
     assert class_of("analysisRetry") == "btn-circle btn-blue"
-    assert class_of("stopShake") == "btn-circle btn-red"
+    # 停止摇骰保留给人工模式（manual_shaking）：默认隐藏，进入人工模式才显示。
+    assert class_of("stopShake") == "btn-circle btn-red hidden"
+    # 机械臂失败页三键：红=退出、黄=人工模式（新色，须与实体按键提示同源）、蓝=重试。
+    assert class_of("armBack") == "btn-pill btn-red"
+    assert class_of("armManual") == "btn-circle btn-yellow"
+    assert class_of("armRetry") == "btn-circle btn-blue"
     assert class_of("backFromRules") == "btn-circle btn-red"
     assert class_of("readyBack") == "btn-circle btn-red"
     assert class_of("analysisBackToGames") == "btn-pill btn-red"
@@ -173,7 +178,10 @@ def test_frontend_blue_button_retries_adjudication_after_diagnosis():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
 
     assert 'aria-keyshortcuts="ArrowDown"' in html
-    assert "state.phase === 'analysis' && event.key === 'ArrowDown'" in js
+    # 蓝键（↓）在 analysis 失败页仍是重试；arm_failed 失败页是机械臂重试。
+    # 两条都从同一个按键分支出发，与屏幕按钮走同一个 handler。
+    assert "else if (state.phase === 'analysis' && analysisFailureVisible()) submitIntent('retry');" in js
+    assert "else if (state.phase === 'arm_failed') handlers.armRetry();" in js
     # Retrying re-enters adjudication through the backend state machine.
     assert "submitIntent('retry')" in js
     # The retry hint itself is spoken by the backend on entering the failed state.
@@ -362,6 +370,17 @@ def test_robot_shake_is_event_driven_with_manual_fallback():
 
     # The manual intent must stay voice-reachable.
     assert dice_manifest()["asr"]["phrases"]["manual"]
+
+    # 前端布局：倒计时页与摇骰页各一条臂进度行（🦾+阶段+n/10）；人工模式的
+    # 30s 计时与停止按钮默认隐藏（进入 manual_shaking 才显示）。
+    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    assert 'id="armCountdownRow"' in html
+    assert 'id="armShakingRow"' in html
+    assert 'id="shakeTimerRow"' in html
+    assert 'id="shakeSeconds">30<' in html
+    assert "const urgent = seconds <= 3;" in js
+    assert "updateArmProgress(event)" in js
 
 
 def test_frontend_uses_user_gesture_audio_for_countdown_cues():

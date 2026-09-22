@@ -102,15 +102,24 @@ function expect(label, actual, expected) {
   }
 }
 
-// 需求本体：摇骰进行中按 Esc，必须与屏幕上的红色"停止摇骰"按钮完全同动作。
+// 机械臂剧本（2026-09-23）：机械臂摇骰中无"停止"动作（等臂完成）；人工模式
+// （manual_shaking，共用 shaking 视图）的 Esc 才是停止摇骰；arm_failed 的
+// ↓/↑/Esc 分别对应机械臂重试 / 人工模式 / 退出本局。
 enterState('shaking', 'shaking');
-expect('摇骰中点击「停止摇骰」按钮', clickButton('stopShake'), '[["stop_shake",{}]]');
-expect('摇骰中按 Esc', press('Escape'), clickButton('stopShake'));
+expect('机械臂摇骰中按 Esc（不应有动作）', press('Escape'), '[]');
+expect('机械臂摇骰中按 Enter（不应有动作）', press('Enter'), '[]');
+enterState('manual_shaking', 'shaking');
+expect('人工摇骰中点击「停止摇骰」按钮', clickButton('stopShake'), '[["stop_shake",{}]]');
+expect('人工摇骰中按 Esc', press('Escape'), clickButton('stopShake'));
+enterState('arm_failed', 'arm_failed');
+expect('机械臂失败页按 ↓（机械臂重试）', press('ArrowDown'), clickButton('armRetry'));
+expect('机械臂失败页按 ↑（人工模式）', press('ArrowUp'), clickButton('armManual'));
+expect('机械臂失败页按 Esc（退出本局）', press('Escape'), clickButton('armBack'));
 
 // 回归护栏：其余既有映射不能被这次改动带偏。
-expect('摇骰中按 Enter（不应有动作）', press('Enter'), '[]');
 enterState('rules', 'rules');
 expect('规则页按 Esc 仍是返回', press('Escape'), '[["back",{}]]');
+expect('规则页按 ↓ 仍是重复规则', press('ArrowDown'), clickButton('repeatRules'));
 enterState('ready', 'ready');
 expect('准备页按 Enter 仍是开始摇骰', press('Enter'), '[["start_shake",{}]]');
 enterState('result', 'result');
