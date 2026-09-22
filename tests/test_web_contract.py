@@ -321,16 +321,47 @@ def test_frontend_uses_vision_specific_copy_during_post_open_countdown():
     assert "倒计时结束后开始视觉裁决" in copy
 
 
-def test_frontend_uses_ten_second_shake_and_urgent_last_three_seconds():
-    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
-    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+def test_robot_shake_is_event_driven_with_manual_fallback():
+    """机械臂摇骰契约（2026-09-23 集成拍板）：
 
-    # The ten-second budget is owned by the backend state machine.
-    assert dice_state("shaking")["duration"] == 10
-    assert 'id="shakeSeconds">10<' in html
-    assert "const urgent = seconds <= 3;" in js
-    assert "shakeSeconds.classList.toggle('is-urgent', urgent)" in js
-    assert "if (urgent) playCountdownCue(seconds);" in js
+    - shake_countdown 入口下发抓取（识别+抓取不摇）；只声明失败路由——
+      抓取提前完成不得打断三二一倒计时（落 robot_unrouted 观察）
+    - shaking 无定时无停止按钮：入场即下发摇（advance until RETURN_HOME
+      一条链：摇+放杯+张手+归位），完成/失败双路由
+    - arm_failed 兜底：蓝=重试回 shake_countdown、黄=人工模式、红=退出
+    - manual_shaking 30s 兜底 + 停止按钮（stop_shake 保留给人工模式）
+    """
+    machine = dice_manifest()["state_machine"]
+    countdown = machine["states"]["shake_countdown"]
+    grasp = countdown["on_enter"][1]
+    assert grasp == {"action": "robot", "command": "grasp_cup", "timeout_seconds": 30}
+    assert countdown["on_expire"]["to"] == "shaking"
+    assert countdown["on_event"] == {"robot.grasp_cup.failed": {"to": "arm_failed"}}
+
+    shaking = machine["states"]["shaking"]
+    assert "duration" not in shaking
+    assert "on_intent" not in shaking
+    assert "on_expire" not in shaking
+    shake = shaking["on_enter"][1]
+    assert shake == {"action": "robot", "command": "shake_dice", "timeout_seconds": 90}
+    assert shaking["on_event"] == {
+        "robot.shake_dice.completed": {"to": "vision_countdown"},
+        "robot.shake_dice.failed": {"to": "arm_failed"},
+    }
+
+    arm_failed = machine["states"]["arm_failed"]
+    intents = arm_failed["on_intent"]
+    assert intents["retry"]["to"] == "shake_countdown"
+    assert intents["manual"]["to"] == "manual_shaking"
+    assert intents["back"]["exit"] is True
+
+    manual = machine["states"]["manual_shaking"]
+    assert manual["duration"] == 30
+    assert manual["on_intent"]["stop_shake"]["to"] == "vision_countdown"
+    assert manual["on_expire"]["to"] == "vision_countdown"
+
+    # The manual intent must stay voice-reachable.
+    assert dice_manifest()["asr"]["phrases"]["manual"]
 
 
 def test_frontend_uses_user_gesture_audio_for_countdown_cues():
@@ -711,7 +742,8 @@ def test_manifest_state_machine_declares_the_full_graph():
     assert machine["initial"] == "rules"
     names = set(machine["states"])
     assert {
-        "rules", "ready", "shake_countdown", "shaking", "open_reveal",
+        "rules", "ready", "shake_countdown", "shaking", "arm_failed",
+        "manual_shaking", "open_reveal",
         "vision_countdown", "analysis", "analysis_failed", "result",
     } <= names
     # Analysis routes both provider outcomes.
@@ -726,6 +758,13 @@ def test_manifest_state_machine_declares_the_full_graph():
     result_entry = machine["states"]["result"]["on_enter"][0]
     assert result_entry["select_by"] == "winner_role"
     assert set(result_entry["cases"]) == {"PLAYER", "AGENT", "TIE"}
+    # Robot wiring: ready re-homes the arm, the result performs the winner
+    # gesture from the agent's viewpoint (PLAYER wins → the arm "loses").
+    assert {"action": "robot", "command": "reset_home"} in machine["states"]["ready"]["on_enter"]
+    feedback = machine["states"]["result"]["on_enter"][1]
+    assert feedback["command"] == "feedback"
+    assert feedback["select_by"] == "winner_role"
+    assert feedback["cases"] == {"PLAYER": "lose", "AGENT": "win", "TIE": "draw"}
 
 
 def test_frontend_ignores_stale_events_after_round_ends():

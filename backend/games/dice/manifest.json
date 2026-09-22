@@ -30,6 +30,13 @@
 				"停",
 				"stop"
 			],
+			"manual": [
+				"人工",
+				"手动",
+				"我来摇",
+				"人工模式",
+				"manual"
+			],
 			"repeat": [
 				"重复",
 				"再来一遍",
@@ -134,7 +141,7 @@
 					{
 						"action": "speech",
 						"mode": "tts_local",
-						"text": "欢迎来到摇骰游戏。下面由我去宣读规则，当前双方各有五颗骰子，听语音提示开始摇骰子。屏幕的倒计时结束后就停止摇骰并且摆放到桌子上白色圆圈的区域，然后同时开盖，点数总和更大的一方获胜，如果明白了，请按绿色按钮开始游戏；如果需要再听一次，请按蓝色的按钮。"
+						"text": "欢迎来到摇骰游戏。本场由机械臂 Agent 与您对局，双方各有五颗骰子。听语音提示开始摇骰，倒计时结束后请持续摇动您的骰盅，机械臂会和您同时摇骰，摇骰结束后自动判定，点数总和更大的一方获胜。如果明白了，请按绿色按钮开始游戏；如果需要再听一次，请按蓝色的按钮。"
 					}
 				],
 				"on_intent": {
@@ -146,7 +153,7 @@
 							{
 								"action": "speech",
 								"mode": "tts_local",
-								"text": " 欢迎来到摇骰子游戏。下面由我去宣读规则，当前双方各有五颗骰子，听语音提示开始摇骰子。屏幕的倒计时结束后就停止摇骰并且摆放到桌子上白色圆圈的区域，然后同时开盖，点数总和更大的一方获胜，如果明白了，请按绿色按钮开始游戏；如果需要再听一次，请按蓝色的按钮。"
+								"text": " 欢迎来到摇骰游戏。本场由机械臂 Agent 与您对局，双方各有五颗骰子。听语音提示开始摇骰，倒计时结束后请持续摇动您的骰盅，机械臂会和您同时摇骰，摇骰结束后自动判定，点数总和更大的一方获胜。如果明白了，请按绿色按钮开始游戏；如果需要再听一次，请按蓝色的按钮。"
 							}
 						]
 					},
@@ -159,13 +166,17 @@
 				"ui": {
 					"view": "ready",
 					"title": "准备好了吗？",
-					"copy": "人手操作模式已开启，拿起骰盅后点击开始。"
+					"copy": "机械臂模式：拿起你的骰盅，点击开始后双方同时摇骰。"
 				},
 				"on_enter": [
 					{
 						"action": "speech",
 						"mode": "tts_local",
-						"text": "准备好了吗，按下绿色按钮马上开始。"
+						"text": "准备好了吗，拿起你的骰盅，按下绿色按钮，机械臂和你同时开始摇骰子。"
+					},
+					{
+						"action": "robot",
+						"command": "reset_home"
 					}
 				],
 				"on_intent": {
@@ -181,7 +192,7 @@
 				"ui": {
 					"view": "countdown",
 					"title": "同步倒计时",
-					"copy": "与 Agent 保持同步，倒计时结束后开始摇骰。"
+					"copy": "机械臂正在抓取骰盅，倒计时结束后双方同时开始摇骰。"
 				},
 				"duration": 2.4,
 				"tick_seconds": 0.8,
@@ -191,19 +202,88 @@
 						"mode": "audio",
 						"audio": "audio/warm_321开始.wav",
 						"text": "三，二，一，开始"
+					},
+					{
+						"action": "robot",
+						"command": "grasp_cup",
+						"timeout_seconds": 30
 					}
 				],
 				"on_expire": {
 					"to": "shaking"
+				},
+				"on_event": {
+					"robot.grasp_cup.failed": {
+						"to": "arm_failed"
+					}
 				}
 			},
 			"shaking": {
 				"ui": {
 					"view": "shaking",
 					"title": "摇骰进行中",
-					"copy": "双方同时摇骰，准备好后可提前停止。"
+					"copy": "机械臂正在摇骰，请摇动你的骰盅，完成后自动判定。"
 				},
-				"duration": 10,
+				"on_enter": [
+					{
+						"action": "speech",
+						"mode": "tts_local",
+						"text": "摇骰进行中，请持续摇动你的骰盅。"
+					},
+					{
+						"action": "robot",
+						"command": "shake_dice",
+						"timeout_seconds": 90
+					}
+				],
+				"on_event": {
+					"robot.shake_dice.completed": {
+						"to": "vision_countdown"
+					},
+					"robot.shake_dice.failed": {
+						"to": "arm_failed"
+					}
+				}
+			},
+			"arm_failed": {
+				"ui": {
+					"view": "arm_failed",
+					"title": "机械臂未完成",
+					"copy": "机械臂动作未完成。蓝色按钮重试机械臂；黄色按钮切换人工摇骰；红色按钮退出本局。"
+				},
+				"on_enter": [
+					{
+						"action": "speech",
+						"mode": "tts_local",
+						"text": "机械臂没有完成摇骰动作。可以按蓝色按钮让机械臂重试，按黄色按钮切换为人工摇骰，或按红色按钮退出本局。"
+					}
+				],
+				"on_intent": {
+					"retry": {
+						"to": "shake_countdown"
+					},
+					"manual": {
+						"to": "manual_shaking"
+					},
+					"back": {
+						"exit": true
+					}
+				}
+			},
+			"manual_shaking": {
+				"ui": {
+					"view": "shaking",
+					"title": "人工摇骰",
+					"copy": "人工模式：请摇动双方骰盅，完成后点击停止摇骰。"
+				},
+				"on_enter": [
+					{
+						"action": "speech",
+						"mode": "tts_local",
+						"text": "已切换为人工模式，请摇动双方的骰盅，摇好后按红色按钮停止。"
+					}
+				],
+				"duration": 30,
 				"tick_seconds": 1.0,
 				"on_intent": {
 					"stop_shake": {
@@ -326,6 +406,16 @@
 								"mode": "tts_local",
 								"text": "当前玩家点数{player_score}。Agent点数{agent_score}。本局平局，要不再来一局？"
 							}
+						}
+					},
+					{
+						"action": "robot",
+						"command": "feedback",
+						"select_by": "winner_role",
+						"cases": {
+							"PLAYER": "lose",
+							"AGENT": "win",
+							"TIE": "draw"
 						}
 					}
 				],
