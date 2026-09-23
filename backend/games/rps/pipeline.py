@@ -2,8 +2,10 @@
 
 玩家手势来自视觉：``observe()`` 拿 v10 runtime 的稳定观测（类别已在 C++
 折叠成 Rock/Paper/Scissors），最高置信度的检测就是玩家的出拳。agent 手势
-仍是程序随机——这一处**就是将来给机械臂下发指令的位置**（臂出什么手势是
-程序自己定的，视觉不需要识别它；ROI 已把臂所在半幅确定性排除）。
+是程序随机，同一份随机值下发给机械臂摆出静态拳形（石头→rock / 剪刀→
+scissors / 布→paper）——随机数是单一事实源，臂只是执行器；视觉不需要识别
+臂（ROI 已把臂所在半幅确定性排除）。臂出拳失败或不可用时返回诊断型结果，
+引擎据此走 analysis_failed（蓝键重试会重放出拳）。
 
 胜负不走 provider 的双侧规则（``categorical_relation`` 要求两侧都有值，
 而 agent 侧根本不进画面），比较与投影由本模块调用
@@ -27,6 +29,83 @@ _LABEL_TO_GESTURE = {
     "Paper": "布",
     "Scissors": "剪刀",
 }
+
+_ARM_THROW_DIAGNOSIS_REASON = "arm_throw_failed"
+
+
+def _arm_throw_failure(
+    on_log: Callable[[str], None],
+    on_event: Callable[[Mapping[str, Any]], None],
+    reason: str,
+) -> dict[str, Any]:
+    """Fabricate the arm-failure outcome in the observe diagnosis shape.
+
+    与 observe 的诊断契约同形（``diagnosed``/``retry_required``），引擎据此
+    路由 ``adjudication.diagnosis`` → analysis_failed；``diagnosis.message``
+    由 rps.js 渲染到失败页状态行。
+    """
+    on_log(f"robot throw_gesture failed: {reason}")
+    diagnosis = {
+        "adjudicated": False,
+        "verified": False,
+        "diagnosed": True,
+        "retry_required": True,
+        "diagnosis": {
+            "reason": _ARM_THROW_DIAGNOSIS_REASON,
+            "message": f"机械臂未完成出拳（{reason}），可按蓝色按钮重试",
+        },
+        "source": "local",
+    }
+    on_event({"event": "diagnosis", **diagnosis})
+    return diagnosis
+
+
+def _throw_agent_gesture(
+    manifest: Mapping[str, Any],
+    components: Any,
+    gesture: str,
+    *,
+    on_event: Callable[[Mapping[str, Any]], None],
+    is_cancelled: Callable[[], bool],
+    on_log: Callable[[str], None],
+    timeout_seconds: float,
+) -> dict[str, Any] | None:
+    """让机械臂亮出与裁决同一份随机拳形（静态手势，保持姿态不回 home）。
+
+    臂是必需执行器：槽位缺失、provider 未实现 ``throw_gesture``、no-op 地板
+    返回 ``skipped``、动作失败或抛异常都返回诊断型结果——本局走
+    analysis_failed。成功返回 ``None``，裁决继续。
+    """
+    try:
+        provider_id = resolve_provider_id(manifest, "robot_arm", "")
+        if not provider_id:
+            return _arm_throw_failure(on_log, on_event, "robot_arm 槽位未配置")
+        robot = components.require(provider_id, expected_type="robot")
+        throw = getattr(robot, "throw_gesture", None)
+        if not callable(throw):
+            return _arm_throw_failure(
+                on_log, on_event, f"provider {provider_id} 未实现 throw_gesture"
+            )
+        outcome = throw(
+            gesture,
+            on_event=on_event,
+            is_cancelled=is_cancelled,
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        return _arm_throw_failure(on_log, on_event, repr(exc))
+    if not (
+        isinstance(outcome, dict)
+        and outcome.get("status") == "completed"
+        and not outcome.get("skipped")
+    ):
+        reason = (
+            str(outcome.get("reason"))
+            if isinstance(outcome, dict) and outcome.get("reason")
+            else "动作未完成"
+        )
+        return _arm_throw_failure(on_log, on_event, reason)
+    return None
 
 
 def run(
@@ -90,8 +169,21 @@ def run(
         raise RuntimeError("cancelled")
 
     on_event({"event": "phase", "phase": "verifying", "llm": False})
-    # 机械臂手势 = 程序随机（将来在此处向臂下发指令，接口形状不变）。
+    # agent 拳形 = 程序随机，同一份随机值下发给机械臂摆静态拳形。顺序刻意
+    # 是先 observe 再亮臂：玩家手势先锁定，杜绝"看到臂出拳后改手"的窗口；
+    # 臂在判定阶段亮拳（实测 0.9-1.2s），随后宣判。
     agent_gesture = random.choice(GESTURES)
+    arm_failure = _throw_agent_gesture(
+        manifest,
+        components,
+        agent_gesture,
+        on_event=on_event,
+        is_cancelled=is_cancelled,
+        on_log=on_log,
+        timeout_seconds=timeout_seconds,
+    )
+    if arm_failure is not None:
+        return arm_failure
     result = project(player_gesture, agent_gesture, manifest["participants"], source="yolo_only")
     on_event({"event": "result", **result})
     # post-result hold 与 dice 同款：结果已出、推流保温，倒计时归展示层。

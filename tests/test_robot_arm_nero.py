@@ -265,6 +265,29 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         self.assertIn("action", commands)
         self.assertLess(commands.index("reload"), commands.index("action"))
 
+    def test_throw_gesture_maps_rps_vocabulary_to_demo_actions(self):
+        """rps 出拳：游戏词表（石头/剪刀/布）→ demo 动作 rock/scissors/paper，
+        复用静态动作通路（reload 前置免费继承）；未知词表值直接失败。"""
+        for gesture, action in (("石头", "rock"), ("剪刀", "scissors"), ("布", "paper")):
+            outcome = self.provider.throw_gesture(
+                gesture, on_event=self.events.append, is_cancelled=lambda: False
+            )
+            self.assertEqual(outcome["status"], "completed")
+        self.assertIn("手势 rock", [str(e.get("zh")) for e in self.events])
+        self.assertIn("手势 paper", [str(e.get("zh")) for e in self.events])
+        received = [
+            json.loads(line)
+            for line in (self.demo_root / "received.log").read_text().splitlines()
+        ]
+        names = [c.get("name") for c in received if c.get("command") == "action"]
+        self.assertEqual(names, ["rock", "scissors", "paper"])
+
+        outcome = self.provider.throw_gesture(
+            "布匹", on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "failed")
+        self.assertIn("unknown throw gesture", str(outcome["reason"]))
+
     def test_grasp_chain_never_sends_reload(self):
         """reload 只对静态动作有意义；抓取/摇骰链保持纯 advance 协议。"""
         outcome = self.provider.grasp_cup(

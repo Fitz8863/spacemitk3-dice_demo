@@ -12,6 +12,7 @@ Command mapping:
 * ``grasp_cup``  → ``advance until LIFT``      (HOME→CAPTURE→PLAN→APPROACH→GRIP→LIFT; grasp and lift, no shaking)
 * ``shake_dice`` → ``advance until RETURN_HOME`` (SHAKE→LOWER→OPEN→RETURN_HOME; the cup is already aloft)
 * ``feedback``   → ``action name=yeah|thumbs-up|tie``
+* ``throw_gesture`` → ``action name=rock|paper|scissors`` (rps agent move; pose is held, no auto-home)
 * ``reset_home`` → ``action name=home`` — best-effort, never revives a dead resident
 
 Completion is judged strictly by id-correlated events (``command_completed`` /
@@ -67,6 +68,8 @@ _PHASE_LABELS_ZH = {
     "RETURN_HOME": "收尾归位",
 }
 _FEEDBACK_ACTIONS = {"win": "yeah", "lose": "thumbs-up", "draw": "tie"}
+# rps 游戏词表（games/rps/result.py GESTURES）→ demo 静态手势动作名。
+_THROW_ACTIONS = {"石头": "rock", "剪刀": "scissors", "布": "paper"}
 
 _LOG_TAIL_LINES = 15
 
@@ -346,6 +349,7 @@ class RobotArmNeroProvider(RobotProvider):
             "grasp_cup": float(config.get("grasp_timeout_seconds", 45)),
             "shake_dice": float(config.get("shake_timeout_seconds", 120)),
             "feedback": float(config.get("action_timeout_seconds", 30)),
+            "throw_gesture": float(config.get("action_timeout_seconds", 30)),
             "reset_home": float(config.get("action_timeout_seconds", 30)),
         }
         self._sigint_grace = float(config.get("sigint_grace_seconds", 15))
@@ -458,6 +462,25 @@ class RobotArmNeroProvider(RobotProvider):
             return {"status": "failed", "reason": f"unknown feedback kind {kind!r}"}
         return self._run_command(
             "feedback",
+            {"command": "action", "name": action},
+            timeout_seconds,
+            on_event,
+            is_cancelled,
+        )
+
+    def throw_gesture(
+        self,
+        gesture: str,
+        *,
+        on_event: RobotEventFn,
+        is_cancelled: RobotCancelledFn,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        action = _THROW_ACTIONS.get(gesture)
+        if action is None:
+            return {"status": "failed", "reason": f"unknown throw gesture {gesture!r}"}
+        return self._run_command(
+            "throw_gesture",
             {"command": "action", "name": action},
             timeout_seconds,
             on_event,

@@ -795,7 +795,13 @@ def _round_robot_fn(game_id: str):
 
 
 def _manifest_uses_robot(manifest: dict) -> bool:
-    """True when any state's on_enter declares a robot action."""
+    """True when the game drives the arm — via state actions or its pipeline.
+
+    两种形态都算：状态机 on_enter 声明 robot 动作（dice 抓/摇/归位），或游戏
+    自身 manifest 显式声明 ``providers.robot_arm`` 槽位（rps 管线直发出拳）。
+    必须传**合并全局默认前**的 manifest——合并后所有游戏都带全局槽位，那不
+    代表该游戏用臂。
+    """
     machine = manifest.get("state_machine") or {}
     for state in (machine.get("states") or {}).values():
         if not isinstance(state, dict):
@@ -803,6 +809,11 @@ def _manifest_uses_robot(manifest: dict) -> bool:
         for action in state.get("on_enter") or []:
             if isinstance(action, dict) and action.get("action") == "robot":
                 return True
+    providers = manifest.get("providers")
+    if isinstance(providers, dict):
+        configured = providers.get("robot_arm")
+        if isinstance(configured, str) and configured.strip():
+            return True
     return False
 
 
@@ -872,6 +883,9 @@ def create_round(game_id: str) -> GameRound:
     manifest = require_game(get_games(), game_id)
     if not isinstance(manifest.get("state_machine"), dict):
         raise InvalidRequestError(f"game {game_id} declares no state_machine")
+    # rps 这类管线直发机械臂的游戏靠自身 manifest 显式声明槽位来 opt-in
+    # 预热/终局归位，所以 _manifest_uses_robot 必须看合并前的原始 manifest。
+    uses_robot = _manifest_uses_robot(manifest)
     # The round snapshots the *effective* manifest: arena defaults underlaid,
     # the global ASR breaker applied.  Engine and ASR bridge read it as-is.
     manifest = with_global_defaults(manifest, get_arena_config())
@@ -897,7 +911,7 @@ def create_round(game_id: str) -> GameRound:
         )
         rounds[round_.id] = round_
     round_.start()
-    if _manifest_uses_robot(manifest):
+    if uses_robot:
         # Entering the game is when the arm's resident runtime comes up: the
         # rules speech (~30s) comfortably covers its warmup, and the post-round
         # home reset is armed for however this round ends.

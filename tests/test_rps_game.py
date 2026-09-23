@@ -103,16 +103,36 @@ class _FakeV10Provider:
         return {"observations": {"default": self.observation}}
 
 
+class _FakeRobot:
+    """Test double for the arm: records throws, replays scripted outcomes.
+
+    没有脚本时返回 completed——与真机一致，出拳成功后裁决继续。
+    """
+
+    def __init__(self, outcomes=None):
+        self.calls = []
+        self.outcomes = list(outcomes or [])
+
+    def throw_gesture(self, gesture, *, on_event, is_cancelled, timeout_seconds=None):
+        self.calls.append(gesture)
+        if self.outcomes:
+            return self.outcomes.pop(0)
+        return {"status": "completed"}
+
+
 class _FakeComponents:
-    def __init__(self, provider):
+    def __init__(self, provider, robot=None):
         self.provider = provider
+        self.robot = robot if robot is not None else _FakeRobot()
         self.requested = []
 
     def require(self, provider_id, expected_type=None, expected_role=None):
         self.requested.append((provider_id, expected_type, expected_role))
-        if provider_id != "vision_yolov10_objdetect":
-            raise RuntimeError(f"unexpected provider id {provider_id!r}")
-        return self.provider
+        if provider_id == "vision_yolov10_objdetect":
+            return self.provider
+        if provider_id == "robot_arm_nero" and self.robot is not None:
+            return self.robot
+        raise RuntimeError(f"unexpected provider id {provider_id!r}")
 
 
 class VisionPipelineTests(unittest.TestCase):
@@ -196,13 +216,78 @@ class VisionPipelineTests(unittest.TestCase):
                 on_event=lambda e: None,
             )
 
+    def test_run_dispatches_the_same_random_gesture_to_the_arm(self):
+        # 臂收到的必须是裁决用的同一份随机拳形（单一事实源）；且顺序是
+        # 先 observe 锁定玩家手势、再让臂亮拳（杜绝看到臂出拳后改手）。
+        provider = _FakeV10Provider(_observation("Rock"))
+        with mock.patch("games.rps.pipeline.random.choice", return_value="剪刀"):
+            result, _, components = self._run(provider)
+        self.assertEqual(components.robot.calls, ["剪刀"])
+        self.assertEqual(result["agent_choice"], "剪刀")
+        self.assertEqual(
+            [r[0] for r in components.requested],
+            ["vision_yolov10_objdetect", "robot_arm_nero"],
+        )
+
+    def test_run_routes_arm_failure_to_analysis_diagnosis(self):
+        # 臂失败 = 本局中断：返回诊断型结果（与 observe 诊断同形），引擎
+        # 路由 adjudication.diagnosis → analysis_failed，重试会重放出拳。
+        provider = _FakeV10Provider(_observation("Rock"))
+        robot = _FakeRobot(outcomes=[{"status": "failed", "reason": "demo 退出码 2"}])
+        events = []
+        manifest = rps_manifest()
+        manifest["participants"] = {"player": "RIGHT", "agent": "LEFT"}
+        with mock.patch("games.rps.pipeline.random.choice", return_value="布"):
+            result = rps_pipeline.run(
+                lambda line: None, lambda: False, 30.0,
+                components=_FakeComponents(provider, robot=robot),
+                manifest=manifest,
+                on_event=events.append,
+            )
+        self.assertTrue(result["diagnosed"])
+        self.assertTrue(result["retry_required"])
+        self.assertEqual(result["diagnosis"]["reason"], "arm_throw_failed")
+        self.assertIn("机械臂未完成出拳", result["diagnosis"]["message"])
+        self.assertIn("demo 退出码 2", result["diagnosis"]["message"])
+        self.assertTrue(any(e.get("event") == "diagnosis" for e in events))
+        self.assertFalse(any(e.get("event") == "result" for e in events))
+
+    def test_run_treats_noop_arm_skip_as_failure(self):
+        # 基类 no-op 地板返回 skipped：rps 臂必需，skipped 同样中断本局。
+        provider = _FakeV10Provider(_observation("Rock"))
+        robot = _FakeRobot(outcomes=[{"status": "completed", "skipped": True}])
+        manifest = rps_manifest()
+        manifest["participants"] = {"player": "RIGHT", "agent": "LEFT"}
+        result = rps_pipeline.run(
+            lambda line: None, lambda: False, 30.0,
+            components=_FakeComponents(provider, robot=robot),
+            manifest=manifest,
+            on_event=lambda e: None,
+        )
+        self.assertTrue(result["diagnosed"])
+        self.assertEqual(result["diagnosis"]["reason"], "arm_throw_failed")
+
+    def test_run_requires_a_configured_robot_slot(self):
+        provider = _FakeV10Provider(_observation("Rock"))
+        manifest = rps_manifest()
+        manifest["participants"] = {"player": "RIGHT", "agent": "LEFT"}
+        del manifest["providers"]["robot_arm"]
+        result = rps_pipeline.run(
+            lambda line: None, lambda: False, 30.0,
+            components=_FakeComponents(provider),
+            manifest=manifest,
+            on_event=lambda e: None,
+        )
+        self.assertTrue(result["diagnosed"])
+        self.assertIn("槽位未配置", result["diagnosis"]["message"])
+
 
 class RoundFlowTests(unittest.TestCase):
-    def make_round(self, player_label="Rock"):
+    def make_round(self, player_label="Rock", robot=None):
         manifest = rps_manifest()
         manifest["participants"] = {"player": "RIGHT", "agent": "LEFT"}
         provider = _FakeV10Provider(_observation(player_label))
-        components = _FakeComponents(provider)
+        components = _FakeComponents(provider, robot=robot)
 
         def adjudicate(manifest, on_event, is_cancelled, log):
             return rps_pipeline.run(
@@ -223,11 +308,29 @@ class RoundFlowTests(unittest.TestCase):
         round_.start()
         return round_
 
+    def _ack_play_chant(self, round_):
+        """play 的口令是 await 台词：无头驱动必须自己回执，否则吃 30s 兜底。"""
+        self.assertTrue(
+            wait_for(
+                lambda: [
+                    e for e in round_.snapshot()["events"]
+                    if e.get("event") == "speech" and e.get("await")
+                ]
+            )
+        )
+        # 覆盖 worker 在「事件已发、_awaiting_directive 未置位」之间的窗口。
+        time.sleep(0.2)
+        chant = next(
+            e for e in round_.snapshot()["events"]
+            if e.get("event") == "speech" and e.get("await")
+        )
+        round_.submit_intent("speech_done", {"directive_id": chant["directive_id"]})
+
     def drive_to_result(self, agent_gesture, player_gesture):
         """Drive one round with scripted gestures: rules → play → analysis → result.
 
         玩家手势来自注入的观测 label（fake provider），agent 手势是
-        random.choice（机械臂指令位）。
+        random.choice（同一份随机值下发给 fake 机械臂）。
         """
         label = {"石头": "Rock", "剪刀": "Scissors", "布": "Paper"}[player_gesture]
         with mock.patch(
@@ -239,22 +342,7 @@ class RoundFlowTests(unittest.TestCase):
             # confirm 无 after_speech 闸：不等规则宣读的 speech_done 直接按绿键。
             round_.submit_intent("confirm")
             self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "play"))
-            # play 的口令是 await 台词：无头驱动必须自己回执，否则吃 30s 兜底。
-            self.assertTrue(
-                wait_for(
-                    lambda: [
-                        e for e in round_.snapshot()["events"]
-                        if e.get("event") == "speech" and e.get("await")
-                    ]
-                )
-            )
-            # 覆盖 worker 在「事件已发、_awaiting_directive 未置位」之间的窗口。
-            time.sleep(0.2)
-            chant = next(
-                e for e in round_.snapshot()["events"]
-                if e.get("event") == "speech" and e.get("await")
-            )
-            round_.submit_intent("speech_done", {"directive_id": chant["directive_id"]})
+            self._ack_play_chant(round_)
             self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "result"))
             return round_
 
@@ -320,6 +408,39 @@ class RoundFlowTests(unittest.TestCase):
             self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "play"))
         finally:
             round_.cancel()
+
+    def test_flow_arm_failure_routes_to_analysis_failed_and_retry_recovers(self):
+        """臂出拳失败 → analysis_failed（诊断进结果与事件流）；蓝键重试
+        重放整条（observe + 出拳），恢复后正常宣判——同一份随机拳形。"""
+        robot = _FakeRobot(outcomes=[{"status": "failed", "reason": "demo 退出码 2"}])
+        with mock.patch(
+            "games.rps.pipeline.random.choice", return_value="剪刀"
+        ), mock.patch("games.rps.pipeline.time.sleep"):
+            round_ = self.make_round("Rock", robot=robot)
+            try:
+                self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "rules"))
+                round_.submit_intent("confirm")
+                self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "play"))
+                self._ack_play_chant(round_)
+                # 第一次出拳失败 → 诊断路由 analysis_failed，本局中断。
+                self.assertTrue(
+                    wait_for(lambda: round_.snapshot()["state"] == "analysis_failed")
+                )
+                snapshot = round_.snapshot()
+                self.assertEqual(
+                    snapshot["result"]["diagnosis"]["reason"], "arm_throw_failed"
+                )
+                self.assertIn("机械臂未完成出拳", snapshot["result"]["diagnosis"]["message"])
+                self.assertEqual(robot.calls, ["剪刀"])
+                # 蓝键重试：脚本队列已空 → 臂正常出拳 → 正常宣判。
+                round_.submit_intent("retry")
+                self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "result"))
+                snapshot = round_.snapshot()
+                self.assertEqual(snapshot["result"]["winner_role"], "PLAYER")
+                self.assertEqual(snapshot["result"]["agent_choice"], "剪刀")
+                self.assertEqual(robot.calls, ["剪刀", "剪刀"])
+            finally:
+                round_.cancel()
 
 
 if __name__ == "__main__":

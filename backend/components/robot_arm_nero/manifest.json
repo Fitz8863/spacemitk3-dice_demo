@@ -8,6 +8,7 @@
     "robot.grasp_cup",
     "robot.shake_dice",
     "robot.feedback",
+    "robot.throw_gesture",
     "robot.reset_home",
     "robot.resident"
   ],

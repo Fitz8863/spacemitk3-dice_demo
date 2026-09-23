@@ -2,7 +2,8 @@
 
 A robot provider drives exactly one physical arm.  The state machine calls it
 through short imperative commands — grasp the dice cup (no shaking), shake the
-held cup and put it back down, perform a result gesture, return home — and the
+held cup and put it back down, perform a result gesture, throw one static game
+gesture, return home — and the
 provider owns every process-level detail of the demo runtime behind those
 verbs (resident process lifecycle, protocol framing, retries, interruption).
 
@@ -68,6 +69,23 @@ class RobotProvider(Component):
     ) -> dict[str, Any]:
         """Perform one result gesture; ``kind`` is win/lose/draw."""
         raise NotImplementedError
+
+    def throw_gesture(
+        self,
+        gesture: str,
+        *,
+        on_event: RobotEventFn,
+        is_cancelled: RobotCancelledFn,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Throw one static game gesture (e.g. rock/paper/scissors).
+
+        ``gesture`` uses the calling game's own vocabulary; the provider maps
+        it onto its demo action names.  Non-abstract like reset_home: the
+        floor reports ``skipped`` so arm-optional games keep working, while
+        an arm-required game (rps) treats ``skipped`` as a failure.
+        """
+        return {"status": "completed", "skipped": True}
 
     def reset_home(
         self,

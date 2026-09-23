@@ -5,7 +5,8 @@
   "description": "石头 · 剪刀 · 布",
   "enabled": true,
   "providers": {
-    "vision_adjudicator": "vision_yolov10_objdetect"
+    "vision_adjudicator": "vision_yolov10_objdetect",
+    "robot_arm": "robot_arm_nero"
   },
   "vision_profile": {
     "schema_version": 1,
@@ -92,9 +93,9 @@
         }
       },
       "analysis_failed": {
-        "ui": {"view": "analysis", "title": "这次没看清，再给我一次机会", "copy": "按蓝色按钮重新识别。"},
+        "ui": {"view": "analysis", "title": "这局没完成，再来一次", "copy": "按蓝色按钮重试。"},
         "on_enter": [
-          {"action": "speech", "mode": "tts_local", "text": "本次识别未完成，可选择按蓝色按钮重新识别。"}
+          {"action": "speech", "mode": "tts_local", "text": "本次判定未完成，可选择按蓝色按钮重试。"}
         ],
         "on_intent": {
           "retry": {"to": "analysis"},

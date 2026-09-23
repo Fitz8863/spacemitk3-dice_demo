@@ -1303,3 +1303,32 @@ def test_probe_selected_llm_covers_all_four_paths(monkeypatch, capsys):
     server._probe_selected_llm({"providers": {"llm": "llm_probe"}})
     out = capsys.readouterr().out
     assert "probe failed" in out and "connection refused" in out
+
+
+def test_manifest_uses_robot_detects_state_actions_and_explicit_slot():
+    """用臂的两条路：状态机 robot 动作（dice）或自身 manifest 显式声明
+    robot_arm 槽位（rps 管线直发）；两者都不满足才算不用臂。"""
+    state_action = {
+        "state_machine": {"states": {"s": {"on_enter": [
+            {"action": "robot", "command": "reset_home"}
+        ]}}}
+    }
+    assert server._manifest_uses_robot(state_action) is True
+
+    assert server._manifest_uses_robot({"providers": {"robot_arm": "robot_arm_nero"}}) is True
+    assert server._manifest_uses_robot({}) is False
+
+    # 判定必须用合并全局默认前的原始 manifest：合并后所有游戏都会带上
+    # 全局 robot_arm 槽位，那不代表该游戏用臂（create_round 的契约）。
+    assert server._manifest_uses_robot({"state_machine": {"states": {}}}) is False
+
+    # 真实 manifest：rps 显式声明槽位（管线直发），dice 走状态动作。
+    rps_manifest = json.loads(
+        (ROOT / "backend/games/rps/manifest.json").read_text(encoding="utf-8")
+    )
+    assert rps_manifest["providers"]["robot_arm"] == "robot_arm_nero"
+    assert server._manifest_uses_robot(rps_manifest) is True
+    dice_manifest = json.loads(
+        (ROOT / "backend/games/dice/manifest.json").read_text(encoding="utf-8")
+    )
+    assert server._manifest_uses_robot(dice_manifest) is True
