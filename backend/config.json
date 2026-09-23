@@ -9,8 +9,8 @@
     "robot_arm": "robot_arm_nero"
   },
   "participants": {
-    "player": "RIGHT",
-    "agent": "LEFT"
+    "player": "LEFT",
+    "agent": "RIGHT"
   },
   "voice": "default",
   "speed": 1.0,
