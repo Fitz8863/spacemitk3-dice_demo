@@ -190,7 +190,7 @@
 					"title": "游戏开始！",
 					"copy": "机械臂正在抓取骰盅，准备与您同步摇骰。"
 				},
-				"duration": 3.0,
+				"duration": 2.0,
 				"on_enter": [
 					{
 						"action": "robot",
