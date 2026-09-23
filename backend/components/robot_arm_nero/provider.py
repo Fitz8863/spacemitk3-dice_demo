@@ -193,12 +193,14 @@ class _Resident:
                     }
                 )
             return
-        if name in ("command_completed", "action_completed"):
+        if name in ("command_completed", "action_completed", "actions_reloaded"):
             if pending is not None:
+                self._forget_pending(command_id)
                 pending.resolve({"status": "completed"})
             return
         if name == "rejected":
             if pending is not None:
+                self._forget_pending(command_id)
                 pending.resolve(
                     {
                         "status": "failed",
@@ -210,6 +212,7 @@ class _Resident:
             return
         if name == "failed":
             if pending is not None:
+                self._forget_pending(command_id)
                 pending.resolve(
                     {
                         "status": "failed",
@@ -221,9 +224,17 @@ class _Resident:
             return
         if name == "closed":
             if pending is not None:
+                self._forget_pending(command_id)
                 pending.resolve({"status": "failed", "reason": "resident closed"})
             return
         # status / actions / perception_reset / preview: informational only.
+
+    def _forget_pending(self, command_id: Any) -> None:
+        """Drop one resolved pending so the map stays bounded."""
+        if command_id is None:
+            return
+        with self._pending_lock:
+            self._pending.pop(str(command_id), None)
 
     @staticmethod
     def _progress_event(phase: str) -> dict[str, Any]:
@@ -357,6 +368,8 @@ class RobotArmNeroProvider(RobotProvider):
         checks = {
             "run.sh": self._demo_root / "run.sh",
             "configs/green_cup.json": self._demo_root / "configs" / "green_cup.json",
+            "configs/actions/gestures": self._demo_root / "configs" / "actions" / "gestures",
+            "configs/actions/home.json": self._demo_root / "configs" / "actions" / "home.json",
             "vendor-site/pyAgxArm": self._demo_root / "vendor-site" / "pyAgxArm",
             "vendor-site/pyrealsense2": self._demo_root / "vendor-site" / "pyrealsense2",
         }
@@ -507,6 +520,14 @@ class RobotArmNeroProvider(RobotProvider):
             resident, error = self._ensure_running(is_cancelled, deadline)
             if resident is None:
                 return {"status": "failed", "reason": error}
+            if payload.get("command") == "action":
+                # Static gestures live in configs/actions/gestures/ and the
+                # resident hot-reloads that table on demand (demo 2026-09-23).
+                # A fire-and-forget reload ahead of every static action makes
+                # a recipe edit apply to the very next gesture — the demo
+                # serializes stdin commands, so the action runs behind the
+                # reload, and a failed reload keeps the previous table.
+                resident.send({"command": "reload"}, on_event)
             pending = resident.send(payload, on_event)
             outcome = self._wait_pending(resident, pending, deadline, is_cancelled)
             elapsed = round(time.monotonic() - started, 2)

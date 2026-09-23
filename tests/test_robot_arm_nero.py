@@ -9,6 +9,8 @@ restart-and-recover paths the provider must handle.
 """
 from __future__ import annotations
 
+import json
+import shutil
 import sys
 import tempfile
 import threading
@@ -68,6 +70,7 @@ emit("ready", phases=PHASES, actions=["home", "yeah", "thumbs-up", "tie"],
      state_file="green_pipeline_state.json")
 
 for line in sys.stdin:
+    (MODE_FILE.parent / "received.log").open("a").write(line)
     try:
         request = json.loads(line)
     except json.JSONDecodeError:
@@ -78,6 +81,9 @@ for line in sys.stdin:
     if command == "close":
         emit("closed", id=rid, state_file="green_pipeline_state.json")
         break
+    if command == "reload":
+        emit("actions_reloaded", id=rid, names=["home", "yeah", "thumbs-up", "tie"])
+        continue
     if command == "status":
         emit("status", id=rid, next_phase="HOME", completed_phases=[])
         continue
@@ -120,6 +126,11 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         root = Path(self._tmp.name)
         (root / "configs").mkdir()
         (root / "configs" / "green_cup.json").write_text("{}", encoding="utf-8")
+        (root / "configs" / "actions" / "gestures").mkdir(parents=True)
+        (root / "configs" / "actions" / "gestures" / "result_feedback.json").write_text(
+            "{}", encoding="utf-8"
+        )
+        (root / "configs" / "actions" / "home.json").write_text("{}", encoding="utf-8")
         (root / "vendor-site" / "pyAgxArm").mkdir(parents=True)
         (root / "vendor-site" / "pyrealsense2").mkdir(parents=True)
         (root / "cup_grasp_demo" / "datasets").mkdir(parents=True)
@@ -159,6 +170,13 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         health = self.provider.health()
         self.assertFalse(health["ok"])
         self.assertIn("run.sh", str(health.get("error")))
+
+    def test_health_flags_missing_gesture_library(self):
+        """手势缺失时常驻会退化为无动作会话（手势/归位被拒）——部署期就该报出来。"""
+        shutil.rmtree(self.demo_root / "configs" / "actions" / "gestures")
+        health = self.provider.health()
+        self.assertFalse(health["ok"])
+        self.assertIn("gestures", str(health.get("error")))
 
     # ---- happy paths -----------------------------------------------------
 
@@ -208,6 +226,38 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
             on_event=self.events.append, is_cancelled=lambda: False
         )
         self.assertEqual(outcome["status"], "completed")
+
+    def test_action_commands_refresh_the_gesture_table_first(self):
+        """demo 2026-09-23 起手势表支持常驻热重载：动作命令前自动发 reload。
+
+        demo 串行处理 stdin，reload 先到即先生效——改手势文件后下一个手势
+        就用新表，无需重启任何东西。
+        """
+        outcome = self.provider.feedback(
+            "win", on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "completed")
+        received = [
+            json.loads(line)
+            for line in (self.demo_root / "received.log").read_text().splitlines()
+        ]
+        commands = [c.get("command") for c in received if isinstance(c, dict)]
+        self.assertIn("reload", commands)
+        self.assertIn("action", commands)
+        self.assertLess(commands.index("reload"), commands.index("action"))
+
+    def test_grasp_chain_never_sends_reload(self):
+        """reload 只对静态动作有意义；抓取/摇骰链保持纯 advance 协议。"""
+        outcome = self.provider.grasp_cup(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "completed")
+        received = [
+            json.loads(line)
+            for line in (self.demo_root / "received.log").read_text().splitlines()
+        ]
+        commands = [c.get("command") for c in received if isinstance(c, dict)]
+        self.assertNotIn("reload", commands)
 
     def test_unknown_feedback_kind_fails_without_spawning(self):
         outcome = self.provider.feedback(
