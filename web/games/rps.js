@@ -17,16 +17,16 @@ export function register(engine) {
 
   // 后端 ui 文案缺省时的前端兜底。
   const phaseMeta = {
-    rules: ['游戏规则', '听完规则后按 Enter 开始，按 ↓ 可以再听一次。'],
-    play: ['石头 · 剪刀 · 布', '听口令出拳，念到「布」时亮出手势。'],
-    analysis: ['正在判定胜负', '视觉裁决器正在识别双方手势并判定胜负。'],
+    rules: ['先记住胜负小口诀', '听完后按绿色按钮出发；蓝色按钮可以再听一次。'],
+    play: ['石头、剪刀、布——亮相！', '听到「布」时，和小搭子同时亮出手势。'],
+    analysis: ['手势侦探正在判断', '请保持手势不动，结果马上揭晓。'],
     result: ['本局结果', ''],
   };
 
   const RULES_MARKUP = [
-    '<div class="rules-item"><span>01</span><div><strong>听口令出拳</strong><p>听语音念「石头，剪刀，布」，随时可以按绿色按钮开始。</p></div></div>',
-    '<div class="rules-item"><span>02</span><div><strong>同时亮手势</strong><p>念到「布」时双方同时亮出手势，不要提前或延后。</p></div></div>',
-    '<div class="rules-item"><span>03</span><div><strong>视觉判定</strong><p>石头赢剪刀，剪刀赢布，布赢石头；相同的手势是平局。</p></div></div>',
+    '<div class="rules-item"><span>01</span><div><strong>听清小口令</strong><p>听语音念「石头，剪刀，布」，绿色按钮可以直接开始。</p></div></div>',
+    '<div class="rules-item"><span>02</span><div><strong>一起亮相</strong><p>念到「布」时双方同时亮出手势，别抢跑哦。</p></div></div>',
+    '<div class="rules-item"><span>03</span><div><strong>揭晓胜负</strong><p>石头赢剪刀，剪刀赢布，布赢石头；一样就是平局。</p></div></div>',
   ].join('');
 
   let round = null;

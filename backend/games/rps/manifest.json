@@ -58,7 +58,7 @@
     "initial": "rules",
     "states": {
       "rules": {
-        "ui": {"view": "rules", "title": "游戏规则", "copy": "听完规则后按 Enter 开始；随时可以按绿色按钮直接开始，按 ↓ 可以再听一次。"},
+        "ui": {"view": "rules", "title": "先记住胜负小口诀", "copy": "听完后按绿色按钮出发；蓝色按钮可以再听一次，红色按钮返回。"},
         "on_enter": [
           {"action": "speech", "mode": "tts_local", "text": "欢迎来到石头剪刀布。双方听口令出拳，念到布时同时亮出手势：石头赢剪刀，剪刀赢布，布赢石头，相同的手势是平局。明白了就请按绿色按钮开始。"}
         ],
@@ -73,7 +73,7 @@
         }
       },
       "play": {
-        "ui": {"view": "play", "title": "出拳", "copy": "听口令出拳，念到「布」时同时亮出手势。"},
+        "ui": {"view": "play", "title": "石头、剪刀、布——亮相！", "copy": "听到「布」时，和小搭子同时亮出手势。"},
         "on_enter": [
           {"action": "speech", "mode": "tts_local", "text": "石头，剪刀，布。", "await": true}
         ],
@@ -81,7 +81,7 @@
         "on_expire": {"to": "analysis"}
       },
       "analysis": {
-        "ui": {"view": "analysis", "title": "正在判定胜负", "copy": "视觉裁决器正在识别双方手势并判定胜负。"},
+        "ui": {"view": "analysis", "title": "手势侦探正在判断", "copy": "请保持手势不动，结果马上揭晓。"},
         "on_enter": [
           {"action": "speech", "mode": "tts_local", "text": "正在判定胜负"},
           {"action": "adjudicate"}
@@ -92,7 +92,7 @@
         }
       },
       "analysis_failed": {
-        "ui": {"view": "analysis", "title": "本次裁决未完成", "copy": ""},
+        "ui": {"view": "analysis", "title": "这次没看清，再给我一次机会", "copy": "按蓝色按钮重新识别。"},
         "on_enter": [
           {"action": "speech", "mode": "tts_local", "text": "本次识别未完成，可选择按蓝色按钮重新识别。"}
         ],
@@ -103,7 +103,7 @@
         }
       },
       "result": {
-        "ui": {"view": "result", "title": "本局结果", "copy": ""},
+        "ui": {"view": "result", "title": "胜负揭晓！", "copy": ""},
         "on_enter": [
           {
             "action": "speech",

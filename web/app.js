@@ -1,4 +1,4 @@
-// Dice Arena 前端引擎：跨游戏通用的视图切换、语音指令播放、网络与游戏选择。
+// 时空游乐舱前端引擎：跨游戏通用的视图切换、语音指令播放、网络与游戏选择。
 // 游戏流程由后端权威状态机驱动：前端通过 RoundClient 创建对局、提交意图、
 // 订阅事件流并渲染；台词以后端下发的 speech 指令播放，await 指令播完回执。
 import { register as registerDice } from './games/dice.js';
@@ -19,7 +19,7 @@ const state = {
 const $ = (id) => document.getElementById(id);
 const views = [...document.querySelectorAll('[data-view]')];
 
-const SELECT_META = ['选择一场游戏', '欢迎来到 Dice Arena，选择游戏后按 OK 开始。'];
+const SELECT_META = ['挑个游戏，开玩吧！', '选好游戏，再按下绿色按钮，小搭子陪你一起出发。'];
 
 const gameModules = {};
 let activeGame = null; // 当前挂载的游戏模块（有 enter/teardown/onKey）
@@ -397,7 +397,7 @@ function stopSpeech() {
   if ('speechSynthesis' in window) window.speechSynthesis.cancel(); // clean up any external/browser utterance
 }
 
-// Deliberately do not call browser speech synthesis. Dice Arena must use the
+// Deliberately do not call browser speech synthesis. The game UI must use the
 // TTS provider selected by the backend; browser speech would hide a broken
 // provider and make the voice unrelated to the configured model/speaker.
 

@@ -1,7 +1,7 @@
 {
   "_note": "dice_demo 常驻接入配置。demo_root 相对主仓库根解析（默认指向兄弟仓库 dice_demo）；修改本文件需重启后端。真机超时以实测为准：常驻热机下识别+抓取约 2-3s，摇+放+归位约 13-20s；超时预算含进程死亡后的自动重启预热（约 6-10s）。",
-  "demo_root": "../dice_demo",
-  "python_bin": "/usr/bin/python3",
+  "demo_root": "../dice_demo_hwj",
+  "python_bin": "/home/test2/.venv-grasp/bin/python",
   "ready_timeout_seconds": 60,
   "grasp_timeout_seconds": 45,
   "shake_timeout_seconds": 120,
