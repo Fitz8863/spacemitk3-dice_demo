@@ -4,22 +4,65 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#f7f9fc" />
-  <title>Dice Arena · 双方摇骰子</title>
+  <title>时空游乐舱 · 进迭时空</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
-      <div class="brand"><span class="brand-dot" aria-hidden="true"></span>DICE ARENA</div>
+      <div class="brand">
+        <img class="brand-logo" src="./assets/spacemit-logo.png" alt="SPACEMIT 进迭时空" />
+        <span class="brand-divider" aria-hidden="true"></span>
+        <span class="brand-name">时空游乐舱</span>
+      </div>
       <div class="topbar-right">
+        <span class="companion-status"><span aria-hidden="true"></span>AI 小伙伴在线</span>
         <button class="icon-button" id="soundToggle" type="button" aria-label="切换语音">🔊</button>
       </div>
     </header>
 
-    <main class="stage">
+    <div class="experience-shell">
+      <aside class="buddy-panel" aria-label="AI 游戏小伙伴">
+        <div class="buddy-doodles" aria-hidden="true">
+          <span class="doodle-star">✦</span><span class="doodle-heart">♥</span><span class="doodle-die">⚄</span>
+        </div>
+        <div class="buddy-copy">
+          <p>SPACEMIT PLAY LAB · 进迭时空</p>
+          <h2>好运装进口袋，<br />一起玩个痛快！</h2>
+        </div>
+        <div class="buddy-speech">嘿！今天想挑战哪一局？<span>小搭子已经满电待机啦</span></div>
+        <svg class="buddy-art" viewBox="0 0 500 430" role="img" aria-label="芯片小伙伴概念角色">
+          <defs>
+            <linearGradient id="buddyBody" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#e2f89d"/><stop offset="1" stop-color="#b0e237"/></linearGradient>
+            <linearGradient id="buddyFace" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fff"/><stop offset="1" stop-color="#f4fae9"/></linearGradient>
+          </defs>
+          <ellipse cx="244" cy="389" rx="153" ry="20" fill="#cedfbc" opacity=".5"/>
+          <g stroke="#00205c" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M155 298q-38 14-37 46q19 22 56 6M316 298q43 10 46 41q-18 27-54 11" fill="#b0e237"/>
+            <path d="M166 349l-6 30q16 18 47 4l5-35M272 349l5 32q22 18 45-1l-9-40" fill="#fff"/>
+            <path d="M366 185q39-20 49-3q8 19-29 50M124 212q-48-32-54-9q-6 25 45 49" fill="#c5eb6f"/>
+            <rect x="116" y="113" width="254" height="240" rx="73" fill="url(#buddyBody)"/>
+            <path d="M216 112V76q-1-24 24-29" fill="none"/>
+            <ellipse cx="251" cy="45" rx="22" ry="16" transform="rotate(-24 251 45)" fill="#b0e237"/>
+            <rect x="145" y="156" width="196" height="138" rx="49" fill="url(#buddyFace)" stroke-width="5"/>
+            <path d="M184 208q10-13 20 0M282 208q10-13 20 0M226 230q17 23 34 0" fill="none"/>
+            <path d="M174 235h16M298 235h16" stroke="#efafb0" stroke-width="11"/>
+            <path d="M222 323h43" stroke="#fff" stroke-width="9"/>
+          </g>
+          <g transform="translate(337 270) rotate(13)">
+            <rect width="92" height="92" rx="22" fill="#fff" stroke="#00205c" stroke-width="6"/>
+            <g fill="#00205c"><circle cx="27" cy="27" r="7"/><circle cx="65" cy="27" r="7"/><circle cx="46" cy="46" r="7"/><circle cx="27" cy="65" r="7"/><circle cx="65" cy="65" r="7"/></g>
+          </g>
+        </svg>
+        <p class="buddy-label">你的 AI 游戏搭子 <span>SPARK-01</span></p>
+        <p class="buddy-note">小提示：绿色出发 · 蓝色再来 · 红色返回</p>
+      </aside>
+
+      <main class="stage">
       <header class="stage-head">
-        <h1 class="stage-title" id="phaseTitle">选择一场游戏</h1>
-        <p class="stage-copy" id="phaseCopy">欢迎来到 Dice Arena，选择游戏后开始。</p>
+        <span class="stage-kicker">TODAY'S PLAY</span>
+        <h1 class="stage-title" id="phaseTitle">挑个游戏，开玩吧！</h1>
+        <p class="stage-copy" id="phaseCopy">选好游戏，再按下绿色按钮，小搭子陪你一起出发。</p>
       </header>
 
       <div class="stage-body" id="stageContent">
@@ -43,27 +86,27 @@
         <!-- 选择游戏 -->
         <section class="view" data-view="select">
           <div class="game-list" id="gameList" role="listbox" aria-label="游戏列表"></div>
-          <button class="btn-circle btn-green" id="startGame" type="button">进入游戏</button>
+          <button class="btn-circle btn-green" id="startGame" type="button">开玩！</button>
           <p class="standby-wake-words hidden" id="selectVoiceHint"></p>
         </section>
 
         <!-- 游戏规则 -->
         <section class="view hidden" data-view="rules">
           <div class="rules-list">
-            <div class="rules-item"><span>01</span><div><strong>准备</strong><p>把骰盅放在两侧区域，准备好后点击确认。</p></div></div>
-            <div class="rules-item"><span>02</span><div><strong>同步摇骰</strong><p>跟随屏幕倒计时，与 Agent 同时开始、同时停止。</p></div></div>
-            <div class="rules-item"><span>03</span><div><strong>视觉判定</strong><p>开盖后保持骰子不动，等待识别和结果播报。</p></div></div>
+            <div class="rules-item"><span>01</span><div><strong>摆好骰盅</strong><p>把双方骰盅放进指定区域，准备好就按绿色按钮。</p></div></div>
+            <div class="rules-item"><span>02</span><div><strong>一起摇起来</strong><p>跟着倒计时，与机械臂同时开摇、同时停下。</p></div></div>
+            <div class="rules-item"><span>03</span><div><strong>揭晓好运</strong><p>开盖后别碰骰子，交给视觉侦探数点数、判胜负。</p></div></div>
           </div>
           <div class="view-actions">
             <button class="btn-circle btn-red" id="backFromRules" type="button">返回</button>
-            <button class="btn-circle btn-blue" id="repeatRules" type="button" aria-keyshortcuts="ArrowDown">再听一次</button>
-            <button class="btn-circle btn-green" id="confirmRules" type="button" aria-keyshortcuts="Enter">我明白了</button>
+            <button class="btn-circle btn-blue" id="repeatRules" type="button" aria-keyshortcuts="ArrowDown">再讲一遍</button>
+            <button class="btn-circle btn-green" id="confirmRules" type="button" aria-keyshortcuts="Enter">懂啦，出发</button>
           </div>
         </section>
 
         <!-- 机械臂归位（离开结果页时先回初始姿态） -->
-        <section class="view hidden" data-view="rehome">
-          <h2 class="view-title">机械臂归位中</h2>
+        <section class="view hidden" data-view="rehome" aria-label="机械臂归位中">
+          <h2 class="view-title">机械臂回起点啦</h2>
           <div class="arm-progress hidden" id="armRehomeRow" aria-live="polite">
             <span class="arm-robot" aria-hidden="true">🦾</span>
             <span id="armRehomeText">机械臂准备中</span>
@@ -73,10 +116,10 @@
 
         <!-- 准备 -->
         <section class="view hidden" data-view="ready">
-          <h2 class="view-title">请拿起骰盅，准备摇骰</h2>
+          <h2 class="view-title">握好骰盅，好运要出发啦！</h2>
           <div class="view-actions">
             <button class="btn-circle btn-red" id="readyBack" type="button">返回</button>
-            <button class="btn-circle btn-green" id="startShake" type="button">开始摇骰</button>
+            <button class="btn-circle btn-green" id="startShake" type="button">摇起来！</button>
           </div>
         </section>
 
@@ -118,8 +161,8 @@
 
         <!-- 机械臂未完成（重试 / 人工模式 / 退出） -->
         <section class="view hidden" data-view="arm_failed">
-          <h2 class="view-title">机械臂未完成</h2>
-          <p class="analysis-status" id="armFailedStatus">机械臂动作未完成，可选择重试或切换人工模式。</p>
+          <h2 class="view-title">机械臂刚刚卡了一下</h2>
+          <p class="analysis-status" id="armFailedStatus">没关系！可以让它再试一次，也可以切换成人工摇骰。</p>
           <div class="view-actions">
             <button class="btn-pill btn-red" id="armBack" type="button">退出本局</button>
             <button class="btn-circle btn-yellow" id="armManual" type="button" aria-keyshortcuts="ArrowUp">人工摇骰</button>
@@ -136,10 +179,10 @@
         <!-- 分析 -->
         <section class="view hidden" data-view="analysis">
           <div class="analysis-spinner" aria-hidden="true"></div>
-          <h2 class="view-title" id="analysisTitle">正在识别骰子</h2>
+          <h2 class="view-title" id="analysisTitle">点数侦探正在认真数</h2>
           <div class="analysis-stream-panel hidden" id="analysisStreamPanel">
             <div class="analysis-stream-head">
-              <span class="analysis-stream-label"><span class="live-dot" aria-hidden="true"></span>YOLOv8 实时检测</span>
+              <span class="analysis-stream-label"><span class="live-dot" aria-hidden="true"></span>点数侦探 · 实时画面</span>
               <span class="analysis-stream-state" id="analysisStreamState">正在连接画面…</span>
             </div>
             <!-- MediaMTX provides this path's WebRTC player page. Keeping it in
@@ -155,14 +198,14 @@
             ></iframe>
           </div>
           <div class="analysis-steps">
-            <div class="analysis-step active" id="stepCapture"><span>✓</span><div><strong>采集画面</strong></div></div>
-            <div class="analysis-step" id="stepDetect"><span>2</span><div><strong>YOLOv8 识别</strong></div></div>
-            <div class="analysis-step" id="stepJudge"><span>3</span><div><strong>计算胜负</strong></div></div>
+            <div class="analysis-step active" id="stepCapture"><span>✓</span><div><strong>看清骰子</strong></div></div>
+            <div class="analysis-step" id="stepDetect"><span>2</span><div><strong>数一数点数</strong></div></div>
+            <div class="analysis-step" id="stepJudge"><span>3</span><div><strong>揭晓胜负</strong></div></div>
           </div>
           <p class="analysis-status" id="analysisStatus">正在请求 K3 YOLOv8 推理进程…</p>
           <div class="view-actions analysis-failure-actions hidden" id="analysisFailureActions">
             <button class="btn-pill btn-red" id="analysisBackToGames" type="button">退出游戏，返回列表</button>
-            <button class="btn-circle btn-blue" id="analysisRetry" type="button" aria-keyshortcuts="ArrowDown">重新识别</button>
+            <button class="btn-circle btn-blue" id="analysisRetry" type="button" aria-keyshortcuts="ArrowDown">重新识别<br />再看一次</button>
             <button class="btn-circle btn-green" id="analysisNewRound" type="button">再来一局</button>
           </div>
         </section>
@@ -178,13 +221,13 @@
           </div>
           <div class="scoreboard">
             <div class="score-side player-side" id="playerScoreSide">
-              <span class="score-label">玩家 · PLAYER</span>
+              <span class="score-label">你的好运 · PLAYER</span>
               <div class="score-dice" id="playerDice"></div>
               <strong id="playerScore">24</strong>
             </div>
             <div class="versus">VS</div>
             <div class="score-side agent-side" id="agentScoreSide">
-              <span class="score-label">AGENT</span>
+              <span class="score-label">小搭子 · AGENT</span>
               <div class="score-dice" id="agentDice"></div>
               <strong id="agentScore">18</strong>
             </div>
@@ -197,7 +240,13 @@
 
       </div>
 
-    </main>
+      </main>
+    </div>
+
+    <footer class="brand-footer">
+      <span>✦ 把计算变成一场好玩的冒险</span>
+      <span>SpaceMIT · 进迭时空</span>
+    </footer>
 
   </div>
 
