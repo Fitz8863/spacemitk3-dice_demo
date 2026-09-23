@@ -2467,3 +2467,85 @@ def test_verifying_phase_reports_whether_the_llm_is_consulted(tmp_path: Path):
 
     on = verifying_events(True)
     assert on and on[0].get("llm") is True
+
+
+def test_dead_cached_runtime_is_evicted_and_rebuilt(tmp_path: Path):
+    """回归（2026-09-23 rps→dice 切换后 dice 裁决必败 bug）：
+
+    快速切游戏时另一视觉 runtime 还占着相机，本 runtime 的相机打开失败、
+    子进程在 start() 返回**之后**才退出——尸体已进 provider 缓存。旧实现
+    只查签名不验活，之后每一局都复用尸体，裁决永远报 "YOLO runtime is
+    not running" 直到重启服务。缓存命中前必须验活：死了就驱逐重建，
+    下一局自愈。
+    """
+    image = tmp_path / "stable.jpg"
+    image.write_bytes(b"img")
+
+    class Runtime:
+        def __init__(self, view_id):
+            self.view_id = view_id
+            self.commands = []
+            self.running = True
+            self.stopped = 0
+            self.events_data = iter([])
+
+        def is_running(self):
+            return self.running
+
+        def start(self, *args, **kwargs):
+            self.events_data = iter([{
+                "event": "observation",
+                "stable": True,
+                "yolo_outcome": "LEFT",
+                "snapshot": {"path": str(image)},
+            }])
+
+        def send(self, command):
+            self.commands.append(dict(command))
+
+        def events(self):
+            return self.events_data
+
+        def stop(self):
+            self.stopped += 1
+            self.running = False
+
+    class Verifier:
+        def verify(self, **kwargs):
+            return type("R", (), {"status": "success", "outcome": "LEFT", "error": None})()
+
+    made = []
+
+    def factory(view_id):
+        runtime = Runtime(view_id)
+        made.append(runtime)
+        return runtime
+
+    profile = {
+        "game_id": "x",
+        "vision": {"stable_frames": 1},
+        "rule": {"kind": "numeric_compare"},
+        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
+        "runtime": {"mode": "resident", "prewarm_camera": True},
+        "lifecycle": {"pre_adjudication_wait_seconds": 0},
+    }
+    provider = VisionYolov8Objdetect(runtime_factory=factory, verifier=Verifier())
+    request = VisionAdjudicationRequest("x", profile, "r1", 1)
+    common = {
+        "on_log": lambda _line: None,
+        "on_event": lambda _event: None,
+        "is_cancelled": lambda: False,
+    }
+
+    first = provider.adjudicate(request, **common)
+    assert first["outcome"]["value"] == "LEFT"
+    assert len(made) == 1  # resident 模式：缓存住第一个 runtime
+
+    # 相机打开失败：进程在 start() 返回后死亡，尸体留在缓存里。
+    made[0].running = False
+
+    second = provider.adjudicate(request, **common)
+    assert second["outcome"]["value"] == "LEFT"
+    assert len(made) == 2  # 尸体被驱逐，重建了新 runtime
+    assert made[0].stopped == 1  # 旧 runtime 走了 stop 清理
+    assert made[1].running is True  # 新 runtime 在服役

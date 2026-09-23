@@ -345,7 +345,7 @@ def test_robot_shake_is_event_driven_with_manual_fallback():
     machine = dice_manifest()["state_machine"]
 
     intro = machine["states"]["game_start"]
-    assert intro["duration"] == 3.0
+    assert intro["duration"] == 2.0  # 用户 2026-09-23 晚板端调参（原默认 3.0）
     assert intro["on_enter"] == [
         {"action": "robot", "command": "grasp_cup", "timeout_seconds": 30}
     ]

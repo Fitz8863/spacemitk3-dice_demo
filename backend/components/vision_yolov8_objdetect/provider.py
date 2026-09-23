@@ -447,7 +447,31 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
                     shutil.rmtree(old_root, ignore_errors=True)
                 rt = None
             if rt is not None:
-                return rt
+                alive = getattr(rt, "is_running", None)
+                if callable(alive) and not alive():
+                    # A runtime that died after start() must never be reused:
+                    # the known case is a camera-open failure during a fast
+                    # game switch (the other vision runtime still held the
+                    # device), where the child logs "Camera open failed" and
+                    # exits long after start() returned.  Reusing the corpse
+                    # fails every later adjudication with "not running" until
+                    # a service restart; evict and rebuild so the very next
+                    # round self-heals.
+                    on_log("cached runtime is not running; evicting and rebuilding")
+                    try:
+                        stop = getattr(rt, "stop", None)
+                        if callable(stop):
+                            stop()
+                    finally:
+                        self._runtime_cache.pop(vid, None)
+                        self._runtime_signatures.pop(vid, None)
+                        old_root = self._runtime_snapshot_dirs.pop(vid, None)
+                    if old_root is not None:
+                        import shutil
+                        shutil.rmtree(old_root, ignore_errors=True)
+                    rt = None
+                else:
+                    return rt
             rt = self.runtime_factory(vid)
             snapshot_dir = Path(tempfile.mkdtemp(prefix=f"vision-runtime-{vid}-"))
             try:

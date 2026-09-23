@@ -39,7 +39,12 @@ export function register(engine) {
   function submitIntent(intent, payload = {}) {
     if (!round) return Promise.resolve();
     return round.submitIntent(intent, payload).catch((error) => {
-      if (error.silent) return; // 按键时机不合状态属正常对局
+      if (error.silent) {
+        // 回合已终结（ROUND_CLOSED）后一切意图都被静默拒绝——错误页假死
+        // 的根因；此时任何按键都导航回列表（与 dice 同款修复）。
+        if (error.code === 'ROUND_CLOSED') returnToSelect();
+        return; // 按键时机不合状态属正常对局
+      }
       console.error(`Intent ${intent} failed:`, error);
     });
   }

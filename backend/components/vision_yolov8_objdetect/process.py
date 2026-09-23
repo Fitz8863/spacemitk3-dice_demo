@@ -309,6 +309,17 @@ class YoloRuntimeProcess:
             self._runtime_exit_emitted = True
             yield {"event": "runtime_exit", "returncode": returncode}
 
+    def is_running(self) -> bool:
+        """True while the resident process is alive (provider cache probe).
+
+        ``start()`` returns once the process spawns; the camera opens inside
+        the child afterwards, so a camera-open failure kills the process long
+        after ``start()`` succeeded and the provider may have cached it.  The
+        provider probes this before reusing a cached runtime.
+        """
+        process = self._process
+        return process is not None and process.poll() is None
+
     def stop(self) -> None:
         # Terminate the child before closing the event stream.  A provider
         # collector may be blocked in ``TextIOWrapper`` while waiting for the

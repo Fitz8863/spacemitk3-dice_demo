@@ -48,11 +48,18 @@ const roundStub = {
   roundId: 'probe-round',
   async start() {},
   submitIntent(intent, payload) {
+    if (roundStub.rejectWith) {
+      const error = roundStub.rejectWith;
+      roundStub.rejectWith = null;
+      return Promise.reject(error);
+    }
     calls.push([intent, payload]);
     return Promise.resolve();
   },
   cancel() {},
 };
+
+let returnToSelectCalls = 0;
 
 const engine = {
   state,
@@ -61,7 +68,7 @@ const engine = {
   toast() {},
   stopSpeech() {},
   async requestJson() { return {}; },
-  returnToSelect() {},
+  returnToSelect() { returnToSelectCalls += 1; },
   createRoundClient(_gameId, callbacks) {
     onStateChange = callbacks.onStateChange;
     return roundStub;
@@ -125,6 +132,32 @@ enterState('analysis', 'analysis');
 expect('识别失败页按 Enter（再来一局）', press('Enter'), clickButton('analysisNewRound'));
 expect('识别失败页按 ↓（重新识别）', press('ArrowDown'), clickButton('analysisRetry'));
 expect('识别失败页按 Esc（退出）', press('Escape'), clickButton('analysisBackToGames'));
+
+// ---- 回合终结后的假死修复（2026-09-23 rps→dice 卡死 bug 第三层）----
+// 回合 error/cancelled 后一切意图都被 409(ROUND_CLOSED) 静默拒绝；旧实现
+// 静默吞掉导致错误页"按钮能按却毫无反应"。现在任何按键都必须导航回列表。
+enterState('analysis', 'analysis');
+roundStub.rejectWith = Object.assign(new Error('round is no longer running'), {
+  code: 'ROUND_CLOSED', silent: true,
+});
+const navBefore = returnToSelectCalls;
+press('Enter');
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (returnToSelectCalls !== navBefore + 1) {
+  failures.push('✗ 回合终结后按键应导航回列表\\n    实际 returnToSelect 调用: ' + (returnToSelectCalls - navBefore));
+} else {
+  console.log('✓ 回合终结后按键导航回列表 → returnToSelect 调用 +1');
+}
+// 正常对局中的时机不合（ROUND_INTENT_REJECTED）仍应静默、不导航。
+roundStub.rejectWith = Object.assign(new Error('intent not accepted'), {
+  code: 'ROUND_INTENT_REJECTED', silent: true,
+});
+const navBefore2 = returnToSelectCalls;
+press('Enter');
+await new Promise((resolve) => setTimeout(resolve, 0));
+if (returnToSelectCalls !== navBefore2) {
+  failures.push('✗ 时机不合的拒绝不应导航回列表');
+}
 
 // ---- rps：同一套「绿=Enter / 红=Esc」通则 ----
 // 两游戏共用同一份 DOM（元素桩共享），先拆掉 dice 的监听器再注册 rps，
