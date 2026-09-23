@@ -69,6 +69,10 @@ if read_mode(consume=False) == "die_before_ready":
 emit("ready", phases=PHASES, actions=["home", "yeah", "thumbs-up", "tie"],
      state_file="green_pipeline_state.json")
 
+# 有状态推进（镜像真实 ControlSession）：advance 从当前位置顺序跑到目标；
+# RETURN_HOME 完成发 run_completed 并自动复位回空闲。
+pos = 0
+
 for line in sys.stdin:
     (MODE_FILE.parent / "received.log").open("a").write(line)
     try:
@@ -109,11 +113,18 @@ for line in sys.stdin:
             emit("phase_started", id=rid, phase="CAPTURE")
             time.sleep(600)
             continue
-        for phase in PHASES[: PHASES.index(target) + 1]:
+        target_index = PHASES.index(target)
+        if target_index < pos:
+            emit("rejected", id=rid, code="already_completed",
+                 message="目标阶段已经完成，不能重复执行")
+            continue
+        for phase in PHASES[pos : target_index + 1]:
             emit("phase_started", id=rid, phase=phase)
             emit("phase_completed", id=rid, phase=phase, elapsed_s=0.01)
-        if target == "RETURN_HOME":
+        pos = target_index + 1
+        if pos == len(PHASES):
             emit("run_completed", id=rid, runs=1)
+            pos = 0
         emit("command_completed", id=rid, through=target)
         continue
     emit("rejected", id=rid, code="invalid_command", message="unknown command")
@@ -180,7 +191,7 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
 
     # ---- happy paths -----------------------------------------------------
 
-    def test_prewarm_then_grasp_cup_stops_before_shaking(self):
+    def test_prewarm_then_grasp_cup_lifts_before_shaking(self):
         self.provider.ensure_started()
         outcome = self.provider.grasp_cup(
             on_event=self.events.append, is_cancelled=lambda: False
@@ -190,25 +201,33 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         phases = self.phases_seen()
         self.assertIn("CAPTURE", phases)
         self.assertIn("GRIP", phases)
-        # The whole point of the split: no shake motion during the countdown.
+        # 升起（LIFT）并入抓取链（用户 2026-09-23 晚拍板）：过场结束时臂
+        # 举杯在空中待命；整个抓取链仍不得有任何摇的动作。
+        self.assertIn("LIFT", phases)
         self.assertNotIn("SHAKE", phases)
-        self.assertNotIn("LIFT", phases)
+        self.assertNotIn("LOWER", phases)
         zh = {e.get("phase"): e.get("zh") for e in self.events if e.get("event") == "robot"}
         self.assertEqual(zh.get("CAPTURE"), "定位杯子")
-        grip_event = next(
+        lift_event = next(
             e for e in self.events
-            if e.get("event") == "robot" and e.get("phase") == "GRIP"
+            if e.get("event") == "robot" and e.get("phase") == "LIFT"
         )
-        self.assertEqual(grip_event.get("progress"), "5/10")
+        self.assertEqual(lift_event.get("progress"), "6/10")
 
     def test_shake_dice_runs_the_full_chain_to_return_home(self):
+        # 游戏真实序列：先 grasp（推进到 LIFT，杯已在空中），再 shake——
+        # 有状态 resident 下 shake 从 SHAKE 直接开始，不再有抬起。
+        self.provider.grasp_cup(on_event=self.events.append, is_cancelled=lambda: False)
+        self.events.clear()
         outcome = self.provider.shake_dice(
             on_event=self.events.append, is_cancelled=lambda: False
         )
         self.assertEqual(outcome["status"], "completed")
         phases = self.phases_seen()
-        for phase in ("LIFT", "SHAKE", "LOWER", "OPEN", "RETURN_HOME"):
+        self.assertEqual(phases[0], "SHAKE")
+        for phase in ("SHAKE", "LOWER", "OPEN", "RETURN_HOME"):
             self.assertIn(phase, phases)
+        self.assertNotIn("LIFT", phases)
         return_event = next(
             e for e in self.events
             if e.get("event") == "robot" and e.get("phase") == "RETURN_HOME"
@@ -355,25 +374,38 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         self.provider.shutdown()
 
     def test_commands_serialize_on_the_arm_lock(self):
-        """Two concurrent commands must not interleave on one arm."""
+        """Two concurrent commands must not interleave on one arm.
+
+        用游戏的真实序列 grasp→shake：有状态 resident 下连续两次 grasp
+        会被 already_completed 拒绝（与真实 ControlSession 一致），所以
+        第二条命令换成 shake——它必须等第一条的臂锁释放后才开跑。
+        """
         self.provider.ensure_started()
         results: list[dict] = []
-        started = threading.Event()
+        first_started = threading.Event()
 
         def run_grasp():
-            started.set()
+            first_started.set()
             results.append(
                 self.provider.grasp_cup(on_event=self.events.append, is_cancelled=lambda: False)
             )
 
+        def run_shake():
+            results.append(
+                self.provider.shake_dice(on_event=self.events.append, is_cancelled=lambda: False)
+            )
+
         first = threading.Thread(target=run_grasp)
         first.start()
-        started.wait(5)
-        second = threading.Thread(target=run_grasp)
+        first_started.wait(5)
+        second = threading.Thread(target=run_shake)
         second.start()
         first.join(30)
         second.join(30)
         self.assertEqual([r["status"] for r in results], ["completed", "completed"])
+        # 顺序保障：LIFT（grasp 链尾）先于 SHAKE（shake 链头）到达。
+        phases = [str(e.get("phase")) for e in self.events if e.get("event") == "robot"]
+        self.assertLess(phases.index("LIFT"), phases.index("SHAKE"))
 
 
 if __name__ == "__main__":

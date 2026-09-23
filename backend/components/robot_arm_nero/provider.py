@@ -9,8 +9,8 @@ demo exits on ``failed``) or the round is cancelled (SIGINT, exit 130).
 
 Command mapping:
 
-* ``grasp_cup``  → ``advance until GRIP``      (HOME→CAPTURE→PLAN→APPROACH→GRIP; no shaking)
-* ``shake_dice`` → ``advance until RETURN_HOME`` (LIFT→SHAKE→LOWER→OPEN→RETURN_HOME)
+* ``grasp_cup``  → ``advance until LIFT``      (HOME→CAPTURE→PLAN→APPROACH→GRIP→LIFT; grasp and lift, no shaking)
+* ``shake_dice`` → ``advance until RETURN_HOME`` (SHAKE→LOWER→OPEN→RETURN_HOME; the cup is already aloft)
 * ``feedback``   → ``action name=yeah|thumbs-up|tie``
 * ``reset_home`` → ``action name=home`` — best-effort, never revives a dead resident
 
@@ -424,7 +424,7 @@ class RobotArmNeroProvider(RobotProvider):
     ) -> dict[str, Any]:
         return self._run_command(
             "grasp_cup",
-            {"command": "advance", "until": "GRIP"},
+            {"command": "advance", "until": "LIFT"},
             timeout_seconds,
             on_event,
             is_cancelled,

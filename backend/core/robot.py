@@ -45,7 +45,7 @@ class RobotProvider(Component):
         is_cancelled: RobotCancelledFn,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Locate the dice cup and grasp it, stopping before any shaking."""
+        """Locate the cup, grasp it and lift it — stopping before any shaking."""
         raise NotImplementedError
 
     def shake_dice(
@@ -55,7 +55,7 @@ class RobotProvider(Component):
         is_cancelled: RobotCancelledFn,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Shake the held cup, place it back down, and return the arm home."""
+        """Shake the lifted cup, place it back down, and return the arm home."""
         raise NotImplementedError
 
     def feedback(
