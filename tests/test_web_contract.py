@@ -394,6 +394,9 @@ def test_robot_shake_is_event_driven_with_manual_fallback():
     assert 'data-view="game_start"' in html
     assert "游戏开始！" in html
     assert 'id="armGameStartRow"' in html
+    assert 'data-view="rehome"' in html
+    assert "机械臂归位中" in html
+    assert 'id="armRehomeRow"' in html
     assert ".game-start-text" in css
     assert 'id="armCountdownRow"' in html
     assert 'id="armShakingRow"' in html
@@ -797,10 +800,18 @@ def test_manifest_state_machine_declares_the_full_graph():
     result_entry = machine["states"]["result"]["on_enter"][0]
     assert result_entry["select_by"] == "winner_role"
     assert set(result_entry["cases"]) == {"PLAYER", "AGENT", "TIE"}
-    # Robot wiring: ready 刻意不再挂任何 robot 动作（2026-09-23 拍板）——
-    # 归位本来多余（每轮 RETURN_HOME 已归位、终态 watcher 兜底），且归位
-    # 手势会占住臂锁 1.8s+，玩家快点开始时抓取被迫排队、整个抓取动作
-    # 挪到 shaking 里才执行。抓取链第一步就是 HOME，姿态恢复免费。
+    # 离开结果页必须先归位（用户 2026-09-23 晚拍板）：再来一局经 rehome
+    # 过场（reset_home 事件驱动，完成/失败/6s 兜底三路都回 ready）；返回
+    # 列表走服务端终态归位 watcher。ready 保持无 robot 动作（e66d773 的
+    # 锁排队教训——归位不该挂在所有进 ready 的路径上）。
+    rehome = machine["states"]["rehome"]
+    assert rehome["on_enter"] == [{"action": "robot", "command": "reset_home"}]
+    assert rehome["on_expire"]["to"] == "ready"
+    assert rehome["on_event"] == {
+        "robot.reset_home.completed": {"to": "ready"},
+        "robot.reset_home.failed": {"to": "ready"},
+    }
+    assert machine["states"]["result"]["on_intent"]["new_round"]["to"] == "rehome"
     ready_actions = machine["states"]["ready"]["on_enter"]
     assert all(a.get("action") != "robot" for a in ready_actions)
     feedback = machine["states"]["result"]["on_enter"][1]

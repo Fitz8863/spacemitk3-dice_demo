@@ -162,6 +162,31 @@
 					}
 				}
 			},
+			"rehome": {
+				"ui": {
+					"view": "rehome",
+					"title": "机械臂归位中",
+					"copy": "机械臂正在回到初始位置，马上开始下一局。"
+				},
+				"duration": 6,
+				"on_enter": [
+					{
+						"action": "robot",
+						"command": "reset_home"
+					}
+				],
+				"on_expire": {
+					"to": "ready"
+				},
+				"on_event": {
+					"robot.reset_home.completed": {
+						"to": "ready"
+					},
+					"robot.reset_home.failed": {
+						"to": "ready"
+					}
+				}
+			},
 			"ready": {
 				"ui": {
 					"view": "ready",
@@ -435,7 +460,7 @@
 				],
 				"on_intent": {
 					"new_round": {
-						"to": "ready"
+						"to": "rehome"
 					},
 					"back": {
 						"exit": true

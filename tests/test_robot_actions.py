@@ -94,7 +94,18 @@ def robot_machine(**overrides):
                     "cases": {"PLAYER": "lose", "AGENT": "win", "TIE": "draw"},
                 },
             ],
-            "on_intent": {"new_round": {"to": "ready"}, "back": {"exit": True}},
+            "on_intent": {"new_round": {"to": "rehome"}, "back": {"exit": True}},
+        },
+        "rehome": {
+            "duration": 3,
+            "on_enter": [
+                {"action": "robot", "command": "reset_home"},
+            ],
+            "on_expire": {"to": "ready"},
+            "on_event": {
+                "robot.reset_home.completed": {"to": "ready"},
+                "robot.reset_home.failed": {"to": "ready"},
+            },
         },
         "arm_failed": {
             "on_enter": [{"action": "speech", "mode": "tts_local", "text": "臂失败"}],
@@ -452,6 +463,25 @@ class RobotEngineTests(unittest.TestCase):
         drive_to_shaking(round_)
         round_.cancel()
         self.assertTrue(interrupted.wait(5))
+
+    def test_result_new_round_rehomes_the_arm_before_ready(self):
+        """离开 result 必须先归位（2026-09-23 晚拍板）：new_round → rehome，
+        reset_home 完成事件驱动进 ready——归位没做完玩家不会停在等待。"""
+        robot = _ScriptedRobot()
+        gate = threading.Event()
+        robot.on("reset_home", _blocking({"status": "completed"}, gate=gate))
+        round_ = start_robot_round(robot)
+
+        round_.submit_intent("confirm")
+        round_.submit_intent("start_shake")
+        self.assertTrue(wait_for(lambda: reached(round_, "result"), timeout=15))
+        round_.submit_intent("new_round")
+        self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "rehome"))
+        # 归位在跑：当前仍停在 rehome（reached 会命中早前经过的 ready，不能用）
+        self.assertEqual(round_.snapshot()["state"], "rehome")
+        gate.set()  # 归位完成 → completed 事件驱动进 ready
+        self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "ready"))
+        round_.cancel()
 
     def test_missing_robot_provider_fails_the_round(self):
         round_ = GameRound(

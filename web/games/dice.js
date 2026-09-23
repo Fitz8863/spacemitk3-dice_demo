@@ -35,6 +35,7 @@ export function register(engine) {
   const phaseMeta = {
     rules: ['游戏规则', '听完规则后按 Enter 确认，按 ↓ 可以再听一次。'],
     ready: ['准备好了吗？', '机械臂模式：拿起你的骰盅，点击开始后双方同时摇骰。'],
+    rehome: ['机械臂归位中', '机械臂正在回到初始位置，马上开始下一局。'],
     game_start: ['游戏开始！', '机械臂正在抓取骰盅。'],
     countdown: ['同步倒计时', '机械臂已就位，倒计时结束后双方同时开始摇骰。'],
     shaking: ['摇骰进行中', '机械臂正在摇骰，请摇动你的骰盅。'],
@@ -207,7 +208,9 @@ export function register(engine) {
       agentDice = [];
       updateScores();
     }
-    if (stateName === 'game_start') {
+    if (stateName === 'rehome') {
+      enterRehomeView();
+    } else if (stateName === 'game_start') {
       enterGameStartView();
     } else if (stateName === 'shake_countdown') {
       enterCountdownView();
@@ -223,6 +226,7 @@ export function register(engine) {
   function updateArmProgress(event) {
     // 抓取发生在过场页/倒计时页、摇骰发生在摇骰页：三行同款进度条各自更新。
     const rows = [
+      { row: $('armRehomeRow'), text: $('armRehomeText'), step: $('armRehomeStep') },
       { row: $('armGameStartRow'), text: $('armGameStartText'), step: $('armGameStartStep') },
       { row: $('armCountdownRow'), text: $('armCountdownText'), step: $('armCountdownStep') },
       { row: $('armShakingRow'), text: $('armShakingText'), step: $('armShakingStep') },
@@ -240,6 +244,7 @@ export function register(engine) {
 
   function resetArmProgressRows() {
     const rows = [
+      { row: $('armRehomeRow'), text: $('armRehomeText'), step: $('armRehomeStep') },
       { row: $('armGameStartRow'), text: $('armGameStartText'), step: $('armGameStartStep') },
       { row: $('armCountdownRow'), text: $('armCountdownText'), step: $('armCountdownStep') },
       { row: $('armShakingRow'), text: $('armShakingText'), step: $('armShakingStep') },
@@ -249,6 +254,12 @@ export function register(engine) {
       text.textContent = '机械臂准备中';
       step.textContent = '';
     }
+  }
+
+  function enterRehomeView() {
+    // 离开结果页的归位过场：臂进度行可见（显示"手势 home"）。
+    const row = $('armRehomeRow');
+    if (row) row.classList.remove('hidden');
   }
 
   function enterGameStartView() {
@@ -665,7 +676,7 @@ export function register(engine) {
 
   return {
     id: 'dice',
-    phases: ['select', 'rules', 'ready', 'game_start', 'countdown', 'shaking', 'open', 'arm_failed', 'analysis', 'result'],
+    phases: ['select', 'rules', 'ready', 'rehome', 'game_start', 'countdown', 'shaking', 'open', 'arm_failed', 'analysis', 'result'],
     progressCount: 6,
     phaseMeta,
     enter,

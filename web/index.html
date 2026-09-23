@@ -61,6 +61,16 @@
           </div>
         </section>
 
+        <!-- 机械臂归位（离开结果页时先回初始姿态） -->
+        <section class="view hidden" data-view="rehome">
+          <h2 class="view-title">机械臂归位中</h2>
+          <div class="arm-progress hidden" id="armRehomeRow" aria-live="polite">
+            <span class="arm-robot" aria-hidden="true">🦾</span>
+            <span id="armRehomeText">机械臂准备中</span>
+            <span class="arm-phase-step" id="armRehomeStep"></span>
+          </div>
+        </section>
+
         <!-- 准备 -->
         <section class="view hidden" data-view="ready">
           <h2 class="view-title">请拿起骰盅，准备摇骰</h2>
