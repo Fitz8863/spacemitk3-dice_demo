@@ -173,10 +173,6 @@
 						"action": "speech",
 						"mode": "tts_local",
 						"text": "准备好了吗，拿起你的骰盅，按下绿色按钮，机械臂和你同时开始摇骰子。"
-					},
-					{
-						"action": "robot",
-						"command": "reset_home"
 					}
 				],
 				"on_intent": {

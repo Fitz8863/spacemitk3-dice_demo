@@ -37,7 +37,6 @@ def robot_machine(**overrides):
         "ready": {
             "on_enter": [
                 {"action": "speech", "mode": "tts_local", "text": "准备"},
-                {"action": "robot", "command": "reset_home"},
             ],
             "on_intent": {
                 "start_shake": {"to": "shake_countdown"},
@@ -456,9 +455,10 @@ class RobotEngineTests(unittest.TestCase):
             log=lambda line: None,
         )
         round_.start()
-        # ready.on_enter carries the round's first robot action (reset_home);
-        # with no provider wired the round must fail there, loudly.
+        # shake_countdown 的 grasp 是本图第一个 robot 动作；没接 provider
+        # 的回合必须在真正用到机械臂的那一刻大声失败。
         round_.submit_intent("confirm")
+        round_.submit_intent("start_shake")
         self.assertTrue(wait_for(lambda: round_.snapshot()["status"] == "error"))
         self.assertIn("robot", round_.snapshot()["error"])
 

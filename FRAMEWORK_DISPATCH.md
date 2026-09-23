@@ -278,7 +278,7 @@ dice 的摇骰由机械臂执行：manifest 的 `on_enter` 里写 `{"action":"ro
 
 生命周期：进游戏（create_round，manifest 声明了 robot 动作即算）→ provider
 `ensure_started()` 后台拉起常驻进程（规则宣读覆盖预热）→ 跨回合保活 →
-回合终态 best-effort `reset_home`（代际守卫，新一轮的 ready 动作优先）→
+回合终态 best-effort `reset_home`（代际守卫，新一轮的抓取链优先——其 HOME 阶段自带归位）→
 服务退出发 close。槽位：全局 `providers.robot_arm`（可被游戏 manifest 覆盖），
 缺槽/坏件 = 命令失败进 `arm_failed` 兜底。
 

@@ -777,9 +777,12 @@ def test_manifest_state_machine_declares_the_full_graph():
     result_entry = machine["states"]["result"]["on_enter"][0]
     assert result_entry["select_by"] == "winner_role"
     assert set(result_entry["cases"]) == {"PLAYER", "AGENT", "TIE"}
-    # Robot wiring: ready re-homes the arm, the result performs the winner
-    # gesture from the agent's viewpoint (PLAYER wins → the arm "loses").
-    assert {"action": "robot", "command": "reset_home"} in machine["states"]["ready"]["on_enter"]
+    # Robot wiring: ready 刻意不再挂任何 robot 动作（2026-09-23 拍板）——
+    # 归位本来多余（每轮 RETURN_HOME 已归位、终态 watcher 兜底），且归位
+    # 手势会占住臂锁 1.8s+，玩家快点开始时抓取被迫排队、整个抓取动作
+    # 挪到 shaking 里才执行。抓取链第一步就是 HOME，姿态恢复免费。
+    ready_actions = machine["states"]["ready"]["on_enter"]
+    assert all(a.get("action") != "robot" for a in ready_actions)
     feedback = machine["states"]["result"]["on_enter"][1]
     assert feedback["command"] == "feedback"
     assert feedback["select_by"] == "winner_role"
