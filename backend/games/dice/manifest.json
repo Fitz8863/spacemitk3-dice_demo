@@ -177,10 +177,33 @@
 				],
 				"on_intent": {
 					"start_shake": {
-						"to": "shake_countdown"
+						"to": "game_start"
 					},
 					"back": {
 						"to": "rules"
+					}
+				}
+			},
+			"game_start": {
+				"ui": {
+					"view": "game_start",
+					"title": "游戏开始！",
+					"copy": "机械臂正在抓取骰盅，准备与您同步摇骰。"
+				},
+				"duration": 3.0,
+				"on_enter": [
+					{
+						"action": "robot",
+						"command": "grasp_cup",
+						"timeout_seconds": 30
+					}
+				],
+				"on_expire": {
+					"to": "shake_countdown"
+				},
+				"on_event": {
+					"robot.grasp_cup.failed": {
+						"to": "arm_failed"
 					}
 				}
 			},
@@ -188,7 +211,7 @@
 				"ui": {
 					"view": "countdown",
 					"title": "同步倒计时",
-					"copy": "机械臂正在抓取骰盅，倒计时结束后双方同时开始摇骰。"
+					"copy": "机械臂已就位，倒计时结束后双方同时开始摇骰。"
 				},
 				"duration": 2.4,
 				"tick_seconds": 0.8,
@@ -198,11 +221,6 @@
 						"mode": "audio",
 						"audio": "audio/warm_321开始.wav",
 						"text": "三，二，一，开始"
-					},
-					{
-						"action": "robot",
-						"command": "grasp_cup",
-						"timeout_seconds": 30
 					}
 				],
 				"on_expire": {
@@ -256,7 +274,7 @@
 				],
 				"on_intent": {
 					"retry": {
-						"to": "shake_countdown"
+						"to": "game_start"
 					},
 					"manual": {
 						"to": "manual_shaking"

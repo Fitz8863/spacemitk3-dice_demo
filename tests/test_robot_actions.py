@@ -39,16 +39,23 @@ def robot_machine(**overrides):
                 {"action": "speech", "mode": "tts_local", "text": "准备"},
             ],
             "on_intent": {
-                "start_shake": {"to": "shake_countdown"},
+                "start_shake": {"to": "game_start"},
                 "back": {"exit": True},
             },
+        },
+        "game_start": {
+            "duration": 0.3,
+            "on_enter": [
+                {"action": "robot", "command": "grasp_cup"},
+            ],
+            "on_expire": {"to": "shake_countdown"},
+            "on_event": {"robot.grasp_cup.failed": {"to": "arm_failed"}},
         },
         "shake_countdown": {
             "duration": 0.3,
             "tick_seconds": 0.1,
             "on_enter": [
                 {"action": "speech", "mode": "audio", "audio": "audio/warm.wav"},
-                {"action": "robot", "command": "grasp_cup"},
             ],
             "on_expire": {"to": "shaking"},
             "on_event": {"robot.grasp_cup.failed": {"to": "arm_failed"}},
@@ -92,7 +99,7 @@ def robot_machine(**overrides):
         "arm_failed": {
             "on_enter": [{"action": "speech", "mode": "tts_local", "text": "臂失败"}],
             "on_intent": {
-                "retry": {"to": "shake_countdown"},
+                "retry": {"to": "game_start"},
                 "manual": {"to": "manual_shaking"},
                 "back": {"exit": True},
             },
@@ -455,8 +462,8 @@ class RobotEngineTests(unittest.TestCase):
             log=lambda line: None,
         )
         round_.start()
-        # shake_countdown 的 grasp 是本图第一个 robot 动作；没接 provider
-        # 的回合必须在真正用到机械臂的那一刻大声失败。
+        # game_start 的 grasp 是本图第一个 robot 动作；没接 provider 的回合
+        # 必须在真正用到机械臂的那一刻大声失败。
         round_.submit_intent("confirm")
         round_.submit_intent("start_shake")
         self.assertTrue(wait_for(lambda: round_.snapshot()["status"] == "error"))

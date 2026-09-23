@@ -330,19 +330,34 @@ def test_frontend_uses_vision_specific_copy_during_post_open_countdown():
 
 
 def test_robot_shake_is_event_driven_with_manual_fallback():
-    """机械臂摇骰契约（2026-09-23 集成拍板）：
+    """机械臂摇骰契约（2026-09-23 集成拍板 + 过场态改造）：
 
-    - shake_countdown 入口下发抓取（识别+抓取不摇）；只声明失败路由——
-      抓取提前完成不得打断三二一倒计时（落 robot_unrouted 观察）
-    - shaking 无定时无停止按钮：入场即下发摇（advance until RETURN_HOME
-      一条链：摇+放杯+张手+归位），完成/失败双路由
-    - arm_failed 兜底：蓝=重试回 shake_countdown、黄=人工模式、红=退出
-    - manual_shaking 30s 兜底 + 停止按钮（stop_shake 保留给人工模式）
+    - game_start 过场（用户拍板 2026-09-23 晚）：入口即刻下发抓取（advance until
+      GRIP，识别+抓取不摇），大字"游戏开始！"动画 + 臂进度行；duration 就是过场
+      秒数的唯一旋钮（热加载可调，默认 3s——抓取实测 3.5-4s，过场+2.4s 倒计时
+      后臂已持杯待命）；只声明失败路由，抓取提前完成不打断过场
+    - shake_countdown 只剩三二一口令（抓取已前移）；保留 grasp 失败路由——
+      抓取偶发偏慢时失败事件落在倒计时态，仍能正确进兜底页
+    - shaking 无定时无停止按钮：入场即下发摇，完成/失败双路由
+    - arm_failed 兜底：蓝=重试回 game_start（重新过场+重新抓取）、黄=人工、
+      红=退出；manual_shaking 30s 兜底 + 停止按钮
     """
     machine = dice_manifest()["state_machine"]
+
+    intro = machine["states"]["game_start"]
+    assert intro["duration"] == 3.0
+    assert intro["on_enter"] == [
+        {"action": "robot", "command": "grasp_cup", "timeout_seconds": 30}
+    ]
+    assert intro["on_expire"]["to"] == "shake_countdown"
+    assert intro["on_event"] == {"robot.grasp_cup.failed": {"to": "arm_failed"}}
+    assert machine["states"]["ready"]["on_intent"]["start_shake"]["to"] == "game_start"
+
     countdown = machine["states"]["shake_countdown"]
-    grasp = countdown["on_enter"][1]
-    assert grasp == {"action": "robot", "command": "grasp_cup", "timeout_seconds": 30}
+    assert countdown["on_enter"][0]["mode"] == "audio"
+    assert countdown["on_enter"][0]["audio"] == "audio/warm_321开始.wav"
+    assert len(countdown["on_enter"]) == 1
+    assert countdown["duration"] == 2.4
     assert countdown["on_expire"]["to"] == "shaking"
     assert countdown["on_event"] == {"robot.grasp_cup.failed": {"to": "arm_failed"}}
 
@@ -359,7 +374,7 @@ def test_robot_shake_is_event_driven_with_manual_fallback():
 
     arm_failed = machine["states"]["arm_failed"]
     intents = arm_failed["on_intent"]
-    assert intents["retry"]["to"] == "shake_countdown"
+    assert intents["retry"]["to"] == "game_start"
     assert intents["manual"]["to"] == "manual_shaking"
     assert intents["back"]["exit"] is True
 
@@ -371,10 +386,15 @@ def test_robot_shake_is_event_driven_with_manual_fallback():
     # The manual intent must stay voice-reachable.
     assert dice_manifest()["asr"]["phrases"]["manual"]
 
-    # 前端布局：倒计时页与摇骰页各一条臂进度行（🦾+阶段+n/10）；人工模式的
-    # 30s 计时与停止按钮默认隐藏（进入 manual_shaking 才显示）。
+    # 前端布局：过场页大字动画 + 臂进度行；倒计时页与摇骰页各一条进度行；
+    # 人工模式的 30s 计时与停止按钮默认隐藏。
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+    assert 'data-view="game_start"' in html
+    assert "游戏开始！" in html
+    assert 'id="armGameStartRow"' in html
+    assert ".game-start-text" in css
     assert 'id="armCountdownRow"' in html
     assert 'id="armShakingRow"' in html
     assert 'id="shakeTimerRow"' in html
@@ -647,13 +667,13 @@ def test_ready_start_button_can_interrupt_the_opening_announcement():
 
     回归守护：9249ee9（2026-09-18）曾给 start_shake 声明 after_speech 闸
     （播报未完按绿键 409 静默拒绝），2026-09-21 按用户要求撤销——播报中途
-    按绿键/Enter 直接打断进入倒计时，残留播报由下一状态的入场语音顶替
-    （前端顶替路径停止旧音频并立即回执 speech_done）。这条声明被误加回来
-    时这里先红。
+    按绿键/Enter 直接打断进入过场（2026-09-23 晚起目标态为 game_start），
+    残留播报由后续状态的入场语音顶替（前端顶替路径停止旧音频并立即回执
+    speech_done）。这条声明被误加回来时这里先红。
     """
     ready = dice_state("ready")
     start = ready["on_intent"]["start_shake"]
-    assert start["to"] == "shake_countdown"
+    assert start["to"] == "game_start"
     assert "after_speech" not in start
     # back 同样不设闸：播报中途仍可返回规则页。
     assert "after_speech" not in ready["on_intent"]["back"]

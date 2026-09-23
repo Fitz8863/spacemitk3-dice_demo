@@ -35,7 +35,8 @@ export function register(engine) {
   const phaseMeta = {
     rules: ['游戏规则', '听完规则后按 Enter 确认，按 ↓ 可以再听一次。'],
     ready: ['准备好了吗？', '机械臂模式：拿起你的骰盅，点击开始后双方同时摇骰。'],
-    countdown: ['同步倒计时', '机械臂正在抓取骰盅，倒计时结束后双方同时开始摇骰。'],
+    game_start: ['游戏开始！', '机械臂正在抓取骰盅。'],
+    countdown: ['同步倒计时', '机械臂已就位，倒计时结束后双方同时开始摇骰。'],
     shaking: ['摇骰进行中', '机械臂正在摇骰，请摇动你的骰盅。'],
     arm_failed: ['机械臂未完成', '蓝色按钮重试机械臂；黄色按钮切换人工摇骰；红色按钮退出本局。'],
     open: ['你准备好了吗？听语音倒计时同时开盖', ''],
@@ -206,7 +207,9 @@ export function register(engine) {
       agentDice = [];
       updateScores();
     }
-    if (stateName === 'shake_countdown') {
+    if (stateName === 'game_start') {
+      enterGameStartView();
+    } else if (stateName === 'shake_countdown') {
       enterCountdownView();
     } else if (stateName === 'shaking') {
       // shaking 与 manual_shaking 共用 shaking 视图；按后端真实状态名区分布局。
@@ -218,8 +221,9 @@ export function register(engine) {
 
   // ---- 机械臂进度 / 视图布局 ----
   function updateArmProgress(event) {
-    // 抓取发生在倒计时页、摇骰发生在摇骰页：两行同款进度条各自更新。
+    // 抓取发生在过场页/倒计时页、摇骰发生在摇骰页：三行同款进度条各自更新。
     const rows = [
+      { row: $('armGameStartRow'), text: $('armGameStartText'), step: $('armGameStartStep') },
       { row: $('armCountdownRow'), text: $('armCountdownText'), step: $('armCountdownStep') },
       { row: $('armShakingRow'), text: $('armShakingText'), step: $('armShakingStep') },
     ];
@@ -236,6 +240,7 @@ export function register(engine) {
 
   function resetArmProgressRows() {
     const rows = [
+      { row: $('armGameStartRow'), text: $('armGameStartText'), step: $('armGameStartStep') },
       { row: $('armCountdownRow'), text: $('armCountdownText'), step: $('armCountdownStep') },
       { row: $('armShakingRow'), text: $('armShakingText'), step: $('armShakingStep') },
     ];
@@ -246,8 +251,14 @@ export function register(engine) {
     }
   }
 
+  function enterGameStartView() {
+    // 开局过场：大字动画 + 臂进度行（抓取在此时进行）。
+    const row = $('armGameStartRow');
+    if (row) row.classList.remove('hidden');
+  }
+
   function enterCountdownView() {
-    // 三二一倒计时 + 抓取进度行（机械臂与口令并行）。
+    // 三二一倒计时 + 抓取进度行（抓取偶发偏慢时仍可见）。
     const row = $('armCountdownRow');
     if (row) row.classList.remove('hidden');
   }
@@ -644,7 +655,7 @@ export function register(engine) {
 
   return {
     id: 'dice',
-    phases: ['select', 'rules', 'ready', 'countdown', 'shaking', 'open', 'arm_failed', 'analysis', 'result'],
+    phases: ['select', 'rules', 'ready', 'game_start', 'countdown', 'shaking', 'open', 'arm_failed', 'analysis', 'result'],
     progressCount: 6,
     phaseMeta,
     enter,

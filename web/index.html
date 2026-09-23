@@ -70,6 +70,16 @@
           </div>
         </section>
 
+        <!-- 开局过场：机械臂抓取期间的大字动画 -->
+        <section class="view hidden" data-view="game_start">
+          <div class="game-start-text" id="gameStartText">游戏开始！</div>
+          <div class="arm-progress hidden" id="armGameStartRow" aria-live="polite">
+            <span class="arm-robot" aria-hidden="true">🦾</span>
+            <span id="armGameStartText">机械臂准备中</span>
+            <span class="arm-phase-step" id="armGameStartStep"></span>
+          </div>
+        </section>
+
         <!-- 倒计时（摇骰三二一；下方并行显示机械臂抓取进度） -->
         <section class="view hidden" data-view="countdown">
           <div class="countdown-number" id="countdownNumber">3</div>

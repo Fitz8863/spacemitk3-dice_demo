@@ -88,10 +88,18 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .btn-blue { background: #2563eb; box-shadow: 0 8px 18px rgba(37, 99, 235, .22); }
 .btn-yellow { background: #d97706; box-shadow: 0 8px 18px rgba(217, 119, 6, .22); }
 
-/* 机械臂进度行（倒计时页与摇骰页共用）：🦾 + 当前阶段 + n/10 计数 */
+/* 机械臂进度行（倒计时页/摇骰页/过场页共用）：🦾 + 当前阶段 + n/10 计数 */
 .arm-progress { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 18px; padding: 10px 22px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); box-shadow: var(--shadow); color: var(--muted); font-size: 20px; }
 .arm-robot { font-size: 24px; }
 .arm-phase-step { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* 开局过场：大字弹入 + 轻微脉动，倒计时/语音开始前机械臂完成抓取 */
+.game-start-text { font-size: 120px; font-weight: 900; letter-spacing: .04em; color: var(--accent); animation: gameStartPop .6s cubic-bezier(.2, 1.4, .4, 1) both, gameStartPulse 1.2s ease-in-out .6s infinite; }
+@keyframes gameStartPop { from { opacity: 0; transform: scale(.4); } to { opacity: 1; transform: scale(1); } }
+@keyframes gameStartPulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.045); } }
+@media (prefers-reduced-motion: reduce) {
+  .game-start-text { animation: gameStartPop .01s both; }
+}
 
 
 /* 规则 */
