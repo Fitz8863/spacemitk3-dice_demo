@@ -541,8 +541,12 @@ export function register(engine) {
       return;
     }
     if (event.key === 'Enter') {
+      // 绿键/Enter 与屏幕上的绿色按钮同义：规则确认、开始摇骰、结果页再来
+      // 一局、识别失败页再来一局。
       if (state.phase === 'rules') submitIntent('confirm');
       else if (state.phase === 'ready') handlers.startShake();
+      else if (state.phase === 'result') handlers.newRound();
+      else if (state.phase === 'analysis' && analysisFailureVisible()) handlers.analysisNewRound();
       return;
     }
     if (event.key === 'ArrowDown') {

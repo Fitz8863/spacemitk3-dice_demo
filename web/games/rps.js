@@ -120,8 +120,10 @@ export function register(engine) {
       return;
     }
     if (event.key === 'Enter') {
+      // 绿键/Enter 与绿色按钮同义：规则确认、结果页/识别失败页再来一局。
       if (state.phase === 'rules') handlers.confirmRules();
       else if (state.phase === 'result') handlers.newRound();
+      else if (state.phase === 'analysis' && analysisFailureVisible()) handlers.analysisNewRound();
       return;
     }
     if (event.key === 'ArrowDown') {

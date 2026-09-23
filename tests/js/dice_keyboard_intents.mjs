@@ -116,14 +116,46 @@ expect('机械臂失败页按 ↓（机械臂重试）', press('ArrowDown'), cli
 expect('机械臂失败页按 ↑（人工模式）', press('ArrowUp'), clickButton('armManual'));
 expect('机械臂失败页按 Esc（退出本局）', press('Escape'), clickButton('armBack'));
 
-// 回归护栏：其余既有映射不能被这次改动带偏。
-enterState('rules', 'rules');
-expect('规则页按 Esc 仍是返回', press('Escape'), '[["back",{}]]');
-expect('规则页按 ↓ 仍是重复规则', press('ArrowDown'), clickButton('repeatRules'));
-enterState('ready', 'ready');
-expect('准备页按 Enter 仍是开始摇骰', press('Enter'), '[["start_shake",{}]]');
+// 绿键=Enter / 红键=Esc 通则（2026-09-23 晚拍板）：结果页与识别失败页的
+// 绿色「再来一局」也必须吃 Enter；红键各态仍为返回/退出。
 enterState('result', 'result');
+expect('结果页按 Enter（再来一局）', press('Enter'), clickButton('newRound'));
 expect('结果页按 Esc 仍是返回', press('Escape'), '[["back",{}]]');
+enterState('analysis', 'analysis');
+expect('识别失败页按 Enter（再来一局）', press('Enter'), clickButton('analysisNewRound'));
+expect('识别失败页按 ↓（重新识别）', press('ArrowDown'), clickButton('analysisRetry'));
+expect('识别失败页按 Esc（退出）', press('Escape'), clickButton('analysisBackToGames'));
+
+// ---- rps：同一套「绿=Enter / 红=Esc」通则 ----
+// 两游戏共用同一份 DOM（元素桩共享），先拆掉 dice 的监听器再注册 rps，
+// 否则 clickButton 会同时触发两个游戏的 handler。
+game.teardown();
+const rpsPath = dicePath.replace(/dice\.js$/, 'rps.js');
+const { register: registerRps } = await import(rpsPath);
+onStateChange = null;
+const rpsGame = registerRps(engine);
+await rpsGame.enter({ id: 'rps', participants: { player: 'LEFT', agent: 'RIGHT' } });
+const rpsState = (name, view) => onStateChange(name, { view }, {});
+const rpsPress = (key) => { calls.length = 0; rpsGame.onKey({ key }); return JSON.stringify(calls); };
+const rpsClick = (id) => {
+  calls.length = 0;
+  (elements.get(id).listeners.click || []).forEach((fn) => fn());
+  return JSON.stringify(calls);
+};
+rpsState('rules', 'rules');
+expect('rps 规则页按 Enter（确认）', rpsPress('Enter'), rpsClick('confirmRules'));
+expect('rps 规则页按 Esc（返回）', rpsPress('Escape'), rpsClick('backFromRules'));
+expect('rps 规则页按 ↓（重复规则）', rpsPress('ArrowDown'), rpsClick('repeatRules'));
+rpsState('result', 'result');
+expect('rps 结果页按 Enter（再来一局）', rpsPress('Enter'), rpsClick('newRound'));
+expect('rps 结果页按 Esc（返回列表）', rpsPress('Escape'), rpsClick('backToGames'));
+rpsState('analysis', 'analysis');
+expect('rps 识别失败页按 Enter（再来一局）', rpsPress('Enter'), rpsClick('analysisNewRound'));
+expect('rps 识别失败页按 ↓（重新识别）', rpsPress('ArrowDown'), rpsClick('analysisRetry'));
+expect('rps 识别失败页按 Esc（退出）', rpsPress('Escape'), rpsClick('analysisBackToGames'));
+rpsState('play', 'play');
+expect('rps 出拳中按 Enter（不应有动作）', rpsPress('Enter'), '[]');
+expect('rps 出拳中按 Esc（不应有动作）', rpsPress('Escape'), '[]');
 
 if (failures.length) {
   console.error(`\n${failures.length} 项不符合预期:\n${failures.join('\n')}`);
