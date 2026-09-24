@@ -275,7 +275,9 @@ class RobotSchemaTests(unittest.TestCase):
         with self.assertRaises(StateMachineError):
             validate_state_machine(
                 self._machine_with_action(
-                    {"action": "robot", "command": "reset_home", "timeout_seconds": 5}
+                    # reset_home 自 2026-09-24 起允许 timeout_seconds（归位
+                    # 不变量），但 delay_seconds 仍是它的非法键。
+                    {"action": "robot", "command": "reset_home", "delay_seconds": 1}
                 ),
                 "dice",
             )
