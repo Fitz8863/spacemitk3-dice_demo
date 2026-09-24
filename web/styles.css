@@ -186,11 +186,23 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 
 /* 分析 */
 .analysis-spinner { width: 52px; height: 52px; margin: 0 auto 28px; border: 4px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
-.vision-pip { position: fixed; top: 112px; right: 28px; width: 236px; padding: 5px; border: 1px solid var(--line); border-radius: 14px 10px 16px 11px; background: var(--surface); box-shadow: var(--shadow); text-align: left; z-index: 25; transition: top .4s cubic-bezier(.25,.9,.3,1.05), left .4s cubic-bezier(.25,.9,.3,1.05), width .4s cubic-bezier(.25,.9,.3,1.05), padding .4s; }
+.vision-pip { position: fixed; top: 104px; left: 50%; right: auto; transform: translateX(-50%); width: 236px; padding: 5px; border: 1px solid var(--line); border-radius: 14px 10px 16px 11px; background: var(--surface); box-shadow: var(--shadow); text-align: left; z-index: 25; transition: top .4s cubic-bezier(.25,.9,.3,1.05), width .4s cubic-bezier(.25,.9,.3,1.05), padding .4s; }
+/* 小窗居中正上方（用户 2026-09-24 拍板）——局内各阶段的标题区让出顶部带，
+   裁决态本来就隐藏 stage-head 不用让。 */
+body[data-phase="rules"] .stage-head,
+body[data-phase="ready"] .stage-head,
+body[data-phase="rehome"] .stage-head,
+body[data-phase="game_start"] .stage-head,
+body[data-phase="countdown"] .stage-head,
+body[data-phase="shaking"] .stage-head,
+body[data-phase="open"] .stage-head,
+body[data-phase="arm_failed"] .stage-head,
+body[data-phase="rps-play"] .stage-head,
+body[data-phase="result"] .stage-head { padding-top: 138px; }
 .vision-pip .analysis-stream-head { display: none; }
 body[data-phase="select"] .vision-pip,
 body[data-phase="standby"] .vision-pip { display: none; }
-body[data-phase="analysis"] .vision-pip { top: 168px; left: 50%; right: auto; transform: translateX(-50%); width: min(92vw, 760px); padding: 12px; border-radius: 18px; }
+body[data-phase="analysis"] .vision-pip { top: 128px; width: min(92vw, 760px); padding: 12px; border-radius: 18px; }
 body[data-phase="analysis"] .vision-pip .analysis-stream-head { display: flex; }
 .analysis-stream-spacer { width: min(100%, 760px); margin: 0 auto 28px; aspect-ratio: 13 / 9; border-radius: 18px; }
 .analysis-stream-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 4px 10px; color: var(--muted-2); font-size: 15px; }
