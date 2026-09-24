@@ -1415,3 +1415,7 @@ def test_rps_manifest_play_declares_prefetch_throw_and_retry_replays():
     assert play["on_enter"][-1] is robot_actions[-1]
     failed = manifest["state_machine"]["states"]["analysis_failed"]
     assert failed["on_intent"]["retry"] == {"to": "play"}
+    # 判定结束即异步回家（不管裁决成败）：result 与 analysis_failed 的
+    # on_enter 都声明 reset_home，下次出拳从 home 起势。
+    for state in (failed, manifest["state_machine"]["states"]["result"]):
+        assert {"action": "robot", "command": "reset_home"} in state["on_enter"]

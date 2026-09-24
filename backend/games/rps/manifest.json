@@ -96,7 +96,8 @@
       "analysis_failed": {
         "ui": {"view": "analysis", "title": "这局没完成，再来一次", "copy": "按蓝色按钮重试。"},
         "on_enter": [
-          {"action": "speech", "mode": "tts_local", "text": "本次判定未完成，可选择按蓝色按钮重试。"}
+          {"action": "speech", "mode": "tts_local", "text": "本次判定未完成，可选择按蓝色按钮重试。"},
+          {"action": "robot", "command": "reset_home"}
         ],
         "on_intent": {
           "retry": {"to": "play"},
@@ -115,7 +116,8 @@
               "AGENT": {"mode": "tts_local", "text": "你出了{player_choice}，Agent出了{agent_choice}，很遗憾你输了，要不再来一局？"},
               "TIE": {"mode": "tts_local", "text": "双方都出了{player_choice}，本局平局，再来一局？"}
             }
-          }
+          },
+          {"action": "robot", "command": "reset_home"}
         ],
         "on_intent": {
           "new_round": {"to": "play"},

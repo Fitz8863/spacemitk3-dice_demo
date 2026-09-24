@@ -115,6 +115,7 @@ class _FakeRobot:
 
     def __init__(self, outcomes=None, chooser=None):
         self.calls = []
+        self.home_calls = 0
         self.outcomes = list(outcomes or [])
         self.chooser = chooser or (lambda: random.choice(sorted(GESTURES)))
 
@@ -128,6 +129,10 @@ class _FakeRobot:
             outcome = {"status": "completed"}
         outcome.setdefault("gesture", gesture)
         return outcome
+
+    def reset_home(self, *, on_event, is_cancelled, timeout_seconds=None):
+        self.home_calls += 1
+        return {"status": "completed"}
 
 
 class _FakeComponents:
@@ -390,9 +395,16 @@ class RoundFlowTests(unittest.TestCase):
             )
 
         def robot_fn(action, on_event, is_cancelled, log):
-            # 镜像 server 的 throw_gesture 分发：派发即重置（再来一局/重试
-            # 不得消费上一局的拳形），结果回写共享槽。
-            if action.get("command") != "throw_gesture":
+            # 镜像 server 的 robot 分发：throw_gesture 派发即重置（再来一局/
+            # 重试不得消费上一局的拳形）、结果回写共享槽；reset_home 直接转发。
+            command = action.get("command")
+            if command == "reset_home":
+                return robot.reset_home(
+                    on_event=on_event,
+                    is_cancelled=is_cancelled,
+                    timeout_seconds=action.get("timeout_seconds"),
+                )
+            if command != "throw_gesture":
                 return {"status": "failed", "reason": "unexpected command"}
             arm_throw.update(status="pending", gesture=None)
             outcome = robot.throw_gesture(
@@ -544,6 +556,8 @@ class RoundFlowTests(unittest.TestCase):
                     snapshot["result"]["diagnosis"]["reason"], "arm_throw_failed"
                 )
                 self.assertIn("机械臂未完成出拳", snapshot["result"]["diagnosis"]["message"])
+                # 失败页也异步回家（不管裁决成败判定结束即归位）。
+                self.assertTrue(wait_for(lambda: robot.home_calls == 1))
                 # 失败即中断：没有现场补掷，臂只被调了一次。
                 self.assertEqual(robot.calls, ["石头"])
                 # 蓝键重试=完整重放：重回 play 重念口令 → 再回执 → 再出拳。
@@ -561,7 +575,8 @@ class RoundFlowTests(unittest.TestCase):
     def test_play_chant_ack_dispatches_throw_and_result_uses_same_gesture(self):
         """口令回执后状态机立刻派发出拳（wav 播完即出拳）；判定的 agent
         拳形必须等于臂实际出的那份——观众看到的拳 == 记分用的拳，
-        且裁决只消费前置拳形，不再二次直发。"""
+        且裁决只消费前置拳形，不再二次直发。进 result 同时异步下发
+        reset_home——判定结束即回家，下次出拳从 home 起势。"""
         robot = _FakeRobot()
         round_ = self.make_round("Rock", robot=robot)
         try:
@@ -575,6 +590,8 @@ class RoundFlowTests(unittest.TestCase):
             snapshot = round_.snapshot()
             self.assertEqual(snapshot["result"]["agent_choice"], robot.calls[0])
             self.assertEqual(len(robot.calls), 1)
+            # 判定一结束（进 result）就异步回家。
+            self.assertTrue(wait_for(lambda: robot.home_calls == 1))
         finally:
             round_.cancel()
 
