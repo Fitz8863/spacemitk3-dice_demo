@@ -6,5 +6,6 @@
   "grasp_timeout_seconds": 45,
   "shake_timeout_seconds": 120,
   "action_timeout_seconds": 30,
-  "sigint_grace_seconds": 15
+  "sigint_grace_seconds": 15,
+  "home_on_boot": true
 }

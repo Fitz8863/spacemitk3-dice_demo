@@ -1199,6 +1199,90 @@ def test_prewarm_resident_asr_without_hook_is_a_noop(monkeypatch):
     )  # must not raise
 
 
+# ---- boot-time arm homing (归位不变量的开机档) ----
+
+
+class _BootHomeRobot:
+    def __init__(self, *, home_on_boot: bool = True) -> None:
+        self.id = "robot_fake"
+        self.type = "robot"
+        self.role = ""
+        self.home_on_boot = home_on_boot
+        self.reset_calls = 0
+        self._reset_event = threading.Event()
+
+    def reset_home(self, *, on_event, is_cancelled, timeout_seconds=None):
+        self.reset_calls += 1
+        self._reset_event.set()
+        return {"status": "completed"}
+
+
+class _BootHomeRegistry:
+    def __init__(self, provider) -> None:
+        self._provider = provider
+
+    def require(self, component_id, expected_type=None):
+        assert component_id == "robot_fake"
+        return self._provider
+
+
+def _run_boot_home(monkeypatch, provider) -> _BootHomeRobot:
+    monkeypatch.setattr(server, "COMPONENTS", _BootHomeRegistry(provider))
+    monkeypatch.setattr(
+        server, "_ARENA_CONFIG", {"providers": {"robot_arm": "robot_fake"}}
+    )
+    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", Path("/nonexistent-arena.json"))
+    monkeypatch.setattr(server, "_ARENA_MTIME", None)
+    games = GameRegistry()
+    games.register({"id": "dice", "enabled": True, "state_machine": {"states": {
+        "s": {"on_enter": [{"action": "robot", "command": "reset_home"}]}
+    }}})
+    monkeypatch.setattr(server, "GAMES", games)
+    server._home_arm_on_boot()
+    assert provider._reset_event.wait(5), "boot homing thread never ran"
+    return provider
+
+
+def test_boot_homing_homes_the_arm_when_enabled(monkeypatch):
+    """用臂游戏 + home_on_boot 开 → 服务启动后台归位（复活语义可拉新常驻）。"""
+    provider = _run_boot_home(monkeypatch, _BootHomeRobot(home_on_boot=True))
+    assert provider.reset_calls == 1
+
+
+def test_boot_homing_is_off_when_flag_cleared(monkeypatch):
+    """home_on_boot=false → 不发归位（没接臂的部署用这个档）。"""
+    provider = _BootHomeRobot(home_on_boot=False)
+    monkeypatch.setattr(server, "COMPONENTS", _BootHomeRegistry(provider))
+    monkeypatch.setattr(
+        server, "_ARENA_CONFIG", {"providers": {"robot_arm": "robot_fake"}}
+    )
+    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", Path("/nonexistent-arena.json"))
+    monkeypatch.setattr(server, "_ARENA_MTIME", None)
+    games = GameRegistry()
+    games.register({"id": "dice", "enabled": True})
+    monkeypatch.setattr(server, "GAMES", games)
+    server._home_arm_on_boot()
+    time.sleep(0.2)
+    assert provider.reset_calls == 0
+
+
+def test_boot_homing_skips_when_no_game_uses_the_arm(monkeypatch):
+    """没有任何启用游戏用臂 → 不动 provider（连 require 都不该走到）。"""
+    provider = _BootHomeRobot(home_on_boot=True)
+    monkeypatch.setattr(server, "COMPONENTS", _BootHomeRegistry(provider))
+    monkeypatch.setattr(
+        server, "_ARENA_CONFIG", {"providers": {"robot_arm": "robot_fake"}}
+    )
+    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", Path("/nonexistent-arena.json"))
+    monkeypatch.setattr(server, "_ARENA_MTIME", None)
+    games = GameRegistry()
+    games.register({"id": "solo", "enabled": True})
+    monkeypatch.setattr(server, "GAMES", games)
+    server._home_arm_on_boot()
+    time.sleep(0.2)
+    assert provider.reset_calls == 0
+
+
 # ---- single-ASR-engine invariant ----
 
 

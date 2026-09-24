@@ -359,6 +359,9 @@ class RobotArmNeroProvider(RobotProvider):
             "reset_home": float(config.get("action_timeout_seconds", 30)),
         }
         self._sigint_grace = float(config.get("sigint_grace_seconds", 15))
+        # 归位不变量的开机档：服务起来后把臂拉回 home（没接臂的部署关掉，
+        # 免得白拉一对常驻进程）。组件 config 改动需重启后端。
+        self._home_on_boot = bool(config.get("home_on_boot", True))
         # One arm: commands serialize here, including the ready wait and any
         # auto-retry, so the demo never sees overlapping motion.
         self._arm_lock = threading.Lock()
@@ -366,6 +369,10 @@ class RobotArmNeroProvider(RobotProvider):
         self._shutdown = False
 
     # ---- component lifecycle -------------------------------------------
+
+    @property
+    def home_on_boot(self) -> bool:
+        return self._home_on_boot
 
     def health(self) -> dict[str, Any]:
         payload: dict[str, Any] = {

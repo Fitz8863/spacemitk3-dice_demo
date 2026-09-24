@@ -940,6 +940,48 @@ def _prewarm_robot_provider(game_id: str) -> None:
         print(f"[robot] resident prewarm failed: {exc!r}", flush=True)
 
 
+def _home_arm_on_boot() -> None:
+    """归位不变量的开机档：服务就绪后把臂拉回 home 手势。
+
+    条件：任一启用游戏用臂（_manifest_uses_robot，看原始 manifest）且
+    provider 的 home_on_boot 开（没接臂的部署关它，免得白拉常驻进程）。
+    后台线程执行：CAN 未起/无臂时失败只打日志，不阻塞服务就绪、不重试；
+    归位拉起的常驻留活，等第一局直接复用。
+    """
+    try:
+        # 任一用臂游戏解析出的都是同一个全局槽位；取第一个命中游戏的 id
+        # 走 _game_provider_id（它会按游戏覆盖→全局槽的顺序解析）。
+        robot_games = [
+            game for game in _enabled_game_manifests() if _manifest_uses_robot(game)
+        ]
+        if not robot_games:
+            return
+        game_id = str(robot_games[0].get("id") or "")
+        provider_id = _game_provider_id(game_id, "robot_arm", "")
+        if not provider_id:
+            return
+        provider = COMPONENTS.require(provider_id, expected_type="robot")
+        if not bool(getattr(provider, "home_on_boot", False)):
+            return
+    except Exception as exc:
+        print(f"[robot] boot homing skipped: {exc!r}", flush=True)
+        return
+
+    def home() -> None:
+        try:
+            outcome = provider.reset_home(
+                on_event=lambda event: None, is_cancelled=lambda: False
+            )
+            if isinstance(outcome, dict) and outcome.get("status") != "completed":
+                print(f"[robot] boot reset_home: {outcome.get('reason')}", flush=True)
+            else:
+                print("[robot] boot homing done (arm parked at home)", flush=True)
+        except Exception as exc:
+            print(f"[robot] boot reset_home failed: {exc!r}", flush=True)
+
+    threading.Thread(target=home, name="arm-boot-home", daemon=True).start()
+
+
 def create_round(game_id: str) -> GameRound:
     manifest = require_game(get_games(), game_id)
     if not isinstance(manifest.get("state_machine"), dict):
@@ -1766,6 +1808,8 @@ def main() -> None:
         flush=True,
     )
     print(f"Components: {', '.join(COMPONENTS.ids()) or 'none'}", flush=True)
+    # 归位不变量的开机档：后台把臂拉回 home（失败只打日志，不挡服务就绪）。
+    _home_arm_on_boot()
     shutdown_requested = threading.Event()
 
     def request_shutdown(signum: int, _frame: Any) -> None:
