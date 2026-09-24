@@ -76,7 +76,7 @@
       "play": {
         "ui": {"view": "play", "title": "石头、剪刀、布——亮相！", "copy": "听到「布」时，和小搭子同时亮出手势。"},
         "on_enter": [
-          {"action": "speech", "mode": "tts_local", "text": "石头，剪刀，布。", "await": true}
+          {"action": "speech", "mode": "audio", "text": "石头，剪刀，布。","audio": "audio/石头剪刀布.wav", "await": true}
         ],
         "duration": 0.4,
         "on_expire": {"to": "analysis"}
