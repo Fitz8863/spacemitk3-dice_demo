@@ -166,8 +166,9 @@ class TestRpsRuntimeConfigContract:
         for sources in config["rps_map"].values():
             for source in sources:
                 assert source in config["classes"]
-        # Fold happens before stability: 15 folded-multiset frames.
-        assert config["stable_frames"] == 15
+        # Fold happens before stability: 10 folded-multiset frames
+        # (用户 2026-09-24 板端手调 15→10，加快手势锁定)。
+        assert config["stable_frames"] == 10
         # Rotation + ROI are the rps hardware specifics.  The direction (cw /
         # ccw) follows the physical camera mounting — a deployment value the
         # user tunes on site (2026-09-21: ccw), so only pin its shape.

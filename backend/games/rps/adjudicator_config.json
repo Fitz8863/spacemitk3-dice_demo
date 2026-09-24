@@ -59,7 +59,7 @@
   },
   "filter_no_gesture": true,
   "conf": 0.25,
-  "stable_frames": 15,
+  "stable_frames": 10,
   "rotate": {
     "enabled": true,
     "direction": "ccw",
