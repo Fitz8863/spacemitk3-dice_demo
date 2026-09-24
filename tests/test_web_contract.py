@@ -345,7 +345,7 @@ def test_robot_shake_is_event_driven_with_manual_fallback():
     machine = dice_manifest()["state_machine"]
 
     intro = machine["states"]["game_start"]
-    assert intro["duration"] == 3.0  # 用户 2026-09-24 板端调参（09-23 曾 3.0→2.0，后采纳加宽抓取窗口建议回调 3.0）
+    assert intro["duration"] == 3.5  # 用户 2026-09-24 板端调参（历程 3.0→2.0→3.0→3.5，为 LIFT 完成留窗口）
     assert intro["on_enter"] == [
         {"action": "robot", "command": "grasp_cup", "timeout_seconds": 30}
     ]
@@ -365,7 +365,7 @@ def test_robot_shake_is_event_driven_with_manual_fallback():
     assert "duration" not in shaking
     assert "on_intent" not in shaking
     assert "on_expire" not in shaking
-    shake = shaking["on_enter"][1]
+    shake = shaking["on_enter"][0]  # 用户 2026-09-24 删"摇骰进行中"提示语，摇指令升为 on_enter[0]
     assert shake == {"action": "robot", "command": "shake_dice", "timeout_seconds": 90}
     assert shaking["on_event"] == {
         "robot.shake_dice.completed": {"to": "vision_countdown"},
@@ -733,6 +733,15 @@ def test_rps_vision_contract_pins_the_confirmed_flow_decisions():
             if intent not in phrases:
                 missing.append(f"{state_name}.{intent}")
     assert not missing, f"语音不可达的意图（asr.phrases 缺条目）: {missing}"
+    # 失败页"重新识别"移除（用户 2026-09-24 拍板）：rps 不绑 retry、不消费
+    # 蓝键、渲染失败页时隐藏共用按钮（DOM 与 dice 共用，dice 侧仍显示）。
+    rps_js = (ROOT / "web/games/rps.js").read_text(encoding="utf-8")
+    assert "analysisRetry: () => submitIntent('retry')" not in rps_js
+    assert "handlers.analysisRetry()" not in rps_js
+    assert rps_js.count("$('analysisRetry').classList.add('hidden')") == 2
+    dice_js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    assert "analysisRetry: () => submitIntent('retry')" in dice_js
+    assert dice_js.count("$('analysisRetry').classList.remove('hidden')") == 2
 
 
 def test_frontend_cancels_the_round_when_the_page_is_hidden():

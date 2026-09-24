@@ -215,7 +215,7 @@
 					"title": "抓稳骰盅，挑战开始！",
 					"copy": "机械臂正在拿好骰盅，准备和你同步开摇。"
 				},
-				"duration": 3.0,
+				"duration": 3.5,
 				"on_enter": [
 					{
 						"action": "robot",
@@ -264,11 +264,6 @@
 					"copy": "机械臂正在摇骰，你也要持续摇动骰盅哦。"
 				},
 				"on_enter": [
-					{
-						"action": "speech",
-						"mode": "tts_local",
-						"text": "摇骰进行中，请持续摇动你的骰盅。"
-					},
 					{
 						"action": "robot",
 						"command": "shake_dice",
