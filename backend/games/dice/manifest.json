@@ -119,8 +119,8 @@
 			"path": "/dice/det"
 		},
 		"lifecycle": {
-			"pre_adjudication_wait_seconds": 1,
-			"post_result_hold_seconds": 1
+			"pre_adjudication_wait_seconds": 0,
+			"post_result_hold_seconds": 0
 		},
 		"timeouts": {
 			"yolo_detection_seconds": 8,
