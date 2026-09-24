@@ -13,7 +13,9 @@ Command mapping:
 * ``shake_dice`` → ``advance until RETURN_HOME`` (SHAKE→LOWER→OPEN→RETURN_HOME; the cup is already aloft)
 * ``feedback``   → ``action name=yeah|thumbs-up|tie``
 * ``throw_gesture`` → ``action name=rps-ready`` → ``action name=rock|paper|scissors`` (rps agent move: prep pose then the gesture, one locked chain; pose is held, no auto-home)
-* ``reset_home`` → ``action name=home`` — best-effort, never revives a dead resident
+* ``reset_home`` → ``action name=home`` — parks the arm; the one command that
+  revives a dead resident (a phase failure exits the demo, and the parking
+  invariant still demands the arm be homed)
 
 Completion is judged strictly by id-correlated events (``command_completed`` /
 ``action_completed`` / ``rejected`` / ``failed``); progress phases are relayed
@@ -526,13 +528,13 @@ class RobotArmNeroProvider(RobotProvider):
         is_cancelled: RobotCancelledFn,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        # Best-effort by design: the post-round watcher calls this, and it
-        # must not pay a full resident restart just to park the arm.
+        # The parking invariant: any exit from the game flow must home the
+        # arm, including right after a failure (which exits the demo). That
+        # means reset_home is the one command allowed to revive a dead
+        # resident — _run_command_locked's _ensure_running spawns a fresh one.
         with self._arm_lock:
             if self._shutdown:
                 return {"status": "failed", "reason": "provider is shutting down"}
-            if self._resident is None or not self._resident.alive:
-                return {"status": "completed", "skipped": True}
             return self._run_command_locked(
                 "reset_home",
                 {"command": "action", "name": "home"},

@@ -431,12 +431,51 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         self.assertIn("resident not ready", outcome["reason"])
         self.assertIn("simulated can0 down", outcome["reason"])
 
-    def test_reset_home_skips_when_resident_not_running(self):
+    def test_reset_home_revives_a_dead_resident(self):
+        """归位不变量：流程失败自杀后，reset_home 也要能拉起新常驻完成归位。
+
+        旧语义是"resident 死了就 skipped"——失败后臂停在原位（握着杯子）
+        无人处理。新语义：reset_home 是唯一允许复活死 resident 的命令。
+        """
         outcome = self.provider.reset_home(
             on_event=self.events.append, is_cancelled=lambda: False
         )
         self.assertEqual(outcome["status"], "completed")
-        self.assertTrue(outcome.get("skipped"))
+        self.assertFalse(outcome.get("skipped"))
+        self.assertIsNotNone(self.provider._resident)
+        received = [
+            json.loads(line)
+            for line in (self.demo_root / "received.log").read_text().splitlines()
+        ]
+        commands = [c.get("command") for c in received if isinstance(c, dict)]
+        self.assertIn("action", commands)
+        homes = [c for c in received if c.get("command") == "action" and c.get("name") == "home"]
+        self.assertTrue(homes)
+
+    def test_reset_home_after_phase_failure_still_homes(self):
+        """阶段失败退出 demo 后（真实失败链路），归位照样复活执行。"""
+        self.set_mode("fail_exit")
+        outcome = self.provider.grasp_cup(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "failed")
+        # 阶段失败按契约 reap 常驻进程。
+        self.assertTrue(
+            self.provider._resident is None
+            or self.provider._resident.process.poll() is not None
+        )
+        outcome = self.provider.reset_home(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "completed")
+
+    def test_reset_home_refuses_after_shutdown(self):
+        self.provider.shutdown()
+        outcome = self.provider.reset_home(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "failed")
+        self.assertIn("shutting down", outcome["reason"])
 
     def test_shutdown_closes_a_live_resident(self):
         self.provider.ensure_started()
