@@ -58,7 +58,9 @@ export function register(engine) {
     backFromRules: () => submitIntent('back'),
     newRound: () => submitIntent('new_round'),
     backToGames: () => submitIntent('back'),
-    analysisRetry: () => submitIntent('retry'),
+    // analysisRetry 于 2026-09-24 移除（用户拍板）：视觉失败页不再提供
+    // “重新识别”，绿键再来一局等价重开一局；按钮 DOM 与 dice 共用，
+    // rps 在失败页渲染时隐藏，dice 渲染时恢复显示。
     analysisNewRound: () => submitIntent('new_round'),
     analysisBackToGames: () => submitIntent('back'),
   };
@@ -135,7 +137,8 @@ export function register(engine) {
     }
     if (event.key === 'ArrowDown') {
       if (state.phase === 'rules') handlers.repeatRules();
-      else if (state.phase === 'analysis' && analysisFailureVisible()) handlers.analysisRetry();
+      // 蓝键在失败页原是“重新识别”，已随 analysisRetry 一并移除
+      // （2026-09-24）：失败页只剩绿键再来一局与红键退出。
     }
   }
 
@@ -247,6 +250,7 @@ export function register(engine) {
     $('analysisStatus').textContent = diagnosis.message
       || '当前画面无法形成稳定识别结果，请重新开始。';
     $('analysisFailureActions').classList.remove('hidden');
+    $('analysisRetry').classList.add('hidden');
   }
 
   function handleRoundEvent(event, snapshot) {
@@ -291,6 +295,7 @@ export function register(engine) {
           $('analysisTitle').textContent = '识别未完成';
           $('analysisStatus').textContent = '裁决异常结束，请重新开始一局';
           $('analysisFailureActions').classList.remove('hidden');
+          $('analysisRetry').classList.add('hidden');
           // 回合已终结但界面停在失败页等玩家操作，同样需要空闲退出兜底。
           setIdleReturn(true);
           toast('裁决失败');

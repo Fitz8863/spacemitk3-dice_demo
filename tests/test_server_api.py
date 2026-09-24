@@ -1607,9 +1607,11 @@ def test_round_robot_fn_throw_gesture_resets_then_fills_the_shared_slot(monkeypa
     assert arm_throw3["status"] == "failed" and arm_throw3["gesture"] is None
 
 
-def test_rps_manifest_play_declares_prefetch_throw_and_retry_replays():
+def test_rps_manifest_play_declares_prefetch_throw_and_replay():
     """真实 manifest 契约：play 在口令 wav 后声明 throw_gesture（提前出拳），
-    analysis_failed 的 retry 指 play（重试=完整重放口令与出拳）。"""
+    analysis_failed 的再来一局（new_round）指 play（重放=完整重念口令与
+    出拳）。失败页的"重新识别"蓝键已按用户要求移除（2026-09-24），retry
+    intent 与 asr 词条随之删除，只剩 new_round/back。"""
     manifest = json.loads(
         (ROOT / "backend/games/rps/manifest.json").read_text(encoding="utf-8")
     )
@@ -1627,7 +1629,9 @@ def test_rps_manifest_play_declares_prefetch_throw_and_retry_replays():
     # delay_seconds 才出臂），wav 的 await 只撑节奏、不再门控出拳。
     assert play["on_enter"][0] is robot_actions[0]
     failed = manifest["state_machine"]["states"]["analysis_failed"]
-    assert failed["on_intent"]["retry"] == {"to": "play"}
+    assert failed["on_intent"]["new_round"] == {"to": "play"}
+    assert "retry" not in failed["on_intent"]
+    assert "retry" not in manifest["asr"]["phrases"]
     # 判定结束即异步回家（不管裁决成败）：result 与 analysis_failed 的
     # on_enter 都声明 reset_home，下次出拳从 home 起势。
     for state in (failed, manifest["state_machine"]["states"]["result"]):

@@ -532,9 +532,11 @@ class RoundFlowTests(unittest.TestCase):
         finally:
             round_.cancel()
 
-    def test_flow_arm_failure_routes_to_analysis_failed_and_retry_replays(self):
+    def test_flow_arm_failure_routes_to_analysis_failed_and_replay(self):
         """play 提前出拳失败 → 中断到 analysis_failed（不再现场补掷）；
-        蓝键重试=完整重放：重回 play 重念口令再出拳，成功后正常宣判。"""
+        绿键再来一局=完整重放：重回 play 重念口令再出拳，成功后正常宣判。
+        （失败页的"重新识别"蓝键已于 2026-09-24 按用户要求移除，retry
+        intent 随之从 manifest 删除——只剩 new_round/back 两个出口。）"""
         picks = iter(["石头", "剪刀"])
         robot = _FakeRobot(
             outcomes=[{"status": "failed", "reason": "demo 退出码 2"}],
@@ -560,8 +562,8 @@ class RoundFlowTests(unittest.TestCase):
                 self.assertTrue(wait_for(lambda: robot.home_calls == 1))
                 # 失败即中断：没有现场补掷，臂只被调了一次。
                 self.assertEqual(robot.calls, ["石头"])
-                # 蓝键重试=完整重放：重回 play 重念口令 → 再回执 → 再出拳。
-                round_.submit_intent("retry")
+                # 绿键再来一局=完整重放：重回 play 重念口令 → 再回执 → 再出拳。
+                round_.submit_intent("new_round")
                 self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "play"))
                 self._ack_play_chant(round_)
                 self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "result"))

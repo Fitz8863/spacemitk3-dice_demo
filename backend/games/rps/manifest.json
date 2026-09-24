@@ -50,7 +50,6 @@
       "confirm": ["确认", "确定", "OK", "明白了", "准备好了", "yes", "confirm", "got it", "start"],
       "repeat": ["重复", "再来一遍", "再听一次", "repeat", "again", "say it again", "one more time"],
       "new_round": ["再来一局", "再来一句", "下一局", "next round", "play again", "new round", "one more round", "one more game"],
-      "retry": ["重试", "重新", "重新来一遍", "retry", "try again"],
       "back": ["返回", "退出", "back", "go back", "exit", "quit"]
     }
   },
@@ -94,13 +93,12 @@
         }
       },
       "analysis_failed": {
-        "ui": {"view": "analysis", "title": "这局没完成，再来一次", "copy": "按蓝色按钮重试。"},
+        "ui": {"view": "analysis", "title": "这局没完成，再来一次", "copy": "按绿色按钮再来一局。"},
         "on_enter": [
-          {"action": "speech", "mode": "tts_local", "text": "本次判定未完成，可选择按蓝色按钮重试。"},
+          {"action": "speech", "mode": "tts_local", "text": "本次判定未完成，可选择按绿色按钮再来一局。"},
           {"action": "robot", "command": "reset_home"}
         ],
         "on_intent": {
-          "retry": {"to": "play"},
           "new_round": {"to": "play"},
           "back": {"exit": true}
         }

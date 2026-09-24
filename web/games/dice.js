@@ -480,6 +480,7 @@ export function register(engine) {
       ...details,
     ].join(' ');
     $('analysisFailureActions').classList.remove('hidden');
+    $('analysisRetry').classList.remove('hidden');
   }
 
   function handleRoundEvent(event, snapshot) {
@@ -621,6 +622,7 @@ export function register(engine) {
           $('analysisTitle').textContent = '识别未完成';
           $('analysisStatus').textContent = '视觉裁决异常结束，请重新开始一局';
           $('analysisFailureActions').classList.remove('hidden');
+          $('analysisRetry').classList.remove('hidden');
           // 回合已终结但界面停在失败页等玩家操作，同样需要空闲退出兜底。
           setIdleReturn(true);
           toast('K3 视觉裁决失败');
