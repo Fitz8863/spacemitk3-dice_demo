@@ -246,3 +246,39 @@ def test_a_stale_teardown_cannot_release_the_new_rounds_stream():
     assert provider.stop_calls == 0
     new_round.status = "exited"
     assert _wait_for(lambda: provider.stop_calls == 1)
+
+
+def test_fast_cross_game_switch_stops_the_previous_providers_stream():
+    # rps(v10) → 一秒内进 dice(v8)：老回合的 teardown watcher（2s 轮询）来
+    # 不及醒来就被新回合顶掉所有权——老 provider 的 runtime 若不在这里被
+    # 主动停掉，就会继续占着共享相机，新 provider 的摄像头打不开、当局
+    # 直接丢局（2026-09-24 rps→dice 真机复现的根因）。
+    v10 = _Provider()
+    v10.id = "vision_yolov10_objdetect"
+    v8 = _Provider()
+    manager = VisionStreamManager(components=_Registry({v10.id: v10, v8.id: v8}))
+    rps_profile = _profile()
+    rps_profile["game_id"] = "rps"
+    old_round = _StatusRound("r1", _manifest(rps_profile, slot=v10.id))
+    manager.start_for_round(old_round, arena={"vision_always_on": False})
+
+    # 玩家退出 rps 的同一瞬间进 dice——不等 watcher 的 2s 轮询。
+    old_round.status = "cancelled"
+    new_round = _StatusRound("r2", _manifest(_profile(), slot=v8.id))
+    assert manager.start_for_round(new_round, arena={"vision_always_on": False}) is True
+
+    # 跨 provider 交接：老 v10 的流已被主动停掉，新 v8 的流照常起来。
+    assert v10.stop_calls == 1
+    assert len(v8.started) == 1
+    assert v8.stop_calls == 0
+
+    # 老 watcher 醒来后不得再动任何流（等过一个轮询周期验证）。
+    import time as _time
+
+    _time.sleep(2.5)
+    assert v10.stop_calls == 1
+    assert v8.stop_calls == 0
+
+    # 新回合结束由它自己的 watcher 正常收尾。
+    new_round.status = "exited"
+    assert _wait_for(lambda: v8.stop_calls == 1)

@@ -48,7 +48,14 @@ class VisionStreamManager:
     leftover active round while creating the new one, so a teardown scheduled by
     the old round can fire *after* the new round already started its stream;
     every teardown therefore re-checks ownership under the lock and an outdated
-    watcher exits without touching the new round's runtime.
+    watcher exits without touching the new round's runtime.  That handoff has a
+    gap: the old watcher polls on a 2s cadence, so a fast game switch can move
+    ownership before it ever wakes — the old game's stream would then leak.  A
+    switch to the *same* provider is exactly the warm-reuse design (the stream
+    survives), but a switch to a *different* provider leaks a runtime that keeps
+    holding the shared camera and blocks the new one's camera open.  The manager
+    therefore stops the previous provider's stream eagerly on a cross-provider
+    switch, before starting the new one.
     """
 
     def __init__(
@@ -100,6 +107,27 @@ class VisionStreamManager:
         if not callable(start):
             # Cloud/fixture providers have no resident camera.
             return False
+        # A fast game switch supersedes the old round's teardown watcher: its
+        # 2s poll may never fire once ownership moves, so the previous game's
+        # stream must be stopped here.  Re-entering the same provider keeps its
+        # warm runtime (reuse is the design); switching providers means a
+        # different runtime — with two vision packages sharing one camera, the
+        # eager stop is what lets the new runtime's camera open succeed
+        # (rps→dice fast switch lost the round, 2026-09-24).
+        with self._lock:
+            prev_provider = self._provider
+            prev_round_id = self._owner_round_id
+        if prev_provider is not None and prev_provider is not provider:
+            stop = getattr(prev_provider, "stop_streaming", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception as exc:
+                    self._log(f"stream stop failed: {exc!r}")
+            self._log(
+                f"stream down for round {str(prev_round_id)[:8]} "
+                f"(superseded by provider switch)"
+            )
         try:
             started = bool(start(profile, on_log=self._log))
         except Exception as exc:  # a provider bug must not break game entry
