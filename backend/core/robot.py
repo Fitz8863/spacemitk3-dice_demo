@@ -72,7 +72,7 @@ class RobotProvider(Component):
 
     def throw_gesture(
         self,
-        gesture: str,
+        gesture: str | None = None,
         *,
         on_event: RobotEventFn,
         is_cancelled: RobotCancelledFn,
@@ -80,10 +80,13 @@ class RobotProvider(Component):
     ) -> dict[str, Any]:
         """Throw one static game gesture (e.g. rock/paper/scissors).
 
-        ``gesture`` uses the calling game's own vocabulary; the provider maps
-        it onto its demo action names.  Non-abstract like reset_home: the
-        floor reports ``skipped`` so arm-optional games keep working, while
-        an arm-required game (rps) treats ``skipped`` as a failure.
+        ``gesture`` uses the calling game's own vocabulary; ``None`` means the
+        provider picks randomly (the prefetch flow dispatches before the
+        verdict exists).  The outcome must report the gesture actually played
+        as ``outcome["gesture"]`` — that value is the single source of truth
+        for adjudication.  Non-abstract like reset_home: the floor reports
+        ``skipped`` so arm-optional games keep working, while an arm-required
+        game (rps) treats ``skipped`` as a failure.
         """
         return {"status": "completed", "skipped": True}
 

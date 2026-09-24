@@ -316,12 +316,18 @@ def run_game(
     timeout_seconds: float,
     components: Any,
     defaults: Mapping[str, Any] | None = None,
+    arm_throw: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a game's pipeline with the shared provider registry injected.
 
     ``defaults`` is the arena config (backend/config.json): it underlays the
     game manifest so a pipeline resolving a provider slot the manifest leaves
     open still finds the deployment-wide engine.
+
+    ``arm_throw`` is the round's shared robot-throw slot (created in the
+    server's ``create_round``): pipelines that consume prefetched agent
+    gestures read it; pipelines predating the keyword keep working via the
+    compatibility retry below.
     """
     manifest = require_game(registry, game_id)
     if defaults:
@@ -329,11 +335,27 @@ def run_game(
 
         manifest = with_global_defaults(manifest, defaults)
     module = importlib.import_module(f"games.{game_id}.pipeline")
-    return module.run(
-        on_log,
-        is_cancelled,
-        timeout_seconds,
-        components=components,
-        manifest=manifest,
-        on_event=on_event,
-    )
+    try:
+        return module.run(
+            on_log,
+            is_cancelled,
+            timeout_seconds,
+            components=components,
+            manifest=manifest,
+            on_event=on_event,
+            arm_throw=arm_throw,
+        )
+    except TypeError as exc:
+        # Keyword-compat shim for pipelines that predate ``arm_throw``: a
+        # signature mismatch naming the keyword is retried without it, while
+        # any other TypeError (raised inside the pipeline body) propagates.
+        if "arm_throw" not in str(exc):
+            raise
+        return module.run(
+            on_log,
+            is_cancelled,
+            timeout_seconds,
+            components=components,
+            manifest=manifest,
+            on_event=on_event,
+        )

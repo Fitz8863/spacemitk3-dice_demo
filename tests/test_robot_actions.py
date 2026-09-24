@@ -209,6 +209,20 @@ class RobotSchemaTests(unittest.TestCase):
             "dice",
         )
 
+    def test_throw_gesture_action_validates(self):
+        """rps play 的提前出拳动作：可带 timeout_seconds（白名单两个集合都得有它，
+        漏一个整个 rps manifest 就会被拒载、游戏从列表消失——2026-09-24 的教训）。"""
+        validate_state_machine(
+            self._machine_with_action({"action": "robot", "command": "throw_gesture"}),
+            "dice",
+        )
+        validate_state_machine(
+            self._machine_with_action(
+                {"action": "robot", "command": "throw_gesture", "timeout_seconds": 10}
+            ),
+            "dice",
+        )
+
     def test_unknown_command_is_rejected(self):
         with self.assertRaises(StateMachineError):
             validate_state_machine(

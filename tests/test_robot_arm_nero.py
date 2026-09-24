@@ -17,6 +17,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
@@ -287,6 +288,29 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         )
         self.assertEqual(outcome["status"], "failed")
         self.assertIn("unknown throw gesture", str(outcome["reason"]))
+
+    def test_throw_gesture_none_picks_a_random_gesture_and_reports_it(self):
+        """gesture=None（play 提前出拳，拳形尚不可知）：臂侧从词表随机
+        选一种，outcome 必须回报实际执行的那份拳形——单一事实源。"""
+        with mock.patch(
+            "components.robot_arm_nero.provider.random.choice",
+            side_effect=["石头", "剪刀", "布"],
+        ):
+            outcomes = [
+                self.provider.throw_gesture(
+                    None, on_event=self.events.append, is_cancelled=lambda: False
+                )
+                for _ in range(3)
+            ]
+        self.assertEqual([o["gesture"] for o in outcomes], ["石头", "剪刀", "布"])
+        for outcome in outcomes:
+            self.assertEqual(outcome["status"], "completed")
+        received = [
+            json.loads(line)
+            for line in (self.demo_root / "received.log").read_text().splitlines()
+        ]
+        names = [c.get("name") for c in received if c.get("command") == "action"]
+        self.assertEqual(names, ["rock", "scissors", "paper"])
 
     def test_grasp_chain_never_sends_reload(self):
         """reload 只对静态动作有意义；抓取/摇骰链保持纯 advance 协议。"""

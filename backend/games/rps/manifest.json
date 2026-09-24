@@ -76,7 +76,8 @@
       "play": {
         "ui": {"view": "play", "title": "石头、剪刀、布——亮相！", "copy": "听到「布」时，和小搭子同时亮出手势。"},
         "on_enter": [
-          {"action": "speech", "mode": "audio", "text": "石头，剪刀，布。","audio": "audio/石头剪刀布.wav", "await": true}
+          {"action": "speech", "mode": "audio", "text": "石头，剪刀，布。","audio": "audio/石头剪刀布.wav", "await": true},
+          {"action": "robot", "command": "throw_gesture", "timeout_seconds": 10}
         ],
         "duration": 0.4,
         "on_expire": {"to": "analysis"}
@@ -98,7 +99,7 @@
           {"action": "speech", "mode": "tts_local", "text": "本次判定未完成，可选择按蓝色按钮重试。"}
         ],
         "on_intent": {
-          "retry": {"to": "analysis"},
+          "retry": {"to": "play"},
           "new_round": {"to": "play"},
           "back": {"exit": true}
         }

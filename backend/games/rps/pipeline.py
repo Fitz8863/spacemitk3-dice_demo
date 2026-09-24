@@ -2,10 +2,12 @@
 
 玩家手势来自视觉：``observe()`` 拿 v10 runtime 的稳定观测（类别已在 C++
 折叠成 Rock/Paper/Scissors），最高置信度的检测就是玩家的出拳。agent 手势
-是程序随机，同一份随机值下发给机械臂摆出静态拳形（石头→rock / 剪刀→
-scissors / 布→paper）——随机数是单一事实源，臂只是执行器；视觉不需要识别
-臂（ROI 已把臂所在半幅确定性排除）。臂出拳失败或不可用时返回诊断型结果，
-引擎据此走 analysis_failed（蓝键重试会重放出拳）。
+由机械臂执行：play 状态的口令 wav 播完即由状态机派发 ``throw_gesture``
+（臂侧随机选拳），本管线通过回合共享的 ``arm_throw`` 槽消费**臂实际出的
+那份拳形**——随机数单一事实源在臂的 outcome 回报，判定的 agent 拳形与观众
+看到的拳形恒一致。槽缺失（独立调用/旧装配）时走管线直发兜底：现场随机、
+observe 锁定玩家后下发。两条路出拳失败都返回诊断型结果，引擎据此走
+analysis_failed（蓝键重试=完整重放口令与出拳）。
 
 胜负不走 provider 的双侧规则（``categorical_relation`` 要求两侧都有值，
 而 agent 侧根本不进画面），比较与投影由本模块调用
@@ -31,6 +33,50 @@ _LABEL_TO_GESTURE = {
 }
 
 _ARM_THROW_DIAGNOSIS_REASON = "arm_throw_failed"
+
+_ARM_THROW_PENDING_WAIT_SECONDS = 8.0
+
+
+def _wait_prefetched_gesture(
+    arm_throw: Any,
+    *,
+    is_cancelled: Callable[[], bool],
+    timeout_wait_budget_seconds: float,
+) -> tuple[str, str | None]:
+    """Wait for the round's prefetched throw slot to settle.
+
+    Returns ``(source, gesture)``:
+
+    * ``("prefetched", gesture)`` — the arm already threw during play; the
+      gesture is the one it played.
+    * ``("diagnose", None)`` — the slot exists but the throw failed, carried
+      no usable gesture, or stayed pending past the wait budget: interrupt
+      the round (analysis_failed), the retry replays the chant and throw.
+    * ``("legacy", None)`` — no slot at all (standalone call / old wiring):
+      the caller falls back to the pipeline-direct throw.
+
+    A pending slot only waits until ``deadline`` so the adjudication budget
+    stays in charge.
+    """
+    if not isinstance(arm_throw, Mapping):
+        return "legacy", None
+    budget = min(
+        _ARM_THROW_PENDING_WAIT_SECONDS, max(0.0, timeout_wait_budget_seconds)
+    )
+    wait_until = time.monotonic() + budget
+    while True:
+        status = str(arm_throw.get("status") or "")
+        gesture = arm_throw.get("gesture")
+        if status == "completed" and gesture in GESTURES:
+            return "prefetched", str(gesture)
+        if status in {"failed", "completed"}:
+            # failed, or completed without a usable gesture — interrupt.
+            return "diagnose", None
+        if is_cancelled():
+            raise RuntimeError("cancelled")
+        if time.monotonic() >= wait_until:
+            return "diagnose", None
+        time.sleep(0.05)
 
 
 def _arm_throw_failure(
@@ -116,6 +162,7 @@ def run(
     components: Any,
     manifest: Mapping[str, Any],
     on_event: Callable[[Mapping[str, Any]], None],
+    arm_throw: Any = None,
 ) -> dict[str, Any]:
     game_id = str(manifest.get("id", "rps"))
     profile = manifest.get("vision_profile")
@@ -169,21 +216,34 @@ def run(
         raise RuntimeError("cancelled")
 
     on_event({"event": "phase", "phase": "verifying", "llm": False})
-    # agent 拳形 = 程序随机，同一份随机值下发给机械臂摆静态拳形。顺序刻意
-    # 是先 observe 再亮臂：玩家手势先锁定，杜绝"看到臂出拳后改手"的窗口；
-    # 臂在判定阶段亮拳（实测 0.9-1.2s），随后宣判。
-    agent_gesture = random.choice(GESTURES)
-    arm_failure = _throw_agent_gesture(
-        manifest,
-        components,
-        agent_gesture,
-        on_event=on_event,
+    # agent 拳形：正常流在 play 状态已随口令 wav 提前出拳（臂侧随机、
+    # outcome 回报同一份拳形），这里只消费；出拳失败/卡住=中断本局（诊断型
+    # 结果 → analysis_failed，重试完整重放）；仅槽缺失（独立调用/旧装配）
+    # 才回退管线直发——现场随机、observe 已锁定玩家。
+    source, agent_gesture = _wait_prefetched_gesture(
+        arm_throw,
         is_cancelled=is_cancelled,
-        on_log=on_log,
-        timeout_seconds=timeout_seconds,
+        timeout_wait_budget_seconds=timeout_seconds,
     )
-    if arm_failure is not None:
-        return arm_failure
+    if source == "prefetched":
+        on_log(f"agent gesture {agent_gesture} consumed from prefetched arm throw")
+    elif source == "legacy":
+        agent_gesture = random.choice(GESTURES)
+        arm_failure = _throw_agent_gesture(
+            manifest,
+            components,
+            agent_gesture,
+            on_event=on_event,
+            is_cancelled=is_cancelled,
+            on_log=on_log,
+            timeout_seconds=timeout_seconds,
+        )
+        if arm_failure is not None:
+            return arm_failure
+    else:
+        return _arm_throw_failure(
+            on_log, on_event, "play 提前出拳未成功（failed 或超时未回执）"
+        )
     result = project(player_gesture, agent_gesture, manifest["participants"], source="yolo_only")
     on_event({"event": "result", **result})
     # post-result hold 与 dice 同款：结果已出、推流保温，倒计时归展示层。

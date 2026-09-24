@@ -1332,3 +1332,86 @@ def test_manifest_uses_robot_detects_state_actions_and_explicit_slot():
         (ROOT / "backend/games/dice/manifest.json").read_text(encoding="utf-8")
     )
     assert server._manifest_uses_robot(dice_manifest) is True
+
+
+def test_round_robot_fn_throw_gesture_resets_then_fills_the_shared_slot(monkeypatch):
+    """出拳槽契约：派发即重置 pending（再来一局不消费上一局的拳），完成/
+    失败/异常都回写——裁决管线消费的就是这份。"""
+    class FakeArm:
+        id = "robot_fake"
+        type = "robot"
+
+        def __init__(self, outcomes):
+            self.outcomes = list(outcomes)
+            self.calls = []
+
+        def throw_gesture(self, gesture, *, on_event, is_cancelled, timeout_seconds=None):
+            self.calls.append(gesture)
+            if self.outcomes:
+                return self.outcomes.pop(0)
+            return {"status": "completed", "gesture": "石头"}
+
+    class Registry:
+        def __init__(self, provider):
+            self.provider = provider
+
+        def require(self, component_id, expected_type=None, expected_role=None):
+            return self.provider
+
+    arm = FakeArm([{"status": "completed", "gesture": "布"}])
+    monkeypatch.setattr(server, "COMPONENTS", Registry(arm))
+    monkeypatch.setattr(
+        server, "_game_provider_id", lambda game_id, slot, default: "robot_fake"
+    )
+    arm_throw = {"status": "completed", "gesture": "剪刀"}  # 上一局的陈旧值
+    run_robot = server._round_robot_fn("rps", arm_throw)
+    outcome = run_robot(
+        {"command": "throw_gesture", "timeout_seconds": 10},
+        on_event=lambda e: None,
+        is_cancelled=lambda: False,
+        on_log=lambda line: None,
+    )
+    assert outcome["gesture"] == "布"
+    assert arm_throw == {"status": "completed", "gesture": "布"}
+    assert arm.calls == [None]  # manifest 不带 gesture → 臂侧随机
+
+    # 失败路径回写 failed；异常路径同样回写 failed。
+    arm2 = FakeArm([{"status": "failed", "reason": "demo 退出码 2"}])
+    monkeypatch.setattr(server, "COMPONENTS", Registry(arm2))
+    arm_throw2 = {"status": "pending", "gesture": None}
+    run_robot2 = server._round_robot_fn("rps", arm_throw2)
+    outcome2 = run_robot2(
+        {"command": "throw_gesture"},
+        on_event=lambda e: None, is_cancelled=lambda: False, on_log=lambda line: None,
+    )
+    assert outcome2["status"] == "failed"
+    assert arm_throw2["status"] == "failed" and arm_throw2["gesture"] is None
+
+    class Boom(FakeArm):
+        def throw_gesture(self, gesture, **kwargs):
+            raise RuntimeError("resident exploded")
+
+    monkeypatch.setattr(server, "COMPONENTS", Registry(Boom([])))
+    arm_throw3 = {"status": "completed", "gesture": "布"}
+    run_robot3 = server._round_robot_fn("rps", arm_throw3)
+    outcome3 = run_robot3(
+        {"command": "throw_gesture"},
+        on_event=lambda e: None, is_cancelled=lambda: False, on_log=lambda line: None,
+    )
+    assert outcome3["status"] == "failed"
+    assert arm_throw3["status"] == "failed" and arm_throw3["gesture"] is None
+
+
+def test_rps_manifest_play_declares_prefetch_throw_and_retry_replays():
+    """真实 manifest 契约：play 在口令 wav 后声明 throw_gesture（提前出拳），
+    analysis_failed 的 retry 指 play（重试=完整重放口令与出拳）。"""
+    manifest = json.loads(
+        (ROOT / "backend/games/rps/manifest.json").read_text(encoding="utf-8")
+    )
+    play = manifest["state_machine"]["states"]["play"]
+    robot_actions = [a for a in play["on_enter"] if a.get("action") == "robot"]
+    assert robot_actions == [{"action": "robot", "command": "throw_gesture", "timeout_seconds": 10}]
+    # robot 动作排在 wav 台词之后：worker 等回执后才派发（音频播完即出拳）。
+    assert play["on_enter"][-1] is robot_actions[-1]
+    failed = manifest["state_machine"]["states"]["analysis_failed"]
+    assert failed["on_intent"]["retry"] == {"to": "play"}

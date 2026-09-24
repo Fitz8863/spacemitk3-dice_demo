@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import signal
 import subprocess
 import threading
@@ -470,22 +471,30 @@ class RobotArmNeroProvider(RobotProvider):
 
     def throw_gesture(
         self,
-        gesture: str,
+        gesture: str | None = None,
         *,
         on_event: RobotEventFn,
         is_cancelled: RobotCancelledFn,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
+        # gesture=None → 臂侧随机选拳（play 提前出拳时拳形尚不可知）。
+        # 单一事实源是 outcome["gesture"]：实际执行的那份拳形回报给消费方，
+        # 判定用的拳 == 观众看到的拳。
+        if gesture is None:
+            gesture = random.choice(sorted(_THROW_ACTIONS))
         action = _THROW_ACTIONS.get(gesture)
         if action is None:
             return {"status": "failed", "reason": f"unknown throw gesture {gesture!r}"}
-        return self._run_command(
+        outcome = self._run_command(
             "throw_gesture",
             {"command": "action", "name": action},
             timeout_seconds,
             on_event,
             is_cancelled,
         )
+        if isinstance(outcome, dict):
+            outcome.setdefault("gesture", gesture)
+        return outcome
 
     def reset_home(
         self,
