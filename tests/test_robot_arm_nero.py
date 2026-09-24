@@ -94,6 +94,11 @@ for line in sys.stdin:
         continue
     if command == "action":
         name = request.get("name")
+        # reject_prep 用独立持久标记文件（set_mode 的一次性模式会被链内
+        # 前置的 reload 命令提前消费掉）。
+        if (MODE_FILE.parent / "reject_prep").exists() and name == "rps-ready":
+            emit("rejected", id=rid, code="unknown_action", message="unknown action rps-ready")
+            continue
         emit("action_started", id=rid, name=name)
         emit("action_completed", id=rid, name=name,
              receipt="/tmp/receipt.json", elapsed_s=0.01)
@@ -268,26 +273,47 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
 
     def test_throw_gesture_maps_rps_vocabulary_to_demo_actions(self):
         """rps 出拳：游戏词表（石头/剪刀/布）→ demo 动作 rock/scissors/paper，
-        复用静态动作通路（reload 前置免费继承）；未知词表值直接失败。"""
+        每次出拳前先连贯执行 rps-ready 预备动作（单锁两段链）；未知词表值
+        直接失败（不发送任何动作）。"""
         for gesture, action in (("石头", "rock"), ("剪刀", "scissors"), ("布", "paper")):
             outcome = self.provider.throw_gesture(
                 gesture, on_event=self.events.append, is_cancelled=lambda: False
             )
             self.assertEqual(outcome["status"], "completed")
-        self.assertIn("手势 rock", [str(e.get("zh")) for e in self.events])
-        self.assertIn("手势 paper", [str(e.get("zh")) for e in self.events])
+            self.assertEqual(outcome["gesture"], gesture)
         received = [
             json.loads(line)
             for line in (self.demo_root / "received.log").read_text().splitlines()
         ]
         names = [c.get("name") for c in received if c.get("command") == "action"]
-        self.assertEqual(names, ["rock", "scissors", "paper"])
+        self.assertEqual(
+            names,
+            ["rps-ready", "rock", "rps-ready", "scissors", "rps-ready", "paper"],
+        )
+        commands = [c.get("command") for c in received if isinstance(c, dict)]
+        self.assertEqual(commands.count("reload"), 6)  # 每段静态动作前都热重载
 
         outcome = self.provider.throw_gesture(
             "布匹", on_event=self.events.append, is_cancelled=lambda: False
         )
         self.assertEqual(outcome["status"], "failed")
         self.assertIn("unknown throw gesture", str(outcome["reason"]))
+
+    def test_throw_gesture_prep_failure_fails_the_chain(self):
+        """预备段（rps-ready）被拒/失败 → 整链失败，拳形动作不发送。"""
+        (self.demo_root / "reject_prep").write_text("", encoding="utf-8")
+        outcome = self.provider.throw_gesture(
+            "石头", on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "failed")
+        self.assertIn("prep action", str(outcome.get("reason")))
+        received = [
+            json.loads(line)
+            for line in (self.demo_root / "received.log").read_text().splitlines()
+        ]
+        # 只有预备段（及其 reload）被发送，rock 从未到达。
+        sent = [c.get("name") for c in received if c.get("command") == "action"]
+        self.assertEqual(sent, ["rps-ready"])
 
     def test_throw_gesture_none_picks_a_random_gesture_and_reports_it(self):
         """gesture=None（play 提前出拳，拳形尚不可知）：臂侧从词表随机
@@ -310,7 +336,10 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
             for line in (self.demo_root / "received.log").read_text().splitlines()
         ]
         names = [c.get("name") for c in received if c.get("command") == "action"]
-        self.assertEqual(names, ["rock", "scissors", "paper"])
+        self.assertEqual(
+            names,
+            ["rps-ready", "rock", "rps-ready", "scissors", "rps-ready", "paper"],
+        )
 
     def test_grasp_chain_never_sends_reload(self):
         """reload 只对静态动作有意义；抓取/摇骰链保持纯 advance 协议。"""

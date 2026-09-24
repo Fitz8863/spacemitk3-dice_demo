@@ -12,7 +12,7 @@ Command mapping:
 * ``grasp_cup``  → ``advance until LIFT``      (HOME→CAPTURE→PLAN→APPROACH→GRIP→LIFT; grasp and lift, no shaking)
 * ``shake_dice`` → ``advance until RETURN_HOME`` (SHAKE→LOWER→OPEN→RETURN_HOME; the cup is already aloft)
 * ``feedback``   → ``action name=yeah|thumbs-up|tie``
-* ``throw_gesture`` → ``action name=rock|paper|scissors`` (rps agent move; pose is held, no auto-home)
+* ``throw_gesture`` → ``action name=rps-ready`` → ``action name=rock|paper|scissors`` (rps agent move: prep pose then the gesture, one locked chain; pose is held, no auto-home)
 * ``reset_home`` → ``action name=home`` — best-effort, never revives a dead resident
 
 Completion is judged strictly by id-correlated events (``command_completed`` /
@@ -71,6 +71,9 @@ _PHASE_LABELS_ZH = {
 _FEEDBACK_ACTIONS = {"win": "yeah", "lose": "thumbs-up", "draw": "tie"}
 # rps 游戏词表（games/rps/result.py GESTURES）→ demo 静态手势动作名。
 _THROW_ACTIONS = {"石头": "rock", "剪刀": "scissors", "布": "paper"}
+# 出拳前的预备动作（手前伸，与 home 仅肘关节之差）——先预备再亮拳，
+# 两段连贯构成一次 throw_gesture。
+_THROW_PREP_ACTION = "rps-ready"
 
 _LOG_TAIL_LINES = 15
 
@@ -485,13 +488,33 @@ class RobotArmNeroProvider(RobotProvider):
         action = _THROW_ACTIONS.get(gesture)
         if action is None:
             return {"status": "failed", "reason": f"unknown throw gesture {gesture!r}"}
-        outcome = self._run_command(
-            "throw_gesture",
-            {"command": "action", "name": action},
-            timeout_seconds,
-            on_event,
-            is_cancelled,
-        )
+        # 连贯两段链：rps-ready 预备（手前伸）→ 拳形。整链一把臂锁（镜像
+        # reset_home 的持锁直调，两段间不松锁——不与终局归位 watcher 交错）；
+        # 预备段失败即整链失败，第二段的 action_completed 是整链完成判据。
+        with self._arm_lock:
+            if self._shutdown:
+                return {"status": "failed", "reason": "provider is shutting down"}
+            prep = self._run_command_locked(
+                "throw_gesture",
+                {"command": "action", "name": _THROW_PREP_ACTION},
+                timeout_seconds,
+                on_event,
+                is_cancelled,
+            )
+            if not (isinstance(prep, dict) and prep.get("status") == "completed"):
+                if isinstance(prep, dict):
+                    prep["reason"] = (
+                        f"prep action {_THROW_PREP_ACTION!r} failed: {prep.get('reason') or '动作未完成'}"
+                    )
+                    return prep
+                return {"status": "failed", "reason": "prep failed"}
+            outcome = self._run_command_locked(
+                "throw_gesture",
+                {"command": "action", "name": action},
+                timeout_seconds,
+                on_event,
+                is_cancelled,
+            )
         if isinstance(outcome, dict):
             outcome.setdefault("gesture", gesture)
         return outcome

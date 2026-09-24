@@ -1412,7 +1412,7 @@ def test_rps_manifest_play_declares_prefetch_throw_and_retry_replays():
     robot_actions = [a for a in play["on_enter"] if a.get("action") == "robot"]
     assert robot_actions == [{
         "action": "robot", "command": "throw_gesture",
-        "timeout_seconds": 10, "delay_seconds": 2.2,
+        "timeout_seconds": 10, "delay_seconds": 1.4,
     }]
     # robot 动作排在 wav 台词之前：worker 一进状态就派发（线程内睡满
     # delay_seconds 才出臂），wav 的 await 只撑节奏、不再门控出拳。
