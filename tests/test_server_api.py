@@ -1043,7 +1043,7 @@ class _RecordingVisionStream:
         self.arenas: list[dict] = []
         self._raises = raises
 
-    def start_for_round(self, round_, *, arena=None) -> bool:
+    def start_for_round(self, round_, *, arena=None, on_event=None) -> bool:
         if self._raises is not None:
             raise self._raises
         self.started.append(round_.id)
@@ -1412,8 +1412,12 @@ def test_rps_manifest_play_declares_prefetch_throw_and_retry_replays():
     robot_actions = [a for a in play["on_enter"] if a.get("action") == "robot"]
     assert robot_actions == [{
         "action": "robot", "command": "throw_gesture",
-        "timeout_seconds": 10, "delay_seconds": 1.4,
+        "timeout_seconds": 10,
+        "delay_seconds": manifest["state_machine"]["states"]["play"]["on_enter"][0]["delay_seconds"],
     }]
+    # delay_seconds 是热调旋钮（manifest 直改即生效），钉范围不钉数值。
+    delay = robot_actions[0]["delay_seconds"]
+    assert isinstance(delay, (int, float)) and 0 <= delay <= 30
     # robot 动作排在 wav 台词之前：worker 一进状态就派发（线程内睡满
     # delay_seconds 才出臂），wav 的 await 只撑节奏、不再门控出拳。
     assert play["on_enter"][0] is robot_actions[0]

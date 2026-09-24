@@ -701,7 +701,7 @@ def test_rps_vision_contract_pins_the_confirmed_flow_decisions():
     profile = manifest["vision_profile"]
     assert profile["game_id"] == "rps"
     assert profile["runtime_config"] == "backend/games/rps/adjudicator_config.json"
-    assert profile["video"] == {"enabled": False, "path": "/rps/det"}
+    assert profile["video"] == {"enabled": True, "path": "/rps/det"}
     assert profile["llm"]["enabled"] is False  # 纯视觉裁决，无 LLM 复核
     states = manifest["state_machine"]["states"]
     rules = states["rules"]
@@ -713,7 +713,7 @@ def test_rps_vision_contract_pins_the_confirmed_flow_decisions():
     # 出拳动作排在口令最前：进状态即派发（线程内睡 delay_seconds），wav
     # 的 await 只撑节奏、不门控出拳（2026-09-24 时机参数化）。
     throw = next(a for a in play_enter if a.get("action") == "robot")
-    assert play_enter[0] is throw and throw["delay_seconds"] > 0
+    assert play_enter[0] is throw and 0 <= throw["delay_seconds"] <= 30
     analysis = states["analysis"]
     assert analysis["on_event"]["adjudication.result"]["to"] == "result"
     assert analysis["on_event"]["adjudication.diagnosis"]["to"] == "analysis_failed"

@@ -72,12 +72,16 @@ class VisionStreamManager:
         self._owner_round_id: str | None = None
         self._watcher: threading.Thread | None = None
 
-    def start_for_round(self, round_: Any, *, arena: Mapping[str, Any] | None = None) -> bool:
+    def start_for_round(
+        self, round_: Any, *, arena: Mapping[str, Any] | None = None, on_event: Callable[[Mapping[str, Any]], None] | None = None
+    ) -> bool:
         """Bring this round's game camera up; True when a stream is active.
 
         Called on game entry, before any adjudication.  The runtime is spawned
         in prewarm mode, so the detector session is loaded but no inference runs
-        until the adjudication phase asks for it.
+        until the adjudication phase asks for it.  ``on_event`` is the round's
+        side-channel emitter: the provider sends the video event through it at
+        entry so the browser can show the persistent stream window right away.
 
         Re-entering a game does not restart the camera: the provider reuses a
         warm runtime whose launch signature still matches, and rebuilds only
@@ -129,7 +133,17 @@ class VisionStreamManager:
                 f"(superseded by provider switch)"
             )
         try:
-            started = bool(start(profile, on_log=self._log))
+            try:
+                started = bool(start(profile, on_log=self._log, on_event=on_event))
+            except TypeError as exc:
+                # Keyword-compat shim for providers that predate ``on_event``:
+                # a signature mismatch naming the keyword is retried without
+                # it.  The retry lives INSIDE this handler, so its own failure
+                # (e.g. the provider then raising "camera busy") must still be
+                # swallowed by the outer game-entry guard below.
+                if "on_event" not in str(exc):
+                    raise
+                started = bool(start(profile, on_log=self._log))
         except Exception as exc:  # a provider bug must not break game entry
             self._log(f"stream start raised for round {str(round_.id)[:8]}: {exc!r}")
             return False

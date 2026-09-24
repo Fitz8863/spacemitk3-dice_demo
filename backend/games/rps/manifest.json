@@ -33,7 +33,7 @@
       "allowed_outcomes": ["LEFT", "RIGHT", "TIE"]
     },
     "video": {
-      "enabled": false,
+      "enabled": true,
       "path": "/rps/det"
     },
     "lifecycle": {
@@ -76,7 +76,7 @@
       "play": {
         "ui": {"view": "play", "title": "石头、剪刀、布——亮相！", "copy": "听到「布」时，和小搭子同时亮出手势。"},
         "on_enter": [
-          {"action": "robot", "command": "throw_gesture", "timeout_seconds": 10, "delay_seconds": 1.4},
+          {"action": "robot", "command": "throw_gesture", "timeout_seconds": 10, "delay_seconds": 0.0},
           {"action": "speech", "mode": "audio", "text": "石头，剪刀，布。","audio": "audio/石头剪刀布.wav", "await": true}
         ],
         "duration": 0.4,

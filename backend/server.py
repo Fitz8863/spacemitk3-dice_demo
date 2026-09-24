@@ -1007,7 +1007,9 @@ def create_round(game_id: str) -> GameRound:
     # adjudication starts the runtime lazily and reports the real error there.
     # The arena config decides whether the stream also outlives this game.
     try:
-        VISION_STREAM.start_for_round(round_, arena=get_arena_config())
+        VISION_STREAM.start_for_round(
+            round_, arena=get_arena_config(), on_event=round_.emit_observation
+        )
     except Exception as exc:
         print(f"[vision] failed to start streaming for round {round_.id[:8]}: {exc!r}", flush=True)
     return round_

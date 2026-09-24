@@ -115,12 +115,12 @@
 			]
 		},
 		"video": {
-			"enabled": false,
+			"enabled": true,
 			"path": "/dice/det"
 		},
 		"lifecycle": {
-			"pre_adjudication_wait_seconds": 3,
-			"post_result_hold_seconds": 2
+			"pre_adjudication_wait_seconds": 1,
+			"post_result_hold_seconds": 1
 		},
 		"timeouts": {
 			"yolo_detection_seconds": 8,

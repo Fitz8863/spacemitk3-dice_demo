@@ -73,6 +73,7 @@ export function register(engine) {
     frame.onerror = null;
     frame.src = 'about:blank';
     panel.classList.add('hidden');
+    $('analysisStreamSpacer')?.classList.add('hidden');
     const status = $('analysisStreamState');
     if (status) status.textContent = '实时画面已关闭';
   }
@@ -100,14 +101,15 @@ export function register(engine) {
     streamUrl.searchParams.set('playsinline', '1');
 
     panel.classList.remove('hidden');
+    $('analysisStreamSpacer')?.classList.remove('hidden');
     const status = $('analysisStreamState');
     if (status) status.textContent = '正在连接实时画面…';
     frame.onload = () => {
-      if (token !== visionStreamToken || state.phase !== 'analysis') return;
+      if (token !== visionStreamToken) return;
       if (status) status.textContent = '播放页面已加载，等待手势画面…';
     };
     frame.onerror = () => {
-      if (token !== visionStreamToken || state.phase !== 'analysis') return;
+      if (token !== visionStreamToken) return;
       if (status) status.textContent = '实时画面连接失败，识别仍会继续';
     };
     frame.src = streamUrl.toString();
@@ -154,7 +156,6 @@ export function register(engine) {
   function renderState(stateName, ui) {
     if (stateName === lastRenderedState) return;
     lastRenderedState = stateName;
-    if (stateName !== 'analysis' && stateName !== 'analysis_failed') stopVisionStream();
     const view = ui.view || VIEW_BY_STATE[stateName] || stateName;
     const meta = [ui.title || '', ui.copy || ''];
     setPhase(view, meta[0] || meta[1] ? meta : undefined);

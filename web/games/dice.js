@@ -71,6 +71,7 @@ export function register(engine) {
     frame.onerror = null;
     frame.src = 'about:blank';
     panel.classList.add('hidden');
+    $('analysisStreamSpacer')?.classList.add('hidden');
     const status = $('analysisStreamState');
     if (status) status.textContent = '实时画面已关闭';
   }
@@ -98,14 +99,15 @@ export function register(engine) {
     streamUrl.searchParams.set('playsinline', '1');
 
     panel.classList.remove('hidden');
+    $('analysisStreamSpacer')?.classList.remove('hidden');
     const status = $('analysisStreamState');
     if (status) status.textContent = '正在连接实时画面…';
     frame.onload = () => {
-      if (token !== visionStreamToken || state.phase !== 'analysis') return;
+      if (token !== visionStreamToken) return;
       if (status) status.textContent = '播放页面已加载，等待 YOLO 画面…';
     };
     frame.onerror = () => {
-      if (token !== visionStreamToken || state.phase !== 'analysis') return;
+      if (token !== visionStreamToken) return;
       if (status) status.textContent = '实时画面连接失败，识别仍会继续';
     };
     frame.src = streamUrl.toString();
@@ -337,7 +339,6 @@ export function register(engine) {
   }
 
   function resetAnalysisSteps() {
-    stopVisionStream();
     $('stepCapture').classList.add('active');
     $('stepCapture').classList.remove('failed');
     $('stepCapture').querySelector('span').textContent = '✓';
@@ -430,7 +431,6 @@ export function register(engine) {
 
   function showResult(result) {
     assertResultParticipants(result);
-    stopVisionStream();
     playerDice = Array.isArray(result.player_values) ? result.player_values : [];
     agentDice = Array.isArray(result.agent_values) ? result.agent_values : [];
     const player = Number(result.player_score);
@@ -468,7 +468,6 @@ export function register(engine) {
   }
 
   function showDiagnosis(result) {
-    stopVisionStream();
     const diagnosis = result && result.diagnosis && typeof result.diagnosis === 'object'
       ? result.diagnosis : {};
     markAnalysisFailure();

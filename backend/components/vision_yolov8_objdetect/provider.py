@@ -508,6 +508,7 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
         profile: Mapping[str, Any],
         *,
         on_log: Callable[[str], None] | None = None,
+        on_event: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> bool:
         """Start this game's camera/RTSP stream without running inference.
 
@@ -517,6 +518,11 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
         and the detector session is loaded, but ``adjudication_active`` stays
         false, so no OpenCL preprocessing and no inference run until the
         adjudication phase sends ``START_ADJUDICATION``.
+
+        ``on_event`` (the round's side-channel emitter) receives the video
+        event for each started view right here at game entry, so the browser
+        can mount the persistent stream window before adjudication — the
+        adjudication path re-sends the same event and stays idempotent.
 
         Failures are swallowed on purpose.  Entering a game must never break
         because a camera is busy or unplugged; adjudication still starts the
@@ -531,6 +537,13 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
             try:
                 self._ensure_runtime(profile, vid, log)
                 started = True
+                if on_event is not None:
+                    event = self._video_event(profile, vid, {})
+                    if event is not None:
+                        try:
+                            on_event(event)
+                        except Exception:
+                            pass
             except Exception as exc:
                 log(f"[vision] stream start failed for view {vid}: {exc!r}")
         return started
