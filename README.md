@@ -81,14 +81,12 @@ python3 backend/tts_debug.py <provider_id>
 1. 选择游戏列表中的「摇骰子」，点击「进入摇骰子」；
 2. 点击「我明白了」进入准备状态；
 3. 点击「开始摇骰」，网页执行 3、2、1 倒计时；
-4. 当前由人手实际摇动骰盅，摇骰阶段持续 10 秒；剩余 3、2、1 秒时倒计时数字变红并播放提示音，完成后也可以提前点击「停止摇骰」（或按红色按键 / `Esc`）；
-5. 人手打开双方骰盅：语音「停！」播完**静 2 秒**（前端把该句的 `speech_done` 回执压后 2 秒，
-   后端因此整段转场一起后移），随后念「准备好了没有？三、二、一，开盖」——语音的三/二/一与
-   屏幕的 `3、2、1` 同时出现（屏幕倒计时 2.4 秒）；
-6. 倒计时结束后页面自动进入 YOLOv8 真实识别流程（结果由板端检测与 profile 规则产生，绝不由网页随机生成；复核开启时会先过大模型）；
+4. 机械臂实际摇骰（一条链：摇+放杯+张手+归位；2026-09-24 起人工摇骰模式已移除，摇骰环节只有机械臂）；
+5. 机械臂放下杯子归位完的瞬间，语音喊「停！」（`audio/停.wav`）并随即交棒——页面 0.5 秒后
+   直接进入 YOLOv8 真实识别流程（结果由板端检测与 profile 规则产生，绝不由网页随机生成；复核开启时会先过大模型）；
 7. 点击「再来一局」回到准备状态。
 
-实体按键：绿色按键发送 `Enter`，用于确认、进入和开始；红色按键发送 `Escape`，用于取消或返回，**摇骰进行中按它等同点击「停止摇骰」**（提前停止并进入开盖）；蓝色按键发送 `ArrowDown`，用于向下选择或重听规则；黄色按键发送 `ArrowUp`，用于向上选择。
+实体按键：绿色按键发送 `Enter`，用于确认、进入和开始；红色按键发送 `Escape`，用于取消或返回（摇骰进行中无动作——机械臂摇物理上不应打断，等臂完成自然推进）；蓝色按键发送 `ArrowDown`，用于向下选择或重听规则。
 
 ## 配置游戏状态机与语音
 
@@ -112,13 +110,12 @@ python3 backend/tts_debug.py <provider_id>
         "back": {"exit": true}
       }
     },
-    "open_reveal": {
+    "stop_call": {
       "on_enter": [
-        {"action": "speech", "mode": "audio", "audio": "audio/停.wav", "text": "停！", "await": true},
-        {"action": "speech", "mode": "audio", "audio": "audio/开盖词.wav", "text": "准备好了没有？三，二，一,开盖"}
+        {"action": "speech", "mode": "audio", "audio": "audio/停.wav", "text": "停！"}
       ],
-      "duration": 1.6,
-      "on_expire": {"to": "vision_countdown"}
+      "duration": 0.5,
+      "on_expire": {"to": "analysis"}
     },
     "result": {
       "on_enter": [{
@@ -140,7 +137,7 @@ python3 backend/tts_debug.py <provider_id>
 
 - 状态机是**显式命名的有向图**：`to` 按状态名引用，支持任意跳转、回跳（如 `analysis_failed --retry--> analysis`）与跳过；删除状态时改掉引用它的边即可，悬空引用在加载时报错。
 - 触发器三类：`on_intent`（前端按键意图）、`duration` + `on_expire`（计时器，`tick_seconds` 可配，倒计时默认 0.9 秒还原舞台节奏）、`on_event`（后端内部事件，如 `adjudication.result`/`adjudication.diagnosis`）。
-- `speech` 动作 `mode` 只有 `tts_local`/`tts_remote`/`audio` 三种；`await: true` 表示后端等待前端播放完成回执（`speech_done`）后才继续推进。**注意 `await` 会把本状态的 `duration` 计时器整体后推**（引擎先跑完 `on_enter` 再起计时），所以 `duration` 是"这句播完后再等多久"，不是"本状态持续多久"——骰子正是靠这一点：`停` 用 `await` 保证播完才起开盖词，开盖词**不 await** 让计时器与语音并行，屏幕倒计时因此恰好从语音的「三」开始；`select_by: winner_role` 按裁决结果选台词，`{player_score}`/`{agent_score}` 占位符由引擎渲染。
+- `speech` 动作 `mode` 只有 `tts_local`/`tts_remote`/`audio` 三种；`await: true` 表示后端等待前端播放完成回执（`speech_done`）后才继续推进。**注意 `await` 会把本状态的 `duration` 计时器整体后推**（引擎先跑完 `on_enter` 再起计时），所以 `duration` 是"这句播完后再等多久"，不是"本状态持续多久"——骰子现状（2026-09-24）：`stop_call` 的 `停.wav` 故意不 await，喊停的瞬间就交棒进裁决；`select_by: winner_role` 按裁决结果选台词，`{player_score}`/`{agent_score}` 占位符由引擎渲染。
 - `audio` 模式从该游戏目录读取 WAV（如 `audio/停.wav`），拒绝绝对路径和 `..` 越界。游戏级 `voice`/`speed` 是 TTS 默认参数，单条动作可覆盖。
 - 未来接机械臂时，在对应状态加一条新动作类型（如 `{"action": "robot", "command": "shake_dice"}`）并注册对应执行器与 `command` 类型功能包即可，无需改引擎和前端。
 - manifest 支持热加载（mtime 检测，保存后下一局生效；坏配置保留最后可用版本）。正在跑的一局使用创建时的状态机快照。修改 manifest 结构后无需重启后端。
@@ -332,7 +329,7 @@ SELECT -> RULES -> READY -> COUNTDOWN -> SHAKING -> OPEN
 
 - `startShake`：下发摇骰语义指令；
 - `stopShake`：下发停骰语义指令；
-- 开盖过场：摇骰结束后自动等待 2 秒，再开始视觉倒计时与采集识别；
+- 摇骰收尾：机械臂放下杯子归位完即播「停！」（stop_call 0.5s），随即进入视觉识别；
 - `ANALYSIS`：接收 K3 YOLOv8 输出的 10 颗骰子、置信度、两侧总和和判定结果。
 
 当前 HTTP bridge 已通过 SSE 推送分析进度和结果。下一阶段接入机械臂时，应继续让后端作为权威状态源；只有需要双向机器人事件或高频画面时，再增加 WebSocket/视频通道，不让 ROS2、视觉和网页 UI 互相耦合。

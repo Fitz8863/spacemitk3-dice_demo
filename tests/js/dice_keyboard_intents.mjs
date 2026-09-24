@@ -109,18 +109,17 @@ function expect(label, actual, expected) {
   }
 }
 
-// 机械臂剧本（2026-09-23）：机械臂摇骰中无"停止"动作（等臂完成）；人工模式
-// （manual_shaking，共用 shaking 视图）的 Esc 才是停止摇骰；arm_failed 的
-// ↓/↑/Esc 分别对应机械臂重试 / 人工模式 / 退出本局。
+// 机械臂剧本（2026-09-23 + 2026-09-24 删人工模式）：机械臂摇骰中无"停止"
+// 动作（等臂完成，物理上不应打断）；manual_shaking 已整体删除（游戏只有
+// 玩家和 agent 机械臂），arm_failed 只剩 ↓=重试 / Esc=退出。
 enterState('shaking', 'shaking');
 expect('机械臂摇骰中按 Esc（不应有动作）', press('Escape'), '[]');
 expect('机械臂摇骰中按 Enter（不应有动作）', press('Enter'), '[]');
-enterState('manual_shaking', 'shaking');
-expect('人工摇骰中点击「停止摇骰」按钮', clickButton('stopShake'), '[["stop_shake",{}]]');
-expect('人工摇骰中按 Esc', press('Escape'), clickButton('stopShake'));
+enterState('stop_call', 'shaking');
+expect('摇完喊停态按 Esc（不应有动作）', press('Escape'), '[]');
 enterState('arm_failed', 'arm_failed');
 expect('机械臂失败页按 ↓（机械臂重试）', press('ArrowDown'), clickButton('armRetry'));
-expect('机械臂失败页按 ↑（人工模式）', press('ArrowUp'), clickButton('armManual'));
+expect('机械臂失败页按 ↑（已无人工模式，不应有动作）', press('ArrowUp'), '[]');
 expect('机械臂失败页按 Esc（退出本局）', press('Escape'), clickButton('armBack'));
 
 // 绿键=Enter / 红键=Esc 通则（2026-09-23 晚拍板）：结果页与识别失败页的

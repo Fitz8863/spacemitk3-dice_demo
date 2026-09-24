@@ -50,21 +50,6 @@ def test_frontend_preserves_holding_countdown_from_structured_event():
     assert "Math.ceil(remaining / 1000)" in holding
 
 
-def test_frontend_open_phase_prompts_readiness_without_duplicate_banner():
-    """The open phase shows one lowered prompt; the old bottom banner is gone."""
-    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
-    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
-    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
-    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
-
-    open_section = html.split('data-view="open"', 1)[1].split("</section>", 1)[0]
-    assert "请同时开盖" not in open_section
-    assert "请同时开盖" not in html
-    assert "你准备好了吗？听语音倒计时同时开盖" in js
-    assert "document.body.dataset.phase = phase" in app
-    assert 'body[data-phase="open"] .stage-head' in css
-
-
 def test_frontend_schedules_streamed_tts_frames_back_to_back():
     """Streamed TTS frames play on one WebAudio timeline, not per-frame Audio.
 
@@ -112,11 +97,10 @@ def test_frontend_buttons_match_controller_key_colors():
     assert class_of("newRound") == "btn-circle btn-green"
     assert class_of("repeatRules") == "btn-circle btn-blue"
     assert class_of("analysisRetry") == "btn-circle btn-blue"
-    # 停止摇骰保留给人工模式（manual_shaking）：默认隐藏，进入人工模式才显示。
-    assert class_of("stopShake") == "btn-circle btn-red hidden"
-    # 机械臂失败页三键：红=退出、黄=人工模式（新色，须与实体按键提示同源）、蓝=重试。
+    # 人工摇骰模式（stopShake 红钮/armManual 黄钮）已随 manual_shaking 删除
+    # （2026-09-24 拍板：游戏只有玩家和 agent 机械臂）。
+    # 机械臂失败页双键（2026-09-24 起人工摇骰出口删除）：红=退出、蓝=重试。
     assert class_of("armBack") == "btn-pill btn-red"
-    assert class_of("armManual") == "btn-circle btn-yellow"
     assert class_of("armRetry") == "btn-circle btn-blue"
     assert class_of("backFromRules") == "btn-circle btn-red"
     assert class_of("readyBack") == "btn-circle btn-red"
@@ -132,32 +116,6 @@ def test_frontend_buttons_match_controller_key_colors():
     assert css.count("background: #16a34a") == 2
     assert css.count("background: #dc2626") == 2
     assert css.count("background: #2563eb") == 2
-
-
-def test_frontend_shouts_stop_before_reveal_ready():
-    """The 停 → reveal rhythm is declared by the backend state machine."""
-    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
-    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
-
-    open_reveal = dice_state("open_reveal")
-    stop_entry = open_reveal["on_enter"][0]
-    assert stop_entry["mode"] == "audio"
-    assert stop_entry["audio"] == "audio/停.wav"
-    assert stop_entry["text"].strip() == "停！"
-    assert stop_entry["await"] is True
-    # The reveal clip follows in the same on_enter sequence and is not awaited,
-    # so the hold window below runs in parallel with the voice instead of
-    # queueing up behind it.
-    assert open_reveal["on_enter"][1]["text"].startswith("准备好了没有")
-    assert open_reveal["on_enter"][1].get("await") is not True
-    assert open_reveal["duration"] == 1.6
-
-    # The frontend must not re-implement the chain: awaiting is an engine
-    # concern, playback acknowledgement happens through the round client.
-    assert "function stopShake" not in js
-    assert "speakState" not in js
-    assert "startRevealTransition" not in js
-    assert "submitIntent('speech_done'" in app
 
 
 def test_frontend_distinguishes_llm_override_from_consensus():
@@ -254,93 +212,22 @@ def test_frontend_uses_manifest_participant_layout_and_role_result():
     assert re.search(r"result\.winner(?!_role)", dice) is None
 
 
-def test_frontend_enters_open_transition_and_starts_countdown_automatically():
-    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
-    html = (ROOT / "web/index.html").read_text(encoding="utf-8")
-
-    # Timers, transitions, and the reveal chain all live in the backend
-    # state machine; the game module renders events and submits intents only.
-    assert "setTimeout" not in js
-    assert "setInterval" not in js
-    assert "setPhase('open'" not in js
-    assert 'id="revealDice"' not in html
-    open_reveal = dice_state("open_reveal")
-    assert open_reveal["on_enter"][0].get("await") is True
-    assert open_reveal["on_expire"]["to"] == "vision_countdown"
-    reveal_entry = open_reveal["on_enter"][1]
-    # The reveal countdown is a pre-recorded clip now, and it is deliberately
-    # NOT awaited: the hold timer must run *with* the voice so the screen
-    # countdown starts on the voice's "三".
-    assert reveal_entry["mode"] == "audio"
-    assert reveal_entry["audio"].endswith(".wav")
-    assert reveal_entry.get("await") is not True
-    assert reveal_entry["text"]
-
-
-def test_frontend_counts_down_after_open_transition_before_adjudication():
-    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
-
-    # The vision countdown is a backend state; the frontend only renders ticks.
-    # 0.8s per number matches the reveal voice's 三二一 pacing.
-    vision_countdown = dice_state("vision_countdown")
-    assert vision_countdown["duration"] == 2.4
-    assert vision_countdown["tick_seconds"] == 0.8
-    assert vision_countdown["on_expire"]["to"] == "analysis"
-    assert vision_countdown["ui"]["view"] == "countdown"
-    assert "请保持骰子和骰盅位置不动" in vision_countdown["ui"]["copy"]
-    assert "countdownNumber" in js
-    assert "revealDice" not in js
-
-
-def test_reveal_voice_and_screen_countdown_stay_in_step():
-    """The two halves of the reveal rhythm must be edited together.
-
-    The voice clip counts 三/二/一 and the *screen* numbers come from
-    ``vision_countdown``; they only line up because ``open_reveal`` hands over
-    at the moment the voice reaches 三.  That handover is a single number:
-    ``open_reveal.duration``, which starts once the awaited 停 clip is
-    acknowledged (the engine only starts a state's timer after its on_enter
-    sequence has been issued) and must therefore cover the reveal clip's
-    lead-in up to its first number (~1.5s) — not a "transition length" chosen
-    for feel.  Changing any one of these four facts desynchronises the demo,
-    so pin them together.
-    """
-    open_reveal = dice_state("open_reveal")
-    stop_entry = open_reveal["on_enter"][0]
-    reveal_entry = open_reveal["on_enter"][1]
-    vision_countdown = dice_state("vision_countdown")
-
-    # 停 must still finish first, and only 停 may block the sequence.
-    assert stop_entry["await"] is True
-    assert reveal_entry.get("await") is not True
-
-    # Handover at the voice's 三 (~1.5s into the clip + browser start latency).
-    assert open_reveal["duration"] == 1.6
-    assert open_reveal["on_expire"]["to"] == "vision_countdown"
-
-    # The screen side: three numbers, 0.8s apart, ending as the clip does.
-    assert vision_countdown["duration"] == 2.4
-    assert vision_countdown["tick_seconds"] == 0.8
-    assert vision_countdown["on_expire"]["to"] == "analysis"
-
-
-def test_frontend_uses_vision_specific_copy_during_post_open_countdown():
-    copy = dice_state("vision_countdown")["ui"]["copy"]
-    assert "倒计时结束后开始视觉裁决" in copy
-
-
-def test_robot_shake_is_event_driven_with_manual_fallback():
-    """机械臂摇骰契约（2026-09-23 集成拍板 + 过场态改造）：
+def test_robot_shake_is_event_driven_with_stop_call():
+    """机械臂摇骰契约（2026-09-23 集成拍板 + 2026-09-24 删三态改造）：
 
     - game_start 过场（用户拍板 2026-09-23 晚）：入口即刻下发抓取（advance until
       GRIP，识别+抓取不摇），大字"游戏开始！"动画 + 臂进度行；duration 就是过场
-      秒数的唯一旋钮（热加载可调，默认 3s——抓取实测 3.5-4s，过场+2.4s 倒计时
-      后臂已持杯待命）；只声明失败路由，抓取提前完成不打断过场
+      秒数的唯一旋钮（热加载可调，当前 3.5s——为 LIFT 完成留窗口）；只声明失败
+      路由，抓取提前完成不打断过场
     - shake_countdown 只剩三二一口令（抓取已前移）；保留 grasp 失败路由——
       抓取偶发偏慢时失败事件落在倒计时态，仍能正确进兜底页
     - shaking 无定时无停止按钮：入场即下发摇，完成/失败双路由
-    - arm_failed 兜底：蓝=重试回 game_start（重新过场+重新抓取）、黄=人工、
-      红=退出；manual_shaking 30s 兜底 + 停止按钮
+    - stop_call 摇骰收尾态（用户 2026-09-24 拍板）：shake_dice.completed（臂
+      放下杯子归位完）的瞬间进入，播 audio/停.wav 喊停（非 await——语音与
+      交棒计时并行，"马上走视觉"），0.5s 后 expire 进 analysis；替代原
+      vision_countdown 倒计时（2.4s/0.8s 已删）
+    - arm_failed 兜底：蓝=重试回 game_start（重新过场+重新抓取）、红=退出；
+      人工摇骰模式（manual_shaking）已整体移除——游戏只有玩家和 agent 机械臂
     """
     machine = dice_manifest()["state_machine"]
 
@@ -368,15 +255,27 @@ def test_robot_shake_is_event_driven_with_manual_fallback():
     shake = shaking["on_enter"][0]  # 用户 2026-09-24 删"摇骰进行中"提示语，摇指令升为 on_enter[0]
     assert shake == {"action": "robot", "command": "shake_dice", "timeout_seconds": 90}
     assert shaking["on_event"] == {
-        "robot.shake_dice.completed": {"to": "vision_countdown"},
+        "robot.shake_dice.completed": {"to": "stop_call"},
         "robot.shake_dice.failed": {"to": "arm_failed"},
     }
+
+    # stop_call：摇骰收尾——臂放下杯子归位完的瞬间喊停，随即进裁决。
+    stop_call = machine["states"]["stop_call"]
+    assert stop_call["ui"]["view"] == "shaking"  # 复用摇骰视图，文案静默切换
+    assert stop_call["on_enter"] == [{
+        "action": "speech", "mode": "audio",
+        "audio": "audio/停.wav", "text": "停！",
+    }]  # 非 await：语音 0.82s 与交棒并行，"马上走视觉"
+    assert "await" not in stop_call["on_enter"][0]
+    assert stop_call["duration"] == 0.5
+    assert stop_call["on_expire"]["to"] == "analysis"
+    assert "tick_seconds" not in stop_call  # 无屏幕倒计时
 
     arm_failed = machine["states"]["arm_failed"]
     intents = arm_failed["on_intent"]
     assert intents["retry"]["to"] == "game_start"
-    assert intents["manual"]["to"] == "manual_shaking"
     assert intents["back"]["exit"] is True
+    assert set(intents) == {"retry", "back"}  # 人工摇骰出口已删，只剩双出口
     # 归位不变量（2026-09-24 拍板）：失败页出现即视为离开游戏流程，
     # on_enter 末尾异步归位（靠 reset_home 的复活语义拉起新常驻）；
     # 不 await——speech 并行播报，玩家读页面时臂在后台回家。
@@ -384,16 +283,15 @@ def test_robot_shake_is_event_driven_with_manual_fallback():
     analysis_failed = machine["states"]["analysis_failed"]
     assert {"action": "robot", "command": "reset_home", "timeout_seconds": 30} in analysis_failed["on_enter"]
 
-    manual = machine["states"]["manual_shaking"]
-    assert manual["duration"] == 30
-    assert manual["on_intent"]["stop_shake"]["to"] == "vision_countdown"
-    assert manual["on_expire"]["to"] == "vision_countdown"
+    # 人工摇骰模式整体移除（2026-09-24 拍板）：三态不存在、词条退场。
+    states = machine["states"]
+    for gone in ("manual_shaking", "open_reveal", "vision_countdown"):
+        assert gone not in states
+    phrases = dice_manifest()["asr"]["phrases"]
+    assert "manual" not in phrases and "stop_shake" not in phrases
 
-    # The manual intent must stay voice-reachable.
-    assert dice_manifest()["asr"]["phrases"]["manual"]
-
-    # 前端布局：过场页大字动画 + 臂进度行；倒计时页与摇骰页各一条进度行；
-    # 人工模式的 30s 计时与停止按钮默认隐藏。
+    # 前端布局：过场页大字动画 + 臂进度行；倒计时页与摇骰页各一条进度行。
+    # 人工模式 DOM（30s 计时/停止按钮）与开盖空 section 已删。
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
@@ -406,10 +304,12 @@ def test_robot_shake_is_event_driven_with_manual_fallback():
     assert ".game-start-text" in css
     assert 'id="armCountdownRow"' in html
     assert 'id="armShakingRow"' in html
-    assert 'id="shakeTimerRow"' in html
-    assert 'id="shakeSeconds">30<' in html
-    assert "const urgent = seconds <= 3;" in js
+    assert 'data-view="open"' not in html
+    assert 'id="shakeTimerRow"' not in html
+    assert 'id="stopShake"' not in html
+    assert 'id="armManual"' not in html
     assert "updateArmProgress(event)" in js
+    assert "stop_call: { view: 'shaking' }" in js  # 快照路径的视图映射
 
 
 def test_frontend_uses_user_gesture_audio_for_countdown_cues():
@@ -430,7 +330,6 @@ def test_frontend_uses_light_theme_and_high_contrast_urgent_styles():
 
     assert "--bg: #f7f9fc" in css
     assert "--surface: #ffffff" in css
-    assert ".shake-timer strong.is-urgent" in css
     assert "color: var(--loss)" in css
     assert "@keyframes urgentPulse" in css
     assert 'content="#f7f9fc"' in html
@@ -490,7 +389,7 @@ def test_frontend_maps_controller_colors_to_navigation_keys():
     assert "event.key === 'Enter'" in dice
     assert "event.key === 'Escape'" in dice
     assert "event.key === 'ArrowDown'" in dice
-    assert "event.key === 'ArrowUp'" in dice
+    # ArrowUp（黄键）曾绑 armManual 人工摇骰，已随 manual_shaking 删除（2026-09-24）。
     assert "event.key.toLowerCase() === 'q'" not in dice
 
 
@@ -591,36 +490,6 @@ def test_frontend_acks_awaited_directives_and_mutes_cleanly():
     # Muted playback must still acknowledge immediately.
     muted = play.split("if (!state.sound)", 1)[1].split("}", 1)[0]
     assert "acknowledge()" in muted
-
-
-def test_reveal_hold_delays_the_acknowledgement_not_the_playback():
-    """开盖转场的 2 秒停顿＝压后回执，不是压后播放。
-
-    后端对 await 的台词是「收到 speech_done 才发下一句、才启动该状态的
-    duration 计时」，所以把回执压后 N 秒会让下游整条序列一起后移，语音与
-    屏幕倒计时的相对对齐不受影响。反过来，只把音频延后播放的话，屏幕倒计时
-    仍按原时刻出现——两者会错开约 2 秒，正是要避免的回归。
-    """
-    app = (ROOT / "web/app.js").read_text(encoding="utf-8")
-    js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
-    stop_audio = dice_state("open_reveal")["on_enter"][0]["audio"]
-
-    # The policy is hardcoded in the game module and names the stop clip, so a
-    # manifest rename fails here instead of silently dropping the pause.
-    assert "REVEAL_HOLD_SECONDS = 2" in js
-    assert f"REVEAL_STOP_AUDIO = '{stop_audio}'" in js
-    assert "ackHoldSeconds: hold" in js
-    # dice.js stays timer-free: the wait lives in the engine layer.
-    assert "setTimeout" not in js
-
-    # The engine holds the acknowledgement, and only after a normal finish so a
-    # cancelled or superseded line still acknowledges at once.
-    play = app.split("async function playDirective", 1)[1].split(
-        "// ---- 权威对局客户端", 1
-    )[0]
-    assert "options.ackHoldSeconds" in play
-    assert "playbackComplete && ackHoldSeconds > 0" in play
-    assert "waitSeconds(ackHoldSeconds)" in play
 
 
 def test_frontend_surfaces_asr_recognition_feedback():
@@ -804,10 +673,10 @@ def test_manifest_state_machine_declares_the_full_graph():
     assert machine["initial"] == "rules"
     names = set(machine["states"])
     assert {
-        "rules", "ready", "shake_countdown", "shaking", "arm_failed",
-        "manual_shaking", "open_reveal",
-        "vision_countdown", "analysis", "analysis_failed", "result",
-    } <= names
+        "rules", "ready", "rehome", "game_start", "shake_countdown",
+        "shaking", "stop_call", "arm_failed",
+        "analysis", "analysis_failed", "result",
+    } == names  # 2026-09-24 起删 manual_shaking/open_reveal/vision_countdown、加 stop_call
     # Analysis routes both provider outcomes.
     analysis = machine["states"]["analysis"]["on_event"]
     assert analysis["adjudication.result"]["to"] == "result"
@@ -868,8 +737,6 @@ def test_frontend_renders_countdown_top_value_with_ceil():
     # One number per tick_seconds (from the tick event), not per whole second.
     assert "Number(event.tick_seconds || 1) * 1000" in tick
     assert "Math.ceil(remaining / perNumber)" in tick
-    # The shake timer keeps literal seconds-to-go.
-    assert "Math.ceil(remaining / 1000)" in tick
     assert "Math.floor" not in tick
 
 

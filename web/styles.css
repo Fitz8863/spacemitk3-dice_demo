@@ -68,7 +68,6 @@ body[data-phase="game_start"] .experience-shell,
 body[data-phase="rehome"] .experience-shell,
 body[data-phase="countdown"] .experience-shell,
 body[data-phase="shaking"] .experience-shell,
-body[data-phase="open"] .experience-shell,
 body[data-phase="arm_failed"] .experience-shell,
 body[data-phase="play"] .experience-shell,
 body[data-phase="analysis"] .experience-shell,
@@ -77,7 +76,6 @@ body[data-phase="game_start"] .buddy-panel,
 body[data-phase="rehome"] .buddy-panel,
 body[data-phase="countdown"] .buddy-panel,
 body[data-phase="shaking"] .buddy-panel,
-body[data-phase="open"] .buddy-panel,
 body[data-phase="arm_failed"] .buddy-panel,
 body[data-phase="play"] .buddy-panel,
 body[data-phase="analysis"] .buddy-panel,
@@ -86,9 +84,6 @@ body[data-phase="result"] .buddy-panel { display: none; }
 /* 主舞台 */
 .stage { min-width: 0; flex: 1; padding: 28px 44px 24px; display: flex; flex-direction: column; align-items: center; text-align: center; }
 .stage-head { margin: 18px 0 28px; }
-/* 开盖过场：页面标题区下沉并垂直居中，替代原先的底部大字提示 */
-body[data-phase="open"] .stage-head { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; margin: 0; }
-body[data-phase="open"] .stage-body { flex: 0; padding: 0; }
 /* 分析相位：视图自带标题与实时画面面板，外框标题区既重复又占高度。
    板端内容区实测约 940px，留着它会把检测进度文案挤出屏幕（162px 溢出）。 */
 body[data-phase="analysis"] .stage-head { display: none; }
@@ -180,9 +175,6 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .shake-cup { position: relative; display: grid; place-items: center; padding-bottom: 30px; margin-bottom: 20px; }
 .shake-cup::after { content: ''; position: absolute; left: 50%; bottom: 8px; width: 96px; height: 18px; margin-left: -48px; border-radius: 50%; background: radial-gradient(ellipse at center, rgba(16, 24, 40, .26) 0%, rgba(16, 24, 40, .11) 46%, rgba(16, 24, 40, 0) 74%); animation: shadowBreathe .62s ease-in-out infinite; }
 .shake-bounce { perspective: 760px; animation: shake .62s ease-in-out infinite; }
-.shake-timer { display: flex; align-items: baseline; justify-content: center; gap: 16px; margin: 28px 0 40px; color: var(--muted); font-size: 22px; }
-.shake-timer strong { color: var(--tie); font-size: 72px; font-weight: 900; letter-spacing: -.03em; transition: color .2s, transform .2s; }
-.shake-timer strong.is-urgent { color: var(--loss); text-shadow: 0 4px 18px rgba(220, 38, 38, .22); animation: urgentPulse .8s ease-in-out infinite; }
 
 /* 分析 */
 .analysis-spinner { width: 52px; height: 52px; margin: 0 auto 28px; border: 4px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
@@ -195,7 +187,6 @@ body[data-phase="rehome"] .stage-head,
 body[data-phase="game_start"] .stage-head,
 body[data-phase="countdown"] .stage-head,
 body[data-phase="shaking"] .stage-head,
-body[data-phase="open"] .stage-head,
 body[data-phase="arm_failed"] .stage-head,
 body[data-phase="rps-play"] .stage-head,
 body[data-phase="result"] .stage-head { padding-top: 138px; }

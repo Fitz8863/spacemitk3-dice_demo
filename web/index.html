@@ -143,7 +143,7 @@
           </div>
         </section>
 
-        <!-- 摇骰（机械臂模式：臂进度行；人工模式：倒计时 + 停止按钮） -->
+        <!-- 摇骰（机械臂进度行；摇完喊停的 stop_call 复用本视图） -->
         <section class="view hidden" data-view="shaking">
           <div class="shake-cup" id="shakeCup" aria-hidden="true"></div>
           <h2 class="view-title" id="shakingTitle">摇起来！</h2>
@@ -152,20 +152,14 @@
             <span id="armShakingText">机械臂准备中</span>
             <span class="arm-phase-step" id="armShakingStep"></span>
           </div>
-          <div class="shake-timer hidden" id="shakeTimerRow"><span>剩余</span><strong id="shakeSeconds">30</strong><span>秒</span></div>
-          <button class="btn-circle btn-red hidden" id="stopShake" type="button">停止摇骰</button>
         </section>
 
-        <!-- 开盖 -->
-        <section class="view hidden" data-view="open"></section>
-
-        <!-- 机械臂未完成（重试 / 人工模式 / 退出） -->
+        <!-- 机械臂未完成（重试 / 退出） -->
         <section class="view hidden" data-view="arm_failed">
           <h2 class="view-title">机械臂刚刚卡了一下</h2>
-          <p class="analysis-status" id="armFailedStatus">没关系！可以让它再试一次，也可以切换成人工摇骰。</p>
+          <p class="analysis-status" id="armFailedStatus">没关系！可以让它再试一次。</p>
           <div class="view-actions">
             <button class="btn-pill btn-red" id="armBack" type="button">退出本局</button>
-            <button class="btn-circle btn-yellow" id="armManual" type="button" aria-keyshortcuts="ArrowUp">人工摇骰</button>
             <button class="btn-circle btn-blue" id="armRetry" type="button" aria-keyshortcuts="ArrowDown">机械臂重试</button>
           </div>
         </section>

@@ -13,14 +13,6 @@ export function register(engine) {
     5: [0, 2, 4, 6, 8], 6: [0, 2, 3, 5, 6, 8],
   };
 
-  // 「停！」播完后、开盖词起播前的静音长度（秒）。后端对 await 的台词是
-  // 「收到 speech_done 才发下一句、才启动交棒计时」，所以把这条回执压后 2 秒
-  // ＝整段开盖转场后移 2 秒；语音与屏幕倒计时的相对对齐不受影响。
-  // 与 manifest 的 open_reveal.on_enter[0]（"停！" + await:true）配对：
-  // 改动那一句的音频路径时，这里的 REVEAL_STOP_AUDIO 要一起改。
-  const REVEAL_HOLD_SECONDS = 2;
-  const REVEAL_STOP_AUDIO = 'audio/停.wav';
-
   let playerDice = [];
   let agentDice = [];
   let countdownAudioContext = null;
@@ -39,8 +31,8 @@ export function register(engine) {
     game_start: ['抓稳骰盅，挑战开始！', '机械臂正在拿好骰盅，准备和你同步开摇。'],
     countdown: ['一起倒数，准备摇！', '机械臂已经就位，倒计时结束后双方同时开始。'],
     shaking: ['摇起来，把好运叫醒！', '机械臂正在摇骰，你也要持续摇动骰盅哦。'],
-    arm_failed: ['机械臂刚刚卡了一下', '蓝色按钮让它再试一次；黄色按钮改为人工摇骰；红色按钮退出本局。'],
-    open: ['你准备好了吗？听语音倒计时同时开盖', ''],
+    stop_call: ['摇好了！', '停！请保持骰子和骰盅位置不动，马上开始判定。'],
+    arm_failed: ['机械臂刚刚卡了一下', '蓝色按钮让它再试一次；红色按钮退出本局。'],
     analysis: ['点数侦探正在认真数', '请让骰子保持不动，数完点数马上揭晓胜负。'],
     result: ['本局结果', ''],
   };
@@ -216,9 +208,9 @@ export function register(engine) {
       enterGameStartView();
     } else if (stateName === 'shake_countdown') {
       enterCountdownView();
-    } else if (stateName === 'shaking') {
-      // shaking 与 manual_shaking 共用 shaking 视图；按后端真实状态名区分布局。
-      enterShakingView(stateName);
+    } else if (stateName === 'shaking' || stateName === 'stop_call') {
+      // stop_call（摇完喊停）复用 shaking 视图，文案由后端 ui 驱动切换。
+      enterShakingView();
     } else if (stateName === 'arm_failed') {
       enterArmFailedView();
     }
@@ -276,16 +268,11 @@ export function register(engine) {
     if (row) row.classList.remove('hidden');
   }
 
-  function enterShakingView(stateName) {
-    const manual = stateName === 'manual_shaking';
+  function enterShakingView() {
     const title = $('shakingTitle');
-    if (title) title.textContent = manual ? '人工摇骰' : '摇骰进行中';
+    if (title) title.textContent = '摇骰进行中';
     const armRow = $('armShakingRow');
-    if (armRow) armRow.classList.toggle('hidden', manual);
-    const timer = $('shakeTimerRow');
-    if (timer) timer.classList.toggle('hidden', !manual);
-    const stop = $('stopShake');
-    if (stop) stop.classList.toggle('hidden', !manual);
+    if (armRow) armRow.classList.remove('hidden');
   }
 
   function friendlyRobotFailure(reason) {
@@ -321,20 +308,12 @@ export function register(engine) {
   function renderTick(event) {
     const remaining = Number(event.remaining_ms);
     if (!Number.isFinite(remaining) || remaining < 0) return;
-    if (lastRenderedState === 'shake_countdown' || lastRenderedState === 'vision_countdown') {
+    if (lastRenderedState === 'shake_countdown') {
       // 每个数字显示 tick_seconds 秒（manifest 状态机的节奏字段），
       // 与预录语音"三二一"的语速对齐；缺省回退按整秒取整。
       const perNumber = Number(event.tick_seconds || 1) * 1000;
       const total = Math.max(1, Math.round(Number(event.duration_seconds || 3) / (event.tick_seconds || 1)));
       renderCountdownNumber(Math.min(total, Math.max(1, Math.ceil(remaining / perNumber))));
-    } else if (lastRenderedState === 'manual_shaking') {
-      // 人工模式的 30s 兜底倒计时（机械臂模式 shaking 无定时、无此渲染）。
-      const seconds = Math.max(1, Math.ceil(remaining / 1000));
-      const shakeSeconds = $('shakeSeconds');
-      const urgent = seconds <= 3;
-      shakeSeconds.textContent = String(seconds).padStart(2, '0');
-      shakeSeconds.classList.toggle('is-urgent', urgent);
-      if (urgent) playCountdownCue(seconds);
     }
   }
 
@@ -531,7 +510,6 @@ export function register(engine) {
       submitIntent('start_shake');
     },
     readyBack: () => submitIntent('back'),
-    stopShake: () => submitIntent('stop_shake'),
     confirmRules: () => submitIntent('confirm'),
     repeatRules: () => {
       toast('正在重复播报游戏规则');
@@ -544,16 +522,15 @@ export function register(engine) {
     newRound: () => submitIntent('new_round'),
     backToGames: () => submitIntent('back'),
     armRetry: () => submitIntent('retry'),
-    armManual: () => submitIntent('manual'),
     armBack: () => submitIntent('back'),
   };
 
   function onKey(event) {
     if (event.key === 'Escape') {
-      // 红键/Esc 与屏幕上的红色按钮同义：人工摇骰中是"停止摇骰"（提前进入
-      // 判定），机械臂摇骰中无动作（等待臂完成），其余可退状态才是返回。
-      if (state.phase === 'shaking' && lastRenderedState === 'manual_shaking') handlers.stopShake();
-      else if (['rules', 'ready', 'result', 'arm_failed'].includes(state.phase)) submitIntent('back');
+      // 红键/Esc 与屏幕上的红色按钮同义。摇骰中（shaking/stop_call）无动作
+      // ——机械臂摇物理上不应被打断，等臂完成事件自然推进（2026-09-24
+      // 人工摇骰模式移除后，摇骰环节只剩机械臂一条路）。
+      if (['rules', 'ready', 'result', 'arm_failed'].includes(state.phase)) submitIntent('back');
       else if (state.phase === 'analysis' && analysisFailureVisible()) submitIntent('back');
       return;
     }
@@ -570,10 +547,6 @@ export function register(engine) {
       if (state.phase === 'rules') handlers.repeatRules();
       else if (state.phase === 'analysis' && analysisFailureVisible()) submitIntent('retry');
       else if (state.phase === 'arm_failed') handlers.armRetry();
-      return;
-    }
-    if (event.key === 'ArrowUp') {
-      if (state.phase === 'arm_failed') handlers.armManual();
       return;
     }
   }
@@ -607,10 +580,7 @@ export function register(engine) {
         }
       },
       onSpeech: (directive) => {
-        // 「停！」这一句播完后静 REVEAL_HOLD_SECONDS 秒再放行下一句（开盖词），
-        // 转场整体后移、对齐不变。识别靠音频路径——只有这一句带 await。
-        const hold = directive.audio === REVEAL_STOP_AUDIO ? REVEAL_HOLD_SECONDS : 0;
-        playDirective(round, directive, { ackHoldSeconds: hold });
+        playDirective(round, directive);
       },
       onTick: renderTick,
       onEvent: handleRoundEvent,
@@ -635,13 +605,11 @@ export function register(engine) {
         // The round is gone after teardown (returnToSelect/cancel); a stale
         // snapshot must never re-render a finished game view.
         if (!round || !round.roundId) return;
-        // 注意此处传空的 ui：renderState 会退回用状态名当视图名。当前四个
-        // 状态名与视图名不同（shake_countdown/vision_countdown → countdown、
-        // open_reveal → open、analysis_failed → analysis），一旦这条路径被走到
-        // 会隐藏全部视图。manual_shaking 的 30s 停留可能滑出 60 条事件窗，
-        // 需要显式映射回 shaking 视图（状态名直传会隐藏全部视图）。
+        // 注意此处传空的 ui：renderState 会退回用状态名当视图名。状态名与
+        // 视图名不同的（shake_countdown → countdown、stop_call → shaking、
+        // analysis_failed → analysis）需要显式映射，否则会隐藏全部视图。
         const viewOverrides = {
-          manual_shaking: { view: 'shaking' },
+          stop_call: { view: 'shaking' },
           arm_failed: { view: 'arm_failed' },
         };
         if (snapshot.state && snapshot.state !== lastRenderedState) {
@@ -677,7 +645,7 @@ export function register(engine) {
 
   return {
     id: 'dice',
-    phases: ['select', 'rules', 'ready', 'rehome', 'game_start', 'countdown', 'shaking', 'open', 'arm_failed', 'analysis', 'result'],
+    phases: ['select', 'rules', 'ready', 'rehome', 'game_start', 'countdown', 'shaking', 'arm_failed', 'analysis', 'result'],
     progressCount: 6,
     phaseMeta,
     enter,

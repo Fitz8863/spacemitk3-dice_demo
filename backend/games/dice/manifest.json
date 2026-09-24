@@ -25,18 +25,6 @@
 				"begin",
 				"go"
 			],
-			"stop_shake": [
-				"停止",
-				"停",
-				"stop"
-			],
-			"manual": [
-				"人工",
-				"手动",
-				"我来摇",
-				"人工模式",
-				"manual"
-			],
 			"repeat": [
 				"重复",
 				"再来一遍",
@@ -272,24 +260,43 @@
 				],
 				"on_event": {
 					"robot.shake_dice.completed": {
-						"to": "vision_countdown"
+						"to": "stop_call"
 					},
 					"robot.shake_dice.failed": {
 						"to": "arm_failed"
 					}
 				}
 			},
+			"stop_call": {
+				"ui": {
+					"view": "shaking",
+					"title": "摇好了！",
+					"copy": "停！请保持骰子和骰盅位置不动，马上开始判定。"
+				},
+				"on_enter": [
+					{
+						"action": "speech",
+						"mode": "audio",
+						"audio": "audio/停.wav",
+						"text": "停！"
+					}
+				],
+				"duration": 0.5,
+				"on_expire": {
+					"to": "analysis"
+				}
+			},
 			"arm_failed": {
 				"ui": {
 					"view": "arm_failed",
 					"title": "机械臂刚刚卡了一下",
-					"copy": "没关系！蓝色按钮让它再试一次；黄色按钮改为人工摇骰；红色按钮退出本局。"
+					"copy": "没关系！蓝色按钮让它再试一次；红色按钮退出本局。"
 				},
 				"on_enter": [
 					{
 						"action": "speech",
 						"mode": "tts_local",
-						"text": "机械臂没有完成摇骰动作。可以按蓝色按钮让机械臂重试，按黄色按钮切换为人工摇骰，或按红色按钮退出本局。"
+						"text": "机械臂没有完成摇骰动作。可以按蓝色按钮让机械臂重试，或按红色按钮退出本局。"
 					},
 					{
 						"action": "robot",
@@ -301,75 +308,9 @@
 					"retry": {
 						"to": "game_start"
 					},
-					"manual": {
-						"to": "manual_shaking"
-					},
 					"back": {
 						"exit": true
 					}
-				}
-			},
-			"manual_shaking": {
-				"ui": {
-					"view": "shaking",
-					"title": "这局交给你来摇！",
-					"copy": "请摇动双方骰盅，摇好后按红色按钮停止。"
-				},
-				"on_enter": [
-					{
-						"action": "speech",
-						"mode": "tts_local",
-						"text": "已切换为人工模式，请摇动双方的骰盅，摇好后按红色按钮停止。"
-					}
-				],
-				"duration": 30,
-				"tick_seconds": 1.0,
-				"on_intent": {
-					"stop_shake": {
-						"to": "vision_countdown"
-					}
-				},
-				"on_expire": {
-					"to": "vision_countdown"
-				}
-			},
-			"open_reveal": {
-				"ui": {
-					"view": "open",
-					"title": "你准备好了吗？听语音倒计时同时开盖",
-					"copy": "请同时打开骰盅，开盖过场结束后自动进入倒计时。"
-				},
-				"on_enter": [
-					{
-						"action": "speech",
-						"mode": "audio",
-						"audio": "audio/停.wav",
-						"text": "停！",
-						"await": true
-					},
-					{
-						"action": "speech",
-						"mode": "audio",
-						"audio": "audio/warm_准备好了没有？三，二，一,开盖.wav",
-						"text": "准备好了没有？三，二，一,开盖"
-					}
-				],
-				"duration": 1.6,
-				"tick_seconds": 1.0,
-				"on_expire": {
-					"to": "vision_countdown"
-				}
-			},
-			"vision_countdown": {
-				"ui": {
-					"view": "countdown",
-					"title": "骰子别动，我来数一数",
-					"copy": "请保持骰子和骰盅位置不动，倒计时结束后开始视觉裁决，点数侦探马上回来。"
-				},
-				"duration": 2.4,
-				"tick_seconds": 0.8,
-				"on_expire": {
-					"to": "analysis"
 				}
 			},
 			"analysis": {
