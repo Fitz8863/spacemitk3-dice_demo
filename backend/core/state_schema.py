@@ -152,7 +152,7 @@ def _validate_robot_action(action: Mapping[str, Any], field: str) -> None:
             raise _error(field, f"robot feedback accepts no extra keys: {sorted(extra)}")
         return
     allowed = {"action", "command"}
-    if command in {"grasp_cup", "shake_dice", "throw_gesture"}:
+    if command in {"grasp_cup", "shake_dice", "throw_gesture", "reset_home"}:
         allowed.add("timeout_seconds")
         if "timeout_seconds" in action:
             _require_number(action["timeout_seconds"], f"{field}.timeout_seconds", low=0)

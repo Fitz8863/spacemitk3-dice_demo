@@ -295,6 +295,11 @@
 						"action": "speech",
 						"mode": "tts_local",
 						"text": "机械臂没有完成摇骰动作。可以按蓝色按钮让机械臂重试，按黄色按钮切换为人工摇骰，或按红色按钮退出本局。"
+					},
+					{
+						"action": "robot",
+						"command": "reset_home",
+						"timeout_seconds": 30
 					}
 				],
 				"on_intent": {
@@ -408,6 +413,11 @@
 						"action": "speech",
 						"mode": "tts_local",
 						"text": "本次识别未完成，请整理好骰子后，可选择按蓝色按钮重新识别。"
+					},
+					{
+						"action": "robot",
+						"command": "reset_home",
+						"timeout_seconds": 30
 					}
 				],
 				"on_intent": {

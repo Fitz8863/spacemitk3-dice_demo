@@ -377,6 +377,12 @@ def test_robot_shake_is_event_driven_with_manual_fallback():
     assert intents["retry"]["to"] == "game_start"
     assert intents["manual"]["to"] == "manual_shaking"
     assert intents["back"]["exit"] is True
+    # 归位不变量（2026-09-24 拍板）：失败页出现即视为离开游戏流程，
+    # on_enter 末尾异步归位（靠 reset_home 的复活语义拉起新常驻）；
+    # 不 await——speech 并行播报，玩家读页面时臂在后台回家。
+    assert {"action": "robot", "command": "reset_home", "timeout_seconds": 30} in arm_failed["on_enter"]
+    analysis_failed = machine["states"]["analysis_failed"]
+    assert {"action": "robot", "command": "reset_home", "timeout_seconds": 30} in analysis_failed["on_enter"]
 
     manual = machine["states"]["manual_shaking"]
     assert manual["duration"] == 30
