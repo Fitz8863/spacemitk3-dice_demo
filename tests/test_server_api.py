@@ -1410,12 +1410,91 @@ def test_rps_manifest_play_declares_prefetch_throw_and_retry_replays():
     )
     play = manifest["state_machine"]["states"]["play"]
     robot_actions = [a for a in play["on_enter"] if a.get("action") == "robot"]
-    assert robot_actions == [{"action": "robot", "command": "throw_gesture", "timeout_seconds": 10}]
-    # robot 动作排在 wav 台词之后：worker 等回执后才派发（音频播完即出拳）。
-    assert play["on_enter"][-1] is robot_actions[-1]
+    assert robot_actions == [{
+        "action": "robot", "command": "throw_gesture",
+        "timeout_seconds": 10, "delay_seconds": 2.2,
+    }]
+    # robot 动作排在 wav 台词之前：worker 一进状态就派发（线程内睡满
+    # delay_seconds 才出臂），wav 的 await 只撑节奏、不再门控出拳。
+    assert play["on_enter"][0] is robot_actions[0]
     failed = manifest["state_machine"]["states"]["analysis_failed"]
     assert failed["on_intent"]["retry"] == {"to": "play"}
     # 判定结束即异步回家（不管裁决成败）：result 与 analysis_failed 的
     # on_enter 都声明 reset_home，下次出拳从 home 起势。
     for state in (failed, manifest["state_machine"]["states"]["result"]):
         assert {"action": "robot", "command": "reset_home"} in state["on_enter"]
+
+
+def test_throw_gesture_delay_waits_then_calls_and_slot_is_pending_during_delay(monkeypatch):
+    """delay_seconds 契约：槽重置在延迟之前（延迟期间必须 pending——分析侧
+    等的是这份新结果）；睡满后才调 provider；回合取消时中止且不动臂。"""
+    import threading
+    import time as _time
+
+    class FakeArm:
+        id = "robot_fake"
+        type = "robot"
+
+        def __init__(self):
+            self.called_at = None
+
+        def throw_gesture(self, gesture, *, on_event, is_cancelled, timeout_seconds=None):
+            self.called_at = _time.monotonic()
+            return {"status": "completed", "gesture": "石头"}
+
+    class Registry:
+        def __init__(self, provider):
+            self.provider = provider
+
+        def require(self, component_id, expected_type=None, expected_role=None):
+            return self.provider
+
+    arm = FakeArm()
+    monkeypatch.setattr(server, "COMPONENTS", Registry(arm))
+    monkeypatch.setattr(
+        server, "_game_provider_id", lambda game_id, slot, default: "robot_fake"
+    )
+    arm_throw = {"status": "completed", "gesture": "剪刀"}  # 上一局的陈旧值
+    run_robot = server._round_robot_fn("rps", arm_throw)
+
+    started = _time.monotonic()
+    done = threading.Event()
+    outcome_box = {}
+
+    def driver():
+        outcome_box["outcome"] = run_robot(
+            {"command": "throw_gesture", "delay_seconds": 0.3},
+            on_event=lambda e: None,
+            is_cancelled=lambda: False,
+            on_log=lambda line: None,
+        )
+        done.set()
+
+    threading.Thread(target=driver, daemon=True).start()
+    # 延迟期间：槽已被重置为 pending（不得残留上一局的 completed），
+    # provider 尚未被调用。
+    _time.sleep(0.15)
+    assert arm_throw == {"status": "pending", "gesture": None}
+    assert arm.called_at is None
+    assert done.wait(timeout=5)
+    assert outcome_box["outcome"]["status"] == "completed"
+    assert arm.called_at - started >= 0.25  # 睡满了延迟才调用
+
+    # 延迟中取消：立即中止、不动臂、槽落 failed。
+    class CancelledArm(FakeArm):
+        def throw_gesture(self, gesture, **kwargs):
+            raise AssertionError("cancelled delay must not reach the provider")
+
+    arm2 = CancelledArm()
+    monkeypatch.setattr(server, "COMPONENTS", Registry(arm2))
+    arm_throw2 = {"status": "pending", "gesture": None}
+    run_robot2 = server._round_robot_fn("rps", arm_throw2)
+    outcome2 = run_robot2(
+        {"command": "throw_gesture", "delay_seconds": 30},
+        on_event=lambda e: None,
+        is_cancelled=lambda: True,
+        on_log=lambda line: None,
+    )
+    assert outcome2["status"] == "failed"
+    assert "interrupted" in outcome2["reason"]
+    assert arm_throw2["status"] == "failed" and arm_throw2["gesture"] is None

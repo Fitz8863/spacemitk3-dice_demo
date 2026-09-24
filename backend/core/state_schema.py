@@ -156,6 +156,13 @@ def _validate_robot_action(action: Mapping[str, Any], field: str) -> None:
         allowed.add("timeout_seconds")
         if "timeout_seconds" in action:
             _require_number(action["timeout_seconds"], f"{field}.timeout_seconds", low=0)
+    if command == "throw_gesture":
+        # 出拳时机参数：进入状态起延迟 N 秒再派发（与口令音频/回执解耦）。
+        allowed.add("delay_seconds")
+        if "delay_seconds" in action:
+            _require_number(
+                action["delay_seconds"], f"{field}.delay_seconds", low=0, high=30, low_inclusive=True
+            )
     extra = set(action) - allowed
     if extra:
         raise _error(field, f"robot {command} accepts no extra keys: {sorted(extra)}")

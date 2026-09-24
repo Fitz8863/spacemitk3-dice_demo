@@ -345,7 +345,7 @@ def test_robot_shake_is_event_driven_with_manual_fallback():
     machine = dice_manifest()["state_machine"]
 
     intro = machine["states"]["game_start"]
-    assert intro["duration"] == 2.0  # 用户 2026-09-23 晚板端调参（原默认 3.0）
+    assert intro["duration"] == 3.0  # 用户 2026-09-24 板端调参（09-23 曾 3.0→2.0，后采纳加宽抓取窗口建议回调 3.0）
     assert intro["on_enter"] == [
         {"action": "robot", "command": "grasp_cup", "timeout_seconds": 30}
     ]
@@ -707,8 +707,13 @@ def test_rps_vision_contract_pins_the_confirmed_flow_decisions():
     rules = states["rules"]
     assert "after_speech" not in rules["on_intent"]["confirm"]
     assert rules["on_intent"]["confirm"]["to"] == "play"
-    chant = states["play"]["on_enter"][0]
+    play_enter = states["play"]["on_enter"]
+    chant = next(a for a in play_enter if a.get("action") == "speech")
     assert chant["await"] is True
+    # 出拳动作排在口令最前：进状态即派发（线程内睡 delay_seconds），wav
+    # 的 await 只撑节奏、不门控出拳（2026-09-24 时机参数化）。
+    throw = next(a for a in play_enter if a.get("action") == "robot")
+    assert play_enter[0] is throw and throw["delay_seconds"] > 0
     analysis = states["analysis"]
     assert analysis["on_event"]["adjudication.result"]["to"] == "result"
     assert analysis["on_event"]["adjudication.diagnosis"]["to"] == "analysis_failed"

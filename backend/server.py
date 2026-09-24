@@ -814,6 +814,22 @@ def _round_robot_fn(game_id: str, arm_throw: dict | None = None):
                 # 新结果，而不是读到上一局的 completed（判分≠臂姿的竞态）。
                 if arm_throw is not None:
                     arm_throw.update(status="pending", gesture=None)
+                # 出拳时机参数：进入状态起延迟 N 秒再调 provider（与口令
+                # 音频/回执解耦）。重置在延迟之前——延迟期间槽必须是
+                # pending，分析侧的等待才会等这份新结果。可取消：分段睡
+                # 眠，回合取消/终态时中止且不再动臂。
+                delay = action.get("delay_seconds")
+                if isinstance(delay, (int, float)) and not isinstance(delay, bool) and delay > 0:
+                    deadline = time.monotonic() + float(delay)
+                    while time.monotonic() < deadline:
+                        if is_cancelled():
+                            if arm_throw is not None:
+                                arm_throw.update(status="failed", gesture=None)
+                            return {
+                                "status": "failed",
+                                "reason": "throw delay interrupted (cancelled)",
+                            }
+                        time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
                 outcome = provider.throw_gesture(
                     gesture if isinstance(gesture, str) and gesture else None,
                     on_event=on_event,

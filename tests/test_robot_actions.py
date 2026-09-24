@@ -223,6 +223,32 @@ class RobotSchemaTests(unittest.TestCase):
             "dice",
         )
 
+    def test_throw_gesture_delay_seconds_validated(self):
+        """出拳时机参数 delay_seconds：0..30 合法，负数/超上限/非数拒绝。"""
+        for good in (0, 2.2, 30):
+            validate_state_machine(
+                self._machine_with_action(
+                    {"action": "robot", "command": "throw_gesture", "delay_seconds": good}
+                ),
+                "dice",
+            )
+        for bad in (-0.1, 30.5, "soon", True):
+            with self.assertRaises(StateMachineError):
+                validate_state_machine(
+                    self._machine_with_action(
+                        {"action": "robot", "command": "throw_gesture", "delay_seconds": bad}
+                    ),
+                    "dice",
+                )
+        # delay_seconds 只对 throw_gesture 开放。
+        with self.assertRaises(StateMachineError):
+            validate_state_machine(
+                self._machine_with_action(
+                    {"action": "robot", "command": "grasp_cup", "delay_seconds": 1}
+                ),
+                "dice",
+            )
+
     def test_unknown_command_is_rejected(self):
         with self.assertRaises(StateMachineError):
             validate_state_machine(
