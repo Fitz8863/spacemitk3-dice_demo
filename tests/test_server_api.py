@@ -10,6 +10,7 @@ import time
 import unittest
 from http.client import HTTPConnection
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -1280,6 +1281,126 @@ def test_boot_homing_skips_when_no_game_uses_the_arm(monkeypatch):
     monkeypatch.setattr(server, "GAMES", games)
     server._home_arm_on_boot()
     time.sleep(0.2)
+    assert provider.reset_calls == 0
+
+
+# ---- idle-pose patrol（空闲姿态巡检，robot_home_patrol 开关） ----
+
+
+class _PatrolRobot:
+    """Fake robot provider with scriptable probe results."""
+
+    def __init__(self, script) -> None:
+        self.id = "robot_fake"
+        self.type = "robot"
+        self.role = ""
+        self.home_on_boot = False
+        self._script = list(script)  # list of query_pose outcomes
+        self.reset_calls = 0
+        self.probe_calls = 0
+        self.probed = threading.Event()
+
+    def query_pose(self, *, on_event, is_cancelled, timeout_seconds=None):
+        self.probe_calls += 1
+        outcome = self._script.pop(0) if self._script else {"status": "skipped"}
+        self.probed.set()
+        return outcome
+
+    def reset_home(self, *, on_event, is_cancelled, timeout_seconds=None):
+        self.reset_calls += 1
+        return {"status": "completed"}
+
+
+def _patrol_rounds(monkeypatch, running=None):
+    rounds_dict = {}
+    if running is not None:
+        rounds_dict["r1"] = SimpleNamespace(status=running)
+    monkeypatch.setattr(server, "rounds", rounds_dict)
+    monkeypatch.setattr(server, "active_job_id", None)
+
+
+def _one_patrol_cycle(monkeypatch, script, *, arena=None, running=None, expect_probe=True):
+    """Drive exactly one patrol iteration with a fast period, return the fake."""
+    provider = _PatrolRobot(script)
+    monkeypatch.setattr(server, "COMPONENTS", _BootHomeRegistry(provider))
+    monkeypatch.setattr(
+        server,
+        "_ARENA_CONFIG",
+        arena if arena is not None else {
+            "providers": {"robot_arm": "robot_fake"},
+            "robot_home_patrol": True,
+            "robot_home_patrol_seconds": 0.05,
+        },
+    )
+    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", Path("/nonexistent-arena.json"))
+    monkeypatch.setattr(server, "_ARENA_MTIME", None)
+    games = GameRegistry()
+    games.register({"id": "dice", "enabled": True, "state_machine": {"states": {
+        "s": {"on_enter": [{"action": "robot", "command": "reset_home"}]}
+    }}})
+    monkeypatch.setattr(server, "GAMES", games)
+    _patrol_rounds(monkeypatch, running=running)
+    server._run_home_patrol()
+    if expect_probe:
+        assert provider.probed.wait(5), "patrol never probed"
+        time.sleep(0.3)  # let a triggered reset_home land
+    return provider
+
+
+def test_patrol_homes_an_off_home_arm(monkeypatch):
+    """离家 → 探针报告 at_home=False → 巡检触发归位。"""
+    provider = _one_patrol_cycle(
+        monkeypatch, [{"status": "completed", "at_home": False}]
+    )
+    assert provider.reset_calls == 1
+
+
+def test_patrol_leaves_an_at_home_arm_alone(monkeypatch):
+    provider = _one_patrol_cycle(
+        monkeypatch, [{"status": "completed", "at_home": True}]
+    )
+    time.sleep(0.2)
+    assert provider.reset_calls == 0
+
+
+def test_patrol_skips_probe_failures_and_dead_residents(monkeypatch):
+    """探针失败/skipped（死常驻）→ 不归位、不崩——巡检不是第二个复活源。"""
+    provider = _one_patrol_cycle(
+        monkeypatch, [{"status": "failed", "reason": "pose_unavailable"},
+                      {"status": "skipped"}]
+    )
+    time.sleep(0.2)
+    assert provider.reset_calls == 0
+
+
+def test_patrol_does_not_touch_the_arm_during_a_round(monkeypatch):
+    provider = _one_patrol_cycle(
+        monkeypatch, [{"status": "completed", "at_home": False}],
+        running="running", expect_probe=False,
+    )
+    # running 回合期间：连探针都不该发（等满两个周期再断言）。
+    time.sleep(0.4)
+    assert provider.probe_calls == 0
+    assert provider.reset_calls == 0
+
+
+def test_patrol_off_switch_disables_probing(monkeypatch):
+    provider = _PatrolRobot([{"status": "completed", "at_home": False}])
+    monkeypatch.setattr(server, "COMPONENTS", _BootHomeRegistry(provider))
+    monkeypatch.setattr(
+        server,
+        "_ARENA_CONFIG",
+        {"providers": {"robot_arm": "robot_fake"}, "robot_home_patrol": False},
+    )
+    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", Path("/nonexistent-arena.json"))
+    monkeypatch.setattr(server, "_ARENA_MTIME", None)
+    games = GameRegistry()
+    games.register({"id": "dice", "enabled": True})
+    monkeypatch.setattr(server, "GAMES", games)
+    _patrol_rounds(monkeypatch)
+    server._run_home_patrol()
+    time.sleep(0.4)
+    assert provider.probe_calls == 0
     assert provider.reset_calls == 0
 
 

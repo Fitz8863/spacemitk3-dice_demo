@@ -982,6 +982,109 @@ def _home_arm_on_boot() -> None:
     threading.Thread(target=home, name="arm-boot-home", daemon=True).start()
 
 
+# 单例：可停的巡检线程（测试里反复重启不会泄漏旧线程）。
+_home_patrol_thread: threading.Thread | None = None
+_home_patrol_stop = threading.Event()
+
+
+def _run_home_patrol() -> None:
+    """Idle-pose patrol（用户 2026-09-24 提议）：桌面空闲时盯臂是否离家。
+
+    事件驱动归位（终态 watcher / 失败页 / 开机）只覆盖程序知道的离开
+    时刻；巡检补的是程序不知道的位移——现场有人掰了臂、归位失败残留、
+    断电重启后臂被摆到别处。开关与周期热读全局 config：
+    ``robot_home_patrol``（默认 true）/``robot_home_patrol_seconds``（默认 30）。
+
+    巡检纪律：只在「无 running 回合且无活跃裁决 job」时动作——游戏内的
+    姿态是游戏的事（rps 出拳保持、人工摇骰都算）；query_pose 不复活死
+    常驻（skipped = 跳过本轮，复活只属于事件路径的 reset_home）；发现
+    离家才走 reset_home（可复活）。一切失败只打日志。
+    """
+    global _home_patrol_thread, _home_patrol_stop
+    _home_patrol_stop.set()
+    if _home_patrol_thread is not None:
+        _home_patrol_thread.join(timeout=2.0)
+    _home_patrol_stop = threading.Event()
+    stop = _home_patrol_stop
+
+    def _robot_provider_or_none():
+        robot_games = [
+            game for game in _enabled_game_manifests() if _manifest_uses_robot(game)
+        ]
+        if not robot_games:
+            return None
+        provider_id = _game_provider_id(
+            str(robot_games[0].get("id") or ""), "robot_arm", ""
+        )
+        if not provider_id:
+            return None
+        return COMPONENTS.require(provider_id, expected_type="robot")
+
+    def patrol() -> None:
+        while not stop.is_set():
+            try:
+                arena = get_arena_config()
+                if not bool(arena.get("robot_home_patrol", True)):
+                    time.sleep(5.0)
+                    continue
+                period = max(
+                    0.05, float(arena.get("robot_home_patrol_seconds", 30) or 30)
+                )
+            except Exception as exc:
+                print(f"[robot] patrol config error: {exc!r}", flush=True)
+                period = 30.0
+            # 分片睡眠：关开关后最多 5s 内退出（长周期不能拖住停机）。
+            slept = 0.0
+            while slept < period and not stop.is_set():
+                time.sleep(min(5.0, period - slept))
+                slept += min(5.0, period - slept)
+            if stop.is_set():
+                return
+            try:
+                # 游戏内（含活跃裁决 job）的姿态是游戏的事，一律不巡检。
+                with rounds_lock:
+                    game_live = any(r.status == "running" for r in rounds.values())
+                job_live = False
+                if active_job_id:
+                    job = jobs.get(active_job_id)
+                    # 终态（success/error/cancelled）都带 finished_at；
+                    # holding 视为活跃——裁决收尾期同样别碰臂。
+                    job_live = bool(job) and job.finished_at is None
+                if game_live or job_live:
+                    continue
+                provider = _robot_provider_or_none()
+                if provider is None:
+                    continue
+                outcome = provider.query_pose(
+                    on_event=lambda event: None, is_cancelled=lambda: False
+                )
+                # 只有探针明确报"离家"才动臂：skipped（死常驻/无姿态反馈）
+                # 与 failed（CAN/worker 瞬断）都不知道状态，一律不猜。
+                if not isinstance(outcome, dict) or outcome.get("status") != "completed":
+                    continue
+                if outcome.get("at_home"):
+                    continue
+                reason = "pose not at home"
+                if outcome.get("delta_deg"):
+                    reason = f"max delta {max(abs(d) for d in outcome['delta_deg']):.1f} deg"
+                print(f"[robot] patrol: arm off home ({reason}); homing", flush=True)
+                outcome = provider.reset_home(
+                    on_event=lambda event: None, is_cancelled=lambda: False
+                )
+                if isinstance(outcome, dict) and outcome.get("status") != "completed":
+                    print(
+                        f"[robot] patrol reset_home: {outcome.get('reason')}",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(f"[robot] patrol error: {exc!r}", flush=True)
+
+    _home_patrol_thread = threading.Thread(
+        target=patrol, name="arm-home-patrol", daemon=True
+    )
+    _home_patrol_thread.start()
+
+
 def create_round(game_id: str) -> GameRound:
     manifest = require_game(get_games(), game_id)
     if not isinstance(manifest.get("state_machine"), dict):
@@ -1810,6 +1913,8 @@ def main() -> None:
     print(f"Components: {', '.join(COMPONENTS.ids()) or 'none'}", flush=True)
     # 归位不变量的开机档：后台把臂拉回 home（失败只打日志，不挡服务就绪）。
     _home_arm_on_boot()
+    # 空闲姿态巡检：桌面不在游戏里时盯臂是否离家（robot_home_patrol 开关）。
+    _run_home_patrol()
     shutdown_requested = threading.Event()
 
     def request_shutdown(signum: int, _frame: Any) -> None:

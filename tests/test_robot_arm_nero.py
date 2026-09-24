@@ -92,6 +92,18 @@ for line in sys.stdin:
     if command == "status":
         emit("status", id=rid, next_phase="HOME", completed_phases=[])
         continue
+    if command == "query_pose":
+        # Pose probe: mirror the demo's at-home verdict. A one-shot mode file
+        # ("pose_fail") simulates a CAN/worker failure (rejected, session alive).
+        if mode == "pose_fail":
+            emit("rejected", id=rid, code="pose_unavailable",
+                 message="RuntimeError: SDK worker exited")
+            continue
+        at_home = (MODE_FILE.parent / "pose_away").exists() is False
+        joints = [0.0, -1.2217, -1.5708, 1.7453, -0.1745, -0.0873, 0.0873]
+        emit("pose", id=rid, joints_rad=joints,
+             delta_deg=[0.0] * 7 if at_home else [30.0] * 7, at_home=at_home)
+        continue
     if command == "action":
         name = request.get("name")
         # reject_prep 用独立持久标记文件（set_mode 的一次性模式会被链内
@@ -476,6 +488,52 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         )
         self.assertEqual(outcome["status"], "failed")
         self.assertIn("shutting down", outcome["reason"])
+
+    def test_query_pose_reports_at_home_without_reloading_actions(self):
+        """只读姿态探针：pose 事件解析出 at_home；不发 reload（非 action 命令）。"""
+        self.provider.ensure_started()
+        outcome = self.provider.query_pose(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "completed")
+        self.assertTrue(outcome["at_home"])
+        received = [
+            json.loads(line)
+            for line in (self.demo_root / "received.log").read_text().splitlines()
+        ]
+        commands = [c.get("command") for c in received if isinstance(c, dict)]
+        self.assertEqual(commands.count("reload"), 0)
+
+    def test_query_pose_reports_away_and_probe_failure(self):
+        # 离家判定
+        self.provider.ensure_started()
+        (self.demo_root / "pose_away").write_text("", encoding="utf-8")
+        outcome = self.provider.query_pose(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "completed")
+        self.assertFalse(outcome["at_home"])
+        # 探针失败（CAN/worker）→ failed + 常驻仍活着（rejected 不杀会话）
+        self.set_mode("pose_fail")
+        outcome = self.provider.query_pose(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "failed")
+        self.assertIn("pose_unavailable", str(outcome.get("reason")))
+        self.assertTrue(self.provider._resident is not None)
+
+    def test_query_pose_never_revives_a_dead_resident(self):
+        """巡检探针绝不复活：死常驻 = skipped（复活只属于 reset_home）。"""
+        self.set_mode("fail_exit")
+        outcome = self.provider.grasp_cup(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "failed")
+        outcome = self.provider.query_pose(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "skipped")
+        self.assertIsNone(self.provider._resident)
 
     def test_shutdown_closes_a_live_resident(self):
         self.provider.ensure_started()

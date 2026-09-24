@@ -100,8 +100,23 @@ class RobotProvider(Component):
         """Best-effort return to the home pose with fingers open.
 
         Non-abstract on purpose: the floor implementation keeps fixture and
-        fallback providers zero-change.  Real providers override it with a
-        best-effort gesture that must not restart a dead runtime just to move
-        the arm home.
+        fallback providers zero-change.  Real providers override it; the
+        revive policy is theirs to pick (a parking-invariant provider may
+        revive a dead runtime — home is home even after a failure).
         """
         return {"status": "completed", "noop": True}
+
+    def query_pose(
+        self,
+        *,
+        on_event: RobotEventFn,
+        is_cancelled: RobotCancelledFn,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Read-only "is the arm at home" probe for the idle patrol loop.
+
+        Floor implementation: providers without pose feedback report
+        ``skipped`` (cannot judge), which the patrol treats as "do nothing"
+        — never a reason to move or restart the arm.
+        """
+        return {"status": "skipped", "reason": "provider has no pose feedback"}

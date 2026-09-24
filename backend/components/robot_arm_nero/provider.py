@@ -16,6 +16,8 @@ Command mapping:
 * ``reset_home`` → ``action name=home`` — parks the arm; the one command that
   revives a dead resident (a phase failure exits the demo, and the parking
   invariant still demands the arm be homed)
+* ``query_pose`` → ``query_pose`` — read-only at-home probe for the idle
+  patrol; the one command that must NOT revive (dead resident = skip)
 
 Completion is judged strictly by id-correlated events (``command_completed`` /
 ``action_completed`` / ``rejected`` / ``failed``); progress phases are relayed
@@ -207,6 +209,19 @@ class _Resident:
                 self._forget_pending(command_id)
                 pending.resolve({"status": "completed"})
             return
+        if name == "pose":
+            # Read-only probe receipt (query_pose): carries the at_home verdict.
+            if pending is not None:
+                self._forget_pending(command_id)
+                pending.resolve(
+                    {
+                        "status": "completed",
+                        "at_home": bool(event.get("at_home")),
+                        "joints_rad": list(event.get("joints_rad") or []),
+                        "delta_deg": list(event.get("delta_deg") or []),
+                    }
+                )
+            return
         if name == "rejected":
             if pending is not None:
                 self._forget_pending(command_id)
@@ -357,6 +372,7 @@ class RobotArmNeroProvider(RobotProvider):
             "feedback": float(config.get("action_timeout_seconds", 30)),
             "throw_gesture": float(config.get("action_timeout_seconds", 30)),
             "reset_home": float(config.get("action_timeout_seconds", 30)),
+            "query_pose": float(config.get("action_timeout_seconds", 30)),
         }
         self._sigint_grace = float(config.get("sigint_grace_seconds", 15))
         # 归位不变量的开机档：服务起来后把臂拉回 home（没接臂的部署关掉，
@@ -545,6 +561,33 @@ class RobotArmNeroProvider(RobotProvider):
             return self._run_command_locked(
                 "reset_home",
                 {"command": "action", "name": "home"},
+                timeout_seconds,
+                on_event,
+                is_cancelled,
+            )
+
+    def query_pose(
+        self,
+        *,
+        on_event: RobotEventFn,
+        is_cancelled: RobotCancelledFn,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Read-only at-home probe for the patrol loop — never revives.
+
+        The mirror image of reset_home: a dead resident means "cannot judge,
+        skip this round" (the patrol must not become a second revive source);
+        a live one answers ``{"status": "completed", "at_home": bool}``.
+        Probe failures surface as failed/rejected outcomes, never a spawn.
+        """
+        with self._arm_lock:
+            if self._shutdown:
+                return {"status": "failed", "reason": "provider is shutting down"}
+            if self._resident is None or not self._resident.alive:
+                return {"status": "skipped", "reason": "resident not running"}
+            return self._run_command_locked(
+                "query_pose",
+                {"command": "query_pose"},
                 timeout_seconds,
                 on_event,
                 is_cancelled,
