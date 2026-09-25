@@ -24,7 +24,9 @@ Command mapping:
 Completion is judged strictly by id-correlated events (``command_completed`` /
 ``action_completed`` / ``rejected`` / ``failed``); progress phases are relayed
 to the round stream as ``{"event": "robot", ...}``. ``Hand start`` failures
-are retried once after recovery finishes or the resident exits.
+are retried once after recovery finishes or the resident exits. Round cancels
+are tiered: only the long advance chains interrupt the resident; short safe
+actions run to completion so a cancel never kills the resident mid-homing.
 """
 from __future__ import annotations
 
@@ -79,6 +81,14 @@ _THROW_ACTIONS = {"石头": "rock", "剪刀": "scissors", "布": "paper"}
 # 出拳前的预备动作（手前伸，与 home 仅肘关节之差）——先预备再亮拳，
 # 两段连贯构成一次 throw_gesture。
 _THROW_PREP_ACTION = "rps-ready"
+
+# 取消语义分级：advance 类多阶段运动（抓取/摇骰）取消＝急停（SIGINT 进程组，
+# demo 没有逐命令 stop，这是唯一的运动停止手段）；action/query_pose 类短安全
+# 命令（归位/手势/探针，1-3s）取消时只放弃等待、让 demo 把动作执行完——打断
+# 一个正在执行的归位，换来的是 8-13s 复活链加新会话目录（2026-09-25 常驻
+# 重启 bug：三个会话全死在 KeyboardInterrupt + active_action=home）。
+# 超时仍一律急停：那是解锁卡死命令、释放臂锁的唯一逃生门。
+_CANCEL_INTERRUPT_COMMANDS = {"grasp_cup", "shake_dice"}
 
 _LOG_TAIL_LINES = 15
 
@@ -749,7 +759,13 @@ class RobotArmNeroProvider(RobotProvider):
                 # reload, and a failed reload keeps the previous table.
                 resident.send({"command": "reload"}, on_event)
             pending = resident.send(payload, on_event)
-            outcome = self._wait_pending(resident, pending, deadline, is_cancelled)
+            outcome = self._wait_pending(
+                resident,
+                pending,
+                deadline,
+                is_cancelled,
+                interrupt_on_cancel=name in _CANCEL_INTERRUPT_COMMANDS,
+            )
             elapsed = round(time.monotonic() - started, 2)
             if outcome is None:
                 reason = (
@@ -814,11 +830,17 @@ class RobotArmNeroProvider(RobotProvider):
         pending: _Pending,
         deadline: float,
         is_cancelled: RobotCancelledFn,
+        *,
+        interrupt_on_cancel: bool = True,
     ) -> dict[str, Any] | None:
-        """None when cancelled/timed out (the resident was interrupted)."""
+        """None when cancelled/timed out. Timeout always interrupts the
+        resident (the only escape hatch for a hung command); cancel only
+        does when ``interrupt_on_cancel`` — the short safe actions let the
+        demo finish the motion instead of dying mid-homing."""
         while not pending.done.wait(0.1):
             if is_cancelled():
-                resident.interrupt()
+                if interrupt_on_cancel:
+                    resident.interrupt()
                 return None
             if time.monotonic() >= deadline:
                 resident.interrupt()

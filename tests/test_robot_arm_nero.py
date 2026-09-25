@@ -107,10 +107,20 @@ for line in sys.stdin:
         continue
     if command == "action":
         name = request.get("name")
-        # reject_prep 用独立持久标记文件（set_mode 的一次性模式会被链内
-        # 前置的 reload 命令提前消费掉）。
+        # reject_prep / hang_action 用独立持久标记文件（set_mode 的一次性
+        # 模式会被链内前置的 reload 命令提前消费掉）。
         if (MODE_FILE.parent / "reject_prep").exists() and name == "rps-ready":
             emit("rejected", id=rid, code="unknown_action", message="unknown action rps-ready")
+            continue
+        if (MODE_FILE.parent / "hang_action").exists():
+            # 静态手势执行中卡住（模拟归位/手势运行期间回合被取消）：
+            # 等 release_action 标记后照常完成——取消分级测试据此验证命令
+            # 放弃等待后常驻仍把动作跑完。
+            emit("action_started", id=rid, name=name)
+            while not (MODE_FILE.parent / "release_action").exists():
+                time.sleep(0.01)
+            emit("action_completed", id=rid, name=name,
+                 receipt="/tmp/receipt.json", elapsed_s=0.01)
             continue
         emit("action_started", id=rid, name=name)
         emit("action_completed", id=rid, name=name,
@@ -591,6 +601,85 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         outcome = self.provider.grasp_cup(on_event=self.events.append, is_cancelled=is_cancelled)
         self.assertEqual(outcome["status"], "failed")
         self.assertIn("interrupted (cancelled)", outcome["reason"])
+
+    def test_cancel_during_reset_home_leaves_the_resident_alive(self):
+        """取消分级（2026-09-25 常驻重启 bug）：归位这类短安全动作取消时
+        放弃等待、让 demo 跑完——常驻不死，下一个命令复用同一会话。
+        旧语义对一切取消都 SIGINT 进程组：三个真实会话死在
+        KeyboardInterrupt + active_action=home，下一局白付 8-13s 复活链。
+        """
+        self.provider.ensure_started()
+        resident = self.provider._resident
+        hang_flag = self.demo_root / "hang_action"
+        release = self.demo_root / "release_action"
+        hang_flag.write_text("", encoding="utf-8")
+        cancelled = threading.Event()
+        result = {}
+        worker = threading.Thread(target=lambda: result.setdefault(
+            "outcome", self.provider.reset_home(
+                on_event=self.events.append, is_cancelled=cancelled.is_set
+            )
+        ))
+        worker.start()
+        try:
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and "ACTION" not in self.phases_seen():
+                time.sleep(0.01)
+            self.assertIn("ACTION", self.phases_seen())
+            cancelled.set()
+            worker.join(timeout=5.0)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result["outcome"]["status"], "failed")
+            self.assertIn("interrupted (cancelled)", result["outcome"]["reason"])
+            # 常驻没被杀：放开动作，被放弃的归位在 demo 侧照常完成，
+            # 随后同会话继续服务（零复活、零新 session 目录）。
+            hang_flag.unlink()
+            release.write_text("", encoding="utf-8")
+            deadline = time.monotonic() + 5.0
+            while resident._pending and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(resident._pending)
+            outcome = self.provider.reset_home(
+                on_event=self.events.append, is_cancelled=lambda: False
+            )
+            self.assertEqual(outcome["status"], "completed")
+            self.assertIs(self.provider._resident, resident)
+            self.assertEqual(self._received_commands().count("action"), 2)
+        finally:
+            release.write_text("", encoding="utf-8")
+            worker.join(timeout=5.0)
+
+    def test_cancel_during_throw_gesture_leaves_the_resident_alive(self):
+        """出拳链同属 action 类：取消后预备段在 demo 侧跑完，常驻不死。"""
+        self.provider.ensure_started()
+        resident = self.provider._resident
+        hang_flag = self.demo_root / "hang_action"
+        release = self.demo_root / "release_action"
+        hang_flag.write_text("", encoding="utf-8")
+        cancelled = threading.Event()
+        result = {}
+        worker = threading.Thread(target=lambda: result.setdefault(
+            "outcome", self.provider.throw_gesture(
+                None, on_event=self.events.append, is_cancelled=cancelled.is_set
+            )
+        ))
+        worker.start()
+        try:
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and "ACTION" not in self.phases_seen():
+                time.sleep(0.01)
+            self.assertIn("ACTION", self.phases_seen())
+            cancelled.set()
+            worker.join(timeout=5.0)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result["outcome"]["status"], "failed")
+            self.assertIn("interrupted (cancelled)", result["outcome"]["reason"])
+            hang_flag.unlink()
+            release.write_text("", encoding="utf-8")
+            self.assertTrue(resident.process.poll() is None)
+        finally:
+            release.write_text("", encoding="utf-8")
+            worker.join(timeout=5.0)
 
     def test_ready_failure_surfaces_the_log_tail(self):
         self.set_mode("die_before_ready")

@@ -636,7 +636,10 @@ class GameRound:
         def is_cancelled() -> bool:
             # Round-level only: a normal state transition (generation bump)
             # must never abort a physical arm cycle halfway; cancelling the
-            # round (or reaching a terminal status) interrupts it instead.
+            # round (or reaching a terminal status) surfaces it to the
+            # provider instead, which decides per command whether to
+            # interrupt the motion (advance chains) or let it finish
+            # (short safe actions — see robot_arm_nero's cancel tiering).
             with self.condition:
                 return self._cancelled or self.status in _TERMINAL_STATUSES
 
