@@ -111,7 +111,12 @@ class _Resident:
         demo_root: Path,
         env: dict[str, str],
         sigint_grace: float,
+        on_notice=None,
     ) -> None:
+        # Process-level notice sink (recovery_started/recovered): these fire
+        # after the failed command's pending was resolved and forgotten, so
+        # they must not depend on the pending map.
+        self._on_notice = on_notice
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.session_dir = (
             demo_root / "cup_grasp_demo" / "datasets" / f"game_{stamp}_{uuid.uuid4().hex[:8]}"
@@ -194,18 +199,13 @@ class _Resident:
             with self._pending_lock:
                 pending = self._pending.get(str(command_id))
         if name in ("recovery_started", "recovered"):
-            # demo 2026-09-25 失败自愈调度器：阶段失败后归位并继续服务（不
-            # 退出进程）。转成进度事件让观众看到自愈过程；命令结果仍按
+            # demo 2026-09-25 失败自愈调度器：failed 事件的 pending 已被
+            # resolve+forget，随后到达的 recovery 通知没有 pending 可挂——
+            # 走进程级通知通道转发给最近一次命令的事件回调；命令结果仍按
             # failed 处理（本条命令已经失败，自愈只保住常驻）。
-            if pending is not None:
-                pending.on_event(
-                    {
-                        "event": "robot",
-                        "phase": "RECOVERY",
-                        "zh": "失败自愈，机械臂归位中" if name == "recovery_started"
-                        else "机械臂已恢复就位",
-                    }
-                )
+            notice = self._on_notice
+            if notice is not None:
+                notice(name)
             _log(f"resident {name} (recovery)")
             return
         if name == "phase_started":
@@ -259,8 +259,6 @@ class _Resident:
                     {
                         "status": "failed",
                         "reason": f"{event.get('phase')}: {event.get('error')}",
-                        # The demo exits after a phase failure by contract.
-                        "process_exiting": True,
                     }
                 )
             return
@@ -402,6 +400,10 @@ class RobotArmNeroProvider(RobotProvider):
         self._arm_lock = threading.Lock()
         self._resident: _Resident | None = None
         self._shutdown = False
+        # Latest in-flight command's event callback: the recovery notices
+        # arrive after that command's pending was resolved, so the notice
+        # path needs this side channel (recorded under the arm lock).
+        self._notice_fn: RobotEventFn | None = None
 
     # ---- component lifecycle -------------------------------------------
 
@@ -448,7 +450,8 @@ class RobotArmNeroProvider(RobotProvider):
             if self._resident is not None and self._resident.alive:
                 return  # already warming or ready
             self._resident = _Resident(
-                self._demo_root, self._build_env(), self._sigint_grace
+                self._demo_root, self._build_env(), self._sigint_grace,
+                on_notice=self._relay_notice,
             )
             _log(f"resident prewarmed (session {self._resident.session_dir.name})")
         except Exception as exc:
@@ -602,7 +605,14 @@ class RobotArmNeroProvider(RobotProvider):
         with self._arm_lock:
             if self._shutdown:
                 return {"status": "failed", "reason": "provider is shutting down"}
-            if self._resident is None or not self._resident.alive:
+            # 三重验活：failed 事件先于进程退出落地时（demo 自愈失败走
+            # legacy exit 的窗口），alive 标志和句柄都还没更新——poll 现场
+            # 问操作系统，绝不在这个窗口里 spawn 复活。
+            if (
+                self._resident is None
+                or not self._resident.alive
+                or self._resident.process.poll() is not None
+            ):
                 return {"status": "skipped", "reason": "resident not running"}
             return self._run_command_locked(
                 "query_pose",
@@ -700,6 +710,7 @@ class RobotArmNeroProvider(RobotProvider):
                 # serializes stdin commands, so the action runs behind the
                 # reload, and a failed reload keeps the previous table.
                 resident.send({"command": "reload"}, on_event)
+            self._notice_fn = on_event
             pending = resident.send(payload, on_event)
             outcome = self._wait_pending(resident, pending, deadline, is_cancelled)
             elapsed = round(time.monotonic() - started, 2)
@@ -736,12 +747,13 @@ class RobotArmNeroProvider(RobotProvider):
                     self._resident = None
                 continue
             if outcome.get("status") != "completed" and self._resident is not None:
-                # A phase failure (or an unexpected exit) kills the process:
-                # reap it and drop the resident now, so health checks and
-                # best-effort skips see a consistent provider state instead
-                # of waiting for the next command to clean up lazily.
+                # demo 2026-09-25 起失败自愈（recovery 归位后继续常驻）：
+                # failed ≠ 进程退出。只在进程**真的死了**（自愈失败走
+                # legacy exit，或启动即崩）时才 reap；活着的常驻正带着
+                # RECOVERY 进度，绝不能 wait+interrupt 打断它的自愈归位。
+                # 半死不活的句柄由下一次 _ensure_running 的验活兜底清理。
                 resident = self._resident
-                if outcome.get("process_exiting") or resident.process.poll() is not None:
+                if resident.process.poll() is not None:
                     try:
                         resident.process.wait(timeout=5)
                     except subprocess.TimeoutExpired:
@@ -784,7 +796,8 @@ class RobotArmNeroProvider(RobotProvider):
             if is_cancelled():
                 return None, "cancelled"
             self._resident = _Resident(
-                self._demo_root, self._build_env(), self._sigint_grace
+                self._demo_root, self._build_env(), self._sigint_grace,
+                on_notice=self._relay_notice,
             )
             _log(f"resident spawned (session {self._resident.session_dir.name})")
         # Either freshly spawned or still warming from a prewarm.
@@ -812,3 +825,21 @@ class RobotArmNeroProvider(RobotProvider):
         existing = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = ":".join([*pythonpath, existing]) if existing else ":".join(pythonpath)
         return env
+
+    def _relay_notice(self, name: str) -> None:
+        """Forward a process-level demo notice (recovery_started/recovered).
+
+        The failed command's pending is already resolved, so the sink is the
+        latest in-flight command's event callback (recorded under the arm
+        lock on every send); watcher/boot paths with no callback just log.
+        """
+        on_event = self._notice_fn
+        if on_event is not None:
+            on_event(
+                {
+                    "event": "robot",
+                    "phase": "RECOVERY",
+                    "zh": "失败自愈，机械臂归位中" if name == "recovery_started"
+                    else "机械臂已恢复就位",
+                }
+            )

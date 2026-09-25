@@ -126,6 +126,13 @@ for line in sys.stdin:
         if mode == "reject_advance":
             emit("rejected", id=rid, code="flow_in_progress", message="抓取流程进行中")
             continue
+        if mode == "recovering_failure":
+            # demo 2026-09-25 失败自愈：failed → recovery_started → 归位 →
+            # recovered，进程不退出、继续常驻服务。
+            emit("failed", id=rid, phase="GRIP", error="ValueError: planned move rejected")
+            emit("recovery_started", id=rid, action="home", cause="ValueError: planned move rejected")
+            emit("recovered", id=rid, action="home")
+            continue
         if mode == "fail_exit":
             emit("failed", id=rid, phase="GRIP", error="ValueError: planned move rejected")
             sys.exit(2)
@@ -190,6 +197,21 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
 
     def set_mode(self, mode: str) -> None:
         (self.demo_root / "mode.txt").write_text(mode, encoding="utf-8")
+
+    def _wait_resident_dead(self, timeout=5.0):
+        """等自愈失败（legacy exit）的常驻进程真正退出。
+
+        failed 事件先于进程退出落地（几十毫秒窗口）；新契约不在 failed
+        时刻打断进程，死句柄由下一次 _ensure_running 延迟清理——测试里
+        先等 poll() 确认死透再断言后续行为。
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            resident = self.provider._resident
+            if resident is None or resident.process.poll() is not None:
+                return True
+            time.sleep(0.02)
+        return False
 
     def phases_seen(self) -> list[str]:
         return [str(e.get("phase")) for e in self.events if e.get("event") == "robot"]
@@ -397,8 +419,9 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         )
         self.assertEqual(outcome["status"], "failed")
         self.assertIn("planned move rejected", outcome["reason"])
-        # A phase failure reaps the process and drops the resident eagerly.
-        self.assertIsNone(self.provider._resident)
+        # 2026-09-25 新契约：failed 不再立即 reap（demo 自愈世界不能打断
+        # 活常驻）；进程死透由延迟清理兜底，下条命令自动重启。
+        self.assertTrue(self._wait_resident_dead())
 
         outcome = self.provider.grasp_cup(
             on_event=self.events.append, is_cancelled=lambda: False
@@ -477,15 +500,15 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
             on_event=self.events.append, is_cancelled=lambda: False
         )
         self.assertEqual(outcome["status"], "failed")
-        # 阶段失败按契约 reap 常驻进程。
-        self.assertTrue(
-            self.provider._resident is None
-            or self.provider._resident.process.poll() is not None
-        )
+        # 新契约：不立即 reap；等进程死透后归位走复活链（session 换新）。
+        self.assertTrue(self._wait_resident_dead())
+        old_session = self.provider._resident.session_dir if self.provider._resident else None
         outcome = self.provider.reset_home(
             on_event=self.events.append, is_cancelled=lambda: False
         )
         self.assertEqual(outcome["status"], "completed")
+        if old_session is not None:
+            self.assertIsNot(self.provider._resident.session_dir, old_session)  # 复活
 
     def test_reset_home_refuses_after_shutdown(self):
         self.provider.shutdown()
@@ -535,11 +558,11 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
             on_event=self.events.append, is_cancelled=lambda: False
         )
         self.assertEqual(outcome["status"], "failed")
+        self.assertTrue(self._wait_resident_dead())
         outcome = self.provider.query_pose(
             on_event=self.events.append, is_cancelled=lambda: False
         )
         self.assertEqual(outcome["status"], "skipped")
-        self.assertIsNone(self.provider._resident)
 
     # ---- ensure_home（2026-09-25 检查式归位） ----
 
@@ -614,12 +637,46 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
             on_event=self.events.append, is_cancelled=lambda: False
         )
         self.assertEqual(outcome["status"], "completed")
-        self.assertEqual(outcome["status"], "completed")
         phases = self.phases_seen()
         self.assertIn("RECOVERY", phases)
         zh = {e.get("zh") for e in self.events if e.get("event") == "robot"}
         self.assertIn("失败自愈，机械臂归位中", zh)
         self.assertIn("机械臂已恢复就位", zh)
+
+    def test_failed_then_recovery_keeps_the_resident_alive(self):
+        """失败恢复协议（ChatGPT 2026-09-25 报的 bug）：demo 失败自愈后
+        进程**不退出**——main 不得 wait+interrupt 打断归位、不得丢弃活常驻；
+        下一条命令复用同一进程（自愈成果保住）。"""
+        self.provider.ensure_started()
+        session_dir = self.provider._resident.session_dir
+        self.set_mode("recovering_failure")
+        outcome = self.provider.grasp_cup(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "failed")
+        self.assertIn("planned move rejected", str(outcome.get("reason")))
+        # 完整序列转成 RECOVERY 进度（failed → recovery_started →
+        # recovered；resolve 后通知仍在管道里，有界等齐）。
+        deadline = time.monotonic() + 5.0
+        zh = []
+        while time.monotonic() < deadline:
+            zh = [str(e.get("zh")) for e in self.events if e.get("event") == "robot"]
+            if "失败自愈，机械臂归位中" in zh and "机械臂已恢复就位" in zh:
+                break
+            time.sleep(0.02)
+        self.assertIn("失败自愈，机械臂归位中", zh)
+        self.assertIn("机械臂已恢复就位", zh)
+        # 修复前：process_exiting 标志会让 provider wait(5s)+interrupt 杀掉
+        # 活着的自愈常驻并把 _resident 置 None。修复后常驻保留且存活。
+        self.assertIsNotNone(self.provider._resident)
+        self.assertTrue(self.provider._resident.alive)
+        self.assertIs(self.provider._resident.process.poll(), None)
+        # 下一条命令复用同一常驻（同 session），不再重启。
+        outcome = self.provider.reset_home(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "completed")
+        self.assertIs(self.provider._resident.session_dir, session_dir)
 
     def test_shutdown_closes_a_live_resident(self):
         self.provider.ensure_started()
