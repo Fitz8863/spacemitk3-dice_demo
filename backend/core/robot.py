@@ -120,3 +120,20 @@ class RobotProvider(Component):
         — never a reason to move or restart the arm.
         """
         return {"status": "skipped", "reason": "provider has no pose feedback"}
+
+    def ensure_home(
+        self,
+        *,
+        on_event: RobotEventFn,
+        is_cancelled: RobotCancelledFn,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Checked homing (probe first, home only if off-home).
+
+        Floor implementation: no probe means no way to prove the arm is
+        home, so it degrades to the unconditional reset_home — "ensure"
+        must never silently skip the motion.
+        """
+        return self.reset_home(
+            on_event=on_event, is_cancelled=is_cancelled, timeout_seconds=timeout_seconds
+        )

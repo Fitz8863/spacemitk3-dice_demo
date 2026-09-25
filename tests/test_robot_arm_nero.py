@@ -111,7 +111,13 @@ for line in sys.stdin:
         if (MODE_FILE.parent / "reject_prep").exists() and name == "rps-ready":
             emit("rejected", id=rid, code="unknown_action", message="unknown action rps-ready")
             continue
+        # recovering：模拟 demo 失败自愈调度器（阶段失败→归位→继续服务）
+        # 在 action home 前后发出的 recovery_started/recovered。
+        if (MODE_FILE.parent / "recovering").exists() and name == "home":
+            emit("recovery_started", id=rid, action="home", cause="ValueError: simulated")
         emit("action_started", id=rid, name=name)
+        if (MODE_FILE.parent / "recovering").exists() and name == "home":
+            emit("recovered", id=rid, action="home")
         emit("action_completed", id=rid, name=name,
              receipt="/tmp/receipt.json", elapsed_s=0.01)
         continue
@@ -534,6 +540,86 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         )
         self.assertEqual(outcome["status"], "skipped")
         self.assertIsNone(self.provider._resident)
+
+    # ---- ensure_home（2026-09-25 检查式归位） ----
+
+    def _received_commands(self):
+        return [
+            json.loads(line).get("command")
+            for line in (self.demo_root / "received.log").read_text().splitlines()
+            if line.strip().startswith("{")
+        ]
+
+    def test_ensure_home_skips_motion_when_already_home(self):
+        """在家 → 只发探针（query_pose），零动作不发 action home。"""
+        self.provider.ensure_started()
+        outcome = self.provider.ensure_home(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "completed")
+        self.assertTrue(outcome["at_home"])
+        commands = self._received_commands()
+        self.assertEqual(commands.count("query_pose"), 1)
+        self.assertEqual(
+            sum(1 for c in commands if c == "action"), 0
+        )
+
+    def test_ensure_home_homes_when_off_home(self):
+        """不在家 → 探针后走归位链（action home 发出）。"""
+        self.provider.ensure_started()
+        (self.demo_root / "pose_away").write_text("", encoding="utf-8")
+        outcome = self.provider.ensure_home(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "completed")
+        commands = self._received_commands()
+        self.assertEqual(commands.count("query_pose"), 1)
+        homes = [
+            json.loads(line)
+            for line in (self.demo_root / "received.log").read_text().splitlines()
+            if "query_pose" not in line and '"home"' in line
+        ]
+        self.assertTrue(homes)
+
+    def test_ensure_home_homes_conservatively_on_probe_failure(self):
+        """探针失败（CAN/瞬断）→ 不知道状态就归位，绝不跳过。"""
+        self.provider.ensure_started()
+        self.set_mode("pose_fail")
+        outcome = self.provider.ensure_home(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "completed")
+        commands = self._received_commands()
+        self.assertEqual(commands.count("query_pose"), 1)
+
+    def test_ensure_home_revives_a_dead_resident(self):
+        """死常驻 → 直接走归位链（复活语义），不发探针。"""
+        self.set_mode("fail_exit")
+        outcome = self.provider.grasp_cup(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "failed")
+        outcome = self.provider.ensure_home(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "completed")
+        commands = self._received_commands()
+        self.assertEqual(commands.count("query_pose"), 0)
+
+    def test_recovery_events_relay_as_robot_progress(self):
+        """demo 2026-09-25 失败自愈：recovery_started/recovered 转进度事件。"""
+        self.provider.ensure_started()
+        (self.demo_root / "recovering").write_text("", encoding="utf-8")
+        outcome = self.provider.reset_home(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "completed")
+        self.assertEqual(outcome["status"], "completed")
+        phases = self.phases_seen()
+        self.assertIn("RECOVERY", phases)
+        zh = {e.get("zh") for e in self.events if e.get("event") == "robot"}
+        self.assertIn("失败自愈，机械臂归位中", zh)
+        self.assertIn("机械臂已恢复就位", zh)
 
     def test_shutdown_closes_a_live_resident(self):
         self.provider.ensure_started()

@@ -18,6 +18,9 @@ Command mapping:
   invariant still demands the arm be homed)
 * ``query_pose`` → ``query_pose`` — read-only at-home probe for the idle
   patrol; the one command that must NOT revive (dead resident = skip)
+* ``ensure_home`` → probe then maybe ``action name=home`` — checked homing
+  (2026-09-25): at-home answers with zero motion, anything else falls
+  through to the full reset_home chain (revive included)
 
 Completion is judged strictly by id-correlated events (``command_completed`` /
 ``action_completed`` / ``rejected`` / ``failed``); progress phases are relayed
@@ -190,6 +193,21 @@ class _Resident:
         if command_id is not None:
             with self._pending_lock:
                 pending = self._pending.get(str(command_id))
+        if name in ("recovery_started", "recovered"):
+            # demo 2026-09-25 失败自愈调度器：阶段失败后归位并继续服务（不
+            # 退出进程）。转成进度事件让观众看到自愈过程；命令结果仍按
+            # failed 处理（本条命令已经失败，自愈只保住常驻）。
+            if pending is not None:
+                pending.on_event(
+                    {
+                        "event": "robot",
+                        "phase": "RECOVERY",
+                        "zh": "失败自愈，机械臂归位中" if name == "recovery_started"
+                        else "机械臂已恢复就位",
+                    }
+                )
+            _log(f"resident {name} (recovery)")
+            return
         if name == "phase_started":
             if pending is not None:
                 pending.on_event(self._progress_event(str(event.get("phase") or "")))
@@ -373,6 +391,7 @@ class RobotArmNeroProvider(RobotProvider):
             "throw_gesture": float(config.get("action_timeout_seconds", 30)),
             "reset_home": float(config.get("action_timeout_seconds", 30)),
             "query_pose": float(config.get("action_timeout_seconds", 30)),
+            "ensure_home": float(config.get("action_timeout_seconds", 30)),
         }
         self._sigint_grace = float(config.get("sigint_grace_seconds", 15))
         # 归位不变量的开机档：服务起来后把臂拉回 home（没接臂的部署关掉，
@@ -588,6 +607,52 @@ class RobotArmNeroProvider(RobotProvider):
             return self._run_command_locked(
                 "query_pose",
                 {"command": "query_pose"},
+                timeout_seconds,
+                on_event,
+                is_cancelled,
+            )
+
+    def ensure_home(
+        self,
+        *,
+        on_event: RobotEventFn,
+        is_cancelled: RobotCancelledFn,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Checked homing: probe first (≈60ms cached), home only if off-home.
+
+        The 2026-09-25 parking-insurance command: an at-home arm answers
+        completed with zero motion (no redundant ~2s homing gesture), while
+        anything else — off-home, probe failure, or a dead resident — falls
+        through to the full reset_home chain (which may revive).  Err on the
+        side of homing: a probe that cannot judge must not skip the motion.
+        The probe cannot see fingers (snapshot carries joints only), which is
+        exactly why this stays a separate command: reset_home stays
+        unconditional for the "must open the hand" paths (dice failure page).
+        """
+        with self._arm_lock:
+            if self._shutdown:
+                return {"status": "failed", "reason": "provider is shutting down"}
+            if self._resident is not None and self._resident.alive:
+                # The probe must not eat the homing budget: cap it short so a
+                # hung snapshot still leaves the full timeout for the motion.
+                probe_budget = min(float(timeout_seconds or 30.0), 10.0)
+                probe = self._run_command_locked(
+                    "query_pose",
+                    {"command": "query_pose"},
+                    probe_budget,
+                    on_event,
+                    is_cancelled,
+                )
+                if (
+                    isinstance(probe, dict)
+                    and probe.get("status") == "completed"
+                    and probe.get("at_home")
+                ):
+                    return {"status": "completed", "at_home": True}
+            return self._run_command_locked(
+                "reset_home",
+                {"command": "action", "name": "home"},
                 timeout_seconds,
                 on_event,
                 is_cancelled,

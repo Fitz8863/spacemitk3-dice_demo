@@ -1608,26 +1608,32 @@ def test_round_robot_fn_throw_gesture_resets_then_fills_the_shared_slot(monkeypa
 
 
 def test_rps_manifest_play_declares_prefetch_throw_and_replay():
-    """真实 manifest 契约：play 在口令 wav 后声明 throw_gesture（提前出拳），
-    analysis_failed 的再来一局（new_round）指 play（重放=完整重念口令与
-    出拳）。失败页的"重新识别"蓝键已按用户要求移除（2026-09-24），retry
-    intent 与 asr 词条随之删除，只剩 new_round/back。"""
+    """真实 manifest 契约：play 入口先 ensure_home（2026-09-25 保险归位：
+    探针确认在家零动作，未在家才归位——出拳必从 home 起势），再声明
+    throw_gesture（提前出拳）；analysis_failed 的再来一局（new_round）指
+    play（重放=完整重念口令与出拳）。失败页的"重新识别"蓝键已按用户要求
+    移除（2026-09-24），retry intent 与 asr 词条随之删除，只剩 new_round/back。"""
     manifest = json.loads(
         (ROOT / "backend/games/rps/manifest.json").read_text(encoding="utf-8")
     )
     play = manifest["state_machine"]["states"]["play"]
     robot_actions = [a for a in play["on_enter"] if a.get("action") == "robot"]
-    assert robot_actions == [{
-        "action": "robot", "command": "throw_gesture",
-        "timeout_seconds": 10,
-        "delay_seconds": manifest["state_machine"]["states"]["play"]["on_enter"][0]["delay_seconds"],
-    }]
+    assert robot_actions == [
+        {"action": "robot", "command": "ensure_home", "timeout_seconds": 30},
+        {
+            "action": "robot", "command": "throw_gesture",
+            "timeout_seconds": 10,
+            "delay_seconds": manifest["state_machine"]["states"]["play"]["on_enter"][1]["delay_seconds"],
+        },
+    ]
     # delay_seconds 是热调旋钮（manifest 直改即生效），钉范围不钉数值。
-    delay = robot_actions[0]["delay_seconds"]
+    delay = robot_actions[1]["delay_seconds"]
     assert isinstance(delay, (int, float)) and 0 <= delay <= 30
-    # robot 动作排在 wav 台词之前：worker 一进状态就派发（线程内睡满
-    # delay_seconds 才出臂），wav 的 await 只撑节奏、不再门控出拳。
+    # 保险归位排最前、出拳紧随其后，都排在 wav 台词之前：worker 一进状态
+    # 就派发（探针 ~60ms 过后睡 delay_seconds 才出臂），wav 的 await 只撑
+    # 节奏、不再门控出拳。
     assert play["on_enter"][0] is robot_actions[0]
+    assert play["on_enter"][1] is robot_actions[1]
     failed = manifest["state_machine"]["states"]["analysis_failed"]
     assert failed["on_intent"]["new_round"] == {"to": "play"}
     assert "retry" not in failed["on_intent"]

@@ -808,6 +808,17 @@ def _round_robot_fn(game_id: str, arm_throw: dict | None = None):
                 return provider.reset_home(
                     on_event=on_event, is_cancelled=is_cancelled, timeout_seconds=timeout
                 )
+            if command == "ensure_home":
+                # 检查式归位（2026-09-25）：地板 provider 无此方法时退化为
+                # 强制归位，"确保在家"永不静默跳过。
+                ensure = getattr(provider, "ensure_home", None)
+                if callable(ensure):
+                    return ensure(
+                        on_event=on_event, is_cancelled=is_cancelled, timeout_seconds=timeout
+                    )
+                return provider.reset_home(
+                    on_event=on_event, is_cancelled=is_cancelled, timeout_seconds=timeout
+                )
             if command == "throw_gesture":
                 gesture = action.get("gesture")
                 # 派发即重置：再来一局/重试重新出拳时，消费方必须等到这份
@@ -911,13 +922,19 @@ def _watch_round_arm_reset(round_id: str, game_id: str, generation: int) -> None
             if not provider_id:
                 return
             provider = COMPONENTS.require(provider_id, expected_type="robot")
-            outcome = provider.reset_home(
-                on_event=lambda event: None, is_cancelled=lambda: False
-            )
+            # 2026-09-25 起用检查式归位：探针（≈60ms 缓存读）确认在家则零动作，
+            # 未在家/探针失败/常驻死亡才执行归位（地板 provider 自动退化为强制）。
+            ensure = getattr(provider, "ensure_home", None)
+            if callable(ensure):
+                outcome = ensure(on_event=lambda event: None, is_cancelled=lambda: False)
+            else:
+                outcome = provider.reset_home(
+                    on_event=lambda event: None, is_cancelled=lambda: False
+                )
             if isinstance(outcome, dict) and outcome.get("status") != "completed":
-                print(f"[robot] post-round reset_home: {outcome.get('reason')}", flush=True)
+                print(f"[robot] post-round ensure_home: {outcome.get('reason')}", flush=True)
         except Exception as exc:
-            print(f"[robot] post-round reset_home failed: {exc!r}", flush=True)
+            print(f"[robot] post-round ensure_home failed: {exc!r}", flush=True)
 
     threading.Thread(target=watch, name=f"arm-reset-{round_id[:8]}", daemon=True).start()
 

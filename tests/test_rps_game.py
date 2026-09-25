@@ -116,6 +116,7 @@ class _FakeRobot:
     def __init__(self, outcomes=None, chooser=None):
         self.calls = []
         self.home_calls = 0
+        self.ensure_calls = 0
         self.outcomes = list(outcomes or [])
         self.chooser = chooser or (lambda: random.choice(sorted(GESTURES)))
 
@@ -133,6 +134,12 @@ class _FakeRobot:
     def reset_home(self, *, on_event, is_cancelled, timeout_seconds=None):
         self.home_calls += 1
         return {"status": "completed"}
+
+    def ensure_home(self, *, on_event, is_cancelled, timeout_seconds=None):
+        # 检查式归位（2026-09-25 play 入口保险）：出拳前确认在家——
+        # fake 默认"在家"零动作；ensure_calls 供断言 play 是否走过它。
+        self.ensure_calls += 1
+        return {"status": "completed", "at_home": True}
 
 
 class _FakeComponents:

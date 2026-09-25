@@ -29,7 +29,7 @@ ACTION_TYPES = {"speech", "adjudicate", "robot"}
 # ``grasp_cup`` stops before any shaking; ``shake_dice`` covers
 # shake→place→return-home as one physical chain; ``feedback`` performs a
 # result gesture selected by the round's winner_role.
-ROBOT_COMMANDS = {"grasp_cup", "shake_dice", "feedback", "throw_gesture", "reset_home"}
+ROBOT_COMMANDS = {"grasp_cup", "shake_dice", "feedback", "throw_gesture", "reset_home", "ensure_home"}
 ROBOT_FEEDBACK_KINDS = {"win", "lose", "draw"}
 
 # The single context selector supported today: the adjudicated winner maps a
@@ -152,7 +152,7 @@ def _validate_robot_action(action: Mapping[str, Any], field: str) -> None:
             raise _error(field, f"robot feedback accepts no extra keys: {sorted(extra)}")
         return
     allowed = {"action", "command"}
-    if command in {"grasp_cup", "shake_dice", "throw_gesture", "reset_home"}:
+    if command in {"grasp_cup", "shake_dice", "throw_gesture", "reset_home", "ensure_home"}:
         allowed.add("timeout_seconds")
         if "timeout_seconds" in action:
             _require_number(action["timeout_seconds"], f"{field}.timeout_seconds", low=0)
