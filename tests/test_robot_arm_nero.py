@@ -33,6 +33,7 @@ FAKE_PHASES = [
 
 FAKE_RESIDENT_SOURCE = '''
 import json
+import select
 import sys
 import time
 from pathlib import Path
@@ -111,13 +112,7 @@ for line in sys.stdin:
         if (MODE_FILE.parent / "reject_prep").exists() and name == "rps-ready":
             emit("rejected", id=rid, code="unknown_action", message="unknown action rps-ready")
             continue
-        # recovering：模拟 demo 失败自愈调度器（阶段失败→归位→继续服务）
-        # 在 action home 前后发出的 recovery_started/recovered。
-        if (MODE_FILE.parent / "recovering").exists() and name == "home":
-            emit("recovery_started", id=rid, action="home", cause="ValueError: simulated")
         emit("action_started", id=rid, name=name)
-        if (MODE_FILE.parent / "recovering").exists() and name == "home":
-            emit("recovered", id=rid, action="home")
         emit("action_completed", id=rid, name=name,
              receipt="/tmp/receipt.json", elapsed_s=0.01)
         continue
@@ -133,12 +128,47 @@ for line in sys.stdin:
             emit("recovery_started", id=rid, action="home", cause="ValueError: planned move rejected")
             emit("recovered", id=rid, action="home")
             continue
+        if mode == "recovering_failure_delayed":
+            emit("failed", id=rid, phase="GRIP", error="ValueError: planned move rejected")
+            emit("recovery_started", id="unrelated-command", action="home")
+            emit("recovery_started", id=rid, action="home")
+            (MODE_FILE.parent / "recovery_waiting").write_text("", encoding="utf-8")
+            while not (MODE_FILE.parent / "release_recovery").exists():
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    (MODE_FILE.parent / "queued_during_recovery").write_text("", encoding="utf-8")
+                time.sleep(0.01)
+            emit("recovered", id=rid, action="home")
+            pos = 0
+            continue
+        if mode == "recovery_home_failed":
+            emit("failed", id=rid, phase="GRIP", error="ValueError: planned move rejected")
+            emit("recovery_started", id=rid, action="home")
+            emit("failed", id=rid, phase="recovery:home",
+                 error="RuntimeError: home motion timed out")
+            sys.exit(2)
         if mode == "fail_exit":
             emit("failed", id=rid, phase="GRIP", error="ValueError: planned move rejected")
             sys.exit(2)
         if mode == "hand_start":
             emit("failed", id=rid, phase="GRIP",
                  error="ValueError: Hand start exceeds 0.5 degree motion bound")
+            sys.exit(2)
+        if mode == "hand_start_recovering":
+            emit("failed", id=rid, phase="GRIP",
+                 error="ValueError: Hand start exceeds 0.5 degree motion bound")
+            emit("recovery_started", id=rid, action="home")
+            (MODE_FILE.parent / "recovery_waiting").write_text("", encoding="utf-8")
+            while not (MODE_FILE.parent / "release_recovery").exists():
+                time.sleep(0.01)
+            emit("recovered", id=rid, action="home")
+            pos = 0
+            continue
+        if mode == "hand_start_recovery_home_failed":
+            emit("failed", id=rid, phase="GRIP",
+                 error="ValueError: Hand start exceeds 0.5 degree motion bound")
+            emit("recovery_started", id=rid, action="home")
+            emit("failed", id=rid, phase="recovery:home",
+                 error="RuntimeError: home motion timed out")
             sys.exit(2)
         if mode == "hang":
             emit("phase_started", id=rid, phase="CAPTURE")
@@ -437,6 +467,105 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         self.assertTrue(outcome.get("auto_retried"))
         self.assertIn("AUTO_RETRY", self.phases_seen())
 
+    def test_hand_start_retry_waits_for_live_recovery(self):
+        self.provider.ensure_started()
+        resident = self.provider._resident
+        self.set_mode("hand_start_recovering")
+        result = {}
+        worker = threading.Thread(target=lambda: result.setdefault(
+            "outcome", self.provider.grasp_cup(
+                on_event=self.events.append, is_cancelled=lambda: False
+            )
+        ))
+        worker.start()
+        release = self.demo_root / "release_recovery"
+        try:
+            deadline = time.monotonic() + 5.0
+            while not (self.demo_root / "recovery_waiting").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue((self.demo_root / "recovery_waiting").exists())
+            release.write_text("", encoding="utf-8")
+            worker.join(timeout=5.0)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result["outcome"]["status"], "completed")
+            self.assertTrue(result["outcome"].get("auto_retried"))
+            self.assertIs(self.provider._resident, resident)
+            self.assertIsNone(resident.process.poll())
+        finally:
+            release.write_text("", encoding="utf-8")
+            worker.join(timeout=5.0)
+
+    def test_hand_start_does_not_retry_after_recovery_home_fails(self):
+        self.provider.ensure_started()
+        self.set_mode("hand_start_recovery_home_failed")
+        outcome = self.provider.grasp_cup(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "failed")
+        self.assertIn("home motion timed out", outcome["reason"])
+        self.assertEqual(self._received_commands().count("advance"), 1)
+        self.assertTrue(self._wait_resident_dead())
+
+    def test_hand_start_cancelled_before_retry_sends_no_motion(self):
+        self.provider.ensure_started()
+        self.set_mode("hand_start_recovering")
+        cancelled = threading.Event()
+        release = self.demo_root / "release_recovery"
+
+        def on_event(event):
+            if event.get("phase") == "AUTO_RETRY":
+                cancelled.set()
+
+        def release_recovery():
+            deadline = time.monotonic() + 5.0
+            while not (self.demo_root / "recovery_waiting").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            release.write_text("", encoding="utf-8")
+
+        worker = threading.Thread(target=release_recovery)
+        worker.start()
+        try:
+            outcome = self.provider.grasp_cup(
+                on_event=on_event, is_cancelled=cancelled.is_set
+            )
+            self.assertTrue(cancelled.is_set())
+            self.assertEqual(outcome["status"], "failed")
+            self.assertEqual(self._received_commands().count("advance"), 1)
+        finally:
+            release.write_text("", encoding="utf-8")
+            worker.join(timeout=5.0)
+
+    def test_hand_start_cancelled_during_recovery_keeps_homing(self):
+        self.provider.ensure_started()
+        resident = self.provider._resident
+        self.set_mode("hand_start_recovering")
+        cancelled = threading.Event()
+        result = {}
+        worker = threading.Thread(target=lambda: result.setdefault(
+            "outcome", self.provider.grasp_cup(
+                on_event=self.events.append, is_cancelled=cancelled.is_set
+            )
+        ))
+        release = self.demo_root / "release_recovery"
+        worker.start()
+        try:
+            deadline = time.monotonic() + 5.0
+            while not (self.demo_root / "recovery_waiting").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue((self.demo_root / "recovery_waiting").exists())
+            cancelled.set()
+            worker.join(timeout=5.0)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result["outcome"]["status"], "failed")
+            self.assertIsNone(resident.process.poll())
+            release.write_text("", encoding="utf-8")
+            self.assertTrue(resident.recovery_done.wait(5.0))
+            self.assertIsNone(resident.process.poll())
+            self.assertEqual(self._received_commands().count("advance"), 1)
+        finally:
+            release.write_text("", encoding="utf-8")
+            worker.join(timeout=5.0)
+
     def test_timeout_interrupts_the_resident(self):
         self.set_mode("hang")
         self.provider._timeouts["grasp_cup"] = 1.5
@@ -629,20 +758,6 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         commands = self._received_commands()
         self.assertEqual(commands.count("query_pose"), 0)
 
-    def test_recovery_events_relay_as_robot_progress(self):
-        """demo 2026-09-25 失败自愈：recovery_started/recovered 转进度事件。"""
-        self.provider.ensure_started()
-        (self.demo_root / "recovering").write_text("", encoding="utf-8")
-        outcome = self.provider.reset_home(
-            on_event=self.events.append, is_cancelled=lambda: False
-        )
-        self.assertEqual(outcome["status"], "completed")
-        phases = self.phases_seen()
-        self.assertIn("RECOVERY", phases)
-        zh = {e.get("zh") for e in self.events if e.get("event") == "robot"}
-        self.assertIn("失败自愈，机械臂归位中", zh)
-        self.assertIn("机械臂已恢复就位", zh)
-
     def test_failed_then_recovery_keeps_the_resident_alive(self):
         """失败恢复协议（ChatGPT 2026-09-25 报的 bug）：demo 失败自愈后
         进程**不退出**——main 不得 wait+interrupt 打断归位、不得丢弃活常驻；
@@ -677,6 +792,124 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         )
         self.assertEqual(outcome["status"], "completed")
         self.assertIs(self.provider._resident.session_dir, session_dir)
+
+    def test_followup_waits_for_recovery_before_sending(self):
+        self.provider.ensure_started()
+        resident = self.provider._resident
+        first_events = []
+        second_events = []
+        self.set_mode("recovering_failure_delayed")
+        first = self.provider.grasp_cup(
+            on_event=first_events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(first["status"], "failed")
+        result = {}
+        worker = threading.Thread(target=lambda: result.setdefault(
+            "outcome", self.provider.reset_home(
+                on_event=second_events.append, is_cancelled=lambda: False
+            )
+        ))
+        release = self.demo_root / "release_recovery"
+        worker.start()
+        try:
+            deadline = time.monotonic() + 5.0
+            while not (self.demo_root / "recovery_waiting").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue((self.demo_root / "recovery_waiting").exists())
+            time.sleep(0.2)
+            self.assertTrue(worker.is_alive())
+            self.assertFalse((self.demo_root / "queued_during_recovery").exists())
+            self.assertIsNone(resident.process.poll())
+            release.write_text("", encoding="utf-8")
+            worker.join(timeout=5.0)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result["outcome"]["status"], "completed")
+            self.assertEqual(
+                [e.get("zh") for e in first_events].count("失败自愈，机械臂归位中"), 1
+            )
+            self.assertIn("机械臂已恢复就位", [e.get("zh") for e in first_events])
+            self.assertNotIn("机械臂已恢复就位", [e.get("zh") for e in second_events])
+        finally:
+            release.write_text("", encoding="utf-8")
+            worker.join(timeout=5.0)
+
+    def test_followup_timeout_leaves_recovery_running(self):
+        self.provider.ensure_started()
+        resident = self.provider._resident
+        self.set_mode("recovering_failure_delayed")
+        first = self.provider.grasp_cup(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(first["status"], "failed")
+        release = self.demo_root / "release_recovery"
+        try:
+            followup = self.provider.reset_home(
+                on_event=self.events.append, is_cancelled=lambda: False,
+                timeout_seconds=0.15,
+            )
+            self.assertEqual(followup["status"], "failed")
+            self.assertIn("recovery still in progress", followup["reason"])
+            self.assertFalse((self.demo_root / "queued_during_recovery").exists())
+            self.assertIsNone(resident.process.poll())
+            release.write_text("", encoding="utf-8")
+            self.assertTrue(resident.recovery_done.wait(5.0))
+            self.assertIsNone(resident.process.poll())
+            retry = self.provider.reset_home(
+                on_event=self.events.append, is_cancelled=lambda: False
+            )
+            self.assertEqual(retry["status"], "completed")
+            self.assertIs(self.provider._resident, resident)
+        finally:
+            release.write_text("", encoding="utf-8")
+
+    def test_followup_cancelled_at_recovery_handoff_sends_no_motion(self):
+        self.provider.ensure_started()
+        resident = self.provider._resident
+        self.set_mode("recovering_failure_delayed")
+        first = self.provider.grasp_cup(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(first["status"], "failed")
+        cancelled = threading.Event()
+        result = {}
+        worker = threading.Thread(target=lambda: result.setdefault(
+            "outcome", self.provider.reset_home(
+                on_event=self.events.append, is_cancelled=cancelled.is_set
+            )
+        ))
+        release = self.demo_root / "release_recovery"
+        worker.start()
+        try:
+            deadline = time.monotonic() + 5.0
+            while not (self.demo_root / "recovery_waiting").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue((self.demo_root / "recovery_waiting").exists())
+            cancelled.set()
+            release.write_text("", encoding="utf-8")
+            worker.join(timeout=5.0)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result["outcome"]["status"], "failed")
+            self.assertEqual(self._received_commands().count("action"), 0)
+            self.assertIsNone(resident.process.poll())
+        finally:
+            release.write_text("", encoding="utf-8")
+            worker.join(timeout=5.0)
+
+    def test_recovery_home_failure_is_reported(self):
+        self.provider.ensure_started()
+        self.set_mode("recovery_home_failed")
+        events = []
+        outcome = self.provider.grasp_cup(
+            on_event=events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "failed")
+        deadline = time.monotonic() + 5.0
+        while not any(e.get("phase") == "RECOVERY_FAILED" for e in events) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        failures = [e for e in events if e.get("phase") == "RECOVERY_FAILED"]
+        self.assertEqual(len(failures), 1)
+        self.assertIn("home motion timed out", failures[0]["reason"])
+        self.assertTrue(self._wait_resident_dead())
 
     def test_shutdown_closes_a_live_resident(self):
         self.provider.ensure_started()
