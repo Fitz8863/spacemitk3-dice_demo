@@ -612,3 +612,48 @@ body[data-phase="analysis"] .vision-pip { border-radius: 24px 17px 27px 20px; }
   .view-actions { flex-wrap: wrap; }
   .rules-item { min-height: 0; transform: none !important; }
 }
+
+/* Dice: keep one connected player in normal flow, with video as the main content. */
+body:has(.dice-video) .experience-shell { grid-template-columns: minmax(0, 1fr); }
+body:has(.dice-video) .buddy-panel { display: none; }
+body:has(.dice-video) .stage { padding: 20px 28px 24px; }
+body:has(.dice-video) .stage-head { padding-top: 0; margin: 0 0 16px; }
+body:has(.dice-video) .stage-kicker { display: none; }
+body:has(.dice-video) .stage-title { font-size: clamp(26px, 2.6vw, 38px); margin: 0 0 6px; text-wrap: balance; }
+body:has(.dice-video) .stage-title::after { display: none; }
+body:has(.dice-video) .stage-copy { font-size: 16px; line-height: 1.4; text-wrap: pretty; }
+body:has(.dice-video) .stage-body { flex: 0 0 auto; padding: 12px 0 0; max-width: 1100px; }
+body:has(.dice-video) .vision-pip {
+  position: static; transform: none; width: min(100%, 840px); box-sizing: border-box;
+  padding: 8px; margin: 0 auto; border-radius: 18px; z-index: auto; transition: none;
+}
+body:has(.dice-video):is([data-phase="analysis"], [data-phase="result"]) .vision-pip { width: min(100%, 1100px); }
+body:has(.dice-video) .vision-pip .analysis-stream-head { display: flex; margin: 0 4px 6px; font-size: 13px; }
+body:has(.dice-video) .analysis-stream-state { max-width: 65%; text-align: right; }
+body:has(.dice-video) .analysis-stream-spacer { display: none; }
+body:has(.dice-video) .countdown-number { font-size: clamp(64px, 8vw, 104px); font-variant-numeric: tabular-nums; }
+body:has(.dice-video) .game-start-text { font-size: clamp(30px, 4vw, 48px); }
+body:has(.dice-video) .arm-progress { margin: 12px auto 0; padding: 10px 16px; }
+body:has(.dice-video) .shake-cup { display: none; }
+body:has(.dice-video) .view-title { font-size: clamp(24px, 2.5vw, 32px); margin: 8px 0; }
+body:has(.dice-video) .result-banner { padding: 10px 20px; gap: 12px; }
+body:has(.dice-video) .result-emoji { font-size: 32px; }
+body:has(.dice-video) .result-subtitle { font-size: 15px; }
+body:has(.dice-video) .scoreboard { margin: 14px 0; padding: 14px 20px; gap: 20px; }
+body:has(.dice-video) .score-label { font-size: 16px; }
+body:has(.dice-video) .score-dice { margin: 10px 0; }
+body:has(.dice-video) .score-side > strong { font-size: 52px; font-variant-numeric: tabular-nums; }
+body:has(.dice-video) .view-actions { margin-top: 12px; }
+body:has(.dice-video) .view-actions .btn-circle { width: 110px; height: 110px; padding: 8px; font-size: 20px; }
+body:has(.dice-video) .view-actions .btn-pill { min-height: 72px; padding: 16px 24px; font-size: 20px; }
+@media (max-width: 720px) {
+  body:has(.dice-video) .stage { padding: 16px 12px 20px; }
+  body:has(.dice-video) .vision-pip { padding: 5px; }
+  body:has(.dice-video) .analysis-stream-head { flex-direction: row; align-items: center; }
+  body:has(.dice-video) .analysis-stream-state { display: none; }
+  body:has(.dice-video) .scoreboard { padding: 8px; gap: 8px; }
+  body:has(.dice-video) .score-side { min-width: 0; padding: 8px 4px; }
+  body:has(.dice-video) .score-label { font-size: 13px; }
+  body:has(.dice-video) .score-dice { gap: 4px; }
+  body:has(.dice-video) .score-dice .die { --die-size: clamp(18px, 4.5vw, 32px); }
+}

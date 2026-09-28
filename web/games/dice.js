@@ -553,6 +553,7 @@ export function register(engine) {
 
   // ---- 对局生命周期 ----
   async function enter(manifest) {
+    $('analysisStreamPanel').classList.add('dice-video');
     configureParticipants(manifest);
     stopVisionStream();
     // 摇骰页放一颗会翻滚的六面骰（diceCubeMarkup），观众看到的是在翻的骰子，
@@ -631,6 +632,7 @@ export function register(engine) {
   }
 
   function teardown() {
+    $('analysisStreamPanel').classList.remove('dice-video');
     stopVisionStream();
     participantSides = null;
     Object.entries(handlers).forEach(([id, fn]) => $(id).removeEventListener('click', fn));
