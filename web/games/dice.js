@@ -192,6 +192,7 @@ export function register(engine) {
     const view = ui.view || stateName;
     const meta = [ui.title || '', ui.copy || ''];
     setPhase(view, meta[0] || meta[1] ? meta : undefined);
+    if (view === 'ready') $('readyButtonHint').innerHTML = $('phaseCopy').innerHTML;
     // 等玩家操作的状态没有 duration/on_expire，玩家走开后会永远停住；交给引擎
     // 在这些状态挂空闲退出计时器（超时取消回合回列表），离开即解除。
     setIdleReturn(['rules', 'ready', 'result', 'analysis_failed', 'arm_failed'].includes(stateName));
