@@ -66,8 +66,18 @@ def robot_machine(**overrides):
                 {"action": "robot", "command": "shake_dice"},
             ],
             "on_event": {
-                "robot.shake_dice.completed": {"to": "vision_countdown"},
+                "robot.shake_dice.completed": {"to": "stop_call"},
                 "robot.shake_dice.failed": {"to": "arm_failed"},
+            },
+        },
+        "stop_call": {
+            "on_enter": [
+                {"action": "speech", "mode": "audio", "audio": "audio/stop.wav"},
+                {"action": "robot", "command": "settle_dice"},
+            ],
+            "on_event": {
+                "robot.settle_dice.completed": {"to": "vision_countdown"},
+                "robot.settle_dice.failed": {"to": "arm_failed"},
             },
         },
         "vision_countdown": {
@@ -198,13 +208,19 @@ class RobotSchemaTests(unittest.TestCase):
         payload["states"]["rules"]["on_enter"] = [action]
         return payload
 
-    def test_grasp_and_shake_actions_validate(self):
+    def test_grasp_shake_and_settle_actions_validate(self):
         validate_state_machine(
             self._machine_with_action({"action": "robot", "command": "grasp_cup"}), "dice"
         )
         validate_state_machine(
             self._machine_with_action(
                 {"action": "robot", "command": "shake_dice", "timeout_seconds": 60}
+            ),
+            "dice",
+        )
+        validate_state_machine(
+            self._machine_with_action(
+                {"action": "robot", "command": "settle_dice", "timeout_seconds": 60}
             ),
             "dice",
         )
@@ -393,6 +409,36 @@ class RobotEngineTests(unittest.TestCase):
     def test_shake_failure_routes_to_arm_failed(self):
         robot = _ScriptedRobot()
         robot.on("shake_dice", _failing("phase LOWER failed"))
+        round_ = start_robot_round(robot)
+
+        drive_to_shaking(round_)
+        self.assertTrue(wait_for(lambda: reached(round_, "arm_failed")))
+        round_.cancel()
+
+    def test_stop_call_starts_as_soon_as_shake_finishes_while_settle_continues(self):
+        robot = _ScriptedRobot()
+        settle_gate = threading.Event()
+        robot.on("settle_dice", _blocking({"status": "completed"}, gate=settle_gate))
+        round_ = start_robot_round(robot)
+
+        drive_to_shaking(round_)
+        self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "stop_call"))
+        self.assertFalse(settle_gate.is_set())
+        stop_speech = [
+            event for event in round_.snapshot()["events"]
+            if event.get("event") == "speech" and event.get("mode") == "audio"
+            and event.get("audio") == "audio/stop.wav"
+        ]
+        self.assertEqual(len(stop_speech), 1)
+        self.assertFalse(reached(round_, "vision_countdown"))
+
+        settle_gate.set()
+        self.assertTrue(wait_for(lambda: reached(round_, "vision_countdown")))
+        round_.cancel()
+
+    def test_settle_failure_routes_to_arm_failed(self):
+        robot = _ScriptedRobot()
+        robot.on("settle_dice", _failing("phase LOWER failed"))
         round_ = start_robot_round(robot)
 
         drive_to_shaking(round_)

@@ -271,7 +271,7 @@
 				"ui": {
 					"view": "shaking",
 					"title": "摇好了！",
-					"copy": "停！请保持骰子和骰盅位置不动，马上开始判定。"
+					"copy": "停！机械臂正在放回骰盅，随后开始判定。"
 				},
 				"on_enter": [
 					{
@@ -279,11 +279,20 @@
 						"mode": "audio",
 						"audio": "audio/停.wav",
 						"text": "停！"
+					},
+					{
+						"action": "robot",
+						"command": "settle_dice",
+						"timeout_seconds": 90
 					}
 				],
-				"duration": 0.5,
-				"on_expire": {
-					"to": "analysis"
+				"on_event": {
+					"robot.settle_dice.completed": {
+						"to": "analysis"
+					},
+					"robot.settle_dice.failed": {
+						"to": "arm_failed"
+					}
 				}
 			},
 			"arm_failed": {

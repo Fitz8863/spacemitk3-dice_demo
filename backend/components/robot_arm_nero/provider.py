@@ -9,7 +9,8 @@ recovery; the resident is reused after ``recovered`` and replaced if it exits.
 Command mapping:
 
 * ``grasp_cup``  → ``advance until LIFT``      (HOME→CAPTURE→PLAN→APPROACH→GRIP→LIFT; grasp and lift, no shaking)
-* ``shake_dice`` → ``advance until RETURN_HOME`` (SHAKE→LOWER→OPEN→RETURN_HOME; the cup is already aloft)
+* ``shake_dice`` → ``advance until SHAKE``       (SHAKE only; completion is the stop cue)
+* ``settle_dice`` → ``advance until RETURN_HOME`` (LOWER→OPEN→RETURN_HOME after the stop cue)
 * ``feedback``   → ``action name=yeah|thumbs-up|tie``
 * ``throw_gesture`` → ``action name=rps-ready`` → ``action name=rock|paper|scissors`` (rps agent move: prep pose then the gesture, one locked chain; pose is held, no auto-home)
 * ``reset_home`` → ``action name=home`` — parks the arm; the one command that
@@ -88,7 +89,7 @@ _THROW_PREP_ACTION = "rps-ready"
 # 一个正在执行的归位，换来的是 8-13s 复活链加新会话目录（2026-09-25 常驻
 # 重启 bug：三个会话全死在 KeyboardInterrupt + active_action=home）。
 # 超时仍一律急停：那是解锁卡死命令、释放臂锁的唯一逃生门。
-_CANCEL_INTERRUPT_COMMANDS = {"grasp_cup", "shake_dice"}
+_CANCEL_INTERRUPT_COMMANDS = {"grasp_cup", "shake_dice", "settle_dice"}
 
 _LOG_TAIL_LINES = 15
 
@@ -420,6 +421,7 @@ class RobotArmNeroProvider(RobotProvider):
         self._timeouts = {
             "grasp_cup": float(config.get("grasp_timeout_seconds", 45)),
             "shake_dice": float(config.get("shake_timeout_seconds", 120)),
+            "settle_dice": float(config.get("shake_timeout_seconds", 120)),
             "feedback": float(config.get("action_timeout_seconds", 30)),
             "throw_gesture": float(config.get("action_timeout_seconds", 30)),
             "reset_home": float(config.get("action_timeout_seconds", 30)),
@@ -528,6 +530,21 @@ class RobotArmNeroProvider(RobotProvider):
     ) -> dict[str, Any]:
         return self._run_command(
             "shake_dice",
+            {"command": "advance", "until": "SHAKE"},
+            timeout_seconds,
+            on_event,
+            is_cancelled,
+        )
+
+    def settle_dice(
+        self,
+        *,
+        on_event: RobotEventFn,
+        is_cancelled: RobotCancelledFn,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return self._run_command(
+            "settle_dice",
             {"command": "advance", "until": "RETURN_HOME"},
             timeout_seconds,
             on_event,

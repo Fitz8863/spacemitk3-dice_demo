@@ -222,11 +222,10 @@ def test_robot_shake_is_event_driven_with_stop_call():
       路由，抓取提前完成不打断过场
     - shake_countdown 只剩三二一口令（抓取已前移）；保留 grasp 失败路由——
       抓取偶发偏慢时失败事件落在倒计时态，仍能正确进兜底页
-    - shaking 无定时无停止按钮：入场即下发摇，完成/失败双路由
-    - stop_call 摇骰收尾态（用户 2026-09-24 拍板）：shake_dice.completed（臂
-      放下杯子归位完）的瞬间进入，播 audio/停.wav 喊停（非 await——语音与
-      交棒计时并行，"马上走视觉"），0.5s 后 expire 进 analysis；替代原
-      vision_countdown 倒计时（2.4s/0.8s 已删）
+    - shaking 无定时无停止按钮：入场只推进 SHAKE；SHAKE 完成即进入 stop_call
+    - stop_call 在摇晃停止的瞬间播 audio/停.wav，同时派发 settle_dice，让
+      LOWER→OPEN→RETURN_HOME 在喊停后继续；收尾完成才进入 analysis，避免
+      视频裁决拍到仍被手遮挡的杯子
     - arm_failed 兜底：蓝=重试回 game_start（重新过场+重新抓取）、红=退出；
       人工摇骰模式（manual_shaking）已整体移除——游戏只有玩家和 agent 机械臂
     """
@@ -260,16 +259,25 @@ def test_robot_shake_is_event_driven_with_stop_call():
         "robot.shake_dice.failed": {"to": "arm_failed"},
     }
 
-    # stop_call：摇骰收尾——臂放下杯子归位完的瞬间喊停，随即进裁决。
+    # stop_call：SHAKE 完成的瞬间喊停；放杯、松手、归位与停.wav 并行。
     stop_call = machine["states"]["stop_call"]
     assert stop_call["ui"]["view"] == "shaking"  # 复用摇骰视图，文案静默切换
-    assert stop_call["on_enter"] == [{
-        "action": "speech", "mode": "audio",
-        "audio": "audio/停.wav", "text": "停！",
-    }]  # 非 await：语音 0.82s 与交棒并行，"马上走视觉"
+    assert stop_call["on_enter"] == [
+        {
+            "action": "speech", "mode": "audio",
+            "audio": "audio/停.wav", "text": "停！",
+        },
+        {
+            "action": "robot", "command": "settle_dice", "timeout_seconds": 90,
+        },
+    ]
     assert "await" not in stop_call["on_enter"][0]
-    assert stop_call["duration"] == 0.5
-    assert stop_call["on_expire"]["to"] == "analysis"
+    assert "duration" not in stop_call
+    assert "on_expire" not in stop_call
+    assert stop_call["on_event"] == {
+        "robot.settle_dice.completed": {"to": "analysis"},
+        "robot.settle_dice.failed": {"to": "arm_failed"},
+    }
     assert "tick_seconds" not in stop_call  # 无屏幕倒计时
 
     arm_failed = machine["states"]["arm_failed"]

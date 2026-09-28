@@ -300,9 +300,9 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         )
         self.assertEqual(lift_event.get("progress"), "6/10")
 
-    def test_shake_dice_runs_the_full_chain_to_return_home(self):
-        # 游戏真实序列：先 grasp（推进到 LIFT，杯已在空中），再 shake——
-        # 有状态 resident 下 shake 从 SHAKE 直接开始，不再有抬起。
+    def test_shake_completion_marks_stop_then_settle_returns_home(self):
+        # 游戏真实序列：shake 只推进 SHAKE。它的 completion 是“停”的精确
+        # 触发点；随后 settle 才继续 LOWER→OPEN→RETURN_HOME。
         self.provider.grasp_cup(on_event=self.events.append, is_cancelled=lambda: False)
         self.events.clear()
         outcome = self.provider.shake_dice(
@@ -310,10 +310,15 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         )
         self.assertEqual(outcome["status"], "completed")
         phases = self.phases_seen()
-        self.assertEqual(phases[0], "SHAKE")
-        for phase in ("SHAKE", "LOWER", "OPEN", "RETURN_HOME"):
-            self.assertIn(phase, phases)
-        self.assertNotIn("LIFT", phases)
+        self.assertEqual(phases, ["SHAKE"])
+
+        self.events.clear()
+        outcome = self.provider.settle_dice(
+            on_event=self.events.append, is_cancelled=lambda: False
+        )
+        self.assertEqual(outcome["status"], "completed")
+        phases = self.phases_seen()
+        self.assertEqual(phases, ["LOWER", "OPEN", "RETURN_HOME"])
         return_event = next(
             e for e in self.events
             if e.get("event") == "robot" and e.get("phase") == "RETURN_HOME"

@@ -797,6 +797,10 @@ def _round_robot_fn(game_id: str, arm_throw: dict | None = None):
                 return provider.shake_dice(
                     on_event=on_event, is_cancelled=is_cancelled, timeout_seconds=timeout
                 )
+            if command == "settle_dice":
+                return provider.settle_dice(
+                    on_event=on_event, is_cancelled=is_cancelled, timeout_seconds=timeout
+                )
             if command == "feedback":
                 return provider.feedback(
                     str(action.get("kind") or ""),

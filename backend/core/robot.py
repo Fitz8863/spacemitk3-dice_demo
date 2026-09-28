@@ -1,9 +1,9 @@
 """Game-facing contract for robot-arm providers.
 
 A robot provider drives exactly one physical arm.  The state machine calls it
-through short imperative commands — grasp the dice cup (no shaking), shake the
-held cup and put it back down, perform a result gesture, throw one static game
-gesture, return home — and the
+through short imperative commands — grasp the dice cup, shake the held cup,
+put it back down, perform a result gesture, throw one static game gesture,
+return home — and the
 provider owns every process-level detail of the demo runtime behind those
 verbs (resident process lifecycle, protocol framing, retries, interruption).
 
@@ -56,7 +56,17 @@ class RobotProvider(Component):
         is_cancelled: RobotCancelledFn,
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Shake the lifted cup, place it back down, and return the arm home."""
+        """Shake the lifted cup and stop before lowering it."""
+        raise NotImplementedError
+
+    def settle_dice(
+        self,
+        *,
+        on_event: RobotEventFn,
+        is_cancelled: RobotCancelledFn,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Place the shaken cup down, open the hand, and return home."""
         raise NotImplementedError
 
     def feedback(
