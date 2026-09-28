@@ -169,11 +169,10 @@ class TestRpsRuntimeConfigContract:
         # Fold happens before stability: 10 folded-multiset frames
         # (用户 2026-09-24 板端手调 15→10，加快手势锁定)。
         assert config["stable_frames"] == 10
-        # Rotation + ROI are the rps hardware specifics.  The direction (cw /
-        # ccw) follows the physical camera mounting — a deployment value the
-        # user tunes on site (2026-09-21: ccw), so only pin its shape.
+        # Rotation + ROI are the rps hardware specifics.  The camera is mounted
+        # sideways, so the published result stream is rotated clockwise.
         assert config["rotate"]["enabled"] is True
-        assert config["rotate"]["direction"] in {"cw", "ccw"}
+        assert config["rotate"]["direction"] == "cw"
         assert config["rotate"]["angle"] == 90
         assert config["roi"]["enabled"] is True
         # rtsp.path stays undeclared: manifest video.path overrides via CLI.

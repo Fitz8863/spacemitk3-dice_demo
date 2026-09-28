@@ -619,6 +619,10 @@ def test_rps_vision_contract_pins_the_confirmed_flow_decisions():
     assert "analysisRetry: () => submitIntent('retry')" not in rps_js
     assert "handlers.analysisRetry()" not in rps_js
     assert rps_js.count("$('analysisRetry').classList.add('hidden')") == 2
+    # 猜拳与摇骰共用宽屏视频布局，进入时启用，退出时必须清理，避免
+    # 返回游戏列表或进入其他游戏后残留布局状态。
+    assert "$('analysisStreamPanel').classList.add('dice-video');" in rps_js
+    assert "$('analysisStreamPanel').classList.remove('dice-video');" in rps_js
     dice_js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     assert "analysisRetry: () => submitIntent('retry')" in dice_js
     assert dice_js.count("$('analysisRetry').classList.remove('hidden')") == 2

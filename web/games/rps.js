@@ -263,6 +263,9 @@ export function register(engine) {
 
   // ---- 对局生命周期 ----
   async function enter(manifest) {
+    // 与摇骰子共用宽屏视频布局：视频成为局内主画面，隐藏左侧装饰栏，
+    // 裁决与结果阶段自动进一步放大。
+    $('analysisStreamPanel').classList.add('dice-video');
     configureParticipants(manifest);
     // 共享视图换上猜拳措辞（HTML 默认是 dice 的），teardown 还原。
     const rulesList = document.querySelector('.rules-list');
@@ -326,6 +329,7 @@ export function register(engine) {
   }
 
   function teardown() {
+    $('analysisStreamPanel').classList.remove('dice-video');
     // 还原共享视图的 dice 默认文案（guards 覆盖 enter 中途失败的情况）。
     if (savedRulesMarkup) {
       document.querySelector('.rules-list').innerHTML = savedRulesMarkup;
