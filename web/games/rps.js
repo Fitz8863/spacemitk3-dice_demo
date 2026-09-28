@@ -15,7 +15,7 @@ export function register(engine) {
 
   // 状态名 → 视图名。play 的视图与状态同名（ui.view 也写 "play"），重连
   // 快照路径（onSyncState）只有状态名，仅 analysis_failed 需要映射。
-  const VIEW_BY_STATE = { 'analysis_failed': 'analysis' };
+  const VIEW_BY_STATE = { 'analysis_failed': 'analysis', 'preparing': 'play' };
 
   // 后端 ui 文案缺省时的前端兜底。
   const phaseMeta = {
@@ -38,18 +38,42 @@ export function register(engine) {
   let displayLayout = null;
   let savedRulesMarkup = '';
   let savedDetectLabel = '';
+  let restarting = false;
 
   function submitIntent(intent, payload = {}) {
     if (!round) return Promise.resolve();
     return round.submitIntent(intent, payload).catch((error) => {
       if (error.silent) {
         // 回合已终结（ROUND_CLOSED）后一切意图都被静默拒绝——错误页假死
-        // 的根因；此时任何按键都导航回列表（与 dice 同款修复）。
-        if (error.code === 'ROUND_CLOSED') returnToSelect();
+        // 的根因；绿色重开当前游戏，红色才回列表。
+        if (error.code === 'ROUND_CLOSED') {
+          if (intent === 'new_round') return restartClosedRound();
+          returnToSelect();
+        }
         return; // 按键时机不合状态属正常对局
       }
       console.error(`Intent ${intent} failed:`, error);
     });
+  }
+
+  async function restartClosedRound() {
+    if (restarting || !round) return;
+    restarting = true;
+    stopSpeech();
+    setIdleReturn(false);
+    lastRenderedState = '';
+    const client = round;
+    try {
+      await client.start();
+      if (client !== round) return;
+      setActiveRound(client);
+      await client.submitIntent('confirm');
+    } catch (error) {
+      toast('重新开始失败，请重试');
+      console.error(error);
+    } finally {
+      restarting = false;
+    }
   }
 
   const handlers = {
@@ -166,14 +190,14 @@ export function register(engine) {
     $('analysisTitle').textContent = '正在识别手势';
     $('analysisFailureActions').classList.add('hidden');
     document.querySelector('.analysis-spinner')?.classList.remove('hidden');
-    $('analysisStatus').textContent = '正在识别双方手势…';
+    $('analysisStatus').textContent = '正在识别蓝色区域的人手…';
   }
 
   function updateAnalysisProgress(event) {
     if (event.phase === 'detecting') {
       $('stepDetect').classList.add('active');
       $('stepDetect').querySelector('span').textContent = '…';
-      $('analysisStatus').textContent = '正在识别双方手势…';
+      $('analysisStatus').textContent = '正在识别蓝色区域的人手…';
     } else if (event.phase === 'verifying') {
       $('stepDetect').classList.add('active');
       $('stepDetect').querySelector('span').textContent = '✓';
@@ -281,6 +305,9 @@ export function register(engine) {
       onEvent: handleRoundEvent,
       onComplete: (event) => {
         if (event.status === 'error') {
+          setPhase('analysis');
+          lastRenderedState = '';
+          resetAnalysisSteps();
           document.querySelector('.analysis-spinner')?.classList.add('hidden');
           $('analysisTitle').textContent = '识别未完成';
           $('analysisStatus').textContent = '裁决异常结束，请重新开始一局';

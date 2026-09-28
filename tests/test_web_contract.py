@@ -75,7 +75,7 @@ def test_frontend_schedules_streamed_tts_frames_back_to_back():
     assert "createBufferSource" in app
     assert "player.waitDrained" in app
     assert "await scheduler.schedule(blob)" in app
-    assert "await playSpeechBlob(blob, requestId)" in app  # fallback kept
+    assert "await playSpeechBlob(blob, requestId, notifyStarted)" in app  # fallback kept
 
 
 def test_frontend_result_copy_has_no_doubled_llm_prefix():
@@ -627,12 +627,10 @@ def test_rps_vision_contract_pins_the_confirmed_flow_decisions():
     play_enter = states["play"]["on_enter"]
     chant = next(a for a in play_enter if a.get("action") == "speech")
     assert chant["await"] is True
-    # 入口先 ensure_home（2026-09-25 保险归位：探针确认在家零动作），
-    # 出拳紧随其后排在口令之前：进状态即派发（线程内睡 delay_seconds），
-    # wav 的 await 只撑节奏、不门控出拳。
+    # 预备先完成，实际音频起播回执门控出拳；await 继续控制裁决时机。
     assert states["preparing"]["on_event"]["robot.prepare_throw.completed"]["to"] == "play"
-    throw = next(a for a in play_enter if a.get("command") == "throw_gesture")
-    assert play_enter[0] is throw and throw["prepared"] is True and throw["delay_seconds"] == 0
+    throw = next(a for a in chant["on_start"] if a.get("command") == "throw_gesture")
+    assert play_enter == [chant] and throw["prepared"] is True and throw["delay_seconds"] == 0.65
     analysis = states["analysis"]
     assert analysis["on_event"]["adjudication.result"]["to"] == "result"
     assert analysis["on_event"]["adjudication.diagnosis"]["to"] == "analysis_failed"

@@ -121,12 +121,12 @@ wait_for_exit() {
 }
 
 runtime_children() {
-    # Resident engine children of this deployment (yolov8_camera,
+    # Resident engine children of this deployment (yolov8_camera, yolov10_camera,
     # stream_asr; arecord exits by itself once stream_asr's pipe closes).
     # Matched by executable path under this project so a sibling checkout or
     # unrelated process is never touched.
     local pid exe
-    for pid in $(pgrep -x yolov8_camera 2>/dev/null; pgrep -x stream_asr 2>/dev/null); do
+    for pid in $(pgrep -x yolov8_camera 2>/dev/null; pgrep -x yolov10_camera 2>/dev/null; pgrep -x stream_asr 2>/dev/null); do
         exe="$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)"
         case "$exe" in
             "$ROOT_DIR"/*) printf '%s\n' "$pid" ;;
@@ -188,8 +188,9 @@ else
     fi
     rm -f "$PID_FILE"
     echo "Dice Arena web stopped: pid=$pid"
-    kill_runtime_children
 fi
+# Also reap an orphan when the parent was already killed before stop was called.
+kill_runtime_children
 
 # Stop both the provider reported by the running backend and everything the
 # current manifest references, so a manifest edit between start and stop

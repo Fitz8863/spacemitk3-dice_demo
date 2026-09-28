@@ -458,6 +458,7 @@ class RoundFlowTests(unittest.TestCase):
             e for e in round_.snapshot()["events"]
             if e.get("event") == "speech" and e.get("await")
         ][-1]
+        round_.submit_intent("speech_started", {"directive_id": chant["directive_id"]})
         round_.submit_intent("speech_done", {"directive_id": chant["directive_id"]})
 
     def drive_to_result(self, agent_gesture, player_gesture):

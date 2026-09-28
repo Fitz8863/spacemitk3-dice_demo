@@ -189,6 +189,17 @@ def _validate_action(action: Any, field: str) -> None:
     if action_type == "robot":
         _validate_robot_action(action, field)
         return
+    if "on_start" in action:
+        actions = action["on_start"]
+        if action.get("mode") != "audio" or action.get("await") is not True:
+            raise _error(field, "on_start requires awaited audio speech")
+        if not isinstance(actions, list) or not actions:
+            raise _error(field, "on_start must contain robot actions")
+        for index, start_action in enumerate(actions):
+            if not isinstance(start_action, dict) or start_action.get("action") != "robot":
+                raise _error(field, "on_start accepts robot actions only")
+            _validate_robot_action(start_action, f"{field}.on_start[{index}]")
+        _require_number(action.get("playback_seconds"), f"{field}.playback_seconds", low=0, high=30)
     if "select_by" in action:
         if action.get("select_by") not in SELECT_BY_KEYS:
             raise _error(f"{field}.select_by", f"must be one of {sorted(SELECT_BY_KEYS)}")

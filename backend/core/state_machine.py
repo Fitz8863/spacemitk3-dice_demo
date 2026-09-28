@@ -152,6 +152,7 @@ class GameRound:
         # these is still unacknowledged, so the state's opening announcement
         # must finish before that intent takes effect.
         self._entry_speech: set[str] = set()
+        self._speech_start_actions: dict[str, tuple[int, list]] = {}
         self._worker: threading.Thread | None = None
 
     # ---- lifecycle -----------------------------------------------------
@@ -180,6 +181,14 @@ class GameRound:
         with self.condition:
             if self.status in _TERMINAL_STATUSES:
                 raise RoundClosedError(self.id)
+            if name == "speech_started":
+                directive_id = str(payload.get("directive_id") or "")
+                pending = self._speech_start_actions.pop(directive_id, None)
+                if pending is not None and pending[0] == self._generation:
+                    self._emit_locked({"event": "speech_started", "directive_id": directive_id})
+                    for action in pending[1]:
+                        self._start_robot_action(action)
+                return self._snapshot_locked()
             if name == "speech_done":
                 self._ack_speech_locked(str(payload.get("directive_id") or ""))
                 return self._snapshot_locked()
@@ -346,6 +355,7 @@ class GameRound:
             self.state = name
             self._generation += 1
             self._entry_speech = set()
+            self._speech_start_actions.clear()
             generation = self._generation
             state = self.machine["states"][name]
             self._emit_locked({
@@ -415,6 +425,9 @@ class GameRound:
                     if action.get("await"):
                         if not self._wait_speech_done(generation, directive["directive_id"]):
                             return
+                        with self.condition:
+                            if self._speech_start_actions.pop(directive["directive_id"], None) is not None:
+                                raise RuntimeError("口令未开始播放，未执行出拳；请检查声音后再来一局")
                 elif action.get("action") == "adjudicate":
                     if not self._run_adjudication(generation):
                         return
@@ -547,6 +560,12 @@ class GameRound:
                 and self._generation == entry_generation
             ):
                 self._entry_speech.add(directive["directive_id"])
+                if action.get("on_start"):
+                    self._speech_start_actions[directive["directive_id"]] = (
+                        entry_generation, list(action["on_start"])
+                    )
+                    directive["notify_start"] = True
+                    directive["playback_seconds"] = action.get("playback_seconds", 0)
             self._active_speech[directive["directive_id"]] = (
                 time.monotonic() + self._speech_ack_fallback_seconds
             )

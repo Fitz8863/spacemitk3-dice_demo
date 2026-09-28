@@ -518,7 +518,7 @@ async function* readTtsFrames(reader) {
   throw new Error('TTS 流没有结束帧');
 }
 
-async function playSpeechBlob(blob, requestId) {
+async function playSpeechBlob(blob, requestId, onStarted = () => {}) {
   if (!state.sound || requestId !== state.ttsRequestId) {
     throw new DOMException('Speech playback was cancelled', 'AbortError');
   }
@@ -555,6 +555,7 @@ async function playSpeechBlob(blob, requestId) {
 
   try {
     await audio.play();
+    onStarted();
     await playbackDone;
     if (playbackError) throw playbackError;
   } catch (error) {
@@ -588,7 +589,7 @@ function getSpeechAudioContext() {
   return state.speechAudioContext;
 }
 
-function createSpeechScheduler(requestId) {
+function createSpeechScheduler(requestId, onStarted = null) {
   const context = getSpeechAudioContext();
   if (!context) return null;
   const player = {
@@ -597,6 +598,8 @@ function createSpeechScheduler(requestId) {
     sources: [],
     cancelled: false,
     resolveDrained: null,
+    startTimer: null,
+    notifiedStart: false,
   };
   const cancelSource = (source) => {
     try { source.stop(); } catch (_) { /* already ended */ }
@@ -606,6 +609,7 @@ function createSpeechScheduler(requestId) {
     if (player.cancelled || requestId !== state.ttsRequestId || !state.sound) {
       throw new DOMException('Speech playback was cancelled', 'AbortError');
     }
+    if (onStarted) await context.resume();
     const buffer = await context.decodeAudioData(await blob.arrayBuffer());
     if (player.cancelled || requestId !== state.ttsRequestId || !state.sound) {
       throw new DOMException('Speech playback was cancelled', 'AbortError');
@@ -616,6 +620,15 @@ function createSpeechScheduler(requestId) {
     // 第一帧留一点起播水位，后续帧紧贴前一帧结尾，形成连续时间线。
     const startAt = Math.max(player.nextAt, context.currentTime + 0.06);
     source.start(startAt);
+    if (onStarted && !player.notifiedStart) {
+      player.notifiedStart = true;
+      const checkStarted = () => {
+        if (player.cancelled || requestId !== state.ttsRequestId) return;
+        if (context.state === 'running' && context.currentTime >= startAt) onStarted();
+        else player.startTimer = setTimeout(checkStarted, 10);
+      };
+      player.startTimer = setTimeout(checkStarted, Math.max(0, (startAt - context.currentTime) * 1000));
+    }
     player.nextAt = startAt + buffer.duration;
     player.sources.push(source);
     source.onended = () => {
@@ -629,6 +642,7 @@ function createSpeechScheduler(requestId) {
   };
   player.cancel = () => {
     player.cancelled = true;
+    clearTimeout(player.startTimer);
     for (const source of player.sources.splice(0)) cancelSource(source);
     player.nextAt = 0;
     if (player.resolveDrained) {
@@ -659,8 +673,17 @@ function waitSeconds(seconds) {
 // 转场（骰子：停！之后静 2 秒再念开盖词）。
 async function playDirective(round, directive, options = {}) {
   const ackHoldSeconds = Math.max(0, Number(options.ackHoldSeconds) || 0);
+  const targetRoundId = round?.roundId;
+  let startNotified = false;
+  let startAck = Promise.resolve();
+  const notifyStarted = () => {
+    if (startNotified || !directive.notify_start || !targetRoundId || round.roundId !== targetRoundId) return;
+    startNotified = true;
+    startAck = round.submitIntent('speech_started', { directive_id: directive.directive_id })
+      .catch((error) => { console.error('Speech start acknowledgement failed:', error); });
+  };
   const acknowledge = () => {
-    if (round && round.roundId) {
+    if (round && round.roundId === targetRoundId) {
       round.submitIntent('speech_done', { directive_id: directive.directive_id })
         .catch(() => { /* round may already be closed; the engine fallback covers it */ });
     }
@@ -669,6 +692,9 @@ async function playDirective(round, directive, options = {}) {
     armIdleReturn();
   };
   if (!state.sound) {
+    notifyStarted();
+    await startAck;
+    if (directive.notify_start) await waitSeconds(Number(directive.playback_seconds) || 0);
     acknowledge();
     return;
   }
@@ -711,7 +737,7 @@ async function playDirective(round, directive, options = {}) {
       if (state.ttsAbortController === controller) state.ttsAbortController = null;
     }
   })();
-  const scheduler = createSpeechScheduler(requestId);
+  const scheduler = createSpeechScheduler(requestId, directive.notify_start ? notifyStarted : null);
   if (scheduler) state.ttsPlaybackCancel = scheduler.cancel;
   let playedFrames = 0;
   // 只有"正常播完"才做回执压后；被取消/被新指令顶替时立即回执，不去为一条
@@ -725,7 +751,7 @@ async function playDirective(round, directive, options = {}) {
       const blob = await queue.next();
       if (blob === null) break;
       if (scheduler) await scheduler.schedule(blob);
-      else await playSpeechBlob(blob, requestId);
+      else await playSpeechBlob(blob, requestId, notifyStarted);
       playedFrames += 1;
     }
     if (scheduler) await scheduler.waitDrained();
@@ -740,6 +766,7 @@ async function playDirective(round, directive, options = {}) {
     if (scheduler && state.ttsPlaybackCancel === scheduler.cancel) {
       state.ttsPlaybackCancel = null;
     }
+    await startAck;
     if (playbackComplete && ackHoldSeconds > 0) await waitSeconds(ackHoldSeconds);
     // 所有退出路径（成功/失败/被新指令顶替）都恰好回执一次：await 的
     // 唤醒引擎等待者，非 await 的释放播报闸登记。
@@ -817,7 +844,10 @@ function createRoundClient(gameId, handlers) {
   function subscribe() {
     if (source) source.close();
     source = new EventSource(`/api/game/rounds/${roundId}/stream`);
+    const subscribedRoundId = roundId;
+    const subscribedSource = source;
     const handle = (event) => {
+      if (subscribedRoundId !== roundId) return;
       try {
         ingest(JSON.parse(event.data));
       } catch (_) { /* malformed frame: the next snapshot re-aligns state */ }
@@ -826,7 +856,7 @@ function createRoundClient(gameId, handlers) {
     source.addEventListener('update', handle);
     source.addEventListener('complete', (event) => {
       handle(event);
-      source?.close();
+      subscribedSource.close();
     });
     source.onerror = () => { /* EventSource retries; server resends a snapshot */ };
   }
@@ -836,7 +866,9 @@ function createRoundClient(gameId, handlers) {
       method: 'POST',
       body: JSON.stringify({ game: gameId }),
     });
+    teardownStream();
     roundId = payload.round_id;
+    closed = false;
     lastSequence = 0;
     subscribe();
     return payload;
@@ -844,14 +876,15 @@ function createRoundClient(gameId, handlers) {
 
   async function submitIntent(intent, payload = {}) {
     if (!roundId) throw new Error('对局尚未创建');
-    const snapshot = await requestJson(`/api/game/rounds/${roundId}/intents`, {
+    const targetRoundId = roundId;
+    const snapshot = await requestJson(`/api/game/rounds/${targetRoundId}/intents`, {
       method: 'POST',
       body: JSON.stringify({ intent, ...payload }),
     });
     // Ingest the response so terminal transitions (e.g. an exit intent)
     // navigate even when the SSE stream is broken; sequence dedup keeps
     // this idempotent with the stream.
-    if (snapshot && typeof snapshot === 'object' && 'status' in snapshot) {
+    if (targetRoundId === roundId && snapshot && typeof snapshot === 'object' && 'status' in snapshot) {
       ingest(snapshot);
     }
     return snapshot;

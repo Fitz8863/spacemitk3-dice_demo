@@ -1222,7 +1222,12 @@ int main(int argc, char** argv) {
             vision_control::CommandReader reader;
             while (!g_signal_stop && !abort.load()) {
                 const auto lines = reader.read_ready(a.control_fd, 250);
-                if (lines.empty() && reader.closed()) break;
+                if (lines.empty() && reader.closed()) {
+                    // The backend owns this camera. Never keep capturing after
+                    // its command pipe closes (including a SIGKILL/restart).
+                    abort.store(true);
+                    break;
+                }
                 for (const std::string& line : lines) {
                     const std::string command = control_command_name(line);
                     if (command == "START_ADJUDICATION") {

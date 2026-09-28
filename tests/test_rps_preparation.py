@@ -35,9 +35,15 @@ def test_ready_motion_gates_chant_but_throw_does_not_wait_for_speech():
         assert not any(e.get('event') == 'speech' and e.get('await')
                        for e in round_.snapshot()['events'])
         prepared.set()
-        assert throw_started.wait(2)
         assert wait_for(lambda: any(e.get('event') == 'speech' and e.get('await')
                                    for e in round_.snapshot()['events']))
+        assert not throw_started.is_set()
+        chant = next(e for e in round_.snapshot()['events'] if e.get('event') == 'speech' and e.get('await'))
+        round_.submit_intent('speech_started', {'directive_id': 'stale-directive'})
+        assert not throw_started.is_set()
+        round_.submit_intent('speech_started', {'directive_id': chant['directive_id']})
+        assert throw_started.wait(2)
+        round_.submit_intent('speech_started', {'directive_id': chant['directive_id']})
         assert round_.state == 'play'
         assert calls == ['prepare_throw', 'throw_gesture']
     finally:
