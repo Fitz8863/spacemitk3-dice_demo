@@ -70,10 +70,8 @@
   <div class="vision-pip hidden" id="analysisStreamPanel">
     <div class="analysis-stream-head">
       <span class="analysis-stream-label"><span class="live-dot" aria-hidden="true"></span>实时画面</span>
-      <span class="analysis-stream-state" id="analysisStreamState">正在连接画面…</span>
     </div>
-    <!-- MediaMTX provides this path's WebRTC player page. Keeping it in
-         an iframe avoids coupling the game UI to a stream protocol. -->
+    <!-- Shared player keeps the loading scene visible until a video frame arrives. -->
     <iframe
       id="analysisStream"
       title="实时检测画面"

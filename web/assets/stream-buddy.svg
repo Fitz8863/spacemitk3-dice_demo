@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 430" role="img" aria-label="芯片小伙伴概念角色">
+          <defs>
+            <linearGradient id="buddyBody" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#e2f89d"/><stop offset="1" stop-color="#b0e237"/></linearGradient>
+            <linearGradient id="buddyFace" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fff"/><stop offset="1" stop-color="#f4fae9"/></linearGradient>
+          </defs>
+          <ellipse cx="244" cy="389" rx="153" ry="20" fill="#cedfbc" opacity=".5"/>
+          <g stroke="#00205c" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M155 298q-38 14-37 46q19 22 56 6M316 298q43 10 46 41q-18 27-54 11" fill="#b0e237"/>
+            <path d="M166 349l-6 30q16 18 47 4l5-35M272 349l5 32q22 18 45-1l-9-40" fill="#fff"/>
+            <path d="M366 185q39-20 49-3q8 19-29 50M124 212q-48-32-54-9q-6 25 45 49" fill="#c5eb6f"/>
+            <rect x="116" y="113" width="254" height="240" rx="73" fill="url(#buddyBody)"/>
+            <path d="M216 112V76q-1-24 24-29" fill="none"/>
+            <ellipse cx="251" cy="45" rx="22" ry="16" transform="rotate(-24 251 45)" fill="#b0e237"/>
+            <rect x="145" y="156" width="196" height="138" rx="49" fill="url(#buddyFace)" stroke-width="5"/>
+            <path d="M184 208q10-13 20 0M282 208q10-13 20 0M226 230q17 23 34 0" fill="none"/>
+            <path d="M174 235h16M298 235h16" stroke="#efafb0" stroke-width="11"/>
+            <path d="M222 323h43" stroke="#fff" stroke-width="9"/>
+          </g>
+          <g transform="translate(337 270) rotate(13)">
+            <rect width="92" height="92" rx="22" fill="#fff" stroke="#00205c" stroke-width="6"/>
+            <g fill="#00205c"><circle cx="27" cy="27" r="7"/><circle cx="65" cy="27" r="7"/><circle cx="46" cy="46" r="7"/><circle cx="27" cy="65" r="7"/><circle cx="65" cy="65" r="7"/></g>
+          </g>
+        </svg>

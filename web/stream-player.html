@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>实时画面</title>
+  <link rel="stylesheet" href="./stream-player.css">
+  <script defer src="./stream-player.js"></script>
+</head>
+<body>
+  <video id="video" autoplay muted playsinline aria-label="实时检测画面"></video>
+  <div id="loading" role="status" aria-live="polite">
+    <div class="loading-scene" aria-hidden="true">
+      <span class="spark spark-one">✦</span><span class="spark spark-two">✦</span>
+      <div class="jumper"><img src="./assets/stream-buddy.svg" alt=""></div>
+      <div class="dice-row"><span class="die">⚂</span><span class="die">⚄</span><span class="die">⚁</span></div>
+    </div>
+    <p>视频流加载中...</p>
+  </div>
+</body>
+</html>

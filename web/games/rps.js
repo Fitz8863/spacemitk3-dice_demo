@@ -31,7 +31,6 @@ export function register(engine) {
 
   let round = null;
   let lastRenderedState = '';
-  let visionStreamToken = 0;
   let activeVisionUrl = '';
   let participantSides = null;
   let savedRulesMarkup = '';
@@ -68,18 +67,13 @@ export function register(engine) {
 
   // ---- 实时画面（MediaMTX WebRTC iframe，与 dice.js 同款共享面板） ----
   function stopVisionStream() {
-    visionStreamToken += 1;
     const panel = $('analysisStreamPanel');
     const frame = $('analysisStream');
     if (!panel || !frame) return;
-    frame.onload = null;
-    frame.onerror = null;
     activeVisionUrl = '';
     frame.src = 'about:blank';
     panel.classList.add('hidden');
     $('analysisStreamSpacer')?.classList.add('hidden');
-    const status = $('analysisStreamState');
-    if (status) status.textContent = '实时画面已关闭';
   }
 
   function startVisionStream(event) {
@@ -88,7 +82,6 @@ export function register(engine) {
     if (!panel || !frame) return;
     const configuredUrl = event && typeof event.url === 'string' ? event.url.trim() : '';
     if (!configuredUrl) return;
-
     let streamUrl;
     try {
       streamUrl = new URL(configuredUrl, window.location.href);
@@ -96,39 +89,15 @@ export function register(engine) {
     } catch (_) {
       return;
     }
-    // The MediaMTX WebRTC page reads these options and starts muted playback,
-    // which is allowed when the analysis page opens without a user gesture.
-    streamUrl.searchParams.set('autoplay', '1');
-    streamUrl.searchParams.set('muted', '1');
-    streamUrl.searchParams.set('controls', '0');
-    streamUrl.searchParams.set('playsinline', '1');
-
     const normalizedUrl = streamUrl.toString();
     panel.classList.remove('hidden');
     $('analysisStreamSpacer')?.classList.remove('hidden');
-    const status = $('analysisStreamState');
-    // 常驻 vision runtime 会在同一回合的重新判定时再发一次相同
-    // video 事件。重新赋值 iframe.src 会让 WebRTC 播放器整页重载，
-    // 观众就会看到黑屏。同 URL 直接复用当前连接。
-    if (activeVisionUrl === normalizedUrl && frame.src !== 'about:blank') {
-      if (status) status.textContent = '小搭子正在认真看手势…';
-      return;
-    }
-
-    const token = ++visionStreamToken;
-    panel.classList.remove('hidden');
-    $('analysisStreamSpacer')?.classList.remove('hidden');
-    if (status) status.textContent = '正在连接实时画面…';
-    frame.onload = () => {
-      if (token !== visionStreamToken) return;
-      if (status) status.textContent = '播放页面已加载，等待手势画面…';
-    };
-    frame.onerror = () => {
-      if (token !== visionStreamToken) return;
-      if (status) status.textContent = '实时画面连接失败，识别仍会继续';
-    };
+    // Reuse the connection across repeated video events and adjudication.
+    if (activeVisionUrl === normalizedUrl && frame.src !== 'about:blank') return;
     activeVisionUrl = normalizedUrl;
-    frame.src = normalizedUrl;
+    const playerUrl = new URL('./stream-player.html', window.location.href);
+    playerUrl.searchParams.set('stream', normalizedUrl);
+    frame.src = playerUrl.toString();
   }
 
   function analysisFailureVisible() {

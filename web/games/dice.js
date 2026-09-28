@@ -16,8 +16,8 @@ export function register(engine) {
   let playerDice = [];
   let agentDice = [];
   let countdownAudioContext = null;
-  let visionStreamToken = 0;
   let participantSides = null;
+  let activeVisionUrl = '';
   let round = null;
   let lastRenderedState = '';
   let lastCountdownValue = '';
@@ -55,17 +55,13 @@ export function register(engine) {
 
   // ---- 实时画面（MediaMTX WebRTC iframe，保持原有边界） ----
   function stopVisionStream() {
-    visionStreamToken += 1;
     const panel = $('analysisStreamPanel');
     const frame = $('analysisStream');
     if (!panel || !frame) return;
-    frame.onload = null;
-    frame.onerror = null;
+    activeVisionUrl = '';
     frame.src = 'about:blank';
     panel.classList.add('hidden');
     $('analysisStreamSpacer')?.classList.add('hidden');
-    const status = $('analysisStreamState');
-    if (status) status.textContent = '实时画面已关闭';
   }
 
   function startVisionStream(event) {
@@ -74,8 +70,6 @@ export function register(engine) {
     if (!panel || !frame) return;
     const configuredUrl = event && typeof event.url === 'string' ? event.url.trim() : '';
     if (!configuredUrl) return;
-
-    const token = ++visionStreamToken;
     let streamUrl;
     try {
       streamUrl = new URL(configuredUrl, window.location.href);
@@ -83,26 +77,15 @@ export function register(engine) {
     } catch (_) {
       return;
     }
-    // The MediaMTX WebRTC page reads these options and starts muted playback,
-    // which is allowed when the analysis page opens without a user gesture.
-    streamUrl.searchParams.set('autoplay', '1');
-    streamUrl.searchParams.set('muted', '1');
-    streamUrl.searchParams.set('controls', '0');
-    streamUrl.searchParams.set('playsinline', '1');
-
+    const normalizedUrl = streamUrl.toString();
     panel.classList.remove('hidden');
     $('analysisStreamSpacer')?.classList.remove('hidden');
-    const status = $('analysisStreamState');
-    if (status) status.textContent = '正在连接实时画面…';
-    frame.onload = () => {
-      if (token !== visionStreamToken) return;
-      if (status) status.textContent = '播放页面已加载，等待 YOLO 画面…';
-    };
-    frame.onerror = () => {
-      if (token !== visionStreamToken) return;
-      if (status) status.textContent = '实时画面连接失败，识别仍会继续';
-    };
-    frame.src = streamUrl.toString();
+    // Reuse the connection across repeated video events and adjudication.
+    if (activeVisionUrl === normalizedUrl && frame.src !== 'about:blank') return;
+    activeVisionUrl = normalizedUrl;
+    const playerUrl = new URL('./stream-player.html', window.location.href);
+    playerUrl.searchParams.set('stream', normalizedUrl);
+    frame.src = playerUrl.toString();
   }
 
   // ---- 结果与比分渲染 ----

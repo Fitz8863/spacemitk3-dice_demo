@@ -48,7 +48,7 @@ def test_rps_reuses_same_video_url_during_readjudication():
     assert "let activeVisionUrl = ''" in js
     assert "activeVisionUrl === normalizedUrl" in js
     assert "activeVisionUrl = normalizedUrl" in js
-    assert "小搭子正在认真看手势" in js
+    assert "./stream-player.html" in js
 
 
 def test_frontend_preserves_holding_countdown_from_structured_event():
