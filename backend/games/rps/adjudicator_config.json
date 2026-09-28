@@ -88,7 +88,7 @@
   "device": "",
   "width": 1920,
   "height": 1080,
-  "fps": 25,
+  "fps": 24,
   "intra_threads": 2,
   "ep_affinity": "14;15",
   "queue_depth": 2,

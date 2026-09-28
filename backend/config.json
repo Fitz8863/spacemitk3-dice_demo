@@ -15,7 +15,7 @@
   "voice": "default",
   "speed": 1.0,
   "asr_enabled": false,
-  "vision_always_on": false,
+  "vision_always_on": true,
   "robot_home_patrol": true,
   "robot_home_patrol_seconds": 30,
   "standby": {

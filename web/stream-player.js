@@ -12,6 +12,8 @@
   let retryTimer = null;
   let frameCallback = null;
   let disposed = false;
+  let connectionGeneration = 0;
+  let retryAttempts = 0;
   let streamUrl;
 
   function showLoading() {
@@ -25,6 +27,7 @@
     frameCallback = null;
     if (!disposed && video.readyState >= 2 && video.videoWidth > 0) {
       loading.hidden = true;
+      retryAttempts = 0;
     }
   }
 
@@ -57,23 +60,49 @@
     return;
   }
 
+  function closeReader() {
+    // Invalidate callbacks before closing: a retired connection must not
+    // replace the new track or schedule a second retry.
+    connectionGeneration += 1;
+    const previous = reader;
+    reader = null;
+    if (previous !== null) previous.close();
+  }
+
+  function retry(action) {
+    if (disposed) return;
+    clearTimeout(retryTimer);
+    // Cold camera startup normally takes a few seconds. Probe quickly in
+    // that window; back off if the camera/server remains unavailable.
+    const delay = retryAttempts++ < 20 ? 250 : 2000;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (!disposed) action();
+    }, delay);
+  }
+
   function connect() {
     if (disposed) return;
     const endpoint = new URL('whep', streamUrl);
     endpoint.search = streamUrl.search;
+    const generation = ++connectionGeneration;
     reader = new MediaMTXWebRTCReader({
       url: endpoint.toString(),
       onError: (error) => {
-        // MediaMTX retries the WHEP connection itself. Keep its technical errors
-        // in the console, and keep the friendly scene covering the video.
+        if (disposed || generation !== connectionGeneration) return;
         console.debug('Video stream reconnecting:', error);
         showLoading();
+        // close() also cancels MediaMTX's built-in 2-second retry timer.
+        closeReader();
+        retry(connect);
       },
       onTrack: (event) => {
-        if (disposed) return;
+        if (disposed || generation !== connectionGeneration) return;
         showLoading();
         video.srcObject = event.streams[0];
-        video.play().catch(showLoading);
+        video.play().catch(() => {
+          if (generation === connectionGeneration) showLoading();
+        });
       },
     });
   }
@@ -85,7 +114,7 @@
     script.onload = connect;
     script.onerror = () => {
       script.remove();
-      if (!disposed) retryTimer = setTimeout(loadReader, 2000);
+      retry(loadReader);
     };
     document.head.append(script);
   }
@@ -94,7 +123,7 @@
     disposed = true;
     clearTimeout(retryTimer);
     if (frameCallback !== null) video.cancelVideoFrameCallback(frameCallback);
-    if (reader !== null) reader.close();
+    closeReader();
     video.srcObject = null;
   });
   loadReader();
