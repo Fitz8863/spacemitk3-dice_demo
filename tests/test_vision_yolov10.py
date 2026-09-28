@@ -176,10 +176,24 @@ class TestRpsRuntimeConfigContract:
         assert config["rotate"]["enabled"] is True
         assert config["rotate"]["direction"] == "cw"
         assert config["rotate"]["angle"] == 180
+        # 展示旋转与模型方向解耦：检测保持原来验证过的 90° 逆时针
+        # 方向和竖屏下半区（蓝色玩家区），不能把机械臂手势纳入判定。
+        assert config["inference_rotate"] == {
+            "enabled": True,
+            "direction": "ccw",
+            "angle": 90,
+        }
+        assert config["inference_roi"] == {
+            "enabled": True,
+            "x": 0.0,
+            "y": 0.5,
+            "w": 1.0,
+            "h": 0.5,
+        }
         assert config["roi"]["enabled"] is True
         assert config["roi"] == {
             "enabled": True,
-            "x": 0.0,
+            "x": 0.5,
             "y": 0.0,
             "w": 0.5,
             "h": 1.0,

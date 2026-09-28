@@ -32,6 +32,7 @@ export function register(engine) {
   let round = null;
   let lastRenderedState = '';
   let visionStreamToken = 0;
+  let activeVisionUrl = '';
   let participantSides = null;
   let savedRulesMarkup = '';
   let savedDetectLabel = '';
@@ -73,6 +74,7 @@ export function register(engine) {
     if (!panel || !frame) return;
     frame.onload = null;
     frame.onerror = null;
+    activeVisionUrl = '';
     frame.src = 'about:blank';
     panel.classList.add('hidden');
     $('analysisStreamSpacer')?.classList.add('hidden');
@@ -87,7 +89,6 @@ export function register(engine) {
     const configuredUrl = event && typeof event.url === 'string' ? event.url.trim() : '';
     if (!configuredUrl) return;
 
-    const token = ++visionStreamToken;
     let streamUrl;
     try {
       streamUrl = new URL(configuredUrl, window.location.href);
@@ -102,9 +103,21 @@ export function register(engine) {
     streamUrl.searchParams.set('controls', '0');
     streamUrl.searchParams.set('playsinline', '1');
 
+    const normalizedUrl = streamUrl.toString();
     panel.classList.remove('hidden');
     $('analysisStreamSpacer')?.classList.remove('hidden');
     const status = $('analysisStreamState');
+    // 常驻 vision runtime 会在同一回合的重新判定时再发一次相同
+    // video 事件。重新赋值 iframe.src 会让 WebRTC 播放器整页重载，
+    // 观众就会看到黑屏。同 URL 直接复用当前连接。
+    if (activeVisionUrl === normalizedUrl && frame.src !== 'about:blank') {
+      if (status) status.textContent = '小搭子正在认真看手势…';
+      return;
+    }
+
+    const token = ++visionStreamToken;
+    panel.classList.remove('hidden');
+    $('analysisStreamSpacer')?.classList.remove('hidden');
     if (status) status.textContent = '正在连接实时画面…';
     frame.onload = () => {
       if (token !== visionStreamToken) return;
@@ -114,7 +127,8 @@ export function register(engine) {
       if (token !== visionStreamToken) return;
       if (status) status.textContent = '实时画面连接失败，识别仍会继续';
     };
-    frame.src = streamUrl.toString();
+    activeVisionUrl = normalizedUrl;
+    frame.src = normalizedUrl;
   }
 
   function analysisFailureVisible() {

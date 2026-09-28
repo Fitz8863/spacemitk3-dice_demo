@@ -39,18 +39,19 @@
 | 键 | 当前值 | 说明 |
 |---|---|---|
 | `conf` | `0.25` | 置信度阈值（模型输出已是概率域）。实测空场景 best_conf≈0.008，真人手势远高于此；**识别不出手时可降到 0.15 试**，误检变多再回调 |
-| `stable_frames` | `15` | **折叠后**类别多重集需连续重复的帧数（≈0.7s @24fps 推理）。手势切换的过渡帧会清零计数——玩家要**保持手势不动**到出结果；识别太慢可降到 10，误判提前可升到 20 |
+| `stable_frames` | `10` | **折叠后**类别多重集需连续重复的帧数（≈0.4s @24fps 推理）。手势切换的过渡帧会清零计数；误判提前可升到 15–20 |
 | `yolov10_enabled` | `true` | `false` = 只推流不推理（透视对位用） |
 
 ## 3. 画面几何（旋转 + ROI）
 
 | 键 | 当前值 | 说明 |
 |---|---|---|
-| `rotate` | `{enabled, cw, 90}` | **相机横装**：OpenCL kernel 采样重映射（CPU 零开销）。推流/识别画面为**竖屏 1080x1920**；detection 坐标恒在旋转后坐标系。改 `direction: ccw` 或 `angle: 180` 前先确认相机物理朝向，别用配置"纠正"画面方向 |
-| `roi` | `{x:0, y:0.5, w:1, h:0.5}` | **识别区域 = 竖屏画面下半**（y 0.5~1.0）：①模型只看该区域（手部目标放大约 **1.8 倍**，小目标更稳）；②框中心不在区域内的检测丢弃——**上半幅（机械臂位置）被确定性排除**。推流画面画绿框白边供对位（实测绿框在 y=960 像素行）。玩家出手要在**下半画面**内，手放太靠上会恒"未识别" |
+| `rotate` | `{enabled:true, direction:cw, angle:180}` | 观众看到的 1920x1080 横屏方向，detection 坐标会映射到这个坐标系 |
+| `inference_rotate` | `{enabled:true, direction:ccw, angle:90}` | 模型保持原先验证过的逆时针 90°方向推理，不跟随 Web 的 180°展示旋转。该方向的下半区对应原始画面左半的蓝色玩家区；模型对手掌朝向敏感，板上同一样本正常方向置信度 0.8356，倒置后 0.0000 |
+| `inference_roi` | `{x:0, y:0.5, w:1, h:0.5}` | 推理只看原检测坐标系的下半区，也就是蓝色玩家区域；机械臂手势被裁剪掉 |
+| `roi` | `{x:0.5, y:0, w:0.5, h:1}` | 180° Web 展示后的右半是蓝色玩家区。runtime 把 `inference_roi` 检出的框映射到这个展示坐标系后，再做门控和绘制 |
 
-**ROI 是"玩家手在画面下半"这一摆位的固化**：如果摄像头/桌子摆位变了，先对位（看推流画面的
-ROI 框），再改 x/y/w/h（占竖屏画面比例，越界启动报错）。
+`inference_roi` 管模型看哪里，`roi` 管观众画面上的最终门控；两者不要混用。相机/桌子摆位改变时先根据推流绿框对位。
 
 ## 4. 采集与推理硬件
 
@@ -67,7 +68,7 @@ ROI 框），再改 x/y/w/h（占竖屏画面比例，越界启动报错）。
 | 键 | 当前值 | 说明 |
 |---|---|---|
 | `video.webrtc_base_url` | `http://127.0.0.1:8889` | 浏览器画面的 WebRTC 基址（mediamtx）；游戏 manifest 的 `video.enabled` 决定页面是否显示（当前 `false`：页面不显示，推流照常，ffplay 可拉流看） |
-| `rtsp.enabled/host/port` | true/127.0.0.1/8554 | runtime 向 mediamtx 推 H.264（VPU 硬编，竖屏 1080x1920） |
+| `rtsp.enabled/host/port` | true/127.0.0.1/8554 | runtime 向 mediamtx 推 H.264（VPU 硬编，横屏 1920x1080） |
 | `rtsp.path` | **不在此声明** | 生产由 manifest 的 `vision_profile.video.path: /rps/det` 经 `--rtsp-path` 恒压；写进来是死键（ Dice 侧已清理过同款纪律）。mediamtx 的 `all_others` 规则覆盖 `/rps/det`，无需改服务配置 |
 
 ## 6. 常见调参速查
@@ -76,7 +77,7 @@ ROI 框），再改 x/y/w/h（占竖屏画面比例，越界启动报错）。
 |---|---|---|
 | 手势识别不出 / 误检 | `conf`（先降后调） | 下一回合 |
 | 识别太慢 / 太快出结果 | `stable_frames`（10~20 之间） | 下一回合 |
-| 手总识别不到 | 看推流绿框：手要在**竖屏下半**；不在就改 `roi` 或调相机 | 下一回合 |
+| 手总识别不到 | 检测仍按顺时针 90°坐标看**下半区**；先确认蓝色玩家区位置，再改 `inference_roi` 或调相机 | 下一回合 |
 | 加/改折叠手势 | `rps_map`（源类名必须在 `classes` 里） | 下一回合（先 self-test） |
 | 换模型 | `model` + `classes` 成对换（文件放 `models/`） | 下一回合（必须 self-test） |
 | 相机换口后打不开 | `v4l2-ctl --list-devices` 核对节点 → 改 `camera` | 下一回合 |
@@ -91,12 +92,13 @@ cd ~/projects/dice-game/main/vision/yolov10_objdetect
 ./build/yolov10_camera --config ../../backend/games/rps/adjudicator_config.json \
     --self-test --no-rtsp
 # 期望：started 事件 + Filtering class_id 33 + RPS mode: Paper/Rock/Scissors<={...}
-#       + Rotation: 90 cw + Inference crop: 1080x960 at +0,+960 + Self-test passed
+#       + Rotation: 180 + Inference rotation: 90 ccw
+#       + Inference crop: 1080x960 at +0,+960 + Self-test passed
 
 # 2. 真机短跑 60 帧（占摄像头，看检测统计）
 ./build/yolov10_camera --config ../../backend/games/rps/adjudicator_config.json \
     --max-frames 60 --no-rtsp
-# 期望：GStreamer camera opened ... @24 + 竖屏帧 + 你的手势出现在检测里
+# 期望：GStreamer camera opened ... @24 + 横屏展示 + 蓝色玩家区的人手出现在检测里
 
 # 3. 推流目检（绿框/手部框/标签）
 ffplay -rtsp_transport tcp rtsp://<板端IP>:8554/rps/det

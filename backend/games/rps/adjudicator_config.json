@@ -1,5 +1,5 @@
 {
-  "_note": "rps 专属的视觉 runtime 配置（模型与检测参数 + 硬件），由 vision/yolov10_objdetect 二进制消费。manifest 的 vision_profile.runtime_config 指向本文件。整份替换、不做字段级合并：这里没写的键会回落到 C++ 编译期默认值，加字段请整份补齐。model/classes/rps_map 按本文件所在目录解析——classes 是模型词表（34 类 HaGRID），与模型文件成对声明（包内零内置词表）；rps_map 把源手势折叠成游戏标签，折叠发生在 C++ 稳定计数之前（palm↔stop 同为 Paper 不清零稳定计数）。与 dice 的差异：1080p@25、rotate 180（将原竖向预览再顺时针旋转 90°，输出 1920×1080 横屏）、ROI 左半画面（确定性排除右半的机械臂，只识别玩家手势）、v10 端到端模型 [1,300,6] 免 NMS。rtsp.path 不在此声明：manifest 的 vision_profile.video.path=/rps/det 经 --rtsp-path 恒压过配置。",
+  "_note": "rps 专属的视觉 runtime 配置（模型与检测参数 + 硬件）。Web 展示使用 rotate 180 的横屏画面；检测独立保持原先 field-tested 的 90° 逆时针方向和下半区 ROI，只识别原始画面左半的蓝色玩家区域。runtime 会把检测框映射回展示画面右半，红色机械臂区域不会进入判定。",
   "model": "models/yolov10n_gestures.q.onnx",
   "classes": [
     "grabbing",
@@ -65,9 +65,21 @@
     "direction": "cw",
     "angle": 180
   },
-  "roi": {
+  "inference_rotate": {
+    "enabled": true,
+    "direction": "ccw",
+    "angle": 90
+  },
+  "inference_roi": {
     "enabled": true,
     "x": 0.0,
+    "y": 0.5,
+    "w": 1.0,
+    "h": 0.5
+  },
+  "roi": {
+    "enabled": true,
+    "x": 0.5,
     "y": 0.0,
     "w": 0.5,
     "h": 1.0

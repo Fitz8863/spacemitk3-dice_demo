@@ -41,6 +41,16 @@ def test_frontend_keeps_video_until_terminal_complete():
     assert "stopVisionStream()" in js
 
 
+def test_rps_reuses_same_video_url_during_readjudication():
+    """同一常驻推流重试时不应重载 iframe，否则每次重新判定都黑屏。"""
+    js = (ROOT / "web/games/rps.js").read_text(encoding="utf-8")
+
+    assert "let activeVisionUrl = ''" in js
+    assert "activeVisionUrl === normalizedUrl" in js
+    assert "activeVisionUrl = normalizedUrl" in js
+    assert "小搭子正在认真看手势" in js
+
+
 def test_frontend_preserves_holding_countdown_from_structured_event():
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
     holding = js.split("event.phase === 'holding'", 1)[1].split("}", 1)[0]

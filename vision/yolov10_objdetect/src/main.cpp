@@ -184,6 +184,13 @@ struct Args {
     bool rotate_enabled = false;
     std::string rotate_direction = "cw";  // "cw" | "ccw" (90-degree modes only)
     int rotate_angle = 90;                // 90 | 180
+    // Model geometry is independent from the published stream geometry.
+    // This preserves the field-tested player ROI while allowing the web
+    // stream to use a different rotation purely for presentation.
+    bool inference_rotate_configured = false;
+    bool inference_rotate_enabled = false;
+    std::string inference_rotate_direction = "cw";
+    int inference_rotate_angle = 90;
     int max_frames = 0;
     bool self_test = false;
     std::string dump_input;
@@ -202,6 +209,10 @@ struct Args {
     // is drawn on the stream for alignment.
     bool roi_enabled = false;
     float roi_x = 0.0f, roi_y = 0.0f, roi_w = 1.0f, roi_h = 1.0f;
+    bool inference_roi_configured = false;
+    bool inference_roi_enabled = false;
+    float inference_roi_x = 0.0f, inference_roi_y = 0.0f;
+    float inference_roi_w = 1.0f, inference_roi_h = 1.0f;
     // Label collapsing: fold the model vocabulary onto game labels via
     // rps_map; off keeps raw declared classes. Both the table and the
     // vocabulary come from config — no defaults live in the binary.
@@ -413,6 +424,49 @@ static bool load_config(const std::string& path, Args& a) {
             }
             a.rotate_angle = angle;
         }
+        const cv::FileNode inference_rotate = root["inference_rotate"];
+        if (!inference_rotate.empty()) {
+            if (!inference_rotate.isMap()) {
+                std::cerr << "config inference_rotate must be a JSON object "
+                             "{enabled, direction, angle}\n";
+                return false;
+            }
+            a.inference_rotate_configured = true;
+            if (!read_config_bool(inference_rotate, "enabled",
+                                  a.inference_rotate_enabled)) return false;
+            read_config_value(inference_rotate, "direction",
+                              a.inference_rotate_direction);
+            std::transform(a.inference_rotate_direction.begin(),
+                           a.inference_rotate_direction.end(),
+                           a.inference_rotate_direction.begin(),
+                           [](unsigned char c) {
+                               return static_cast<char>(std::tolower(c));
+                           });
+            if (a.inference_rotate_direction != "cw" &&
+                a.inference_rotate_direction != "ccw") {
+                std::cerr << "config inference_rotate.direction must be \"cw\" or \"ccw\"\n";
+                return false;
+            }
+            read_config_value(inference_rotate, "angle", a.inference_rotate_angle);
+            if (a.inference_rotate_angle != 90 && a.inference_rotate_angle != 180) {
+                std::cerr << "config inference_rotate.angle must be 90 or 180\n";
+                return false;
+            }
+        }
+        const cv::FileNode inference_roi = root["inference_roi"];
+        if (!inference_roi.empty()) {
+            if (!inference_roi.isMap()) {
+                std::cerr << "config inference_roi must be a JSON object {enabled,x,y,w,h}\n";
+                return false;
+            }
+            a.inference_roi_configured = true;
+            if (!read_config_bool(inference_roi, "enabled",
+                                  a.inference_roi_enabled)) return false;
+            read_config_value(inference_roi, "x", a.inference_roi_x);
+            read_config_value(inference_roi, "y", a.inference_roi_y);
+            read_config_value(inference_roi, "w", a.inference_roi_w);
+            read_config_value(inference_roi, "h", a.inference_roi_h);
+        }
         if (!read_config_bool(root, "rps_mode", a.rps_mode)) return false;
         const cv::FileNode rps_map = root["rps_map"];
         if (!rps_map.empty()) {
@@ -556,6 +610,15 @@ static bool validate_args(Args& a) {
         a.roi_x + a.roi_w > 1.0f || a.roi_y + a.roi_h > 1.0f) {
         std::cerr << "config roi must satisfy 0<=x, 0<=y, w>0, h>0, x+w<=1, y+h<=1 "
                      "(fractions of the streamed frame)\n";
+        return false;
+    }
+    if (a.inference_roi_configured &&
+        (a.inference_roi_x < 0.0f || a.inference_roi_y < 0.0f ||
+         a.inference_roi_w <= 0.0f || a.inference_roi_h <= 0.0f ||
+         a.inference_roi_x + a.inference_roi_w > 1.0f ||
+         a.inference_roi_y + a.inference_roi_h > 1.0f)) {
+        std::cerr << "config inference_roi must satisfy 0<=x, 0<=y, w>0, h>0, "
+                     "x+w<=1, y+h<=1 (fractions of the inference frame)\n";
         return false;
     }
     if (a.intra_threads < 1) {
@@ -955,6 +1018,55 @@ static void draw_detections(cv::Mat& bgr, const std::vector<Detection>& ds,
     }
 }
 
+// Convert a detection between independently rotated views of the same camera
+// frame. Inference keeps its field-tested orientation and player ROI while
+// the published stream can use a presentation-only rotation.
+static cv::Point2f rotated_to_source(const cv::Point2f& p, int mode,
+                                     int source_w, int source_h) {
+    if (mode == 1) return {static_cast<float>(source_w - 1) - p.y, p.x};
+    if (mode == 2) return {p.y, static_cast<float>(source_h - 1) - p.x};
+    if (mode == 3) {
+        return {static_cast<float>(source_w - 1) - p.x,
+                static_cast<float>(source_h - 1) - p.y};
+    }
+    return p;
+}
+
+static cv::Point2f source_to_rotated(const cv::Point2f& p, int mode,
+                                     int source_w, int source_h) {
+    if (mode == 1) return {p.y, static_cast<float>(source_w - 1) - p.x};
+    if (mode == 2) return {static_cast<float>(source_h - 1) - p.y, p.x};
+    if (mode == 3) {
+        return {static_cast<float>(source_w - 1) - p.x,
+                static_cast<float>(source_h - 1) - p.y};
+    }
+    return p;
+}
+
+static void transform_detection(Detection& d, int from_mode, int to_mode,
+                                int source_w, int source_h,
+                                int output_w, int output_h) {
+    const std::array<cv::Point2f, 4> corners = {{
+        {d.x1, d.y1}, {d.x2, d.y1}, {d.x1, d.y2}, {d.x2, d.y2}
+    }};
+    float x1 = static_cast<float>(output_w - 1);
+    float y1 = static_cast<float>(output_h - 1);
+    float x2 = 0.0f;
+    float y2 = 0.0f;
+    for (const auto& corner : corners) {
+        const auto source = rotated_to_source(corner, from_mode, source_w, source_h);
+        const auto output = source_to_rotated(source, to_mode, source_w, source_h);
+        x1 = std::min(x1, output.x);
+        y1 = std::min(y1, output.y);
+        x2 = std::max(x2, output.x);
+        y2 = std::max(y2, output.y);
+    }
+    d.x1 = std::clamp(x1, 0.0f, static_cast<float>(output_w - 1));
+    d.y1 = std::clamp(y1, 0.0f, static_cast<float>(output_h - 1));
+    d.x2 = std::clamp(x2, 0.0f, static_cast<float>(output_w - 1));
+    d.y2 = std::clamp(y2, 0.0f, static_cast<float>(output_h - 1));
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1019,11 +1131,23 @@ int main(int argc, char** argv) {
     // 180 keeps the frame dimensions; the 90-degree modes swap them.
     const int rotate_mode = !a.rotate_enabled ? 0
         : (a.rotate_angle == 180 ? 3 : (a.rotate_direction == "ccw" ? 1 : 2));
+    const int inference_rotate_mode = !a.inference_rotate_configured
+        ? rotate_mode
+        : (!a.inference_rotate_enabled ? 0
+           : (a.inference_rotate_angle == 180 ? 3
+              : (a.inference_rotate_direction == "ccw" ? 1 : 2)));
     const bool swap_dims = (rotate_mode == 1 || rotate_mode == 2);
     if (rotate_mode != 0) {
         std::cout << "Rotation: "
                   << (rotate_mode == 3 ? "180" :
                       (rotate_mode == 1 ? "90 ccw" : "90 cw")) << "\n";
+    }
+    if (inference_rotate_mode != rotate_mode) {
+        std::cout << "Inference rotation: "
+                  << (inference_rotate_mode == 0 ? "none" :
+                      (inference_rotate_mode == 3 ? "180" :
+                       (inference_rotate_mode == 1 ? "90 ccw" : "90 cw")))
+                  << " (published stream keeps its display rotation)\n";
     }
 
     // Inference crop: with roi enabled the model only sees the ROI region of
@@ -1031,17 +1155,31 @@ int main(int argc, char** argv) {
     // model space. The rect is even-aligned so the letterbox pads stay even.
     const int stream_w = swap_dims ? a.height : a.width;
     const int stream_h = swap_dims ? a.width : a.height;
+    const bool inference_swap_dims =
+        (inference_rotate_mode == 1 || inference_rotate_mode == 2);
+    const int inference_w = inference_swap_dims ? a.height : a.width;
+    const int inference_h = inference_swap_dims ? a.width : a.height;
+    const bool inference_roi_enabled = a.inference_roi_configured
+        ? a.inference_roi_enabled : a.roi_enabled;
+    const float inference_roi_x = a.inference_roi_configured
+        ? a.inference_roi_x : a.roi_x;
+    const float inference_roi_y = a.inference_roi_configured
+        ? a.inference_roi_y : a.roi_y;
+    const float inference_roi_w = a.inference_roi_configured
+        ? a.inference_roi_w : a.roi_w;
+    const float inference_roi_h = a.inference_roi_configured
+        ? a.inference_roi_h : a.roi_h;
     const auto even_floor = [](float v) { return std::max(0, static_cast<int>(v) & ~1); };
-    int crop_w = a.roi_enabled ? even_floor(a.roi_w * stream_w) : stream_w;
-    int crop_h = a.roi_enabled ? even_floor(a.roi_h * stream_h) : stream_h;
-    int crop_ox = a.roi_enabled ? even_floor(a.roi_x * stream_w) : 0;
-    int crop_oy = a.roi_enabled ? even_floor(a.roi_y * stream_h) : 0;
-    crop_w = std::min(crop_w, even_floor(stream_w));
-    crop_h = std::min(crop_h, even_floor(stream_h));
-    crop_ox = std::min(crop_ox, stream_w - crop_w);
-    crop_oy = std::min(crop_oy, stream_h - crop_h);
+    int crop_w = inference_roi_enabled ? even_floor(inference_roi_w * inference_w) : inference_w;
+    int crop_h = inference_roi_enabled ? even_floor(inference_roi_h * inference_h) : inference_h;
+    int crop_ox = inference_roi_enabled ? even_floor(inference_roi_x * inference_w) : 0;
+    int crop_oy = inference_roi_enabled ? even_floor(inference_roi_y * inference_h) : 0;
+    crop_w = std::min(crop_w, even_floor(inference_w));
+    crop_h = std::min(crop_h, even_floor(inference_h));
+    crop_ox = std::min(crop_ox, inference_w - crop_w);
+    crop_oy = std::min(crop_oy, inference_h - crop_h);
     std::cout << "Inference crop: " << crop_w << "x" << crop_h << " at +" << crop_ox
-              << ",+" << crop_oy << " (stream " << stream_w << "x" << stream_h
+              << ",+" << crop_oy << " (inference " << inference_w << "x" << inference_h
               << ", hand scale x" << std::fixed << std::setprecision(2)
               << (static_cast<float>(std::max(stream_w, stream_h)) /
                   std::max(1, std::max(crop_w, crop_h)))
@@ -1071,7 +1209,7 @@ int main(int argc, char** argv) {
             constexpr int synthetic_height = 720;
             cv::Mat synthetic_nv12(synthetic_height * 3 / 2, synthetic_width,
                                    CV_8UC1, cv::Scalar(128));
-            const auto prep_result = pre->preprocess(synthetic_nv12, rotate_mode);
+            const auto prep_result = pre->preprocess(synthetic_nv12, inference_rotate_mode);
             if (!prep_result.data || prep_result.data->size() != 3 * 640 * 640) {
                 throw std::runtime_error("OpenCL self-test returned an invalid tensor");
             }
@@ -1273,7 +1411,7 @@ int main(int argc, char** argv) {
             }
             try {
                 const auto t0 = Clock::now();
-                packet->prep = pre->preprocess(*packet->nv12, rotate_mode,
+                packet->prep = pre->preprocess(*packet->nv12, inference_rotate_mode,
                                                packet->crop_w, packet->crop_h,
                                                packet->crop_ox, packet->crop_oy);
                 if (!a.dump_input.empty() && packet->id == 0) {
@@ -1329,6 +1467,15 @@ int main(int argc, char** argv) {
                         d.x2 += packet->crop_ox;
                         d.y1 += packet->crop_oy;
                         d.y2 += packet->crop_oy;
+                    }
+                }
+                // Convert model-space boxes into the independently rotated
+                // display space before ROI gating, snapshots, and overlays.
+                if (inference_rotate_mode != rotate_mode) {
+                    for (auto& d : result->detections) {
+                        transform_detection(d, inference_rotate_mode, rotate_mode,
+                                            a.width, a.height,
+                                            result->width, result->height);
                     }
                 }
                 if (no_gesture_id >= 0) {
