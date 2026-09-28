@@ -131,6 +131,24 @@ def test_frontend_renders_structured_diagnosis_and_retry_prompt():
     assert "analysisFailureActions" in js
 
 
+def test_frontend_uses_one_centered_stage_and_expands_live_video():
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+
+    # The companion is an ambient overlay, not a width-consuming left column.
+    assert "body .experience-shell > .buddy-panel" in css
+    assert "position: absolute;" in css.split(
+        "body .experience-shell > .buddy-panel", 1
+    )[1].split("}", 1)[0]
+    assert "background: transparent;" in css.split(
+        "body .experience-shell > .buddy-panel", 1
+    )[1].split("}", 1)[0]
+    # Wide displays devote most of the canvas to the stream and results.
+    assert "clamp(980px, 62vw, 1500px)" in css
+    assert "clamp(1120px, 70vw, 1740px)" in css
+    # The mascot remains attached to the stream edge while the viewport grows.
+    assert "body:has(.dice-video) .buddy-art" in css
+
+
 def test_frontend_blue_button_retries_adjudication_after_diagnosis():
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
