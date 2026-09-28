@@ -153,8 +153,11 @@ def test_frontend_uses_one_centered_stage_and_expands_live_video():
     assert "background: transparent;" in css.split(
         "body .experience-shell > .buddy-panel", 1
     )[1].split("}", 1)[0]
-    # Wide displays devote most of the canvas to the stream and results.
-    assert "clamp(1200px, 64vw, 2100px)" in css
+    # 局内视频平时收成中窗，仅裁决（analysis）放大成宽屏主画面；
+    # result/analysis_failed 不再放大。
+    assert "clamp(560px, 40vw, 900px)" in css
+    assert 'body:has(.dice-video)[data-phase="analysis"] .vision-pip' in css
+    assert ":is([data-phase=\"analysis\"], [data-phase=\"result\"])" not in css
     assert "clamp(1380px, 68vw, 2300px)" in css
     assert "@media (min-width: 1400px)" in css
     # The mascot is reparented into the stream so it remains attached to the

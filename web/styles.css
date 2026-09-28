@@ -630,9 +630,9 @@ body:has(.dice-video) .stage-copy { font-size: 16px; line-height: 1.4; text-wrap
 body:has(.dice-video) .stage-body { flex: 0 0 auto; padding: 12px 0 0; max-width: 1600px; }
 body:has(.dice-video) .vision-pip {
   position: static; transform: none; width: min(100%, clamp(840px, 44vw, 1500px)); box-sizing: border-box;
-  padding: 8px; margin: 0 auto; border-radius: 18px; z-index: auto; transition: none;
+  padding: 8px; margin: 0 auto; border-radius: 18px; z-index: auto; transition: width .4s cubic-bezier(.25,.9,.3,1.05);
 }
-body:has(.dice-video):is([data-phase="analysis"], [data-phase="result"]) .vision-pip {
+body:has(.dice-video)[data-phase="analysis"] .vision-pip {
   width: min(100%, clamp(1100px, 60vw, 1800px));
 }
 body:has(.dice-video) .vision-pip .analysis-stream-head { display: flex; margin: 0 4px 6px; font-size: 13px; }
@@ -778,10 +778,11 @@ body:has(.dice-video) .buddy-copy { top: 28px; }
    same width, while result/analysis get a little more room for legibility. */
 body:has(.dice-video) .stage { padding-inline: clamp(20px, 2.2vw, 44px); }
 body:has(.dice-video) .stage-body { max-width: min(94vw, 2800px); }
+/* 局内平时收成中窗，只在裁决（analysis）放大成主画面；宽度过渡让切换不跳变。 */
 body:has(.dice-video) .vision-pip {
-  width: min(100%, clamp(1200px, 64vw, 2100px));
+  width: min(100%, clamp(560px, 40vw, 900px));
 }
-body:has(.dice-video):is([data-phase="analysis"], [data-phase="result"]) .vision-pip {
+body:has(.dice-video)[data-phase="analysis"] .vision-pip {
   width: min(100%, clamp(1380px, 68vw, 2300px));
 }
 

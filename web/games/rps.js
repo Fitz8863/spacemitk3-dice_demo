@@ -281,7 +281,7 @@ export function register(engine) {
   // ---- 对局生命周期 ----
   async function enter(manifest) {
     // 与摇骰子共用宽屏视频布局：视频成为局内主画面，隐藏左侧装饰栏，
-    // 裁决与结果阶段自动进一步放大。
+    // 仅裁决（analysis）阶段自动进一步放大。
     $('analysisStreamPanel').classList.add('dice-video');
     configureParticipants(manifest);
     // 共享视图换上猜拳措辞（HTML 默认是 dice 的），teardown 还原。
