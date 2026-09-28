@@ -755,13 +755,21 @@ body .experience-shell > .buddy-panel {
   margin: 0;
 }
 
-/* The mascot overlaps the upper-right edge of the live camera like a sticker.
-   The right inset follows the centered player's width so it stays attached as
-   the viewport grows. */
-body:has(.dice-video) .buddy-art {
-  top: clamp(76px, 6vw, 116px);
-  right: max(22px, calc((100% - clamp(980px, 62vw, 1500px)) / 2 - 54px));
-  width: clamp(112px, 7.5vw, 164px);
+/* The mascot is moved into the live player by app.js and overlaps its corner
+   like a sticker. Its anchor now follows the player at every viewport size. */
+body:has(.dice-video) .vision-pip {
+  position: relative;
+  inset: auto;
+  transform: none;
+  overflow: visible;
+}
+body:has(.dice-video) .vision-pip > .buddy-art {
+  top: clamp(-96px, -5vw, -70px);
+  right: clamp(-92px, -4.5vw, -58px);
+  width: clamp(150px, 10vw, 220px);
+  margin: 0;
+  z-index: 4;
+  pointer-events: none;
 }
 body:has(.dice-video) .buddy-speech { display: none; }
 body:has(.dice-video) .buddy-copy { top: 28px; }
@@ -769,19 +777,23 @@ body:has(.dice-video) .buddy-copy { top: 28px; }
 /* Use the surrounding canvas on wide screens.  Rules and controls share the
    same width, while result/analysis get a little more room for legibility. */
 body:has(.dice-video) .stage { padding-inline: clamp(20px, 2.2vw, 44px); }
-body:has(.dice-video) .stage-body { max-width: min(88vw, 1740px); }
+body:has(.dice-video) .stage-body { max-width: min(94vw, 2800px); }
 body:has(.dice-video) .vision-pip {
-  width: min(100%, clamp(980px, 62vw, 1500px));
+  width: min(100%, clamp(1200px, 64vw, 2100px));
 }
 body:has(.dice-video):is([data-phase="analysis"], [data-phase="result"]) .vision-pip {
-  width: min(100%, clamp(1120px, 70vw, 1740px));
+  width: min(100%, clamp(1380px, 68vw, 2300px));
 }
 
 @media (max-width: 1080px) {
   .stage-body { max-width: 94vw; }
   .buddy-copy, .buddy-speech, .buddy-note { display: none; }
   .buddy-art { top: 24px; right: 22px; width: 112px; }
-  body:has(.dice-video) .buddy-art { top: 70px; right: 12px; width: 104px; }
+  body:has(.dice-video) .vision-pip > .buddy-art {
+    top: -54px;
+    right: -12px;
+    width: 104px;
+  }
 }
 
 @media (max-width: 720px) {
@@ -790,4 +802,79 @@ body:has(.dice-video):is([data-phase="analysis"], [data-phase="result"]) .vision
   .topbar { min-height: 68px; }
   .stage-body { max-width: 100%; }
   body:has(.dice-video) .vision-pip { width: 100%; }
+}
+
+/* Ultra-wide exhibition screens need a larger reading scale. Pixel caps from
+   the tablet layout otherwise leave most of a 2K/4K canvas unused. */
+@media (min-width: 1400px) {
+  .app-shell { padding-inline: clamp(20px, 1.5vw, 54px); }
+  .topbar { min-height: 94px; }
+  .brand-logo { width: clamp(210px, 7vw, 270px); height: auto; }
+  .brand-name { font-size: clamp(22px, 1vw, 30px); }
+  .companion-status { padding: 12px 18px; font-size: clamp(15px, .72vw, 20px); }
+  .icon-button { width: 58px; height: 58px; font-size: 26px; }
+
+  .experience-shell,
+  .stage { min-height: calc(100dvh - 132px); }
+  .stage { padding: clamp(24px, 1.6vw, 48px) clamp(36px, 3vw, 92px); }
+  .stage-head { margin: 22px 0 34px; }
+  .stage-title { font-size: clamp(54px, 3vw, 76px); }
+  .stage-copy { max-width: 1180px; font-size: clamp(21px, 1vw, 28px); }
+  .stage-kicker { font-size: 14px; }
+  .stage-body { max-width: min(92vw, 2600px); }
+
+  .buddy-copy { width: clamp(280px, 18vw, 440px); }
+  .buddy-copy p { font-size: 17px; }
+  .buddy-copy h2 { font-size: clamp(30px, 1.6vw, 42px); }
+  .buddy-speech { font-size: 17px; }
+  .buddy-art { width: clamp(160px, 9.5vw, 230px); }
+  .buddy-note { font-size: 15px; }
+
+  .standby-scene { gap: 46px; }
+  .standby-orb { width: 250px; height: 250px; }
+  .standby-core { width: 62px; height: 62px; border-radius: 18px; }
+  .standby-zzz { font-size: 22px; }
+  .standby-hint { font-size: 28px; }
+  .standby-wake-words { font-size: 21px; }
+
+  .view[data-view="select"] { max-width: min(78vw, 2300px); }
+  .game-list { gap: 24px; margin-bottom: 38px; }
+  .game-option { gap: 30px; padding: 30px 38px; border-radius: 30px; }
+  .game-icon { width: 94px; height: 94px; font-size: 52px; }
+  .game-copy { gap: 11px; }
+  .game-copy strong { font-size: 44px; }
+  .game-copy small { font-size: 25px; }
+  .game-arrow { width: 48px; height: 48px; font-size: 24px; }
+  .game-lock { padding: 10px 18px; font-size: 19px; }
+
+  .btn-circle { width: 150px; height: 150px; font-size: 28px; }
+  .btn-pill { padding: 20px 44px; font-size: 26px; }
+  .rules-list { gap: 26px; margin-bottom: 44px; }
+  .rules-item { min-height: 220px; padding: 28px 30px; }
+  .rules-item > span { width: 58px; height: 48px; font-size: 26px; }
+  .rules-item strong { margin-top: 14px; font-size: 42px; }
+  .rules-item p { font-size: 26px; line-height: 1.5; }
+
+  body:has(.dice-video) .stage { padding-inline: clamp(32px, 2.5vw, 78px); }
+  body:has(.dice-video) .stage-head { margin-bottom: 22px; }
+  body:has(.dice-video) .stage-title { font-size: clamp(42px, 2.2vw, 64px); }
+  body:has(.dice-video) .stage-copy { font-size: clamp(22px, 1vw, 28px); }
+  body:has(.dice-video) .analysis-stream-head { font-size: 20px; }
+  body:has(.dice-video) .view-title { font-size: clamp(38px, 1.9vw, 54px); }
+  body:has(.dice-video) .arm-progress,
+  body:has(.dice-video) .analysis-status { font-size: 25px; }
+  body:has(.dice-video) .analysis-step strong { font-size: 26px; }
+  body:has(.dice-video) .result-subtitle,
+  body:has(.dice-video) .score-label { font-size: 22px; }
+  body:has(.dice-video) .score-side > strong { font-size: 68px; }
+  body:has(.dice-video) .view-actions .btn-circle {
+    width: 138px;
+    height: 138px;
+    font-size: 28px;
+  }
+  body:has(.dice-video) .view-actions .btn-pill {
+    min-height: 82px;
+    padding: 18px 32px;
+    font-size: 24px;
+  }
 }

@@ -133,6 +133,7 @@ def test_frontend_renders_structured_diagnosis_and_retry_prompt():
 
 def test_frontend_uses_one_centered_stage_and_expands_live_video():
     css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+    js = (ROOT / "web/app.js").read_text(encoding="utf-8")
 
     # The companion is an ambient overlay, not a width-consuming left column.
     assert "body .experience-shell > .buddy-panel" in css
@@ -143,10 +144,14 @@ def test_frontend_uses_one_centered_stage_and_expands_live_video():
         "body .experience-shell > .buddy-panel", 1
     )[1].split("}", 1)[0]
     # Wide displays devote most of the canvas to the stream and results.
-    assert "clamp(980px, 62vw, 1500px)" in css
-    assert "clamp(1120px, 70vw, 1740px)" in css
-    # The mascot remains attached to the stream edge while the viewport grows.
-    assert "body:has(.dice-video) .buddy-art" in css
+    assert "clamp(1200px, 64vw, 2100px)" in css
+    assert "clamp(1380px, 68vw, 2300px)" in css
+    assert "@media (min-width: 1400px)" in css
+    # The mascot is reparented into the stream so it remains attached to the
+    # upper-right edge while the viewport and player grow.
+    assert "function bindBuddyToLiveVideo()" in js
+    assert "panel.append(buddy)" in js
+    assert "body:has(.dice-video) .vision-pip > .buddy-art" in css
 
 
 def test_frontend_blue_button_retries_adjudication_after_diagnosis():

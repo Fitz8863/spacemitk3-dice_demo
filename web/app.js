@@ -19,6 +19,33 @@ const state = {
 const $ = (id) => document.getElementById(id);
 const views = [...document.querySelectorAll('[data-view]')];
 
+// The companion is ambient decoration on the menu, but becomes part of the
+// camera composition during a game. Reparenting the existing SVG keeps one
+// accessible mascot in the DOM and makes its position follow the video frame
+// instead of the viewport. Game modules toggle .dice-video when entering and
+// leaving, so a small observer is enough for both dice and RPS.
+function bindBuddyToLiveVideo() {
+  const panel = $('analysisStreamPanel');
+  const home = document.querySelector('.buddy-panel');
+  const buddy = home?.querySelector('.buddy-art');
+  const homeAnchor = home?.querySelector('.buddy-label');
+  if (!panel || !home || !buddy || !homeAnchor) return;
+
+  const sync = () => {
+    if (panel.classList.contains('dice-video')) {
+      if (buddy.parentElement !== panel) panel.append(buddy);
+      return;
+    }
+    if (buddy.parentElement !== home) home.insertBefore(buddy, homeAnchor);
+  };
+
+  new MutationObserver(sync).observe(panel, {
+    attributes: true,
+    attributeFilter: ['class'],
+  });
+  sync();
+}
+
 const SELECT_META = ['挑个游戏，开玩吧！', '选好游戏，再按下绿色按钮，小搭子陪你一起出发。'];
 
 const gameModules = {};
@@ -1000,6 +1027,7 @@ const engine = {
 
 registerGame(registerDice(engine));
 registerGame(registerRps(engine));
+bindBuddyToLiveVideo();
 
 $('startGame').addEventListener('click', enterSelectedGame);
 $('gameList').addEventListener('dblclick', enterSelectedGame);
