@@ -2,7 +2,7 @@
 
 玩家手势来自视觉：``observe()`` 拿 v10 runtime 的稳定观测（类别已在 C++
 折叠成 Rock/Paper/Scissors），最高置信度的检测就是玩家的出拳。agent 手势
-由机械臂执行：play 状态的口令 wav 播完即由状态机派发 ``throw_gesture``
+由机械臂执行：预备动作完成后，play 状态同步派发口令与 ``throw_gesture``
 （臂侧随机选拳），本管线通过回合共享的 ``arm_throw`` 槽消费**臂实际出的
 那份拳形**——随机数单一事实源在臂的 outcome 回报，判定的 agent 拳形与观众
 看到的拳形恒一致。槽缺失（独立调用/旧装配）时走管线直发兜底：现场随机、
@@ -98,7 +98,7 @@ def _arm_throw_failure(
         "retry_required": True,
         "diagnosis": {
             "reason": _ARM_THROW_DIAGNOSIS_REASON,
-            "message": f"机械臂未完成出拳（{reason}），可按蓝色按钮重试",
+            "message": f"机械臂未完成出拳（{reason}），可按绿色按钮再来一局",
         },
         "source": "local",
     }
@@ -164,6 +164,11 @@ def run(
     on_event: Callable[[Mapping[str, Any]], None],
     arm_throw: Any = None,
 ) -> dict[str, Any]:
+    # A failed preparation/throw must not be masked by a no-hand diagnosis.
+    if isinstance(arm_throw, Mapping) and arm_throw.get("status") == "failed":
+        return _arm_throw_failure(
+            on_log, on_event, str(arm_throw.get("reason") or "机械臂预备或出拳动作未完成")
+        )
     game_id = str(manifest.get("id", "rps"))
     profile = manifest.get("vision_profile")
     if not isinstance(profile, Mapping):
@@ -190,6 +195,10 @@ def run(
     )
     # 无稳定观测（超时/无手）：provider 的诊断契约原样上抛——状态机据此
     # 走 adjudication.diagnosis → analysis_failed（重试路径已有）。
+    if isinstance(arm_throw, Mapping) and arm_throw.get("status") == "failed":
+        return _arm_throw_failure(
+            on_log, on_event, str(arm_throw.get("reason") or "出拳动作未完成")
+        )
     if outcome.get("diagnosed"):
         return outcome
 
@@ -242,7 +251,7 @@ def run(
             return arm_failure
     else:
         return _arm_throw_failure(
-            on_log, on_event, "play 提前出拳未成功（failed 或超时未回执）"
+            on_log, on_event, str(arm_throw.get("reason") or "出拳失败或超时未回执")
         )
     result = project(player_gesture, agent_gesture, manifest["participants"], source="yolo_only")
     on_event({"event": "result", **result})

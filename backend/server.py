@@ -770,9 +770,9 @@ def _round_robot_fn(game_id: str, arm_throw: dict | None = None):
     gesture the arm played (single source of truth for the agent's move).
     """
 
-    def _mark_throw_failed() -> None:
+    def _mark_throw_failed(reason: str = "机械臂预备或出拳动作未完成") -> None:
         if arm_throw is not None:
-            arm_throw.update(status="failed", gesture=None)
+            arm_throw.update(status="failed", gesture=None, reason=reason)
 
     def run_robot(action, on_event, is_cancelled, on_log):
         command = str(action.get("command") or "")
@@ -781,12 +781,12 @@ def _round_robot_fn(game_id: str, arm_throw: dict | None = None):
             provider_id = _game_provider_id(game_id, "robot_arm", "")
             if not provider_id:
                 if command in ("throw_gesture", "prepare_throw"):
-                    _mark_throw_failed()
+                    _mark_throw_failed("providers.robot_arm slot is not configured")
                 return {"status": "failed", "reason": "providers.robot_arm slot is not configured"}
             provider = COMPONENTS.require(provider_id, expected_type="robot")
         except DiceArenaError as exc:
             if command in ("throw_gesture", "prepare_throw"):
-                _mark_throw_failed()
+                _mark_throw_failed(exc.message)
             return {"status": "failed", "reason": exc.message}
         try:
             if command == "grasp_cup":
@@ -830,14 +830,16 @@ def _round_robot_fn(game_id: str, arm_throw: dict | None = None):
                 )
                 if isinstance(outcome, dict) and outcome.get("status") == "completed":
                     if arm_throw is not None:
-                        arm_throw.update(status="pending", gesture=None)
+                        arm_throw.update(status="pending", gesture=None, reason=None)
+                else:
+                    _mark_throw_failed(str(outcome.get("reason") or "预备动作未完成") if isinstance(outcome, dict) else "预备动作未完成")
                 return outcome
             if command == "throw_gesture":
                 gesture = action.get("gesture")
                 # 派发即重置：再来一局/重试重新出拳时，消费方必须等到这份
                 # 新结果，而不是读到上一局的 completed（判分≠臂姿的竞态）。
                 if arm_throw is not None:
-                    arm_throw.update(status="pending", gesture=None)
+                    arm_throw.update(status="pending", gesture=None, reason=None)
                 # 出拳时机参数：进入状态起延迟 N 秒再调 provider（与口令
                 # 音频/回执解耦）。重置在延迟之前——延迟期间槽必须是
                 # pending，分析侧的等待才会等这份新结果。可取消：分段睡
@@ -867,6 +869,7 @@ def _round_robot_fn(game_id: str, arm_throw: dict | None = None):
                         if isinstance(outcome, dict) and outcome.get("status") == "completed"
                         else "failed"
                     )
+                    arm_throw["reason"] = outcome.get("reason") if isinstance(outcome, dict) else "出拳动作未完成"
                     arm_throw["gesture"] = (
                         outcome.get("gesture") if isinstance(outcome, dict) else None
                     )
@@ -874,7 +877,7 @@ def _round_robot_fn(game_id: str, arm_throw: dict | None = None):
             return {"status": "failed", "reason": f"unknown robot command {command!r}"}
         except Exception as exc:
             if command in ("throw_gesture", "prepare_throw"):
-                _mark_throw_failed()
+                _mark_throw_failed(str(exc))
             return {"status": "failed", "reason": str(exc)}
 
     return run_robot
