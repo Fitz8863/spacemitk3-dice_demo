@@ -169,13 +169,11 @@ class TestRpsRuntimeConfigContract:
         # Fold happens before stability: 10 folded-multiset frames
         # (用户 2026-09-24 板端手调 15→10，加快手势锁定)。
         assert config["stable_frames"] == 10
-        # Rotation + ROI are the rps hardware specifics.  A 180-degree source
-        # transform turns the previous portrait preview another 90 degrees
-        # clockwise while keeping the published stream 1920x1080 landscape;
-        # the player's red-table half is then the left half of that stream.
+        # Display rotation is presentation-only: publish the requested 90°
+        # clockwise view while inference keeps the validated player geometry.
         assert config["rotate"]["enabled"] is True
         assert config["rotate"]["direction"] == "cw"
-        assert config["rotate"]["angle"] == 180
+        assert config["rotate"]["angle"] == 90
         # 展示旋转与模型方向解耦：检测保持原来验证过的 90° 逆时针
         # 方向和竖屏下半区（蓝色玩家区），不能把机械臂手势纳入判定。
         assert config["inference_rotate"] == {
@@ -193,10 +191,10 @@ class TestRpsRuntimeConfigContract:
         assert config["roi"]["enabled"] is True
         assert config["roi"] == {
             "enabled": True,
-            "x": 0.5,
+            "x": 0.0,
             "y": 0.0,
-            "w": 0.5,
-            "h": 1.0,
+            "w": 1.0,
+            "h": 0.5,
         }
         # rtsp.path stays undeclared: manifest video.path overrides via CLI.
         assert "path" not in config["rtsp"]

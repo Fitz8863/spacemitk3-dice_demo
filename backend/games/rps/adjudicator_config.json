@@ -1,5 +1,5 @@
 {
-  "_note": "rps 专属的视觉 runtime 配置（模型与检测参数 + 硬件）。Web 展示使用 rotate 180 的横屏画面；检测独立保持原先 field-tested 的 90° 逆时针方向和下半区 ROI，只识别原始画面左半的蓝色玩家区域。runtime 会把检测框映射回展示画面右半，红色机械臂区域不会进入判定。",
+  "_note": "rps 专属的视觉 runtime 配置（模型与检测参数 + 硬件）。Web 展示只做顺时针 90° 旋转；检测独立保持原先验证过的逆时针 90°方向和下半区 ROI，只识别原始画面左半的蓝色玩家区域。runtime 会把检测框映射到展示画面的上半区，红色机械臂区域不会进入判定。",
   "model": "models/yolov10n_gestures.q.onnx",
   "classes": [
     "grabbing",
@@ -63,7 +63,7 @@
   "rotate": {
     "enabled": true,
     "direction": "cw",
-    "angle": 180
+    "angle": 90
   },
   "inference_rotate": {
     "enabled": true,
@@ -79,10 +79,10 @@
   },
   "roi": {
     "enabled": true,
-    "x": 0.5,
+    "x": 0.0,
     "y": 0.0,
-    "w": 0.5,
-    "h": 1.0
+    "w": 1.0,
+    "h": 0.5
   },
   "camera": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_9395301F-video-index0",
   "device": "",
