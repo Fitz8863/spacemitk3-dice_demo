@@ -39,6 +39,17 @@ def validate_arena_config(payload: Any) -> dict[str, Any]:
             normalize_participants(participants)
         except ValueError as exc:
             raise ArenaConfigError(f"participants is invalid: {exc}") from exc
+    display = payload.get("display")
+    if display is not None:
+        if not isinstance(display, dict) or display.get("player_side") not in ("LEFT", "RIGHT"):
+            raise ArenaConfigError("display.player_side must be LEFT or RIGHT")
+        rotations = display.get("video_rotation_deg", {})
+        if not isinstance(rotations, dict) or any(
+            not isinstance(game, str) or not game
+            or type(angle) is not int or angle not in (0, 90, 180, 270)
+            for game, angle in rotations.items()
+        ):
+            raise ArenaConfigError("display.video_rotation_deg must map game ids to 0/90/180/270")
     voice = payload.get("voice")
     if voice is not None and (not isinstance(voice, str) or not voice.strip()):
         raise ArenaConfigError("voice must be a non-empty string")
@@ -211,7 +222,8 @@ def with_global_defaults(
     """Underlay arena defaults beneath one game manifest.
 
     Per field the game manifest wins; the arena fills only what it leaves
-    out.  The ASR section is the exception: it carries no switch of its own,
+    out.  Display is a global presentation policy shared by all games.
+    The ASR section is another exception: it carries no switch of its own,
     so the arena breaker is written in as the effective ``enabled`` value.
     Returns a fresh dict — the source manifest and the games registry are
     never mutated.
@@ -229,6 +241,16 @@ def with_global_defaults(
         # The player/Agent physical-side mapping is a property of the table
         # setup, not of any game; games may still override it.
         merged["participants"] = dict(arena["participants"])
+    # Presentation is shared by both games; never overwrite detection participants.
+    display = arena.get("display")
+    if isinstance(display, Mapping):
+        player_side = display["player_side"]
+        base_rotation = display.get("video_rotation_deg", {}).get(merged.get("id"), 0)
+        merged["display"] = {
+            "player_side": player_side,
+            "agent_side": "RIGHT" if player_side == "LEFT" else "LEFT",
+            "video_rotation_deg": (base_rotation + (180 if player_side == "RIGHT" else 0)) % 360,
+        }
     if "voice" not in merged and isinstance(arena.get("voice"), str) and arena["voice"]:
         merged["voice"] = arena["voice"]
     if "speed" not in merged:

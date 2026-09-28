@@ -1,7 +1,7 @@
 @font-face { font-family: WenKai; src: url('./assets/fonts/LXGWWenKai-UI.woff2') format('woff2'); font-display: swap; }
 * { box-sizing: border-box; }
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #fffef8; color: #00205c; }
-video { display: block; width: 100%; height: 100%; object-fit: contain; background: #1e1e1e; }
+video { position: absolute; left: 50%; top: 50%; display: block; width: 100%; height: 100%; object-fit: contain; background: #1e1e1e; }
 #loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: radial-gradient(ellipse at center, #f0f8d8 0%, #fffef8 68%); }
 #loading[hidden] { display: none; }
 #loading p { margin: 22px 0 0; font: 700 clamp(18px, 3vw, 48px)/1.4 WenKai, sans-serif; }

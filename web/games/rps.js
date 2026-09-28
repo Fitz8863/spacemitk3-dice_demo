@@ -1,3 +1,5 @@
+import { resolveDisplayLayout, applyScoreLayout } from '../display-layout.js';
+
 // 猜拳游戏模块：后端权威状态机的声明式前端（视觉接入前的骨架）。
 // 后端 pipeline 当前用判定桩（source:"stub"）出结果，但事件与结果字段的
 // 形状与真实视觉流一致；视觉模型接入后本模块无需结构改动。
@@ -33,6 +35,7 @@ export function register(engine) {
   let lastRenderedState = '';
   let activeVisionUrl = '';
   let participantSides = null;
+  let displayLayout = null;
   let savedRulesMarkup = '';
   let savedDetectLabel = '';
 
@@ -97,6 +100,7 @@ export function register(engine) {
     activeVisionUrl = normalizedUrl;
     const playerUrl = new URL('./stream-player.html', window.location.href);
     playerUrl.searchParams.set('stream', normalizedUrl);
+    playerUrl.searchParams.set('rotation', String(displayLayout?.video_rotation_deg || 0));
     frame.src = playerUrl.toString();
   }
 
@@ -135,8 +139,8 @@ export function register(engine) {
       throw new Error('游戏参与者左右位置配置无效');
     }
     participantSides = { player, agent };
-    $('playerScoreSide').style.gridColumn = player === 'LEFT' ? '1' : '3';
-    $('agentScoreSide').style.gridColumn = agent === 'LEFT' ? '1' : '3';
+    displayLayout = resolveDisplayLayout(manifest);
+    applyScoreLayout($('playerScoreSide'), $('agentScoreSide'), displayLayout);
   }
 
   function renderState(stateName, ui) {

@@ -2,6 +2,12 @@
 (() => {
   const video = document.getElementById('video');
   const loading = document.getElementById('loading');
+  const rotation = Number(new URLSearchParams(location.search).get('rotation') || 0);
+  const angle = [0, 90, 180, 270].includes(rotation) ? rotation : 0;
+  video.style.transform = `translate(-50%, -50%) rotate(${angle}deg)`;
+  // The video is portrait before quarter-turns; swap its box, not the loader.
+  video.style.width = angle % 180 ? '100vh' : '100vw';
+  video.style.height = angle % 180 ? '100vw' : '100vh';
   let reader = null;
   let retryTimer = null;
   let frameCallback = null;

@@ -5,11 +5,11 @@ const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 const vm = require('node:vm');
 
-function player() {
+function player(rotation = '') {
   const listeners = {}, windowEvents = {}, scripts = [], timers = [];
   const loading = { hidden: false };
   const video = {
-    readyState: 0, videoWidth: 0, srcObject: null,
+    style: {}, readyState: 0, videoWidth: 0, srcObject: null,
     addEventListener: (name, fn) => { listeners[name] = fn; },
     play: () => Promise.resolve(),
     requestVideoFrameCallback: (fn) => { video.frame = fn; return 1; },
@@ -18,7 +18,7 @@ function player() {
   let callbacks, closed = false;
   const context = {
     URL, URLSearchParams, console,
-    location: { href: 'http://arena/stream-player.html', search: '?stream=http%3A%2F%2Fcamera%3A8889%2Fdice%2Fdet' },
+    location: { href: 'http://arena/stream-player.html', search: '?stream=http%3A%2F%2Fcamera%3A8889%2Fdice%2Fdet&rotation=' + rotation },
     document: {
       getElementById: (id) => id === 'video' ? video : loading,
       addEventListener() {},
@@ -78,4 +78,19 @@ test('reader script failures retry without removing the loading scene', () => {
   p.windowEvents.pagehide();
   p.timers[0]();
   assert.equal(p.scripts.length, 2);
+});
+
+for (const angle of [0, 90, 180, 270]) {
+  test(`video ${angle} degree rotation fits the box without rotating the loader`, () => {
+    const p = player(String(angle));
+    assert.equal(p.video.style.transform, `translate(-50%, -50%) rotate(${angle}deg)`);
+    assert.equal(p.video.style.width, angle % 180 ? '100vh' : '100vw');
+    assert.equal(p.video.style.height, angle % 180 ? '100vw' : '100vh');
+    assert.equal(p.loading.hidden, false);
+    p.scripts[0].onload();
+    assert.equal(p.callbacks().url, 'http://camera:8889/dice/det/whep');
+  });
+}
+test('invalid display rotation falls back to unrotated video', () => {
+  assert.equal(player('junk').video.style.transform, 'translate(-50%, -50%) rotate(0deg)');
 });

@@ -145,7 +145,7 @@ def public_game_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     public: dict[str, Any] = {
         key: manifest[key]
         for key in (
-            "id", "name", "icon", "description", "enabled", "participants",
+            "id", "name", "icon", "description", "enabled", "participants", "display",
             "voice", "speed", "providers",
         )
         if key in manifest

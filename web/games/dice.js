@@ -1,3 +1,5 @@
+import { resolveDisplayLayout, applyScoreLayout } from '../display-layout.js';
+
 // 摇骰子游戏模块：后端权威状态机的声明式前端。
 // 后端通过 round 事件流驱动一切：state_changed 切视图、speech 播台词、
 // tick 渲染倒计时、adjudication 透传渲染分析进度；本模块只提交意图
@@ -17,6 +19,7 @@ export function register(engine) {
   let agentDice = [];
   let countdownAudioContext = null;
   let participantSides = null;
+  let displayLayout = null;
   let activeVisionUrl = '';
   let round = null;
   let lastRenderedState = '';
@@ -49,8 +52,8 @@ export function register(engine) {
       throw new Error('游戏参与者左右位置配置无效');
     }
     participantSides = { player, agent };
-    $('playerScoreSide').style.gridColumn = player === 'LEFT' ? '1' : '3';
-    $('agentScoreSide').style.gridColumn = agent === 'LEFT' ? '1' : '3';
+    displayLayout = resolveDisplayLayout(manifest);
+    applyScoreLayout($('playerScoreSide'), $('agentScoreSide'), displayLayout);
   }
 
   // ---- 实时画面（MediaMTX WebRTC iframe，保持原有边界） ----
@@ -85,6 +88,7 @@ export function register(engine) {
     activeVisionUrl = normalizedUrl;
     const playerUrl = new URL('./stream-player.html', window.location.href);
     playerUrl.searchParams.set('stream', normalizedUrl);
+    playerUrl.searchParams.set('rotation', String(displayLayout?.video_rotation_deg || 0));
     frame.src = playerUrl.toString();
   }
 
