@@ -630,7 +630,7 @@ def test_rps_vision_contract_pins_the_confirmed_flow_decisions():
     # 预备先完成，实际音频起播回执门控出拳；await 继续控制裁决时机。
     assert states["preparing"]["on_event"]["robot.prepare_throw.completed"]["to"] == "play"
     throw = next(a for a in chant["on_start"] if a.get("command") == "throw_gesture")
-    assert play_enter == [chant] and throw["prepared"] is True and throw["delay_seconds"] == 0.65
+    assert play_enter == [chant] and throw["prepared"] is True and throw["delay_seconds"] == 1.55
     analysis = states["analysis"]
     assert analysis["on_event"]["adjudication.result"]["to"] == "result"
     assert analysis["on_event"]["adjudication.diagnosis"]["to"] == "analysis_failed"
