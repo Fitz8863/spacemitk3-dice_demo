@@ -42,6 +42,9 @@ export function register(engine) {
 
   function submitIntent(intent, payload = {}) {
     if (!round) return Promise.resolve();
+    // Stop locally before the HTTP request: preparing has no replacement
+    // speech, and waiting for arm readiness leaves the old rules audible.
+    if (['confirm', 'repeat', 'back', 'new_round'].includes(intent)) stopSpeech();
     return round.submitIntent(intent, payload).catch((error) => {
       if (error.silent) {
         // 回合已终结（ROUND_CLOSED）后一切意图都被静默拒绝——错误页假死
@@ -169,6 +172,9 @@ export function register(engine) {
 
   function renderState(stateName, ui) {
     if (stateName === lastRenderedState) return;
+    // Covers server-originated transitions too. Same-state snapshots must
+    // not cancel the new state's speech or its audio-start acknowledgement.
+    stopSpeech();
     lastRenderedState = stateName;
     const view = ui.view || VIEW_BY_STATE[stateName] || stateName;
     const meta = [ui.title || '', ui.copy || ''];
