@@ -1601,7 +1601,7 @@ def test_round_robot_fn_throw_gesture_resets_then_fills_the_shared_slot(monkeypa
         on_log=lambda line: None,
     )
     assert outcome["gesture"] == "布"
-    assert arm_throw == {"status": "completed", "gesture": "布"}
+    assert arm_throw == {"status": "completed", "gesture": "布", "reason": None}
     assert arm.calls == [None]  # manifest 不带 gesture → 臂侧随机
 
     # 失败路径回写 failed；异常路径同样回写 failed。
@@ -1632,39 +1632,48 @@ def test_round_robot_fn_throw_gesture_resets_then_fills_the_shared_slot(monkeypa
 
 
 def test_rps_manifest_play_declares_prefetch_throw_and_replay():
-    """真实 manifest 契约：play 入口先 ensure_home（2026-09-25 保险归位：
-    探针确认在家零动作，未在家才归位——出拳必从 home 起势），再声明
-    throw_gesture（提前出拳）；analysis_failed 的再来一局（new_round）指
-    play（重放=完整重念口令与出拳）。失败页的"重新识别"蓝键已按用户要求
-    移除（2026-09-24），retry intent 与 asr 词条随之删除，只剩 new_round/back。"""
+    """真实 manifest 契约（2026-09-28 现状，出拳两段链）：preparing 态先
+    prepare_throw 预摆手型（completed 才进 play，failed 直接跳 analysis 判
+    定）；play 态口令 wav 一开声（on_start）就派发 throw_gesture——出拳与
+    口令同拍起算，delay_seconds 是热调旋钮，prepared=True 表示臂侧复用
+    prepare_throw 的预备结果。analysis_failed 的再来一局（new_round）指
+    preparing（完整重摆+重念口令）。失败页的"重新识别"蓝键已按用户要求
+    移除（2026-09-24），retry intent 与 asr 词条随之删除，只剩
+    new_round/back。"""
     manifest = json.loads(
         (ROOT / "backend/games/rps/manifest.json").read_text(encoding="utf-8")
     )
-    play = manifest["state_machine"]["states"]["play"]
-    robot_actions = [a for a in play["on_enter"] if a.get("action") == "robot"]
-    assert robot_actions == [
-        {"action": "robot", "command": "ensure_home", "timeout_seconds": 30},
+    states = manifest["state_machine"]["states"]
+    preparing = states["preparing"]
+    assert preparing["on_enter"] == [
+        {"action": "robot", "command": "prepare_throw", "timeout_seconds": 30}
+    ]
+    assert preparing["on_event"] == {
+        "robot.prepare_throw.completed": {"to": "play"},
+        "robot.prepare_throw.failed": {"to": "analysis"},
+    }
+    play = states["play"]
+    chant = play["on_enter"][0]
+    assert chant["action"] == "speech" and chant["await"] is True
+    throws = [a for a in chant["on_start"] if a.get("action") == "robot"]
+    assert throws == [
         {
             "action": "robot", "command": "throw_gesture",
             "timeout_seconds": 10,
-            "delay_seconds": manifest["state_machine"]["states"]["play"]["on_enter"][1]["delay_seconds"],
-        },
+            "delay_seconds": chant["on_start"][0]["delay_seconds"],
+            "prepared": True,
+        }
     ]
     # delay_seconds 是热调旋钮（manifest 直改即生效），钉范围不钉数值。
-    delay = robot_actions[1]["delay_seconds"]
+    delay = throws[0]["delay_seconds"]
     assert isinstance(delay, (int, float)) and 0 <= delay <= 30
-    # 保险归位排最前、出拳紧随其后，都排在 wav 台词之前：worker 一进状态
-    # 就派发（探针 ~60ms 过后睡 delay_seconds 才出臂），wav 的 await 只撑
-    # 节奏、不再门控出拳。
-    assert play["on_enter"][0] is robot_actions[0]
-    assert play["on_enter"][1] is robot_actions[1]
-    failed = manifest["state_machine"]["states"]["analysis_failed"]
-    assert failed["on_intent"]["new_round"] == {"to": "play"}
+    failed = states["analysis_failed"]
+    assert failed["on_intent"]["new_round"] == {"to": "preparing"}
     assert "retry" not in failed["on_intent"]
     assert "retry" not in manifest["asr"]["phrases"]
     # 判定结束即异步回家（不管裁决成败）：result 与 analysis_failed 的
     # on_enter 都声明 reset_home，下次出拳从 home 起势。
-    for state in (failed, manifest["state_machine"]["states"]["result"]):
+    for state in (failed, states["result"]):
         assert {"action": "robot", "command": "reset_home"} in state["on_enter"]
 
 
@@ -1717,7 +1726,7 @@ def test_throw_gesture_delay_waits_then_calls_and_slot_is_pending_during_delay(m
     # 延迟期间：槽已被重置为 pending（不得残留上一局的 completed），
     # provider 尚未被调用。
     _time.sleep(0.15)
-    assert arm_throw == {"status": "pending", "gesture": None}
+    assert arm_throw == {"status": "pending", "gesture": None, "reason": None}
     assert arm.called_at is None
     assert done.wait(timeout=5)
     assert outcome_box["outcome"]["status"] == "completed"
