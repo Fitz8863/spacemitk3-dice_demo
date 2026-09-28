@@ -661,3 +661,13 @@ body:has(.dice-video) .view-actions .btn-pill { min-height: 72px; padding: 16px 
 /* Ready: one title and its controller hint below the video. */
 body:has(.dice-video)[data-phase="ready"] .stage-head { display: none; }
 body:has(.dice-video) #readyButtonHint { margin: 8px auto 16px; }
+
+/* Wide displays: use the available horizontal space without stretching the
+   kiosk card through the full height of an extra-tall desktop viewport. */
+@media (min-width: 1440px) and (min-aspect-ratio: 3 / 2) {
+  .app-shell {
+    width: min(92vw, 2100px);
+    max-width: none;
+    min-height: min(100dvh, 1280px);
+  }
+}
