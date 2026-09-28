@@ -384,6 +384,15 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "failed")
         self.assertIn("unknown throw gesture", str(outcome["reason"]))
 
+    def test_prepared_throw_skips_only_the_already_completed_ready_waypoint(self):
+        outcome = self.provider.throw_gesture(
+            "剪刀", prepared=True, on_event=self.events.append, is_cancelled=lambda: False)
+        self.assertEqual(outcome["status"], "completed")
+        received = [json.loads(line) for line in
+                    (self.demo_root / "received.log").read_text().splitlines()]
+        names = [c.get("name") for c in received if c.get("command") == "action"]
+        self.assertEqual(names, ["scissors"])
+
     def test_throw_gesture_prep_failure_stops_before_final_pose(self):
         """预备动作失败时不能继续亮拳，否则回执与现场动作会分叉。"""
         (self.demo_root / "reject_prep").write_text("", encoding="utf-8")

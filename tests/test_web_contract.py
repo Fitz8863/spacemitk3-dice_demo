@@ -623,20 +623,20 @@ def test_rps_vision_contract_pins_the_confirmed_flow_decisions():
     states = manifest["state_machine"]["states"]
     rules = states["rules"]
     assert "after_speech" not in rules["on_intent"]["confirm"]
-    assert rules["on_intent"]["confirm"]["to"] == "play"
+    assert rules["on_intent"]["confirm"]["to"] == "preparing"
     play_enter = states["play"]["on_enter"]
     chant = next(a for a in play_enter if a.get("action") == "speech")
     assert chant["await"] is True
     # 入口先 ensure_home（2026-09-25 保险归位：探针确认在家零动作），
     # 出拳紧随其后排在口令之前：进状态即派发（线程内睡 delay_seconds），
     # wav 的 await 只撑节奏、不门控出拳。
-    assert play_enter[0].get("command") == "ensure_home"
+    assert states["preparing"]["on_event"]["robot.prepare_throw.completed"]["to"] == "play"
     throw = next(a for a in play_enter if a.get("command") == "throw_gesture")
-    assert play_enter[1] is throw and 0 <= throw["delay_seconds"] <= 30
+    assert play_enter[0] is throw and throw["prepared"] is True and throw["delay_seconds"] == 0
     analysis = states["analysis"]
     assert analysis["on_event"]["adjudication.result"]["to"] == "result"
     assert analysis["on_event"]["adjudication.diagnosis"]["to"] == "analysis_failed"
-    assert states["result"]["on_intent"]["new_round"]["to"] == "play"
+    assert states["result"]["on_intent"]["new_round"]["to"] == "preparing"
     phrases = manifest["asr"]["phrases"]
     missing = []
     for state_name, state in states.items():

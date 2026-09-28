@@ -80,10 +80,15 @@ class RobotProvider(Component):
         """Perform one result gesture; ``kind`` is win/lose/draw."""
         raise NotImplementedError
 
+    def prepare_throw(self, *, on_event, is_cancelled, timeout_seconds=None):
+        """Optional pre-chant ready motion; unsupported hardware must not pretend success."""
+        return {"status": "failed", "reason": "prepare_throw is not implemented"}
+
     def throw_gesture(
         self,
         gesture: str | None = None,
         *,
+        prepared: bool = False,
         on_event: RobotEventFn,
         is_cancelled: RobotCancelledFn,
         timeout_seconds: float | None = None,

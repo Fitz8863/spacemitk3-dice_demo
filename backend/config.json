@@ -43,6 +43,6 @@
   },
   "display": {
     "player_side": "LEFT",
-    "video_rotation_deg": {"dice": 0, "rps": 270}
+    "video_rotation_deg": {"dice": 0, "rps": 0}
   }
 }

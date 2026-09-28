@@ -411,6 +411,8 @@ class RoundFlowTests(unittest.TestCase):
                     is_cancelled=is_cancelled,
                     timeout_seconds=action.get("timeout_seconds"),
                 )
+            if command == "prepare_throw":
+                return {"status": "completed"}
             if command != "throw_gesture":
                 return {"status": "failed", "reason": "unexpected command"}
             arm_throw.update(status="pending", gesture=None)

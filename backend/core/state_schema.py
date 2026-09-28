@@ -31,7 +31,7 @@ ACTION_TYPES = {"speech", "adjudicate", "robot"}
 # performs a result gesture selected by the round's winner_role.
 ROBOT_COMMANDS = {
     "grasp_cup", "shake_dice", "settle_dice", "feedback",
-    "throw_gesture", "reset_home", "ensure_home",
+    "throw_gesture", "prepare_throw", "reset_home", "ensure_home",
 }
 ROBOT_FEEDBACK_KINDS = {"win", "lose", "draw"}
 
@@ -157,14 +157,16 @@ def _validate_robot_action(action: Mapping[str, Any], field: str) -> None:
     allowed = {"action", "command"}
     if command in {
         "grasp_cup", "shake_dice", "settle_dice", "throw_gesture",
-        "reset_home", "ensure_home",
+        "reset_home", "ensure_home", "prepare_throw",
     }:
         allowed.add("timeout_seconds")
         if "timeout_seconds" in action:
             _require_number(action["timeout_seconds"], f"{field}.timeout_seconds", low=0)
     if command == "throw_gesture":
         # 出拳时机参数：进入状态起延迟 N 秒再派发（与口令音频/回执解耦）。
-        allowed.add("delay_seconds")
+        allowed.update(("delay_seconds", "prepared"))
+        if "prepared" in action and type(action["prepared"]) is not bool:
+            raise _error(field, "prepared must be boolean")
         if "delay_seconds" in action:
             _require_number(
                 action["delay_seconds"], f"{field}.delay_seconds", low=0, high=30, low_inclusive=True

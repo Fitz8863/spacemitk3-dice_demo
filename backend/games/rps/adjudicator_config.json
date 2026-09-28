@@ -1,5 +1,5 @@
 {
-  "_note": "rps 专属的视觉 runtime 配置（模型与检测参数 + 硬件）。Web 展示只做顺时针 90° 旋转；检测独立保持原先验证过的逆时针 90°方向和下半区 ROI，只识别原始画面左半的蓝色玩家区域。runtime 会把检测框映射到展示画面的上半区，红色机械臂区域不会进入判定。",
+  "_note": "猜拳展示直接输出原始横屏：蓝色玩家左、红色 Agent 右。检测仍独立使用原来的逆时针90度及下半区ROI，只识别人手；display.player_side 可统一切换网页观看方向。",
   "model": "models/yolov10n_gestures.q.onnx",
   "classes": [
     "grabbing",
@@ -61,7 +61,7 @@
   "conf": 0.25,
   "stable_frames": 10,
   "rotate": {
-    "enabled": true,
+    "enabled": false,
     "direction": "cw",
     "angle": 90
   },
@@ -79,10 +79,10 @@
   },
   "roi": {
     "enabled": true,
-    "x": 0.0,
-    "y": 0.0,
-    "w": 1.0,
-    "h": 0.5
+    "x": 0,
+    "y": 0,
+    "w": 0.5,
+    "h": 1
   },
   "camera": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_9395301F-video-index0",
   "device": "",

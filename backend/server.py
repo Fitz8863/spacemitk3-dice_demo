@@ -780,12 +780,12 @@ def _round_robot_fn(game_id: str, arm_throw: dict | None = None):
         try:
             provider_id = _game_provider_id(game_id, "robot_arm", "")
             if not provider_id:
-                if command == "throw_gesture":
+                if command in ("throw_gesture", "prepare_throw"):
                     _mark_throw_failed()
                 return {"status": "failed", "reason": "providers.robot_arm slot is not configured"}
             provider = COMPONENTS.require(provider_id, expected_type="robot")
         except DiceArenaError as exc:
-            if command == "throw_gesture":
+            if command in ("throw_gesture", "prepare_throw"):
                 _mark_throw_failed()
             return {"status": "failed", "reason": exc.message}
         try:
@@ -823,6 +823,15 @@ def _round_robot_fn(game_id: str, arm_throw: dict | None = None):
                 return provider.reset_home(
                     on_event=on_event, is_cancelled=is_cancelled, timeout_seconds=timeout
                 )
+            if command == "prepare_throw":
+                _mark_throw_failed()  # Never reuse a previous round's gesture on prep failure.
+                outcome = provider.prepare_throw(
+                    on_event=on_event, is_cancelled=is_cancelled, timeout_seconds=timeout
+                )
+                if isinstance(outcome, dict) and outcome.get("status") == "completed":
+                    if arm_throw is not None:
+                        arm_throw.update(status="pending", gesture=None)
+                return outcome
             if command == "throw_gesture":
                 gesture = action.get("gesture")
                 # 派发即重置：再来一局/重试重新出拳时，消费方必须等到这份
@@ -846,7 +855,8 @@ def _round_robot_fn(game_id: str, arm_throw: dict | None = None):
                             }
                         time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
                 outcome = provider.throw_gesture(
-                    gesture if isinstance(gesture, str) and gesture else None,
+                    **({"prepared": True} if action.get("prepared") else {}),
+                    gesture=gesture if isinstance(gesture, str) and gesture else None,
                     on_event=on_event,
                     is_cancelled=is_cancelled,
                     timeout_seconds=timeout,
@@ -863,7 +873,7 @@ def _round_robot_fn(game_id: str, arm_throw: dict | None = None):
                 return outcome
             return {"status": "failed", "reason": f"unknown robot command {command!r}"}
         except Exception as exc:
-            if command == "throw_gesture":
+            if command in ("throw_gesture", "prepare_throw"):
                 _mark_throw_failed()
             return {"status": "failed", "reason": str(exc)}
 

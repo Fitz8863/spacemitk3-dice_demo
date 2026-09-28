@@ -570,10 +570,22 @@ class RobotArmNeroProvider(RobotProvider):
             is_cancelled,
         )
 
+    def prepare_throw(self, *, on_event, is_cancelled, timeout_seconds=None):
+        """Finish homing and the ready waypoint before starting the chant."""
+        home = self.ensure_home(on_event=on_event, is_cancelled=is_cancelled,
+                                timeout_seconds=timeout_seconds)
+        if home.get("status") != "completed" or is_cancelled():
+            return {"status": "failed", "reason": home.get("reason") or "preparation cancelled"}
+        return self._run_command(
+            "throw_gesture", {"command": "action", "name": _THROW_PREP_ACTION},
+            timeout_seconds, on_event, is_cancelled,
+        )
+
     def throw_gesture(
         self,
         gesture: str | None = None,
         *,
+        prepared: bool = False,
         on_event: RobotEventFn,
         is_cancelled: RobotCancelledFn,
         timeout_seconds: float | None = None,
@@ -591,21 +603,22 @@ class RobotArmNeroProvider(RobotProvider):
         with self._arm_lock:
             if self._shutdown:
                 return {"status": "failed", "reason": "provider is shutting down"}
-            prep = self._run_command_locked(
-                "throw_gesture",
-                {"command": "action", "name": _THROW_PREP_ACTION},
-                timeout_seconds,
-                on_event,
-                is_cancelled,
-            )
-            if not (isinstance(prep, dict) and prep.get("status") == "completed"):
-                if isinstance(prep, dict):
-                    prep["reason"] = (
-                        f"prep action {_THROW_PREP_ACTION!r} failed: "
-                        f"{prep.get('reason') or '动作未完成'}"
-                    )
-                    return prep
-                return {"status": "failed", "reason": "prep failed"}
+            if not prepared:
+                prep = self._run_command_locked(
+                    "throw_gesture",
+                    {"command": "action", "name": _THROW_PREP_ACTION},
+                    timeout_seconds,
+                    on_event,
+                    is_cancelled,
+                )
+                if not (isinstance(prep, dict) and prep.get("status") == "completed"):
+                    if isinstance(prep, dict):
+                        prep["reason"] = (
+                            f"prep action {_THROW_PREP_ACTION!r} failed: "
+                            f"{prep.get('reason') or '动作未完成'}"
+                        )
+                        return prep
+                    return {"status": "failed", "reason": "prep failed"}
             outcome = self._run_command_locked(
                 "throw_gesture",
                 {"command": "action", "name": action},
