@@ -216,8 +216,9 @@ def test_robot_shake_is_event_driven_with_stop_call():
     """机械臂摇骰契约（2026-09-23 集成拍板 + 2026-09-24 删三态改造）：
 
     - game_start 过场（用户拍板 2026-09-23 晚）：入口即刻下发抓取（advance until
-      GRIP，识别+抓取不摇），大字"游戏开始！"动画 + 臂进度行；duration 就是过场
-      秒数的唯一旋钮（热加载可调，当前 3.5s——为 LIFT 完成留窗口）；只声明失败
+      LIFT，识别+抓取+抬杯但不摇），大字"游戏开始！"动画 + 臂进度行；duration 就是过场
+      秒数的唯一旋钮（热加载可调，当前 5.0s——按板端 6.3–6.9s 抓取实测，
+      让 LIFT 与后续 2.4s 倒计时重叠并在倒计时结束前完成）；只声明失败
       路由，抓取提前完成不打断过场
     - shake_countdown 只剩三二一口令（抓取已前移）；保留 grasp 失败路由——
       抓取偶发偏慢时失败事件落在倒计时态，仍能正确进兜底页
@@ -232,7 +233,7 @@ def test_robot_shake_is_event_driven_with_stop_call():
     machine = dice_manifest()["state_machine"]
 
     intro = machine["states"]["game_start"]
-    assert intro["duration"] == 3.5  # 用户 2026-09-24 板端调参（历程 3.0→2.0→3.0→3.5，为 LIFT 完成留窗口）
+    assert intro["duration"] == 5.0
     assert intro["on_enter"] == [
         {"action": "robot", "command": "grasp_cup", "timeout_seconds": 30}
     ]

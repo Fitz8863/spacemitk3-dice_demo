@@ -958,12 +958,12 @@ def _prewarm_robot_provider(game_id: str) -> None:
 
 
 def _home_arm_on_boot() -> None:
-    """归位不变量的开机档：服务就绪后把臂拉回 home 手势。
+    """归位不变量的开机档：开始接收请求前把臂拉回 home 手势。
 
     条件：任一启用游戏用臂（_manifest_uses_robot，看原始 manifest）且
     provider 的 home_on_boot 开（没接臂的部署关它，免得白拉常驻进程）。
-    后台线程执行：CAN 未起/无臂时失败只打日志，不阻塞服务就绪、不重试；
-    归位拉起的常驻留活，等第一局直接复用。
+    同步执行：启动完成即代表 HOME 已完成，归位拉起的常驻留活，第一局直接
+    复用。CAN 未起/无臂时失败只打日志、不重试，避免服务永久无法启动。
     """
     try:
         # 任一用臂游戏解析出的都是同一个全局槽位；取第一个命中游戏的 id
@@ -984,19 +984,16 @@ def _home_arm_on_boot() -> None:
         print(f"[robot] boot homing skipped: {exc!r}", flush=True)
         return
 
-    def home() -> None:
-        try:
-            outcome = provider.reset_home(
-                on_event=lambda event: None, is_cancelled=lambda: False
-            )
-            if isinstance(outcome, dict) and outcome.get("status") != "completed":
-                print(f"[robot] boot reset_home: {outcome.get('reason')}", flush=True)
-            else:
-                print("[robot] boot homing done (arm parked at home)", flush=True)
-        except Exception as exc:
-            print(f"[robot] boot reset_home failed: {exc!r}", flush=True)
-
-    threading.Thread(target=home, name="arm-boot-home", daemon=True).start()
+    try:
+        outcome = provider.reset_home(
+            on_event=lambda event: None, is_cancelled=lambda: False
+        )
+        if isinstance(outcome, dict) and outcome.get("status") != "completed":
+            print(f"[robot] boot reset_home: {outcome.get('reason')}", flush=True)
+        else:
+            print("[robot] boot homing done (arm parked at home)", flush=True)
+    except Exception as exc:
+        print(f"[robot] boot reset_home failed: {exc!r}", flush=True)
 
 
 # 单例：可停的巡检线程（测试里反复重启不会泄漏旧线程）。
@@ -1928,7 +1925,8 @@ def main() -> None:
         flush=True,
     )
     print(f"Components: {', '.join(COMPONENTS.ids()) or 'none'}", flush=True)
-    # 归位不变量的开机档：后台把臂拉回 home（失败只打日志，不挡服务就绪）。
+    # 归位不变量的开机档：开始服务前把臂拉回 home。失败只打日志，避免
+    # 没接臂的部署永久无法启动；成功则第一局复用已经热好的常驻控制器。
     _home_arm_on_boot()
     # 空闲姿态巡检：桌面不在游戏里时盯臂是否离家（robot_home_patrol 开关）。
     _run_home_patrol()

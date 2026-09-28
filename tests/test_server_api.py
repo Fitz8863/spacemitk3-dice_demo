@@ -1218,6 +1218,18 @@ class _BootHomeRobot:
         return {"status": "completed"}
 
 
+class _BlockingBootHomeRobot(_BootHomeRobot):
+    def __init__(self) -> None:
+        super().__init__()
+        self._release = threading.Event()
+
+    def reset_home(self, *, on_event, is_cancelled, timeout_seconds=None):
+        self.reset_calls += 1
+        self._reset_event.set()
+        assert self._release.wait(5), "test never released boot homing"
+        return {"status": "completed"}
+
+
 class _BootHomeRegistry:
     def __init__(self, provider) -> None:
         self._provider = provider
@@ -1245,9 +1257,21 @@ def _run_boot_home(monkeypatch, provider) -> _BootHomeRobot:
 
 
 def test_boot_homing_homes_the_arm_when_enabled(monkeypatch):
-    """用臂游戏 + home_on_boot 开 → 服务启动后台归位（复活语义可拉新常驻）。"""
+    """用臂游戏 + home_on_boot 开 → 服务启动时归位（复活语义可拉新常驻）。"""
     provider = _run_boot_home(monkeypatch, _BootHomeRobot(home_on_boot=True))
     assert provider.reset_calls == 1
+
+
+def test_boot_homing_blocks_startup_until_home_completes(monkeypatch):
+    """网页不得抢在 HOME 和常驻预热完成前开始接收第一局。"""
+    provider = _BlockingBootHomeRobot()
+    worker = threading.Thread(target=_run_boot_home, args=(monkeypatch, provider))
+    worker.start()
+    assert provider._reset_event.wait(2), "boot homing never started"
+    assert worker.is_alive(), "boot homing returned before HOME completed"
+    provider._release.set()
+    worker.join(2)
+    assert not worker.is_alive()
 
 
 def test_boot_homing_is_off_when_flag_cleared(monkeypatch):
