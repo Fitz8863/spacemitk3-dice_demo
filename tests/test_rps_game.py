@@ -193,9 +193,11 @@ class VisionPipelineTests(unittest.TestCase):
         self.assertEqual(result["winner_role"], "PLAYER")
         self.assertNotIn("diagnosed", result)
         # 事件形状：detecting 来自 provider（observe 内部），verifying/
-        # result/holding 由 pipeline 编排——与前端分析页渲染的 phase 集一致。
+        # result 由 pipeline 编排——与前端分析页渲染的 phase 集一致。
+        # holding 段随 post_result_hold_seconds=0 一并消失（用户 2026-09-29
+        # 去掉结果保持段，判定完直接翻结果页）。
         phases = [e.get("phase") for e in events if e.get("event") == "phase"]
-        self.assertEqual(phases, ["detecting", "verifying", "holding"])
+        self.assertEqual(phases, ["detecting", "verifying"])
         self.assertTrue(any(e.get("event") == "result" for e in events))
 
     def test_run_highest_confidence_detection_wins(self):
