@@ -167,6 +167,19 @@ def test_frontend_uses_one_centered_stage_and_expands_live_video():
     assert "body:has(.dice-video) .vision-pip > .buddy-art" in css
 
 
+def test_disabled_games_are_hidden_not_grayed():
+    """游戏启停宏控（backend/config.json games_enabled）：关闭的游戏不渲染
+    卡片——不灰显、彻底不显示（用户 2026-09-29 拍板）；进入侧的 enabled
+    守卫保留，语音/API 路径同样进不去。"""
+    js = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+    assert "games.filter((game) => game.enabled)" in js
+    assert "game.id === gameId && game.enabled" in js
+    assert "game-lock" not in js
+    assert "game-option.disabled" not in css
+    assert "即将开放" not in js.replace("该游戏即将开放，敬请期待", "")
+
+
 def test_frontend_blue_button_retries_adjudication_after_diagnosis():
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")

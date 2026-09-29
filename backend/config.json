@@ -44,5 +44,9 @@
   "display": {
     "player_side": "LEFT",
     "video_rotation_deg": {"dice": 0, "rps": 0}
+  },
+  "games_enabled": {
+    "dice": true,
+    "rps": true
   }
 }

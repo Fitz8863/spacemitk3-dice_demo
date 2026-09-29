@@ -50,6 +50,13 @@ def validate_arena_config(payload: Any) -> dict[str, Any]:
             for game, angle in rotations.items()
         ):
             raise ArenaConfigError("display.video_rotation_deg must map game ids to 0/90/180/270")
+    games_enabled = payload.get("games_enabled")
+    if games_enabled is not None:
+        if not isinstance(games_enabled, dict) or not all(
+            isinstance(game, str) and game and isinstance(value, bool)
+            for game, value in games_enabled.items()
+        ):
+            raise ArenaConfigError("games_enabled must map game ids to true/false")
     voice = payload.get("voice")
     if voice is not None and (not isinstance(voice, str) or not voice.strip()):
         raise ArenaConfigError("voice must be a non-empty string")
@@ -251,6 +258,13 @@ def with_global_defaults(
             "agent_side": "RIGHT" if player_side == "LEFT" else "LEFT",
             "video_rotation_deg": (base_rotation + (180 if player_side == "RIGHT" else 0)) % 360,
         }
+    # 游戏启停宏控（2026-09-29）：config 里写了该游戏的键就以全局为准，
+    # 没写回落 manifest 自己的 enabled——集中管理，单游戏仍可自带默认。
+    games_enabled = arena.get("games_enabled")
+    if isinstance(games_enabled, Mapping):
+        override = games_enabled.get(merged.get("id"))
+        if isinstance(override, bool):
+            merged["enabled"] = override
     if "voice" not in merged and isinstance(arena.get("voice"), str) and arena["voice"]:
         merged["voice"] = arena["voice"]
     if "speed" not in merged:

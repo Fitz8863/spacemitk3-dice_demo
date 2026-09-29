@@ -95,6 +95,13 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(ArenaConfigError):
             validate_arena_config({**VALID_ARENA, "vision_always_on": "yes"})
 
+    def test_games_enabled_must_map_ids_to_bools(self):
+        validate_arena_config({**VALID_ARENA, "games_enabled": {"rps": False}})
+        with self.assertRaises(ArenaConfigError):
+            validate_arena_config({**VALID_ARENA, "games_enabled": {"rps": "off"}})
+        with self.assertRaises(ArenaConfigError):
+            validate_arena_config({**VALID_ARENA, "games_enabled": ["dice"]})
+
     def test_vision_always_on_defaults_to_on(self):
         # An existing deployment that never heard of the key keeps the stream
         # resident, which is what the board did before the switch existed.
@@ -183,6 +190,16 @@ class MergeTests(unittest.TestCase):
         # A game without an asr section gains nothing.
         merged = with_global_defaults({"id": "dice"}, {**VALID_ARENA, "asr_enabled": False})
         self.assertNotIn("asr", merged)
+
+    def test_games_enabled_override_wins_and_absent_falls_back(self):
+        """游戏启停宏控（2026-09-29）：config 写了键以全局为准，没写回落 manifest。"""
+        arena = {**VALID_ARENA, "games_enabled": {"rps": False}}
+        merged = with_global_defaults({"id": "rps", "enabled": True}, arena)
+        self.assertFalse(merged["enabled"])  # 全局 false 压过 manifest true
+        merged = with_global_defaults({"id": "dice", "enabled": True}, arena)
+        self.assertTrue(merged["enabled"])  # 未声明的游戏不受影响
+        merged = with_global_defaults({"id": "dice", "enabled": False}, arena)
+        self.assertFalse(merged["enabled"])  # 没写键 → manifest 自己的值
 
     def test_leftover_game_level_switch_cannot_silence_voice(self):
         """A manifest still spelling ``enabled: false`` no longer wins.

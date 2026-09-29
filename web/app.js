@@ -974,14 +974,15 @@ function returnToSelect() {
 function renderGameList() {
   const list = $('gameList');
   list.innerHTML = '';
-  games.forEach((game) => {
+  // 游戏启停宏控（backend/config.json 的 games_enabled）：关闭的游戏不渲染
+  // 卡片——不灰显、彻底不显示（用户 2026-09-29 拍板）。
+  games.filter((game) => game.enabled).forEach((game) => {
     const button = document.createElement('button');
     button.type = 'button';
     button.dataset.game = game.id;
-    button.className = 'game-option' + (game.enabled ? '' : ' disabled');
+    button.className = 'game-option';
     button.setAttribute('role', 'option');
     button.setAttribute('aria-selected', 'false');
-    button.disabled = !game.enabled;
 
     const icon = document.createElement('span');
     icon.className = 'game-icon';
@@ -998,19 +999,12 @@ function renderGameList() {
 
     button.append(icon, copy);
 
-    if (game.enabled) {
-      const arrow = document.createElement('span');
-      arrow.className = 'game-arrow';
-      arrow.setAttribute('aria-hidden', 'true');
-      arrow.textContent = '→';
-      button.append(arrow);
-      button.addEventListener('click', () => selectGame(game.id));
-    } else {
-      const lock = document.createElement('span');
-      lock.className = 'game-lock';
-      lock.textContent = '即将开放';
-      button.append(lock);
-    }
+    const arrow = document.createElement('span');
+    arrow.className = 'game-arrow';
+    arrow.setAttribute('aria-hidden', 'true');
+    arrow.textContent = '→';
+    button.append(arrow);
+    button.addEventListener('click', () => selectGame(game.id));
 
     list.append(button);
   });
