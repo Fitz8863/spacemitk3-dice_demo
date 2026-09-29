@@ -92,6 +92,7 @@ class BoardKeyReader:
         paths: Iterable[str] | None = None,
         device_glob: str = "/dev/input/event*",
         rescan_seconds: float = 5.0,
+        select_timeout: float = 1.0,
         debounce_seconds: float = 0.03,
         log: Callable[[str], None] | None = None,
     ) -> None:
@@ -99,6 +100,7 @@ class BoardKeyReader:
         self._paths = list(paths) if paths is not None else None
         self._device_glob = device_glob
         self._rescan_seconds = rescan_seconds
+        self._select_timeout = select_timeout
         self._debounce_seconds = debounce_seconds
         self._log = log or (lambda line: print(f"[board-input] {line}", flush=True))
         self._devices: dict[int, tuple[int, str]] = {}  # fd -> (fd 原始句柄, path)
@@ -207,14 +209,20 @@ class BoardKeyReader:
                     continue
             fds = list(self._devices)
             try:
-                readable, _, _ = select.select(fds, [], [], self._rescan_seconds)
+                # 1s 超时让 stop() 的 join 能及时收线（5s 的话线程会睡满
+                # 整个超时才看到停止位）。
+                readable, _, _ = select.select(fds, [], [], self._select_timeout)
             except (OSError, ValueError):
                 self._close_devices()
                 continue
             if self._stop.is_set():
                 break
             if not readable:
-                self._scan_devices()  # 周期重扫：补热插拔、清死句柄
+                # 周期重扫：补热插拔、清死句柄。停止位优先——别在退出
+                # 路径上重开设备句柄（泄漏）。
+                if self._stop.wait(self._rescan_seconds):
+                    break
+                self._scan_devices()
                 continue
             for fd in readable:
                 try:

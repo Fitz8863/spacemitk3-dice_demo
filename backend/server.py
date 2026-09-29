@@ -748,6 +748,7 @@ def _board_input_status() -> dict:
 
 def _supervise_board_input() -> None:
     """按配置热启停读取线程：true 起线程、false 停并释放设备句柄。"""
+    global _board_reader
     while True:
         try:
             enabled = arena_input_board_enabled(get_arena_config())
@@ -756,7 +757,9 @@ def _supervise_board_input() -> None:
                 running = reader is not None and reader.status()["running"]
             if enabled and not running:
                 with _board_reader_lock:
-                    if _board_reader is None:
+                    # 停过的 reader 对象还在（stop 不置 None），只要没在跑
+                    # 就重建——supervisor 单线程，无并发竞争。
+                    if _board_reader is None or not _board_reader.status()["running"]:
                         _board_reader = BoardKeyReader(_board_dispatch)
                         _board_reader.start()
                         print("[board-input] reader started (input_board_enable=true)", flush=True)
