@@ -38,7 +38,7 @@
     },
     "lifecycle": {
       "pre_adjudication_wait_seconds": 0,
-      "post_result_hold_seconds": 2
+      "post_result_hold_seconds": 0
     },
     "timeouts": {
       "yolo_detection_seconds": 6,
@@ -60,13 +60,13 @@
       "rules": {
         "ui": {"view": "rules", "title": "先记住胜负小口诀", "copy": "听完后按绿色按钮出发；蓝色按钮可以再听一次，红色按钮返回。"},
         "on_enter": [
-          {"action": "speech", "mode": "tts_local", "text": "欢迎来到石头剪刀布。双方听口令出拳，念到布时同时亮出手势：石头赢剪刀，剪刀赢布，布赢石头，相同的手势是平局。明白了就请按绿色按钮开始。"}
+          {"action": "speech", "mode": "tts_local", "text": "欢迎来到石头剪刀布游戏，双方听口令出拳，按绿色按钮马上开始。"}
         ],
         "on_intent": {
           "confirm": {"to": "preparing"},
           "repeat": {
             "actions": [
-              {"action": "speech", "mode": "tts_local", "text": " 欢迎来到石头剪刀布。双方听口令出拳，念到布时同时亮出手势：石头赢剪刀，剪刀赢布，布赢石头，相同的手势是平局。明白了就请按绿色按钮开始。"}
+              {"action": "speech", "mode": "tts_local", "text": "欢迎来到石头剪刀布游戏，双方听口令出拳，按绿色按钮马上开始。"}
             ]
           },
           "back": {"exit": true}
@@ -86,15 +86,14 @@
         "on_enter": [
           {"action": "speech", "mode": "audio", "text": "石头，剪刀，布。", "audio": "audio/石头剪刀布.wav", "await": true,
            "playback_seconds": 2.64,
-           "on_start": [{"action": "robot", "command": "throw_gesture", "timeout_seconds": 10, "delay_seconds": 1.55, "prepared": true}]}
+           "on_start": [{"action": "robot", "command": "throw_gesture", "timeout_seconds": 10, "delay_seconds": 1.50, "prepared": true}]}
         ],
-        "duration": 0.4,
+        "duration": 0.1,
         "on_expire": {"to": "analysis"}
       },
       "analysis": {
         "ui": {"view": "analysis", "title": "手势侦探正在判断", "copy": "请保持手势不动，结果马上揭晓。"},
         "on_enter": [
-          {"action": "speech", "mode": "tts_local", "text": "正在判定胜负"},
           {"action": "adjudicate"}
         ],
         "on_event": {
@@ -120,9 +119,9 @@
             "action": "speech",
             "select_by": "winner_role",
             "cases": {
-              "PLAYER": {"mode": "tts_local", "text": "你出了{player_choice}，Agent出了{agent_choice}，恭喜你赢了，要不再来一局？"},
-              "AGENT": {"mode": "tts_local", "text": "你出了{player_choice}，Agent出了{agent_choice}，很遗憾你输了，要不再来一局？"},
-              "TIE": {"mode": "tts_local", "text": "双方都出了{player_choice}，本局平局，再来一局？"}
+              "PLAYER": {"mode": "tts_local", "text": "你出了{player_choice}，Agent出了{agent_choice}，恭喜你赢了，你真的太强了。"},
+              "AGENT": {"mode": "tts_local", "text": "你出了{player_choice}，Agent出了{agent_choice}，很遗憾你输了哦，回家再练练吧。"},
+              "TIE": {"mode": "tts_local", "text": "双方都出了{player_choice}，本局平局，要不再来一局？"}
             }
           },
           {"action": "robot", "command": "reset_home"}
