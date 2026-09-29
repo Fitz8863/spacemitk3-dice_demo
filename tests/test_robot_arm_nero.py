@@ -25,6 +25,10 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from components.robot_arm_nero.provider import RobotArmNeroProvider  # noqa: E402
+import components.robot_arm_nero.provider as nero_module  # noqa: E402
+
+# 真实探测函数（setUp 会把模块名桩成 ok，解析测试用它还原后再测真实现）。
+REAL_CAN0_STATUS = nero_module._can0_status
 
 FAKE_PHASES = [
     "HOME", "CAPTURE", "PLAN", "APPROACH", "GRIP",
@@ -223,6 +227,14 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         )
         self.demo_root = root
         self.provider = RobotArmNeroProvider()
+        # CAN 探测统一桩成 ok：部署/协议断言与本机（板端/dev 机）can0
+        # 实际状态解耦，can0 各态由专测覆盖。
+        can0_patcher = mock.patch.object(
+            nero_module, "_can0_status",
+            lambda: {"status": "ok", "bitrate": 1_000_000},
+        )
+        can0_patcher.start()
+        self.addCleanup(can0_patcher.stop)
         # Point at the fixture and keep every timeout short but generous for
         # slow CI machines; scenarios override per test where needed.
         self.provider._demo_root = root
@@ -274,6 +286,77 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         health = self.provider.health()
         self.assertFalse(health["ok"])
         self.assertIn("gestures", str(health.get("error")))
+
+    # ---- CAN 接口探测（2026-09-29）------------------------------------
+
+    @staticmethod
+    def _fake_ip(stdout="", returncode=0):
+        return mock.patch(
+            "components.robot_arm_nero.provider.subprocess.run",
+            return_value=mock.Mock(returncode=returncode, stdout=stdout),
+        )
+
+    def test_can0_status_ok_parses_flags_and_bitrate(self):
+        healthy = (
+            '7: can0: <NOARP,UP,LOWER_UP,ECHO> mtu 16 qdisc pfifo_fast '
+            'state UP mode DEFAULT group default qlen 10    link/can  '
+            'can state ERROR-ACTIVE restart-ms 0    bitrate 1000000 '
+            'sample-point 0.750'
+        )
+        with mock.patch.object(nero_module, "_can0_status", REAL_CAN0_STATUS), \
+                self._fake_ip(healthy):
+            status = nero_module._can0_status()
+        self.assertEqual(status["status"], "ok")
+        self.assertEqual(status["bitrate"], 1_000_000)
+
+    def test_can0_status_missing_down_wrong_bitrate(self):
+        with mock.patch.object(nero_module, "_can0_status", REAL_CAN0_STATUS), \
+                self._fake_ip('Device "can0" does not exist.', returncode=1):
+            status = nero_module._can0_status()
+        self.assertEqual(status["status"], "missing")
+        self.assertIn("USB-CAN", status["fix"])
+
+        # DOWN：flags 尖括号里没有 UP（operstate/state 字样不算管理态）。
+        with mock.patch.object(nero_module, "_can0_status", REAL_CAN0_STATUS), \
+                self._fake_ip("7: can0: <NOARP> state DOWN  bitrate 1000000"):
+            status = nero_module._can0_status()
+        self.assertEqual(status["status"], "down")
+        self.assertIn("sudo ip link set can0 up", status["fix"])
+
+        # 已 UP 但波特率错。
+        with mock.patch.object(nero_module, "_can0_status", REAL_CAN0_STATUS), \
+                self._fake_ip("7: can0: <NOARP,UP,LOWER_UP> state UP  bitrate 500000"):
+            status = nero_module._can0_status()
+        self.assertEqual(status["status"], "wrong_bitrate")
+        self.assertEqual(status["bitrate"], 500000)
+        self.assertIn("500000", status["fix"])
+
+    def test_health_reports_can0_and_fails_when_down(self):
+        with mock.patch.object(
+            nero_module, "_can0_status",
+            return_value={"status": "down",
+                          "fix": "can0 未启用，请执行：sudo ip link set can0 up type can bitrate 1000000"},
+        ):
+            health = self.provider.health()
+        self.assertFalse(health["ok"])
+        self.assertEqual(health["can0"]["status"], "down")
+        self.assertIn("sudo ip link set can0 up", str(health["error"]))
+
+    def test_failed_command_reason_gets_can0_diagnosis_prefix(self):
+        """CAN 挂掉时失败 reason 前置修复命令——arm_failed 页直接告诉用户修什么。"""
+        self.provider._shutdown = True  # shutdown 守卫：确定性的 failed 出口
+        with mock.patch.object(
+            nero_module, "_can0_status",
+            return_value={"status": "down",
+                          "fix": "can0 未启用，请执行：sudo ip link set can0 up type can bitrate 1000000"},
+        ):
+            outcome = self.provider.reset_home(
+                on_event=self.events.append, is_cancelled=lambda: False
+            )
+        self.assertEqual(outcome["status"], "failed")
+        self.assertTrue(outcome["reason"].startswith("can0 未启用"))
+        self.assertIn("provider is shutting down", outcome["reason"])
+        self.assertEqual(outcome["can0"], "down")
 
     # ---- happy paths -----------------------------------------------------
 

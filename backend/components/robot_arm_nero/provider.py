@@ -32,9 +32,11 @@ actions run to completion so a cancel never kills the resident mid-homing.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import random
+import re
 import signal
 import subprocess
 import threading
@@ -92,6 +94,68 @@ _THROW_PREP_ACTION = "rps-ready"
 _CANCEL_INTERRUPT_COMMANDS = {"grasp_cup", "shake_dice", "settle_dice"}
 
 _LOG_TAIL_LINES = 15
+
+# 机械臂 CAN 部署常量（与相机路径同级别的事实，不做成配置键）。
+_CAN_INTERFACE = "can0"
+_CAN_BITRATE = 1_000_000
+_CAN_FIX_COMMAND = f"sudo ip link set {_CAN_INTERFACE} up type can bitrate {_CAN_BITRATE}"
+
+
+def _can0_status() -> dict[str, Any]:
+    """只读探测机械臂 CAN 接口：存在 / 已启用 / 波特率三关（2026-09-29）。
+
+    板子重启后 can0 不会自动 up，SDK 连不上机械臂——多数"连不上/超时"
+    失败的根因。读取不需要 root（``ip -details -o link show``），也绝不
+    自动改接口：修复动作留给用户执行（见 ``fix`` 文案里的命令）。
+    """
+    try:
+        proc = subprocess.run(
+            ["ip", "-details", "-o", "link", "show", _CAN_INTERFACE],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"status": "unknown", "detail": str(exc), "fix": f"无法探测 {_CAN_INTERFACE} 状态：{exc}"}
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return {
+            "status": "missing",
+            "fix": f"机械臂 CAN 接口 {_CAN_INTERFACE} 不存在，请检查机械臂/USB-CAN 是否插好",
+        }
+    out = proc.stdout
+    # 管理态 UP 只认 flags 尖括号里作为独立标志的 UP（<NOARP,UP,LOWER_UP>），
+    # 逗号锚定而非词边界（板端 grep 对 \b 不可靠，两侧同模式好对照）；
+    # operstate 的 "state UP" 与 "can state ERROR-ACTIVE" 都不是判据。
+    admin_up = re.search(r"<(.*,)?UP(,.*)?>", out) is not None
+    bitrate_match = re.search(r"\bbitrate (\d+)", out)
+    bitrate = int(bitrate_match.group(1)) if bitrate_match else None
+    if not admin_up:
+        return {"status": "down", "bitrate": bitrate, "fix": f"{_CAN_INTERFACE} 未启用，请执行：{_CAN_FIX_COMMAND}"}
+    if bitrate != _CAN_BITRATE:
+        return {
+            "status": "wrong_bitrate",
+            "bitrate": bitrate,
+            "fix": f"{_CAN_INTERFACE} 波特率不是 {_CAN_BITRATE}（当前 {bitrate}），请执行：{_CAN_FIX_COMMAND}",
+        }
+    return {"status": "ok", "bitrate": bitrate}
+
+
+def _with_can0_diagnosis(method):
+    """命令失败时若 CAN 不可用，把 reason 前置成可操作的修复提示。
+
+    只在失败路径探测（成功零开销）；探测只读。成功路径与 CAN 正常时
+    reason 原样返回，现有失败语义不受影响。
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        outcome = method(self, *args, **kwargs)
+        if isinstance(outcome, dict) and outcome.get("status") == "failed":
+            can = _can0_status()
+            if can["status"] != "ok":
+                outcome["reason"] = (
+                    f"{can['fix']}（原始错误：{outcome.get('reason') or '动作未完成'}）"
+                )
+                outcome["can0"] = can["status"]
+        return outcome
+    return wrapper
 
 
 def _log(line: str) -> None:
@@ -465,6 +529,13 @@ class RobotArmNeroProvider(RobotProvider):
             payload["ok"] = False
             payload["ready"] = False
             payload["error"] = f"demo deployment incomplete under {self._demo_root}: missing {missing}"
+        # CAN 三关探测：/api/health 立刻可见，不用等对局里超时才发现。
+        can = _can0_status()
+        payload["can0"] = can
+        if can["status"] != "ok":
+            payload["ok"] = False
+            payload["ready"] = False
+            payload["error"] = can["fix"]
         return payload
 
     def ensure_started(self) -> None:
@@ -506,6 +577,7 @@ class RobotArmNeroProvider(RobotProvider):
 
     # ---- robot commands --------------------------------------------------
 
+    @_with_can0_diagnosis
     def grasp_cup(
         self,
         *,
@@ -521,6 +593,7 @@ class RobotArmNeroProvider(RobotProvider):
             is_cancelled,
         )
 
+    @_with_can0_diagnosis
     def shake_dice(
         self,
         *,
@@ -536,6 +609,7 @@ class RobotArmNeroProvider(RobotProvider):
             is_cancelled,
         )
 
+    @_with_can0_diagnosis
     def settle_dice(
         self,
         *,
@@ -570,6 +644,7 @@ class RobotArmNeroProvider(RobotProvider):
             is_cancelled,
         )
 
+    @_with_can0_diagnosis
     def prepare_throw(self, *, on_event, is_cancelled, timeout_seconds=None):
         """Finish homing and the ready waypoint before starting the chant."""
         home = self.ensure_home(on_event=on_event, is_cancelled=is_cancelled,
@@ -581,6 +656,7 @@ class RobotArmNeroProvider(RobotProvider):
             timeout_seconds, on_event, is_cancelled,
         )
 
+    @_with_can0_diagnosis
     def throw_gesture(
         self,
         gesture: str | None = None,
@@ -630,6 +706,7 @@ class RobotArmNeroProvider(RobotProvider):
             outcome.setdefault("gesture", gesture)
         return outcome
 
+    @_with_can0_diagnosis
     def reset_home(
         self,
         *,

@@ -14,6 +14,27 @@ LOG_FILE="${LOG_FILE:-${RUNTIME_DIR}/web-${PORT}.log}"
 # "process is alive" check is not a usable service.
 START_HEALTH_TIMEOUT="${START_HEALTH_TIMEOUT:-30}"
 
+# ---- 机械臂 CAN 前置检查（用户 2026-09-29 拍板：can0 不可用直接启动失败）----
+# 板子重启后 can0 不会自动 up，机械臂 SDK 连不上；与其带病启动后在
+# 对局里等超时，不如在这里明确拒绝并给出修复命令。读取只需普通权限。
+CAN_INFO="$(ip -details -o link show can0 2>/dev/null)" || {
+    echo "错误：机械臂 CAN 接口 can0 不存在。" >&2
+    echo "请检查机械臂/USB-CAN 是否插好，然后重新运行本脚本。" >&2
+    exit 1
+}
+if ! grep -qE '<(.*,)?UP(,.*)?>' <<<"$CAN_INFO"; then
+    echo "错误：can0 未启用，机械臂无法工作，服务拒绝启动。" >&2
+    echo "请先执行：sudo ip link set can0 up type can bitrate 1000000" >&2
+    echo "然后重新运行本脚本。" >&2
+    exit 1
+fi
+if ! grep -q 'bitrate 1000000' <<<"$CAN_INFO"; then
+    echo "错误：can0 波特率不是 1000000，机械臂无法工作，服务拒绝启动。" >&2
+    echo "请先执行：sudo ip link set can0 up type can bitrate 1000000" >&2
+    echo "然后重新运行本脚本。" >&2
+    exit 1
+fi
+
 # Resolve referenced providers tolerantly: a broken config/manifest must not
 # kill the script before it can say what is wrong.  The running server keeps
 # the last good config via hot-reload, so a JSON broken mid-edit only bites
