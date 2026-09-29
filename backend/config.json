@@ -1,5 +1,9 @@
 {
   "schema_version": 1,
+    "games_enabled": {
+    "dice": true,
+    "rps": true
+  },
   "providers": {
     "tts_local": "tts_moss_nano",
     "tts_remote": "tts_gptsovits",
@@ -44,9 +48,5 @@
   "display": {
     "player_side": "LEFT",
     "video_rotation_deg": {"dice": 0, "rps": 0}
-  },
-  "games_enabled": {
-    "dice": true,
-    "rps": true
   }
 }
