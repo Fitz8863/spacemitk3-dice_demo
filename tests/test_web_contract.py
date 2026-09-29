@@ -180,6 +180,15 @@ def test_disabled_games_are_hidden_not_grayed():
     assert "即将开放" not in js.replace("该游戏即将开放，敬请期待", "")
 
 
+def test_board_input_relay_contract():
+    """板端键盘附加输入源（input_board_enable，2026-09-29）：select 轮询消费
+    board_navigate 事件只挪高亮；enterSelectedGame 的相位守卫保证同一记板端
+    Enter 的双路径（本地 keydown + selected 事件）只建一个回合。"""
+    js = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    assert "event.status === 'board_navigate'" in js
+    assert "if (state.phase !== 'select') return;" in js
+
+
 def test_frontend_blue_button_retries_adjudication_after_diagnosis():
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")

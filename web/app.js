@@ -293,6 +293,11 @@ function startSelectListening() {
               enterSelectedGame();
               return;
             }
+          } else if (event.status === 'board_navigate' && event.game_id) {
+            // 板端键盘光标同步（input_board_enable）：只挪高亮、不进局——
+            // 进局走 selected 事件或本地 Enter，enterSelectedGame 的相位
+            // 守卫保证同一记按键不会建两个回合。
+            if (fresh) selectGame(event.game_id);
           } else {
             showAsrFeedback({ status: 'unmatched', text: event.text });
           }
