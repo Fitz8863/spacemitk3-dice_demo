@@ -29,6 +29,7 @@ from core.arena_config import (  # noqa: E402
     arena_game_select_phrases,
     arena_slot_value,
     arena_standby,
+    arena_input_board_enabled,
     arena_vision_always_on,
     collect_local_tts_ids,
     collect_provider_slot_ids,
@@ -101,6 +102,17 @@ class ValidationTests(unittest.TestCase):
             validate_arena_config({**VALID_ARENA, "games_enabled": {"rps": "off"}})
         with self.assertRaises(ArenaConfigError):
             validate_arena_config({**VALID_ARENA, "games_enabled": ["dice"]})
+
+    def test_input_board_enable_must_be_bool_and_defaults_off(self):
+        validate_arena_config({**VALID_ARENA, "input_board_enable": True})
+        with self.assertRaises(ArenaConfigError):
+            validate_arena_config({**VALID_ARENA, "input_board_enable": "yes"})
+        # 缺省关：既有部署行为不变。
+        self.assertFalse(arena_input_board_enabled(VALID_ARENA))
+        self.assertFalse(arena_input_board_enabled(None))
+        self.assertTrue(
+            arena_input_board_enabled({**VALID_ARENA, "input_board_enable": True})
+        )
 
     def test_vision_always_on_defaults_to_on(self):
         # An existing deployment that never heard of the key keeps the stream

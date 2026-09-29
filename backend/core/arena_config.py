@@ -60,6 +60,9 @@ def validate_arena_config(payload: Any) -> dict[str, Any]:
     voice = payload.get("voice")
     if voice is not None and (not isinstance(voice, str) or not voice.strip()):
         raise ArenaConfigError("voice must be a non-empty string")
+    board_input = payload.get("input_board_enable")
+    if board_input is not None and not isinstance(board_input, bool):
+        raise ArenaConfigError("input_board_enable must be true/false")
     speed = payload.get("speed")
     if speed is not None and (
         not isinstance(speed, (int, float)) or isinstance(speed, bool) or speed <= 0
@@ -168,6 +171,13 @@ def arena_slot_value(arena: Mapping[str, Any] | None, slot: str) -> str:
 def arena_asr_enabled(arena: Mapping[str, Any] | None) -> bool:
     value = (arena or {}).get("asr_enabled", True)
     return value if isinstance(value, bool) else True
+
+
+def arena_input_board_enabled(arena: Mapping[str, Any] | None) -> bool:
+    """板端物理键盘输入开关（缺省 False=只有 web 输入，既有行为不变）。"""
+    return isinstance((arena or {}).get("input_board_enable"), bool) and (
+        (arena or {}).get("input_board_enable") is True
+    )
 
 
 def arena_vision_always_on(arena: Mapping[str, Any] | None) -> bool:

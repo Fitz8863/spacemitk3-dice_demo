@@ -1020,6 +1020,10 @@ function selectGame(id) {
 }
 
 function enterSelectedGame() {
+  // 相位守卫：只有列表页能发起进局。同一记板端 Enter 会同时走本地
+  // keydown 与服务端 selected 事件两条路（input_board_enable 附加输入源），
+  // 已在对局/已进入时静默忽略，防止连建两个回合；语音直达与陈旧事件同享此保护。
+  if (state.phase !== 'select') return;
   const module = gameModules[state.selectedGame];
   if (!module) {
     toast(`未注册游戏：${state.selectedGame}`);

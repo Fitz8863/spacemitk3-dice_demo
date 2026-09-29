@@ -44,12 +44,14 @@ from core.games import (
 from core.jobs import ComponentJob
 from core.asr_bridge import AsrIntentBridge
 from core.vision_stream import VisionStreamManager
+from core.board_input import BoardKeyReader, resolve_intent
 from core.arena_config import (
     ARENA_CONFIG_PATH,
     ArenaConfigError,
     arena_asr_enabled,
     arena_game_select_confirm_phrases,
     arena_game_select_phrases,
+    arena_input_board_enabled,
     arena_slot_value,
     arena_standby,
     collect_local_tts_ids,
@@ -648,6 +650,128 @@ _SELECT_BUS = _AsrEventBus()
 # (the green button / Enter affordance, spoken).  Its trigger words come
 # from the global config's ``game_select.confirm_phrases``.
 _SELECT_CONFIRM_KEY = "confirm"
+
+
+# ---- 板端物理键盘输入（input_board_enable=true 时的附加输入源）--------
+# 同一记板端按键会同时走两条路：服务端 evdev 直读 + 板子 Chromium 的本地
+# keydown（web 输入照常有效）。引擎对"相位不符的意图"天然幂等拒绝，唯一
+# 真正危险的是选关 Enter 连建两个回合——所以派发与建局都加 250ms 去重窗，
+# 对两条路径统一生效。
+_BOARD_DEDUP_SECONDS = 0.25
+_board_reader: BoardKeyReader | None = None
+_board_reader_lock = threading.Lock()
+_board_cursor: dict[str, str | None] = {"game_id": None}  # 板端导航光标
+_board_dedup: dict[str, float] = {}
+
+
+def _board_recent(key: str) -> bool:
+    now = time.monotonic()
+    last = _board_dedup.get(key)
+    if last is not None and now - last < _BOARD_DEDUP_SECONDS:
+        return True
+    _board_dedup[key] = now
+    if len(_board_dedup) > 32:
+        stale = sorted(_board_dedup.items(), key=lambda kv: kv[1])[:16]
+        for dead_key, _ in stale:
+            _board_dedup.pop(dead_key, None)
+    return False
+
+
+def _board_active_round() -> GameRound | None:
+    with rounds_lock:
+        for round_ in rounds.values():
+            if round_.status == "running":
+                return round_
+    return None
+
+
+def _board_enabled_games() -> list[str]:
+    return [m["id"] for m in get_games() if m.get("enabled")]
+
+
+def _board_cursor_game(games: list[str]) -> str:
+    if _board_cursor["game_id"] not in games:
+        _board_cursor["game_id"] = games[0]
+    return _board_cursor["game_id"]
+
+
+def _board_dispatch(action: str) -> None:
+    """把一个板端按键动作派发到当前相位（局内意图 / 选关 / 待机唤醒）。"""
+    try:
+        if not arena_input_board_enabled(get_arena_config()):
+            return  # 每键现读：热加载，false 期间按键静默丢弃
+        round_ = _board_active_round()
+        if round_ is not None:
+            intent = resolve_intent(round_.game_id, round_.state, action)
+            if intent is None:
+                return
+            if _board_recent(f"intent:{round_.id}:{intent}"):
+                return
+            try:
+                round_.submit_intent(intent, {"source": "board"})
+            except (IntentRejectedError, RoundClosedError):
+                pass  # 相位不符是正常玩法，与前端吞掉的是同一类
+            return
+        games = _board_enabled_games()
+        if not games:
+            return
+        if action in ("up", "down"):
+            idx = games.index(_board_cursor_game(games))
+            step = 1 if action == "down" else -1
+            _board_cursor["game_id"] = games[(idx + step) % len(games)]
+            _SELECT_BUS.push({
+                "event": "asr", "status": "board_navigate",
+                "game_id": _board_cursor["game_id"], "text": "board",
+            })
+            return
+        if action == "confirm":
+            game_id = _board_cursor_game(games)
+            if _board_recent(f"select:{game_id}"):
+                return
+            # 待机页：唤醒回列表；列表页：直达对局（复用语音选游戏的事件形状，
+            # 页面各自按所处相位消费，stale 事件由 listen 清总线+10s 保鲜窗兜底）。
+            _STANDBY_BUS.push({"event": "asr", "status": "wake", "text": "board"})
+            _SELECT_BUS.push({
+                "event": "asr", "status": "selected", "game_id": game_id,
+                "text": "board",
+            })
+    except Exception as exc:  # 派发绝不能带死读取线程
+        print(f"[board-input] dispatch failed: {exc}", flush=True)
+
+
+def _board_input_status() -> dict:
+    with _board_reader_lock:
+        reader = _board_reader
+    status = reader.status() if reader is not None else {"running": False, "devices": []}
+    return {"enabled": arena_input_board_enabled(get_arena_config()), **status}
+
+
+def _supervise_board_input() -> None:
+    """按配置热启停读取线程：true 起线程、false 停并释放设备句柄。"""
+    while True:
+        try:
+            enabled = arena_input_board_enabled(get_arena_config())
+            with _board_reader_lock:
+                reader = _board_reader
+                running = reader is not None and reader.status()["running"]
+            if enabled and not running:
+                with _board_reader_lock:
+                    if _board_reader is None:
+                        _board_reader = BoardKeyReader(_board_dispatch)
+                        _board_reader.start()
+                        print("[board-input] reader started (input_board_enable=true)", flush=True)
+            elif not enabled and reader is not None and running:
+                reader.stop()
+                print("[board-input] reader stopped (input_board_enable=false)", flush=True)
+        except Exception as exc:
+            print(f"[board-input] supervisor error: {exc}", flush=True)
+        time.sleep(2.0)
+
+
+def _start_board_input_supervisor() -> None:
+    threading.Thread(
+        target=_supervise_board_input, name="board-input-supervisor", daemon=True
+    ).start()
 
 
 def _game_select_phrases() -> dict[str, list[str]]:
@@ -1560,6 +1684,7 @@ class Handler(BaseHTTPRequestHandler):
                 "tts_speaker": tts_health.get("speaker", ""),
                 "tts_remote_provider": remote_id,
                 "tts_remote": {**remote_health, "configured": bool(remote_id)},
+                "board_input": _board_input_status(),
                 "camera": "config.json",
             })
             return
@@ -1934,6 +2059,7 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Dice Arena K3 backend listening on http://{args.host}:{args.port}", flush=True)
     print(f"Local TTS provider: {_LOCAL_TTS_PIN or 'none'}", flush=True)
+    _start_board_input_supervisor()
     _probe_selected_llm(arena_config)
     adjudicator = next((item for item in COMPONENTS.all(include_health=True)
                         if item["type"] == "vision" and item["role"] == "adjudicator"), None)
