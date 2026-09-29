@@ -103,7 +103,6 @@ export function register(engine) {
     activeVisionUrl = '';
     frame.src = 'about:blank';
     panel.classList.add('hidden');
-    $('analysisStreamSpacer')?.classList.add('hidden');
   }
 
   function startVisionStream(event) {
@@ -121,7 +120,6 @@ export function register(engine) {
     }
     const normalizedUrl = streamUrl.toString();
     panel.classList.remove('hidden');
-    $('analysisStreamSpacer')?.classList.remove('hidden');
     // Reuse the connection across repeated video events and adjudication.
     if (activeVisionUrl === normalizedUrl && frame.src !== 'about:blank') return;
     activeVisionUrl = normalizedUrl;

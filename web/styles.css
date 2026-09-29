@@ -134,7 +134,6 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .btn-green { background: #16a34a; background: var(--brand-green); color: var(--brand-blue); box-shadow: 0 7px 0 var(--brand-green-dark), 0 12px 22px rgba(124, 161, 35, .15); }
 .btn-red { background: #dc2626; box-shadow: 0 8px 18px rgba(220, 38, 38, .22); }
 .btn-blue { background: #2563eb; box-shadow: 0 8px 18px rgba(37, 99, 235, .22); }
-.btn-yellow { background: #e4a80a; color: var(--brand-blue); box-shadow: 0 8px 18px rgba(217, 119, 6, .22); }
 
 /* 机械臂进度行（倒计时页/摇骰页/过场页共用）：🦾 + 当前阶段 + n/10 计数 */
 .arm-progress { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 18px; padding: 10px 22px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); box-shadow: var(--shadow); color: var(--muted); font-size: 20px; }
@@ -193,12 +192,8 @@ body[data-phase="result"] .stage-head { padding-top: 138px; }
 .vision-pip .analysis-stream-head { display: none; }
 body[data-phase="select"] .vision-pip,
 body[data-phase="standby"] .vision-pip { display: none; }
-body[data-phase="analysis"] .vision-pip { top: 128px; width: min(92vw, 760px); padding: 12px; border-radius: 18px; }
-body[data-phase="analysis"] .vision-pip .analysis-stream-head { display: flex; }
-.analysis-stream-spacer { width: min(100%, 760px); margin: 0 auto 28px; aspect-ratio: 13 / 9; border-radius: 18px; }
 .analysis-stream-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 4px 10px; color: var(--muted-2); font-size: 15px; }
 .analysis-stream-label { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .04em; }
-.analysis-stream-state { color: var(--muted); }
 .live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--loss); box-shadow: 0 0 0 4px rgba(248, 113, 113, .14); animation: livePulse 1.4s ease-in-out infinite; }
 #analysisStream { display: block; width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 12px; background: #e4e7ec; }
 .analysis-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 40px 0 30px; }
@@ -441,8 +436,7 @@ html, body {
 .btn-circle,
 .btn-pill,
 .game-start-text,
-.countdown-number,
-.result-title {
+.countdown-number {
   font-family: "LXGW Play", "Noto Sans CJK SC", "PingFang SC", sans-serif;
 }
 .buddy-copy h2 { font-size: clamp(30px, 2.5vw, 43px); line-height: 1.25; letter-spacing: .01em; }
@@ -538,7 +532,7 @@ html, body {
 .btn-pill { border-radius: 23px 18px 25px 20px; padding: 15px 32px; }
 .btn-circle:hover, .btn-pill:hover { filter: saturate(1.08); transform: translateY(-3px) rotate(-1deg); }
 .btn-circle:active, .btn-pill:active { transform: translateY(5px); box-shadow: 0 2px 0 rgba(0,32,92,.3); }
-.btn-red, .btn-blue, .btn-yellow { border-color: var(--brand-blue); }
+.btn-red, .btn-blue { border-color: var(--brand-blue); }
 
 .rules-list { gap: 18px; margin-bottom: 34px; }
 .rules-item {
@@ -577,7 +571,6 @@ html, body {
 }
 .arm-progress { border-radius: 19px 24px 18px 25px; background: #fff8d9; }
 .analysis-spinner { border-width: 7px; border-top-color: var(--brand-green); border-right-color: #f0b436; box-shadow: 0 0 0 7px rgba(176, 226, 55, .1); }
-body[data-phase="analysis"] .vision-pip { border-radius: 24px 17px 27px 20px; }
 .analysis-step { border-radius: 18px 13px 20px 15px; background: #fbfaf4; }
 .analysis-step:nth-child(2) { transform: rotate(.6deg); }
 .analysis-step.active { background: #f0f8d9; border-color: var(--brand-blue); box-shadow: 5px 6px 0 var(--brand-green); }
@@ -629,15 +622,10 @@ body:has(.dice-video) .stage-title::after { display: none; }
 body:has(.dice-video) .stage-copy { font-size: 16px; line-height: 1.4; text-wrap: pretty; }
 body:has(.dice-video) .stage-body { flex: 0 0 auto; padding: 12px 0 0; max-width: 1600px; }
 body:has(.dice-video) .vision-pip {
-  position: static; transform: none; width: min(100%, clamp(840px, 44vw, 1500px)); box-sizing: border-box;
+  position: static; transform: none; box-sizing: border-box;
   padding: 8px; margin: 0 auto; border-radius: 18px; z-index: auto; transition: width .4s cubic-bezier(.25,.9,.3,1.05);
 }
-body:has(.dice-video)[data-phase="analysis"] .vision-pip {
-  width: min(100%, clamp(1100px, 60vw, 1800px));
-}
 body:has(.dice-video) .vision-pip .analysis-stream-head { display: flex; margin: 0 4px 6px; font-size: 13px; }
-body:has(.dice-video) .analysis-stream-state { max-width: 65%; text-align: right; }
-body:has(.dice-video) .analysis-stream-spacer { display: none; }
 body:has(.dice-video) .countdown-number { font-size: clamp(64px, 8vw, 104px); font-variant-numeric: tabular-nums; }
 body:has(.dice-video) .game-start-text { font-size: clamp(30px, 4vw, 48px); }
 body:has(.dice-video) .arm-progress { margin: 12px auto 0; padding: 10px 16px; }
@@ -657,7 +645,6 @@ body:has(.dice-video) .view-actions .btn-pill { min-height: 72px; padding: 16px 
   body:has(.dice-video) .stage { padding: 16px 12px 20px; }
   body:has(.dice-video) .vision-pip { padding: 5px; }
   body:has(.dice-video) .analysis-stream-head { flex-direction: row; align-items: center; }
-  body:has(.dice-video) .analysis-stream-state { display: none; }
   body:has(.dice-video) .scoreboard { padding: 8px; gap: 8px; }
   body:has(.dice-video) .score-side { min-width: 0; padding: 8px 4px; }
   body:has(.dice-video) .score-label { font-size: 13px; }
