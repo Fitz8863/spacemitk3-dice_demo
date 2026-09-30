@@ -30,7 +30,7 @@
 
 - 游戏配置：`backend/games/<game_id>/manifest.json`。其中的 `providers` 选择语义职责，`vision_profile` 描述该游戏的模型、类别、规则、LLM prompt、视频 path、超时和结果保持时间。
 - 视觉 runtime 配置：各游戏 `backend/games/<game_id>/adjudicator_config.json`（manifest 的 `vision_profile.runtime_config` 必填指向）。这里保存该游戏的摄像头、推理、RTSP 和 MediaMTX WebRTC 基础地址。
-- provider 配置：`backend/components/<provider_id>/config.json`。这里保存适配器的运行时路径、端口、endpoint 和生命周期设置。LLM 密钥在 `backend/components/llm_openai_compat/config.json` 的**顶层扁平键**（`endpoint`/`model`/`api_key`/`reasoning_effort`，没有 `llm` 子段）；仓库当前为公开仓库，不要再新增真实密钥。
+- provider 配置：`backend/components/<provider_id>/config.json`。这里保存适配器的运行时路径、端口和生命周期设置（LLM 组件已随复核链移除，现存配置不含任何云服务凭证）。
 - 机械臂子系统：`dice_demo/` 是上游快照子目录（`git subtree` 合入，内部文件不可在本仓直接修改）；`backend/components/robot_arm_nero/config.json` 的 `demo_root` 指向它，改动需重启生效。
 
 新增游戏通常只需要添加一个游戏目录和 manifest；新增 TTS 或视觉能力只需要添加对应 provider 功能包并在游戏 manifest 中选择。空间定位类视觉必须使用独立的 `role=localizer` 插槽，不能接入 `vision_adjudicator`。

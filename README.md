@@ -4,7 +4,7 @@
 
 - `web/`：大屏 Web 前端，完成游戏列表、规则确认、同步倒计时、双方摇骰、同时开盖、视觉分析动画、胜负播报和再来一局；摇骰阶段为 10 秒，最后 3 秒使用红色高对比倒计时和浏览器提示音；各游戏的 `manifest.json` 集中维护 TTS 文案与默认音色/语速。
 - `backend/server.py`：K3 板端轻量 HTTP bridge；通过视觉裁决功能包调度 YOLOv8 runtime，并使用独立结构化事件通道和 SSE 将进度/结果推送给网页。
-- `vision/yolov8_objdetect/`：通用 YOLOv8 K3 摄像头 runtime，负责 OpenCL 前处理、SpaceMIT ONNX Runtime EP、GStreamer 摄像头、稳定检测、场景几何辅助和快照；游戏规则与 LLM 复核由 Python provider 调度。
+- `vision/yolov8_objdetect/`：通用 YOLOv8 K3 摄像头 runtime，负责 OpenCL 前处理、SpaceMIT ONNX Runtime EP、GStreamer 摄像头、稳定检测、场景几何辅助和快照；游戏规则由 Python provider 调度。
 - `tts/qwen3-tts/`：迁移的 Qwen3-TTS 0.6B + SpaceMIT `llama-server` 服务；网页通过后端代理获取 24 kHz 单声道 WAV。
 - `tts/moss-tts-nano/`：迁移的 MOSS-TTS-Nano SpaceMIT EP runtime 源码与板端交付目录，布局与 `tts/qwen3-tts/` 一致；模型、riscv64 Python 包和 native 库按该目录 `.gitignore` 保留为板端运行时文件。
 - `backend/components/tts_moss_nano/`：MOSS-TTS-Nano 组件适配器；调用仓库内 runtime，按文本 chunk 流式返回 WAV。
@@ -23,7 +23,7 @@
 - **子目录内部不可在本仓修改**（上游领地）：机械臂侧代码/文档的改动一律在上游仓提交，之后在 main 执行 `git subtree pull --prefix=dice_demo <上游路径> hwj_dev --squash` 同步，重启板端服务生效。
 - **板上双位分工**：上游仓检出 = 开发位（改码、pytest、标定）；main 检出内的 `dice_demo/` = 运行位（`robot_arm_nero` 的 `demo_root` 指向它，datasets 运行数据也写在这里）。运行与发布因此永远同源。
 
-> 大模型复核是**可配置**的一环，由游戏 manifest 的 `vision_profile.llm.enabled` 控制；**dice 当前为 `false`（纯 YOLO 判胜）**，复核代码与旋钮保留但休眠。详见下文「大模型的 endpoint…」一段。
+> **裁决是纯 YOLO 单出口**（2026-09-30 起 LLM 大模型复核链整体移除，维护者拍板）：稳定帧检测的胜负结果即终局，`decision_source` 恒为 `yolo_only`。更早的「YOLO+大模型复核」双保险架构已连代码一并删除，历史提交可追溯。
 
 ## 在 K3 板端运行前端
 
@@ -80,9 +80,7 @@ python3 backend/tts_debug.py <provider_id>
 
 `web/` 前端和 `backend/server.py` 都只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。网页请求 `/api/adjudicate` 后，bridge 会通过 `vision_yolov8_objdetect` 启动或复用 `vision/yolov8_objdetect/build/yolov8_camera`；YOLO runtime 只输出稳定检测证据，LLM 请求由 Python provider 发起。浏览器在板端通过 `127.0.0.1` 访问时，可以正常申请摄像头权限；如果从其他设备通过 HTTP IP 访问，浏览器可能因非安全上下文限制摄像头权限，但实际识别仍使用 K3 板端摄像头。
 
-大模型的 endpoint、model 和 API key 统一配置在 `backend/components/llm_openai_compat/config.json`（2026-09-04 大模型模块化后从视觉组件迁出；视觉组件 config 现在只剩 `runtime`/`events`）。该文件被 Git 跟踪；**本仓库当前是公开仓库**（历史中曾包含真实 key，维护者知情并拍板维持现状——不要再往仓库新增任何真实密钥）；不要把 key 写进网页或日志。修改后重启 `scripts/start_web.sh` 生效。如果没有配置 key，`/api/health` 会显示 `llm_configured:false`，进入开盖后的视觉裁决阶段会明确提示未配置，而不是使用随机骰子或直接判定胜负。
-
-> **当前 dice 是纯 YOLO 判胜**：`backend/games/dice/manifest.json` 的 `vision_profile.llm.enabled` 自 2026-09-07 起为 `false`，复核代码与全部旋钮都保留但休眠。`/api/health` 的 `llm_configured:true` 只表示**槽位与组件配置就绪**，不代表这一局会调用大模型。要恢复复核就把该开关改成 `true`（热加载，下一局生效）。
+**LLM 大模型复核已于 2026-09-30 整体移除**（`llm_openai_compat` 组件、`vision_profile.llm` 配置段、复核/复问判定链一并删除；manifest 写回 llm 段会在加载期被拒）。历史提交中曾包含真实的 DeepSeek API key——维护者知情并拍板不轮换、仓库维持公开；**不要再往仓库新增任何真实密钥**。
 
 页面交互流程：
 
@@ -91,7 +89,7 @@ python3 backend/tts_debug.py <provider_id>
 3. 点击「开始摇骰」，网页执行 3、2、1 倒计时；
 4. 机械臂实际摇骰（一条链：摇+放杯+张手+归位；2026-09-24 起人工摇骰模式已移除，摇骰环节只有机械臂）；
 5. 机械臂放下杯子归位完的瞬间，语音喊「停！」（`audio/停.wav`）并随即交棒——页面 0.5 秒后
-   直接进入 YOLOv8 真实识别流程（结果由板端检测与 profile 规则产生，绝不由网页随机生成；复核开启时会先过大模型）；
+   直接进入 YOLOv8 真实识别流程（结果由板端检测与 profile 规则产生，绝不由网页随机生成）；
 7. 点击「再来一局」回到准备状态。
 
 实体按键：绿色按键发送 `Enter`，用于确认、进入和开始；红色按键发送 `Escape`，用于取消或返回（摇骰进行中无动作——机械臂摇物理上不应打断，等臂完成自然推进）；蓝色按键发送 `ArrowDown`，用于向下选择或重听规则。
@@ -248,7 +246,7 @@ cmake --build build -j4
 
 当前迁移的模型是 YOLOv8 raw 输出模型，预期输出 `[1, 10, 8400]`。程序会在 CPU 侧执行 YOLOv8 解码和 NMS，并以模型无关的 detection 列表和稳定帧快照交给游戏 profile 解释；不会在 C++ 中固化骰子数量、分区、求和或胜负规则。
 
-视觉 runtime 的配置**每游戏一份**：manifest 的 `vision_profile.runtime_config` 指向该游戏专属的运行配置文件（**必填**），**dice 读 `backend/games/dice/adjudicator_config.json`**——它持有 C++ 消费的全部参数（模型 `model`、检测阈值 `conf`、稳定帧数 `stable_frames`、分界线检测 `divider_detection` + 摄像头/EP/焦距/RTSP 硬件）。共享部署默认 `vision/yolov8_objdetect/config.json` 已于 2026-09-20 删除（它只剩"游戏忘了声明时的兜底"这一种存在意义，而那个兜底是负价值的静默陷阱）。`backend/components/vision_yolov8_objdetect/config.json` 只保存 Provider 的 runtime 路径与生命周期。这些都**不含** LLM 凭证——endpoint/model/api_key 在 `backend/components/llm_openai_compat/config.json`。游戏 manifest 声明自己的 `video.path`，完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
+视觉 runtime 的配置**每游戏一份**：manifest 的 `vision_profile.runtime_config` 指向该游戏专属的运行配置文件（**必填**），**dice 读 `backend/games/dice/adjudicator_config.json`**——它持有 C++ 消费的全部参数（模型 `model`、检测阈值 `conf`、稳定帧数 `stable_frames`、分界线检测 `divider_detection` + 摄像头/EP/焦距/RTSP 硬件）。共享部署默认 `vision/yolov8_objdetect/config.json` 已于 2026-09-20 删除（它只剩"游戏忘了声明时的兜底"这一种存在意义，而那个兜底是负价值的静默陷阱）。`backend/components/vision_yolov8_objdetect/config.json` 只保存 Provider 的 runtime 路径与生命周期。这些配置**不含**任何云服务凭证（LLM 复核已移除）。游戏 manifest 声明自己的 `video.path`，完整播放地址由 runtime 配置的 `video.webrtc_base_url` 与 path 安全拼接。
 
 > ⚠️ **per-game 运行配置文件是"整份替换"，不做字段级合并。** runtime 只带 `--config <那一份>`，
 > 里面**没写的键会回落到 C++ 编译期默认值**（`conf` 0.50、`stable_frames` 20、`focus` 0），
@@ -357,7 +355,7 @@ provider.py         # Component 子类，实现统一接口
 当前组件：
 
 ```text
-vision_yolov8_objdetect -> vision/adjudicator，按游戏 profile 执行稳定帧、多视角投票、胜负规则和 LLM 复核
+vision_yolov8_objdetect -> vision/adjudicator，按游戏 profile 执行稳定帧、多视角投票和胜负规则
 tts_qwen3     -> tts provider，代理 Qwen3-TTS
 tts_moss_nano -> tts provider，代理仓库内 `tts/moss-tts-nano` 的 MOSS-TTS-Nano SpaceMIT EP runtime，支持 chunk 级 WAV 流式
 tts_gptsovits -> tts provider，HTTP 客户端调用 Tailscale 内另一台 GPU 主机上的 GPT-SoVITS v2ProPlus（9873 按音色名调用），真流式 PCM 实时包装为 WAV 帧

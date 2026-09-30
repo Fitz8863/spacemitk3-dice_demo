@@ -90,7 +90,6 @@ main/
     // adjudicator_config.json（2026-09-20），见下节。
     "multi_view": {"enabled": true, "min_views": 1},
     "rule": {"kind": "numeric_compare"},
-    "llm": {"enabled": false, "timeout_seconds": 10, "allowed_outcomes": ["LEFT", "RIGHT", "TIE"], "...": "..."},
     "video": {"enabled": false, "path": "/dice/det"},
     "lifecycle": {"pre_adjudication_wait_seconds": 3, "post_result_hold_seconds": 2},
     "timeouts": {"yolo_detection_seconds": 8, "adjudication_seconds": 30}
@@ -115,8 +114,7 @@ main/
 
 | 文件 | 所有者 | 典型字段 |
 | --- | --- | --- |
-| `backend/components/vision_yolov8_objdetect/config.json` | Python provider | resident/per-request 模式、runtime 路径、生命周期宽限时间（**不含** LLM 凭证；2026-09-04 起 LLM 配置在 `backend/components/llm_openai_compat/config.json`） |
-| `backend/components/llm_openai_compat/config.json` | LLM 组件 | endpoint、model、api_key、`reasoning_effort` 部署默认（Git 跟踪，**仓库须保持私有**） |
+| `backend/components/vision_yolov8_objdetect/config.json` | Python provider | resident/per-request 模式、runtime 路径、生命周期宽限时间（不含任何云服务凭证） |
 | `backend/games/<id>/adjudicator_config.json` | C++ runtime / **各游戏专属（必填）** | 摄像头、分辨率、帧率、推理线程、EP affinity、焦距/变焦、RTSP 地址、MediaMTX `video.webrtc_base_url`。**只放"这台板子+这张桌子"的属性**：检测阈值等游戏参数在游戏 manifest（见 §3.3）。共享部署默认 `vision/yolov8_objdetect/config.json` 已于 2026-09-20 删除 |
 | `backend/components/tts_*/config.json` | 各 TTS provider | 本地 runtime 路径、端口、模型和音色参数 |
 
@@ -247,7 +245,7 @@ profile 都用 `"default"`——所以 `_runtime_signature()`（`provider.py`）
 裁决入口也有两档，按游戏形态选：
 
 - **双侧证据型**（dice）：pipeline 走 `core.vision_pipeline.run_vision_game` → provider
-  `adjudicate()`——双侧分组、规则评估、（可选）LLM 复核全在 provider。
+  `adjudicate()`——双侧分组与规则评估全在 provider（纯 YOLO）。
 - **单侧证据型**（rps：agent 侧被 ROI 排除、胜负一半在画面外）：pipeline 调 provider
   `observe()` 只拿稳定观测，分组/比较/投影留在游戏侧（`games/<id>/pipeline.py` +
   `result.py`）。`categorical_relation` 要求两侧都有值，单侧缺失直接 RuleError——这是
@@ -397,8 +395,8 @@ RTSP，检测器会话一并载入，只是不推理。所以 `false` 的代价*
 2. runtime 通过独立 `event-fd` 输出 JSONL：`started`、`ready`、`video`、`phase`、`progress`、`observation`。stdout/stderr 仅作为诊断日志。
 3. runtime 的 `stable_count` 只累计**本局 profile 能裁决的帧**，一帧要同时满足三条才累加，否则清零：开启 `divider_detection` 时该帧定位到分界线；按该帧**定位到的分界线**切分（定位不到时才回落到 `vision.divider.position`/`orientation`）后两侧各恰好 `vision.expected_count` 个目标；两侧类别多重集与上一帧完全一致。达到 `stable_frames` 后输出一帧私有 snapshot 和通用 detection。数量与分区位置由 `process.py` 转发为 `--expected-count/--region-position/--region-orientation`，runtime 不固化游戏规则；profile 未声明 `expected_count` 时只保留"检测非空 + 分界线已定位"的旧判据。因此遮挡、叠放、漏检会让计数停在低位，等满 `yolo_detection_seconds` 后走失败诊断，而不是先凑出稳定观测再被 provider 的数量校验打回。
 4. provider 根据 `class_map`、participants、分组方式和 `rule` 计算每个视角的 YOLO 初判。多视角属于同一个裁决对象，按 profile 的 `majority_vote` 做多数投票。
-5. 如果启用 LLM 复核（`llm.enabled`），provider 将稳定帧和本局 prompt 作为一次无历史的 OpenAI-compatible 多模态请求。LLM 只负责复核图片，不接收其他请求上下文。`llm.reasoning_effort`（`none`/`low`/`high`/`max`，热加载）逐局指定思考深度：`none` 关闭模型思考模式，实测复核从 5–10s 降到 1–4s；缺省时用 LLM 组件 config 的部署默认（未设置 = 端点默认，通常是 high）。**失败诊断与复核无关**（2026-09-14 起）：等不到稳定观测、或稳定观测的每侧数量不符时，原因由本地规则依据检测证据（每侧数量、分界线、是否检测为空）生成，不发任何多模态请求。
-6. 结果优先级：YOLO 与 LLM 一致使用 `consensus`；不一致时对 LLM 复问一次做佐证——复问与 YOLO 一致用 `yolo_reask_confirmed`，复问仍坚持且非平局才用 `llm_override`（平局是算术事实，`tie_upheld` 永不被推翻），复问无定论用 `yolo_reask_fallback`；LLM 超时使用 `yolo_timeout_fallback`；其他无效响应或检测证据不足进入错误。
+5. （LLM 复核步骤已于 2026-09-30 移除——裁决纯 YOLO。）失败诊断由本地规则依据检测证据（每侧数量、分界线、是否检测为空）生成，不发任何多模态请求。
+6. 结果即 YOLO 结论（`decision_source` 恒 `yolo_only`）；检测证据不足进入错误诊断。
 7. provider 发出 `FINAL_RESULT` 给 runtime，再发出 `STOP_ADJUDICATION`。这会立即停止 YOLO 推理，但 resident 摄像头和视频链路继续保持。
 8. 发送 `result` 后进入 `holding`，等待 `lifecycle.post_result_hold_seconds`。保持期间不重新检测、不重复调用 LLM，只继续让前端观看实时画面；值为 `0` 时立即结束。
 9. provider 发出 `complete`，任务变为 `success`，resident runtime 回到 `idle`；per-request 模式则回收进程和摄像头。
@@ -415,7 +413,6 @@ RTSP，检测器会话一并载入，只是不推理。所以 `false` 的代价*
   "adjudicated": true,
   "winner": "RIGHT",
   "decision_source": "consensus",
-  "verification": {"status": "matched", "yolo_winner": "RIGHT", "llm_winner": "RIGHT"}
 }
 ```
 
@@ -465,7 +462,7 @@ TTS 与视觉一样使用职责接口和目录功能包：
 
 ## 8. 安全和边界
 
-- LLM key 存放在 `backend/components/llm_openai_compat/config.json` 的顶层 `api_key`（该文件扁平结构，**没有** `llm` 子段；2026-09-04 大模型模块化后从视觉组件迁出。Git 跟踪文件，仓库须保持私有），不能写入前端、公开 manifest 或日志。当前工作区若有用户本地组件 config 修改，提交整理时必须跳过。
+- LLM 复核链已于 2026-09-30 整体移除（含组件与凭证文件）；历史提交中的旧 key 维护者已知情拍板不轮换，不要再往仓库新增任何真实密钥。
 - profile 的模型路径、视频 path、snapshot path 都经过校验；视频 path 只能是安全 URL path，不能包含主机、query、fragment 或 `..`。
 - provider 业务事件使用独立 JSONL 通道；不要从 stdout/stderr 的日志文本猜测胜负。
 - 网页不生成随机结果；裁决必须来自 runtime detection 和 profile/provider 规则。

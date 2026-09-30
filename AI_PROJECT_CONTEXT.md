@@ -2,7 +2,7 @@
 
 > **用途**：新对话或新开发者进入项目时，先阅读本文件，再检查代码和板端实际状态。
 > **记录日期**：2026-09-01
-> **当前阶段**（2026-09-30 更新）：K3 板端 Web 交互 + YOLOv8 骰子识别 + NERO 机械臂全自动摇骰链已接通（`robot_arm_nero` 组件驱动仓内 `dice_demo/` 上游快照；纯 YOLO 判胜，大模型复核关闭但保留）；实体按键/网页按钮保留为人工兜底。
+> **当前阶段**（2026-09-30 更新）：K3 板端 Web 交互 + YOLOv8 骰子识别 + NERO 机械臂全自动摇骰链已接通（`robot_arm_nero` 组件驱动仓内 `dice_demo/` 上游快照；纯 YOLO 判胜，LLM 复核链已于 2026-09-30 整体移除）；实体按键/网页按钮保留为人工兜底。
 > **重要原则**：本文将“已实现/已验证”和“未来规划”分开描述。未来规划不能被当成当前已有功能。
 
 ## 当前实现覆盖（2026-09-01）
@@ -44,7 +44,7 @@ logrotate/systemd，是因为本项目以 tar 包分发、Web 服务没有 syste
 与 manifest 热加载的语义不一致。现在把该文件 `mtime_ns`+`size` 纳入签名 → **保存后下一回合
 自动重建 runtime 即生效**（读不到文件时降级为空串，绝不拒绝启动）。**这是行为变化，需知悉。**
 **③ 裁决流程与结果投影硬编码在 dice**：新增 `core/vision_pipeline.py` 的
-`run_vision_game(..., game_id, projector)`，把「解析裁决器槽位 → 解析 LLM 槽位并软降级 →
+`run_vision_game(..., game_id, projector)`，把「解析裁决器槽位 →
 构造请求 → 调 `adjudicate`（含旧接口 `TypeError` 兼容分支）→ 诊断结果直通 → 投影」
 整段收拢；`games/dice/pipeline.py` 退化为 20 行薄壳（`run()` 签名与模块路径不变，tests 里
 7 处直接调用它）。`core/participants.py` 新增 `project_roles()`（校验 winner 与
@@ -212,8 +212,8 @@ x=548（比例 **0.4281**），而旧的固定切分在 x=640，两者相差 92p
 
 **已知风险（2026-09-14 记录，未修）**：该门控只能校验"每侧恰好 N 个检测框"，**无法判断这些框
 是否真是骰子**——若遮挡恰好稳定产生每侧 5 个杂框（或点数被遮挡后误读），仍会用错误点数判出
-胜负；而 `vision_profile.llm.enabled=false`（2026-09-07 起）意味着没有大模型复核兜底。需要
-兜底时可选：恢复 LLM 复核、或要求同一局内连续两个稳定观测一致才判胜。
+胜负；且自 2026-09-30 起 LLM 复核链已整体移除，没有复核兜底（历史遗留风险成为永久现状，
+维护者已知情拍板）。若将来要兜底，可选要求同一局内连续两个稳定观测一致才判胜。
 
 2026-09-02 起游戏调度升级为**后端权威状态机**：`backend/games/<game_id>/manifest.json` 的
 `state_machine` 节点（校验器 `backend/core/state_schema.py`、引擎 `backend/core/state_machine.py`
@@ -360,7 +360,7 @@ load_games 对游戏 manifest 的 participants 改为可选，`public_all(arena)
 2026-09-02 起环境变量覆盖层已整体移除：`.dice-arena.env` 加载器（`backend/core/env.py`）删除，`DICE_LLM_*`、`DICE_TTS_PROVIDER`、`DICE_MOSS_TTS_*`、`DICE_MEDIAMTX_WEBRTC_BASE_URL` 等输入端覆盖分支全部清理，JSON 配置文件（游戏 manifest、组件 `config.json`、`vision/yolov8_objdetect/config.json`）成为唯一配置来源。游戏 manifest 进一步支持热加载：server.py 的 `get_games()` 按 mtime 自动重载，改台词/换 WAV/按句换引擎保存+刷新页面即生效，坏配置自动保留最后可用版本（删除游戏需重启）；组件 config.json 仍是改后重启生效。LLM endpoint/model/key 位于 `backend/components/vision_yolov8_objdetect/config.json` 的 `llm` 段（该文件被 Git 跟踪，仓库必须保持私有）。**【2026-09-15 订正：此位置已过时——LLM 配置自 2026-09-04 大模型模块化起在 `backend/components/llm_openai_compat/config.json` 的顶层，视觉组件 config 只剩 `runtime`/`events`。上句保留为历史记录。】**daemon 内部为底层原生库 `setdefault` 注入的 `SPACEMIT_EP_*` 变量是 C 库接口，不是人工配置入口。
 
 以下内容覆盖本文中关于组件调度的旧描述：后端扫描 `backend/components/*/manifest.json`，按 `entry` 动态加载功能包并通过 `ComponentRegistry` 按 ID 注入游戏流程。视觉 provider 继续使用广义 `type=vision`，但必须再声明职责 `role`：当前骰子 YOLO 包是 `role=adjudicator` 的视觉裁决器，继承 `VisionAdjudicatorProvider` 并实现 `adjudicate()`；以后用于获取目标坐标/空间位置的 YOLO 包必须使用 `role=localizer`、继承 `VisionLocalizerProvider`，不得接入裁决器插槽。骰子游戏通过 `manifest.json.providers.vision_adjudicator` 选择裁决器。TTS 通过游戏 manifest 的双槽位选择 provider：`providers.tts_local`（本地槽）与 `providers.tts_remote`（远程槽）；台词 mode 只有 `audio`/`tts_local`/`tts_remote` 三种（旧写法 `tts` 与 `providers.tts` 已移除，含它们的 manifest 会加载失败），可按句混用本地与远程引擎，任意台词可用 `provider` 字段显式钉死 provider。`start_web.sh` 会自动启动 manifest 引用到的全部本地 provider。当前骰子本地槽为 `tts_moss_nano`，远程槽为 `tts_gptsovits`——后者通过 HTTP 调用 Tailscale 内另一台 GPU 主机上的 GPT-SoVITS v2ProPlus（9873 按音色名流式调用），无本地 lifecycle，服务地址收敛在组件 `config.json` 的 `runtime.base_url` 一处。`tts_qwen3` 是本地可选 provider。请求体中的 `provider` 不会覆盖后端选择。新增 TTS 不需要修改 `server.py` 或前端：新增功能包并继承 `TtsProvider`，最小实现 `health()` 与 `synthesize()`；只有需要分段低延迟时才覆盖 `stream()`。
-游戏视觉 profile 已正式内嵌到 `backend/games/<game_id>/manifest.json` 的 `vision_profile` 节点；不要再创建外置 `vision_profile.json`。该节点负责模型、类别、规则、LLM prompt、视频 path、任务超时和结果保持时长，并以必填的 `runtime_config` 指向该游戏专属的硬件文件（`backend/games/<id>/adjudicator_config.json`：摄像头、RTSP、MediaMTX WebRTC 基础地址）；组件配置只负责 provider 生命周期（LLM endpoint/model/key 在 `backend/components/llm_openai_compat/config.json`）。
+游戏视觉 profile 已正式内嵌到 `backend/games/<game_id>/manifest.json` 的 `vision_profile` 节点；不要再创建外置 `vision_profile.json`。该节点负责模型、类别、规则、视频 path、任务超时和结果保持时长，并以必填的 `runtime_config` 指向该游戏专属的硬件文件（`backend/games/<id>/adjudicator_config.json`：摄像头、RTSP、MediaMTX WebRTC 基础地址）；组件配置只负责 provider 生命周期（LLM 复核链已于 2026-09-30 移除，无云服务凭证）。
 Provider 可在 manifest 的 `lifecycle.start/stop` 中声明本地模型进程管理命令；`backend/componentctl.py` 和 `scripts/start_web.sh` 会按当前选中的 TTS provider 启动对应 runtime，不再把 Web 启动流程绑定到 Qwen3。新增/删除功能包或修改游戏 provider 后需重启后端以重新扫描。
 当前已加入 `tts_moss_nano` 组件：它只负责 Dice Arena 的 `TtsProvider` 适配和本地 HTTP bridge，完整 MOSS-TTS-Nano runtime 源码已迁移到仓库 `tts/moss-tts-nano`，模型/依赖按该目录 `.gitignore` 保留为板端运行时文件；通过组件 `config.json` 的 `runtime.root`/`runtime.model_dir` 可替换路径。bridge 直接复用板端 `OnnxTtsRuntime` 的 `on_pcm_chunk` 回调，按文本 chunk 生成并即时发送 WAV 帧，前端可在首个 chunk 完成后立即播放；当前是 chunk 级流式，不是逐 codec 帧真流式。默认 voice 为 `Junhao`，不支持通用 `speed` 调节，因此适配器只接受 `speed=1.0`。更新 MOSS 独立项目时无需修改 Dice Arena 核心调度；只有外部 runtime Python 接口改变时才需要更新该组件适配器。
 
@@ -376,8 +376,8 @@ YOLOv8 新版支持 `--event-fd FD`，通过独立的 JSONL 管道发送结构�
 2. 双方准备并开始摇骰；
 3. NERO 机械臂完成抓杯、摇骰、放杯、归位（`robot_arm_nero` 组件驱动仓内 `dice_demo/` 快照的常驻控制器）；
 4. K3 板端启动 YOLOv8，识别左右双方各 5 颗骰子；
-5. YOLOv8 得到稳定结果后按配置调用大模型复核（当前 dice `llm.enabled=false`，复核休眠）；
-6. 结果按 YOLOv8 与 LLM 优先级策略确定（2026-09-02 起）：一致用共识；不一致先复问 LLM 一次，复问与 YOLO 一致维持 YOLO，两次一致才覆盖，平局永不被推翻，复问无定论回退 YOLO，LLM 超时回退 YOLO；
+5. （LLM 复核步骤已于 2026-09-30 移除——稳定检测结果即终局）；
+6. 结果即 YOLO 结论（`decision_source: yolo_only`，平局=YOLO 判 TIE）；
 7. 石头剪刀布（rps）游戏同样可用，出拳判定走同一视觉裁决框架。
 
 「摇骰子」与「石头剪刀布」两款游戏均已实现可用，不再是占位。
@@ -411,7 +411,7 @@ backend/components/vision_yolov8_objdetect/config.json
 backend/games/dice/audio/fll.wav
 ```
 
-前者包含板端 LLM 配置，后者是用户新增音频。**不要擅自回滚、覆盖、暂存或提交它们。** 后续操作前必须重新执行 `git status`，因为以上状态可能已经变化。
+（2026-09-30 注：前者所指的板端 LLM 配置已随复核链移除，此条只剩历史参考价值。）后者是用户新增音频。**不要擅自回滚、覆盖、暂存或提交它们。** 后续操作前必须重新执行 `git status`，因为以上状态可能已经变化。
 
 ### 本地开发机看到的目录
 
@@ -698,39 +698,36 @@ vision/yolov8_objdetect/build/yolov8_camera
 - 不打开本地图形显示窗口；
 - 通过继承的独立文件描述符接收控制命令并输出 JSONL 业务事件；
 - stdout/stderr 只保留诊断日志；
-- 后端收到稳定 `observation` 后，由 Python provider 负责 profile 规则、LLM 复核和最终结果。
+- 后端收到稳定 `observation` 后，由 Python provider 负责 profile 规则与最终结果（纯 YOLO）。
 
 **YOLOv8 默认使用常驻预热模式。** **2026-09-14 起，runtime 在「进入游戏」时就拉起**
 （`create_round` → `VisionStreamManager.start_for_round`，prewarm 模式），而不是等到第一次
-裁决：此时摄像头和视频链路已经就绪、检测器会话已载入，但仍处于 `idle`，不计稳定帧也不调用
-LLM。裁决开始时先经过 `lifecycle.pre_adjudication_wait_seconds`
+裁决：此时摄像头和视频链路已经就绪、检测器会话已载入，但仍处于 `idle`，不计稳定帧。裁决开始时先经过 `lifecycle.pre_adjudication_wait_seconds`
 前置等待（缺省 0 秒，骰子配置为 3 秒，期间发布 `pre_wait` 阶段事件、实时画面已可挂上，
 且不占用裁决超时预算），再通过控制通道进入检测，结果后的
 `post_result_hold_seconds` 期间继续发布视频，随后回到 idle。**何时释放 runtime 由全局
 `vision_always_on` 决定**：true（缺省）跨回合跨游戏常驻到进程退出（异常或取消时也不拆），
 false 则在回合进入终态时停流。旧版按局启动的二进制仅作为迁移兼容路径。
 
-当前 runtime 的有效输出是模型无关的稳定 `observation`：检测框、可选 `divider` 场景几何辅助和私有快照路径。骰子 5+5、石头剪刀布类别关系、多视角多数投票、LLM 成功/超时/失败策略都由 Python provider 按游戏 manifest 决定。
+当前 runtime 的有效输出是模型无关的稳定 `observation`：检测框、可选 `divider` 场景几何辅助和私有快照路径。骰子 5+5、石头剪刀布类别关系、多视角多数投票都由 Python provider 按游戏 manifest 决定。
 
 provider 产生的游戏结果示例：
 
 ```json
 {
-  "verified": true,
-  "source": "yolov8+llm",
+  "adjudicated": true,
+  "decision_source": "yolo_only",
   "first_name": "LEFT",
   "second_name": "RIGHT",
   "first_dice": [1, 1, 2, 3, 6],
   "second_dice": [1, 3, 4, 5, 6],
   "first_sum": 13,
   "second_sum": 19,
-  "yolo_winner": "RIGHT",
-  "llm_winner": "RIGHT",
   "winner": "RIGHT"
 }
 ```
 
-如果 runtime 超时、快照无效、规则不满足或 LLM 调用失败（profile 明确允许超时回退除外），前端应显示错误，不能使用随机结果兜底。
+如果 runtime 超时、快照无效或规则不满足，前端应显示错误，不能使用随机结果兜底。
 
 ### 4.7 摄像头边界
 
