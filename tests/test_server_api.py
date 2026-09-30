@@ -26,7 +26,6 @@ from core.components import ComponentRegistry  # noqa: E402
 from core.errors import ComponentNotFoundError  # noqa: E402
 from core.games import GameRegistry  # noqa: E402
 from core.jobs import ComponentJob  # noqa: E402
-from core.llm import LlmProvider  # noqa: E402
 from core.tts import TtsProvider  # noqa: E402
 from core.vision import VisionAdjudicatorProvider  # noqa: E402
 
@@ -116,16 +115,6 @@ class DummyRemoteTts(TtsProvider):
         self.last_payload = dict(payload)
         self.validate(payload)
         return WAV, {"Content-Type": "audio/wav"}
-
-
-class DummyLlm(LlmProvider):
-    id = "llm_dummy"
-
-    def health(self):
-        return {"id": self.id, "type": self.type, "ok": True, "configured": True, "model": "dummy"}
-
-    def verify(self, **kwargs):
-        raise NotImplementedError
 
 
 def _write_hot_reload_games_root(tmp_path, text):
@@ -501,10 +490,6 @@ class ServerApiTests(unittest.TestCase):
             "id": "tts_dummy_remote", "type": "tts", "name": "Dummy Remote TTS",
             "version": "1", "enabled": True, "entry": "provider.py:DummyRemoteTts",
         })
-        registry.register(DummyLlm(), {
-            "id": "llm_dummy", "type": "llm", "name": "Dummy LLM",
-            "version": "1", "enabled": True, "entry": "provider.py:DummyLlm",
-        })
         server.COMPONENTS = registry
         # Provider selection now has a single configuration source: swap in a
         # game registry whose dice manifest routes the semantic slots to the
@@ -515,7 +500,6 @@ class ServerApiTests(unittest.TestCase):
             "tts_local": "tts_dummy",
             "tts_remote": "tts_dummy_remote",
             "vision_adjudicator": "vision_dummy",
-            "llm": "llm_dummy",
         }
         # Pin the player/agent sides in the fixture.  The real dice manifest
         # inherits them from backend/config.json, whose layout is a deployment
@@ -562,13 +546,6 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(payload["vision"]["id"], "vision_dummy")
         self.assertEqual(payload["tts_remote_provider"], "tts_dummy_remote")
         self.assertTrue(payload["tts_remote"]["configured"])
-        # The LLM slot resolves through the same manifest-first path; its
-        # configuration state comes from the llm component, not the vision
-        # adjudicator's health any more.
-        self.assertEqual(payload["llm_provider"], "llm_dummy")
-        self.assertEqual(payload["llm"]["id"], "llm_dummy")
-        self.assertTrue(payload["llm_configured"])
-        self.assertNotIn("llm_configured", payload["adjudicator"])
 
     def test_tts_endpoints_use_local_slot_provider(self):
         status, headers, data = self.request(
@@ -712,7 +689,6 @@ class ServerApiTests(unittest.TestCase):
             },
             "vision_profile": {
                 "game_id": "dice",
-                "llm": {"api_key": "SECRET", "system_prompt": "PRIVATE PROMPT", "model": "secret-model"},
                 "vision": {"model": "/tmp/private.onnx"},
                 "video": {"enabled": True, "path": "/dice/"},
                 "multi_view": {"enabled": True, "views": [
@@ -735,7 +711,7 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(profile["video"], {"enabled": True, "path": "/dice/"})
         self.assertEqual(profile["multi_view"]["views"][0], {"id": "front", "video": {"enabled": True, "path": "/front/"}})
         serialized = json.dumps(payload)
-        for secret in ("PRIVATE PROMPT", "SECRET", "secret-model", "/tmp/private.onnx", "/dev/video1", "PRIVATE LINE"):
+        for secret in ("/tmp/private.onnx", "/dev/video1", "PRIVATE LINE"):
             self.assertNotIn(secret, serialized)
 
     def test_sse_pushes_structured_job_updates(self):
@@ -1446,92 +1422,6 @@ def test_single_asr_conflict_allows_matching_and_disabled():
     assert server._single_asr_conflict({"providers": {"asr": "asr_a"}}, registry) is None
     registry.register({"id": "off", "enabled": False, "providers": {"asr": "asr_b"}})
     assert server._single_asr_conflict({"providers": {"asr": "asr_a"}}, registry) is None
-
-
-# ---- LLM slot: health projection + soft startup probe ----
-
-
-def test_health_reports_unresolved_llm_as_not_configured(monkeypatch):
-    """No llm slot anywhere (manifest and arena) → llm_configured False, ok False."""
-    # Pin the arena layer so the real backend/config.json (which now carries
-    # providers.llm) cannot leak into this test through the slot fallback.
-    monkeypatch.setattr(server, "_ARENA_CONFIG", {})
-    monkeypatch.setattr(server, "ARENA_CONFIG_PATH", Path("/nonexistent-arena.json"))
-    monkeypatch.setattr(server, "_ARENA_MTIME", None)
-
-    registry = ComponentRegistry()
-    registry.register(DummyVisionAdjudicator(), {
-        "id": "vision_dummy", "type": "vision", "role": "adjudicator",
-        "name": "Dummy Vision Adjudicator", "version": "1", "enabled": True,
-        "entry": "provider.py:DummyVisionAdjudicator",
-    })
-    monkeypatch.setattr(server, "COMPONENTS", registry)
-    games = GameRegistry()
-    games.register({
-        "id": "dice", "name": "Dice", "enabled": True,
-        "providers": {"vision_adjudicator": "vision_dummy"},
-        "vision_profile": {"game_id": "dice"},
-    })
-    monkeypatch.setattr(server, "GAMES", games)
-
-    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    try:
-        connection = HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=3)
-        connection.request("GET", "/api/health")
-        payload = json.loads(connection.getresponse().read())
-        connection.close()
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-
-    assert payload["llm_provider"] == ""
-    assert payload["llm_configured"] is False
-    assert payload["llm"]["ok"] is False
-    assert payload["llm"]["configured"] is False
-
-
-def test_probe_selected_llm_covers_all_four_paths(monkeypatch, capsys):
-    class ProbeLlm:
-        id = "llm_probe"
-        type = "llm"
-
-        def __init__(self, result):
-            self.result = result
-            self.timeout = None
-
-        def probe(self, timeout_seconds):
-            self.timeout = timeout_seconds
-            return self.result
-
-    class Registry:
-        def __init__(self, provider=None):
-            self.provider = provider
-
-        def require(self, component_id, expected_type=None, expected_role=None):
-            if self.provider is not None and component_id == "llm_probe":
-                return self.provider
-            raise ComponentNotFoundError(component_id)
-
-    monkeypatch.setattr(server, "COMPONENTS", Registry())
-    server._probe_selected_llm({"providers": {}})
-    assert "LLM provider: none" in capsys.readouterr().out
-
-    server._probe_selected_llm({"providers": {"llm": "llm_missing"}})
-    out = capsys.readouterr().out
-    assert "llm_missing unusable" in out and "YOLO fallback" in out
-
-    provider = ProbeLlm({"ok": True})
-    monkeypatch.setattr(server, "COMPONENTS", Registry(provider))
-    server._probe_selected_llm({"providers": {"llm": "llm_probe"}})
-    assert "probe ok" in capsys.readouterr().out
-    assert provider.timeout == 5.0
-
-    provider = ProbeLlm({"ok": False, "error": "connection refused"})
-    monkeypatch.setattr(server, "COMPONENTS", Registry(provider))
-    server._probe_selected_llm({"providers": {"llm": "llm_probe"}})
-    out = capsys.readouterr().out
-    assert "probe failed" in out and "connection refused" in out
 
 
 def test_manifest_uses_robot_detects_state_actions_and_explicit_slot():

@@ -230,14 +230,6 @@ class TestGamesProfileRouting:
                 "runtime_config": "backend/games/dice/adjudicator_config.json",
                 "vision": {"class_map": {"0": "1"}, "participants": ["LEFT", "RIGHT"]},
                 "video": {"enabled": False, "path": "/demo/det"},
-                "llm": {
-                    "enabled": False,
-                    "context_mode": "single_turn_no_history",
-                    "timeout_seconds": 5,
-                    "system_prompt": "s",
-                    "user_prompt_template": "u",
-                    "allowed_outcomes": ["LEFT", "RIGHT", "TIE"],
-                },
                 "rule": {"kind": "categorical_relation", "relations": {"a": "b"}},
             },
         }, ensure_ascii=False), encoding="utf-8")

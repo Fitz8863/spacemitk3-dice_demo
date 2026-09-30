@@ -21,7 +21,7 @@ class Component:
     """Base interface shared by all runtime providers."""
 
     id: str = ""
-    type: str = ""  # vision | tts | asr | llm | robot | command
+    type: str = ""  # vision | tts | asr | robot | command
     role: str = ""  # role within a broad type, e.g. vision/adjudicator
     name: str = ""
     version: str = ""
@@ -33,7 +33,7 @@ class Component:
         return {"id": self.id, "type": self.type, "ok": True}
 
 
-_SUPPORTED_TYPES = {"vision", "tts", "asr", "llm", "robot", "command"}
+_SUPPORTED_TYPES = {"vision", "tts", "asr", "robot", "command"}
 _VISION_ROLES = {"adjudicator", "localizer"}
 
 # ``vision_yolo`` was the pre-profile provider id.  Keep this one-way alias
@@ -54,10 +54,6 @@ def _validate_component_contract(component: Component) -> None:
         from core.asr import AsrProvider
 
         expected = AsrProvider
-    elif component.type == "llm":
-        from core.llm import LlmProvider
-
-        expected = LlmProvider
     elif component.type == "robot":
         from core.robot import RobotProvider
 

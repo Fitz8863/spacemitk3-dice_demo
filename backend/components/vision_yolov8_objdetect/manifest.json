@@ -6,6 +6,6 @@
   "version": "3.0",
   "enabled": true,
   "entry": "provider.py:VisionYolov8Objdetect",
-  "capabilities": ["object_detection", "stable_frame", "multiview", "llm_verification"],
+  "capabilities": ["object_detection", "stable_frame", "multiview"],
   "config": "config.json"
 }

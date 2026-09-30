@@ -224,7 +224,6 @@ def run(
     if is_cancelled():
         raise RuntimeError("cancelled")
 
-    on_event({"event": "phase", "phase": "verifying", "llm": False})
     # agent 拳形：正常流在 play 状态已随口令 wav 提前出拳（臂侧随机、
     # outcome 回报同一份拳形），这里只消费；出拳失败/卡住=中断本局（诊断型
     # 结果 → analysis_failed，重试完整重放）；仅槽缺失（独立调用/旧装配）

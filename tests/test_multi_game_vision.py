@@ -50,7 +50,6 @@ def _profile(
         "game_id": game_id,
         "runtime": {"mode": "resident", "prewarm_camera": True},
         "vision": vision,
-        "llm": {"enabled": False, "allowed_outcomes": ["LEFT", "RIGHT"]},
         "lifecycle": {"post_result_hold_seconds": 0},
         "video": {"enabled": True, "path": video_path},
         "timeouts": {"adjudication_seconds": 10},
@@ -586,13 +585,6 @@ def test_profile_validation_requires_runtime_config():
         p["vision"]["class_map"] = {"0": "1"}
         p["vision"]["participants"] = ["LEFT", "RIGHT"]
         p["runtime_config"] = "backend/games/dice/adjudicator_config.json"
-        p["llm"] = {
-            "enabled": False,
-            "context_mode": "single_turn_no_history",
-            "system_prompt": "judge",
-            "user_prompt_template": "judge",
-            "allowed_outcomes": ["LEFT", "RIGHT"],
-        }
         p["video"] = {"enabled": True, "path": "/dice/det"}
         return p
 

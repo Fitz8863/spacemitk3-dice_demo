@@ -202,14 +202,6 @@ export function register(engine) {
       $('stepDetect').classList.add('active');
       $('stepDetect').querySelector('span').textContent = '…';
       $('analysisStatus').textContent = '正在识别蓝色区域的人手…';
-    } else if (event.phase === 'verifying') {
-      $('stepDetect').classList.add('active');
-      $('stepDetect').querySelector('span').textContent = '✓';
-      $('stepJudge').classList.add('active');
-      $('stepJudge').querySelector('span').textContent = '…';
-      $('analysisStatus').textContent = event.llm === false
-        ? '手势识别完成，正在判定胜负…'
-        : '手势识别完成，正在调用大模型复核…';
     } else if (event.phase === 'holding') {
       $('stepDetect').classList.add('active');
       $('stepDetect').querySelector('span').textContent = '✓';

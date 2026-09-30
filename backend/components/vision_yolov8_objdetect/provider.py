@@ -14,7 +14,6 @@ from typing import Any, Callable, Mapping
 from core.vision import VisionAdjudicationRequest, VisionAdjudicatorProvider
 from components.vision_yolov8_objdetect.process import (
     YoloRuntimeProcess,
-    _snapshot_path,
 )
 from components.vision_yolov8_objdetect.rules import (
     diagnose_detection_failure,
@@ -302,19 +301,14 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
     name = "YOLOv8 Object Detection"
     version = "3.0"
 
-    def __init__(self, manifest: dict[str, Any] | None = None, *, runtime_factory: Callable[..., Any] | None = None, verifier: Any | None = None) -> None:
+    def __init__(self, manifest: dict[str, Any] | None = None, *, runtime_factory: Callable[..., Any] | None = None) -> None:
         super().__init__(manifest)
         self.runtime_factory = runtime_factory or (lambda view_id="default": YoloRuntimeProcess())
-        # LLM engines arrive per round on the request (``llm_provider``,
-        # resolved by the pipeline from the global ``llm`` slot).  This
-        # attribute remains the test-injection seam for verifier doubles and
-        # doubles as the fallback when a round carries no provider.
-        self.verifier = verifier
         self._runtime_cache: dict[str, Any] = {}
         # A resident process receives its snapshot root at process creation;
         # subsequent rounds reuse the same camera process.  Keep one private
         # root per view alive for that process lifetime and remove each
-        # single-use snapshot after verification.
+        # single-use snapshot after the round.
         self._runtime_snapshot_dirs: dict[str, Path] = {}
         self._runtime_signatures: dict[str, str] = {}
         # The cache is now reachable from two entry points -- a game-entry
@@ -331,8 +325,6 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
         top-level ``yolo_ready`` field.  It is deliberately a static check, not
         a liveness probe of a resident process, and ``ok`` mirrors it so this
         component can no longer claim health while its binary is missing.
-        LLM readiness belongs to the ``llm`` component, so this payload stays
-        silent about it.
         """
         payload: dict[str, Any] = {
             "id": self.id,
@@ -347,16 +339,6 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
             return {**payload, "ok": False, "ready": False, "binary": "", "error": str(exc)}
         ready = binary.is_file() and os.access(binary, os.X_OK)
         return {**payload, "ok": ready, "ready": ready, "binary": str(binary)}
-
-    def _round_llm(self, request: VisionAdjudicationRequest) -> Any:
-        """The LLM engine for one round: request-injected provider first.
-
-        Production rounds carry the provider resolved from the global
-        ``llm`` slot; the constructor ``verifier`` seam (test doubles, or a
-        provider injected some other way) is the fallback.
-        """
-        provider = getattr(request, "llm_provider", None)
-        return provider if provider is not None else self.verifier
 
     def _stop_all_runtimes(self) -> None:
         """Release every cached runtime and its private snapshot root.
@@ -703,20 +685,6 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
         return float(fallback)
 
     @staticmethod
-    def _llm_timeout(profile: Mapping[str, Any], fallback: float) -> float:
-        """Resolve the single per-request timeout shared by all LLM calls."""
-        llm = profile.get("llm", {})
-        value = llm.get("timeout_seconds") if isinstance(llm, Mapping) else None
-        if (
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and math.isfinite(value)
-            and value > 0
-        ):
-            return float(value)
-        return float(fallback)
-
-    @staticmethod
     def _resident_mode(profile: Mapping[str, Any]) -> bool:
         """Return whether the deployment keeps camera/runtime processes warm."""
         configured: Mapping[str, Any] = {}
@@ -802,8 +770,8 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
         * stable evidence — returns ``{"observations": {view_id: obs}}`` with
           inference already stopped (STOP_ADJUDICATION sent; the resident
           camera/RTSP pipeline stays warm for the browser).  The caller owns
-          the remaining event choreography (verifying/result/holding/
-          complete); ``adjudicate`` is the rule/LLM realization of that tail.
+          the remaining event choreography (result/holding/
+          complete); ``adjudicate`` is the rule realization of that tail.
         """
         round_ = _ObservedRound(request=request)
         try:
@@ -1069,8 +1037,8 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
     def _finalize_round(self, round_: "_ObservedRound") -> None:
         """Post-round bookkeeping shared by every observe()/adjudicate() exit.
 
-        Only unlink paths that crossed the verification boundary in the
-        evaluation tail.  In particular, never trust an arbitrary snapshot
+        Only unlink paths that crossed the evaluation boundary in the
+        tail.  In particular, never trust an arbitrary snapshot
         path supplied by a failed or malicious runtime event.  If a round
         failed or was cancelled, explicitly return each resident runtime to
         idle.  Normal rounds already sent STOP before holding; no process is
@@ -1149,88 +1117,9 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
                 if yolo is None: raise RuntimeError("no strict majority across views")
             else:
                 yolo = computed[0] if computed else evaluate_rule(rule, normalized)
-            # Read the switch *before* announcing the phase.  This event drives
-            # copy that names the LLM, and the browser cannot work it out on its
-            # own: the browser-safe game projection strips the whole ``llm``
-            # section (prompts never reach the page).  Announcing first and
-            # checking afterwards made a detector-only round display
-            # 「正在调用大模型复核」.
-            cfg = profile.get("llm", {})
-            cfg = cfg if isinstance(cfg, Mapping) else {}
-            llm_enabled = bool(cfg.get("enabled", True))
-            on_event({"event": "phase", "phase": "verifying", "llm": llm_enabled})
-            status, out = ("timeout", None) if llm_enabled else ("disabled", None)
-            reask = None
-            if cfg.get("enabled", True):
-                paths = []
-                for observation in ordered:
-                    snapshot = observation.get("snapshot")
-                    raw = snapshot.get("path") if isinstance(snapshot, Mapping) else None
-                    if not isinstance(raw, str) or not raw.strip() or not Path(raw).is_absolute():
-                        raise ValueError("snapshot.path must be an absolute path")
-                    path = Path(raw).resolve()
-                    # Real runtimes are constrained to this round's private
-                    # directory.  Custom injected runtimes may use their own
-                    # fixture directory for compatibility with older callers;
-                    # those paths are still absolute, regular image files.
-                    view_id = str(observation.get("view_id", "default"))
-                    if view_id in round_.strict_snapshot_roots:
-                        try:
-                            path = _snapshot_path(observation, round_.strict_snapshot_roots[view_id])
-                        except Exception:
-                            raise ValueError("snapshot.path must stay inside task directory")
-                    if path.suffix.lower() not in {".jpg", ".jpeg", ".png"} or not path.is_file():
-                        raise ValueError("snapshot.path must reference an existing JPEG or PNG")
-                    paths.append(path)
-                    round_.cleanup_paths.add(path)
-                verifier = self._round_llm(request)
-                model_override = str(cfg.get("model") or "").strip() or None
-                effort_override = str(cfg.get("reasoning_effort") or "").strip() or None
-                remaining = max(0.0, deadline - time.monotonic())
-                if verifier is None:
-                    # The profile asks for verification but the deployment
-                    # resolved no LLM: same semantics as profile-level
-                    # disabled — detector-only result, never a round failure.
-                    status, out = "disabled", None
-                    on_log("[vision] no LLM provider attached; verification disabled")
-                elif remaining > 0:
-                    llm_timeout = min(
-                        self._llm_timeout(profile, fallback_timeout), remaining
-                    )
-                    vr = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=llm_timeout, model=model_override, reasoning_effort=effort_override)
-                    status, out = vr.status, vr.outcome
-                    if status not in {"success", "disabled"}:
-                        # Otherwise the failure reason is unrecoverable after
-                        # the fact: the result payload keeps only the outcome,
-                        # and the re-ask log below fires on a dissent only.
-                        on_log(f"[vision] verification {status}: {getattr(vr, 'error', None) or 'no error detail'}")
-                    # A lone dissent from the verifier is re-asked once within
-                    # the same budget: an answer corroborated by the re-ask may
-                    # override, an answer that flips back confirms the detector,
-                    # and anything else leaves the detector's result standing.
-                    if (
-                        status == "success"
-                        and isinstance(out, str)
-                        and yolo is not None
-                        and out.strip() != str(yolo).strip()
-                    ):
-                        reask_remaining = max(0.0, deadline - time.monotonic())
-                        if reask_remaining > 0:
-                            reask_timeout = min(
-                                self._llm_timeout(profile, fallback_timeout), reask_remaining
-                            )
-                            vr2 = verifier.verify(image_paths=paths, system_prompt=cfg.get("system_prompt", ""), user_prompt=cfg.get("user_prompt_template", ""), allowed_outcomes=cfg.get("allowed_outcomes", []), timeout_seconds=reask_timeout, model=model_override, reasoning_effort=effort_override)
-                            reask = {"outcome": vr2.outcome, "status": vr2.status}
-                        else:
-                            reask = {"outcome": None, "status": "timeout"}
-                        on_log(f"[vision] LLM dissented ({out}); re-ask -> {reask.get('status')}:{reask.get('outcome')}")
-            decision = finalize_outcome(
-                yolo_outcome=yolo,
-                llm_outcome=out,
-                llm_status=status,
-                reask=reask,
-                tie_value=str(rule.get("tie_value", "TIE")),
-            )
+            # Adjudication is detector-only since 2026-09-30: the fused YOLO
+            # outcome is the final verdict — no LLM verification, no re-ask.
+            decision = finalize_outcome(yolo_outcome=yolo)
             final = project_result(profile, decision, {**normalized[0], "views": normalized})
             final_command = {"command": "FINAL_RESULT", "request_id": request.request_id,
                              "outcome": final["outcome"],
@@ -1239,8 +1128,7 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
                              # canonical ``decision_source`` in the public
                              # Python result contract.
                              "source": final.get("decision_source", "provider"),
-                             "decision_source": final.get("decision_source", "provider"),
-                             "verification": final.get("verification", {})}
+                             "decision_source": final.get("decision_source", "provider")}
             for rt in runtimes:
                 try:
                     rt.send(final_command)
@@ -1255,7 +1143,7 @@ class VisionYolov8Objdetect(VisionAdjudicatorProvider):
                     rt.send({"command": "STOP_ADJUDICATION", "request_id": request.request_id})
                 except Exception as exc:
                     on_log(f"[vision] STOP_ADJUDICATION send failed: {exc}")
-            # The adjudication deadline bounds detection and LLM verification.
+            # The adjudication deadline bounds detection and rule evaluation.
             # Holding starts only after a verdict exists, so consuming it from
             # the remaining adjudication budget would silently shorten the
             # game-owned post-result display contract.

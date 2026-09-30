@@ -90,18 +90,6 @@
 		"rule": {
 			"kind": "numeric_compare"
 		},
-		"llm": {
-			"enabled": false,
-			"context_mode": "single_turn_no_history",
-			"timeout_seconds": 10,
-			"system_prompt": "You are a strict dice-sum judge. Use only the supplied image. Reply with exactly one JSON object whose winner is LEFT, RIGHT, or TIE.",
-			"user_prompt_template": "Inspect the supplied stable frame and compare the two sides. Return {\"winner\":\"LEFT|RIGHT|TIE\"}.",
-			"allowed_outcomes": [
-				"LEFT",
-				"RIGHT",
-				"TIE"
-			]
-		},
 		"video": {
 			"enabled": true,
 			"path": "/dice/det"

@@ -364,16 +364,6 @@ export function register(engine) {
       $('analysisStatus').textContent = shownCount > 0 && required > 0
         ? `YOLOv8 正在检测双方各 5 颗骰子，并等待稳定帧（${shownCount}/${required}）…`
         : 'YOLOv8 正在检测双方各 5 颗骰子，并等待稳定帧…';
-    } else if (event.phase === 'verifying') {
-      $('stepDetect').classList.add('active');
-      $('stepDetect').querySelector('span').textContent = '✓';
-      $('stepJudge').classList.add('active');
-      $('stepJudge').querySelector('span').textContent = '…';
-      // 后端在 verifying 事件里带上 llm 标志：浏览器侧拿不到复核开关
-      // （公开的游戏 manifest 会剥掉整段 llm），所以只能由事件告知。
-      $('analysisStatus').textContent = event.llm === false
-        ? 'YOLOv8 结果已稳定，正在判定胜负…'
-        : 'YOLOv8 结果已稳定，正在调用大模型复核…';
     } else if (event.phase === 'holding') {
       const remaining = Number(event.remaining_ms);
       $('stepDetect').classList.add('active');
@@ -413,22 +403,7 @@ export function register(engine) {
     }
     $('resultEmoji').textContent = tie ? '🤝' : playerWins ? '🏆' : '✨';
     $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : 'Agent 获胜';
-    const verificationText = result.source === 'yolo_timeout_fallback'
-      ? '大模型超时，采用 YOLOv8'
-      : result.source === 'yolo_failure_fallback'
-        ? '大模型请求失败，采用 YOLOv8'
-        : result.source === 'llm_override'
-          ? '大模型两次复核一致，以大模型为准'
-          : result.source === 'yolo_reask_confirmed'
-            ? '大模型复问后与 YOLOv8 一致'
-            : result.source === 'yolo_reask_fallback'
-              ? '大模型复问无定论，采用 YOLOv8'
-              : result.source === 'tie_upheld'
-                ? '双方点数相同，判定平局'
-                : result.source === 'yolo_only'
-                  ? '当前未启用大模型'
-                  : '大模型复核一致';
-    $('resultSubtitle').textContent = `YOLOv8：玩家 ${player} : Agent ${agent}；${verificationText}`;
+    $('resultSubtitle').textContent = `YOLOv8：玩家 ${player} : Agent ${agent}（纯视觉判定）`;
     banner.classList.toggle('loss', !playerWins && !tie);
   }
 

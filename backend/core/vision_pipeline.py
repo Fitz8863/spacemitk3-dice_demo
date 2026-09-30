@@ -8,16 +8,14 @@ shared half lives here and each game module passes its own projector.
 
 A game keeps its own tiny ``games/<id>/pipeline.py`` because
 ``core.games.run_game`` imports ``games.<game_id>.pipeline`` by convention.
-That wrapper should stay a few lines: resolving providers, owning the LLM
-fallback or deciding how to project a result here would force every future
-game to repeat it.
+That wrapper should stay a few lines: resolving providers or deciding how to
+project a result here would force every future game to repeat it.
 """
 from __future__ import annotations
 
 import uuid
 from typing import Any, Callable, Mapping
 
-from core.errors import DiceArenaError
 from core.games import resolve_provider_id
 from core.vision import VisionAdjudicationRequest
 
@@ -41,9 +39,8 @@ def run_vision_game(
 
     ``projector`` receives the provider's physical result plus the manifest's
     participant mapping, and returns the round result.  Everything before that
-    — slot resolution, the soft LLM fallback, the request object and the
-    provider-interface compatibility shim — is identical for every vision game
-    and stays here.
+    — slot resolution, the request object and the provider-interface
+    compatibility shim — is identical for every vision game and stays here.
     """
     provider_id = resolve_provider_id(
         manifest, "vision_adjudicator", "vision_yolov8_objdetect"
@@ -61,26 +58,11 @@ def run_vision_game(
         raise RuntimeError(
             f"vision adjudicator {provider_id} does not implement adjudicate()"
         )
-    # The LLM engine is resolved per round from the ``llm`` slot (game manifest
-    # override > arena default, hot-reloaded).  A missing slot means YOLO-only
-    # rounds; a broken slot id must not kill the round either — verification
-    # disables itself and the detector-only result stands.
-    llm_id = resolve_provider_id(manifest, "llm", "")
-    llm_provider = None
-    if llm_id:
-        try:
-            llm_provider = components.require(llm_id, expected_type="llm")
-        except DiceArenaError as exc:
-            on_log(
-                f"[{game_id}] llm provider {llm_id} unavailable: {exc.message}; "
-                "round runs YOLO-only"
-            )
     request = VisionAdjudicationRequest(
         game_id=game_id,
         profile=profile,
         request_id=uuid.uuid4().hex,
         timeout_seconds=timeout_seconds,
-        llm_provider=llm_provider,
     )
     try:
         physical_result = adjudicate(

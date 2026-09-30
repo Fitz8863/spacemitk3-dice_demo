@@ -1,7 +1,7 @@
 """Vision profile helpers for the YOLOv10 package.
 
 The v8 and v10 vision packages share one profile schema (runtime_config
-declaration, vision/rule/llm/video/multi_view sections, timeouts).  The v8
+declaration, vision/rule/video/multi_view sections, timeouts).  The v8
 module owns the implementation; this module re-exports it so callers can
 import from either package.  A future schema divergence would start here.
 """

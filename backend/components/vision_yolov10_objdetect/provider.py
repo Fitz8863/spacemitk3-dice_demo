@@ -51,8 +51,8 @@ class VisionYolov10Objdetect(VisionYolov8Objdetect):
     name = "YOLOv10 Object Detection"
     version = "1.0"
 
-    def __init__(self, manifest: dict[str, Any] | None = None, *, runtime_factory: Callable[..., Any] | None = None, verifier: Any | None = None) -> None:
-        super().__init__(manifest, runtime_factory=runtime_factory or _default_runtime_factory, verifier=verifier)
+    def __init__(self, manifest: dict[str, Any] | None = None, *, runtime_factory: Callable[..., Any] | None = None) -> None:
+        super().__init__(manifest, runtime_factory=runtime_factory or _default_runtime_factory)
 
     def health(self) -> dict[str, Any]:
         """Deployment readiness of the v10 binary (same contract as v8).

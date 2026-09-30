@@ -195,57 +195,15 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         position = divider.get("position", 0.5)
         if not isinstance(position, (int, float)) or isinstance(position, bool) or not math.isfinite(position) or not 0 < position < 1:
             raise ProfileError("vision.divider.position must be between 0 and 1")
-    llm = profile.get("llm")
-    if not isinstance(llm, dict):
-        raise ProfileError("llm must be an object")
-    _required_string(llm.get("system_prompt"), "llm.system_prompt")
-    _required_string(llm.get("user_prompt_template"), "llm.user_prompt_template")
-    # ``enabled`` gates pre-winner verification.  It is validated so a quoted
-    # string such as "false" cannot silently read as true.
-    if "enabled" in llm and not isinstance(llm["enabled"], bool):
-        raise ProfileError("llm.enabled must be boolean")
-    if "reasoning_effort" in llm:
-        effort = llm["reasoning_effort"]
-        if not isinstance(effort, str) or effort.strip().lower() not in {
-            "none",
-            "low",
-            "high",
-            "max",
-        }:
-            raise ProfileError("llm.reasoning_effort must be one of none/low/high/max")
-        llm["reasoning_effort"] = effort.strip().lower()
-    # Failure diagnosis is local-only since 2026-09-14; its configuration keys
-    # are refused loudly instead of being silently ignored as dead config.
-    for removed in (
-        "diagnosis_enabled",
-        "diagnosis_system_prompt",
-        "diagnosis_user_prompt_template",
-        "diagnosis_allowed_reason_codes",
-    ):
-        if removed in llm:
-            raise ProfileError(
-                f"llm.{removed} was removed; failure diagnosis is produced from local "
-                "detector evidence and no longer calls the LLM"
-            )
-    outcomes = llm.get("allowed_outcomes")
-    if (
-        not isinstance(outcomes, list)
-        or not outcomes
-        or not all(isinstance(item, str) and item.strip() for item in outcomes)
-        or len(outcomes) != len(set(outcomes))
-    ):
-        raise ProfileError("llm.allowed_outcomes must be a non-empty unique array")
-    if llm.get("context_mode") != "single_turn_no_history":
-        raise ProfileError("llm.context_mode must be single_turn_no_history")
-    llm_timeout = llm.get("timeout_seconds", 3)
-    if (
-        not isinstance(llm_timeout, (int, float))
-        or isinstance(llm_timeout, bool)
-        or not math.isfinite(llm_timeout)
-        or llm_timeout <= 0
-    ):
-        raise ProfileError("llm.timeout_seconds must be a positive number")
-    llm["timeout_seconds"] = float(llm_timeout)
+    # Pre-winner LLM verification was removed entirely (2026-09-30):
+    # adjudication is detector-only (pure YOLO).  Any leftover ``llm``
+    # section is refused loudly instead of being silently ignored as dead
+    # config — a stale manifest fails fast at load time.
+    if "llm" in profile:
+        raise ProfileError(
+            "llm was removed (2026-09-30); adjudication is detector-only. "
+            "Delete the llm section from this game's vision_profile"
+        )
 
     video = profile.get("video")
     if not isinstance(video, dict):
@@ -269,7 +227,7 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         raise ProfileError("timeouts.adjudication_seconds must be a positive number")
     if "diagnosis_llm_seconds" in timeouts:
         raise ProfileError(
-            "timeouts.diagnosis_llm_seconds was removed; use llm.timeout_seconds"
+            "timeouts.diagnosis_llm_seconds was removed"
         )
     normalized_timeouts = {"adjudication_seconds": float(adjudication_timeout)}
     for field, default in (("yolo_detection_seconds", adjudication_timeout),):
@@ -329,8 +287,6 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
         raise ProfileError("multi_view.views must contain at least min_views entries when enabled")
     if multi.get("yolo_fusion", "majority_vote") not in {"majority_vote"}:
         raise ProfileError("multi_view.yolo_fusion must be majority_vote")
-    if multi.get("llm_images", "all_stable_views") not in {"all_stable_views"}:
-        raise ProfileError("multi_view.llm_images must be all_stable_views")
     return profile
 
 

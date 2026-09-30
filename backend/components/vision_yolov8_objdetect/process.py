@@ -6,13 +6,12 @@ This module owns only the security-sensitive lifetime of runtime snapshots.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping, Sequence, Iterator
+from typing import Any, Mapping, Iterator
 import json
 import os
 import subprocess
 import threading
 
-from core.llm import LlmProvider, VerificationResult
 from components.vision_yolov8_objdetect.profile import (
     load_component_config,
     load_runtime_config,
@@ -382,43 +381,3 @@ def _snapshot_path(observation: Mapping[str, Any], task_dir: Path) -> Path:
     if not resolved.is_file():
         raise SnapshotError("snapshot file does not exist")
     return resolved
-
-
-def verify_snapshot(
-    observation: Mapping[str, Any],
-    *,
-    task_dir: Path,
-    verifier: LlmProvider,
-    system_prompt: str,
-    user_prompt: str,
-    allowed_outcomes: Sequence[str],
-    timeout_seconds: float,
-    model: str | None = None,
-) -> VerificationResult:
-    """Read one stable snapshot, verify it, and always remove the file.
-
-    Runtime-created snapshots are single-use evidence.  Validation occurs
-    before reading, and cleanup is restricted to the resolved task directory.
-    """
-
-    path = _snapshot_path(observation, Path(task_dir))
-    try:
-        # Read before invoking the verifier so missing/invalid files fail at a
-        # deterministic boundary.  The verifier receives the path to preserve
-        # its injectable transport and existing API.
-        path.read_bytes()
-        return verifier.verify(
-            image_path=path,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            allowed_outcomes=allowed_outcomes,
-            timeout_seconds=timeout_seconds,
-            model=model,
-        )
-    finally:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            # Cleanup failure must not expose an arbitrary path or mask the
-            # verifier result; callers can report the leaked snapshot.
-            pass

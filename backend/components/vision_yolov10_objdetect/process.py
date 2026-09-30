@@ -17,7 +17,6 @@ from components.vision_yolov8_objdetect.process import (  # noqa: F401
     YoloRuntimeProcess as _V8YoloRuntimeProcess,
     build_rtsp_args,
     load_runtime_defaults,
-    verify_snapshot,
 )
 from components.vision_yolov8_objdetect.profile import load_component_config
 

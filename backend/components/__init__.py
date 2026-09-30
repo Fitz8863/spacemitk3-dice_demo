@@ -1,1 +1,1 @@
-# Pluggable model/runtime components (vision, tts, llm, command).
+# Pluggable model/runtime components (vision, tts, asr, robot, command).
