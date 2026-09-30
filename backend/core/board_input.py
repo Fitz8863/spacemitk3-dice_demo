@@ -106,6 +106,7 @@ class BoardKeyReader:
         self._devices: dict[int, tuple[int, str]] = {}  # fd -> (fd 原始句柄, path)
         self._permission_denied = False
         self._last_emit: dict[int, float] = {}
+        self._next_rescan = 0.0
         self.last_action: str | None = None
         self.last_key_monotonic: float | None = None
         self._stop = threading.Event()
@@ -150,6 +151,15 @@ class BoardKeyReader:
         return sorted(glob.glob(self._device_glob))
 
     def _scan_devices(self) -> None:
+        alive_paths = {path for _, path in self._devices.values()}
+        # 重插的设备：路径还在但 inode 已换（udev 删旧建新），旧 fd 永远读
+        # 不到新事件——按 inode 比对强制重开。
+        for fd, (_, path) in list(self._devices.items()):
+            try:
+                if os.stat(path).st_ino != os.fstat(fd).st_ino:
+                    self._drop_device(fd)
+            except OSError:
+                self._drop_device(fd)
         alive_paths = {path for _, path in self._devices.values()}
         for path in self._candidate_paths():
             if path in alive_paths:
@@ -219,11 +229,13 @@ class BoardKeyReader:
             if self._stop.is_set():
                 break
             if not readable:
-                # 周期重扫：补热插拔、清死句柄。停止位优先——别在退出
-                # 路径上重开设备句柄（泄漏）。
-                if self._stop.wait(self._rescan_seconds):
-                    break
-                self._scan_devices()
+                # 周期重扫：补热插拔、清死句柄。必须按时间片走——在这里
+                # 阻塞数秒的话 select 只剩零星监听窗口，按键延迟会随相位
+                # 漂到秒级（现场"按了没反应"的第二根因，2026-09-30 修）。
+                now = time.monotonic()
+                if now >= self._next_rescan:
+                    self._scan_devices()
+                    self._next_rescan = now + self._rescan_seconds
                 continue
             for fd in readable:
                 try:

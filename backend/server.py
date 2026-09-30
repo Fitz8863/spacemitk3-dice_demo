@@ -622,15 +622,18 @@ class _AsrEventBus:
         self._events: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._sequence = 0
+        # 共享同一把锁：push 唤醒所有 SSE 推送协程，毫秒级送达且不受
+        # 浏览器后台标签页定时器节流（轮询在后台页会被钳到 1s/1min）。
+        self._changed = threading.Condition(self._lock)
 
     def clear(self) -> int:
         """Start a new epoch; returns the cursor history ends at."""
-        with self._lock:
+        with self._changed:
             self._events.clear()
             return self._sequence
 
     def push(self, event: dict[str, Any]) -> None:
-        with self._lock:
+        with self._changed:
             self._sequence += 1
             self._events.append({
                 **event,
@@ -638,10 +641,16 @@ class _AsrEventBus:
                 "sequence": self._sequence,
             })
             del self._events[:-30]
+            self._changed.notify_all()
 
     def poll(self) -> list[dict[str, Any]]:
-        with self._lock:
+        with self._changed:
             return list(self._events)
+
+    def wait_for_push(self, timeout: float) -> None:
+        """阻塞直到有新 push 或超时（SSE 空闲心跳用）。"""
+        with self._changed:
+            self._changed.wait(timeout)
 
 
 _STANDBY_BUS = _AsrEventBus()
@@ -1457,6 +1466,45 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(f"event: {event}\ndata: {payload}\n\n".encode("utf-8"))
         self.wfile.flush()
 
+    def _stream_bus(self, bus: _AsrEventBus) -> None:
+        """SSE 推送一条选关/待机总线（板端键盘与语音事件的消费通道）。
+
+        EventSource 不吃浏览器后台标签页的定时器节流——轮询版被钳到
+        1s/1min 就是"按键好一会才反应"的根因。``id:`` 用事件序号，
+        断线重连由 EventSource 带 Last-Event-ID 续传，不重放旧事件。
+        """
+        last_id = self.headers.get("Last-Event-ID", "")
+        try:
+            cursor = int(last_id)
+        except ValueError:
+            # 新连接（无 Last-Event-ID）：从当前水位开始，不重放历史——
+            # 页面有 POST listen 清总线 + 10s 保鲜窗兜底，这里不添乱。
+            cursor = max(
+                (int(e.get("sequence", 0)) for e in bus.poll()), default=0
+            )
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        try:
+            while True:
+                events = [e for e in bus.poll() if e.get("sequence", 0) > cursor]
+                if events:
+                    for event in events:
+                        cursor = int(event.get("sequence", 0))
+                        payload = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+                        self.wfile.write(f"id: {cursor}\nevent: bus\ndata: {payload}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    continue
+                bus.wait_for_push(timeout=15.0)
+                # 超时无新事件：注释行心跳，防中间层掐空闲连接。
+                self.wfile.write(b": heartbeat\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+
     @staticmethod
     def job_stream_delta(snapshot: dict[str, Any], after_sequence: int) -> dict[str, Any]:
         """Build a compact SSE update instead of resending logs/event history."""
@@ -1741,6 +1789,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/asr/select/events":
             # Game-list selection events, same polling pattern as standby.
             self.send_json({"events": _SELECT_BUS.poll()})
+            return
+        if path == "/api/asr/standby/stream":
+            self._stream_bus(_STANDBY_BUS)
+            return
+        if path == "/api/asr/select/stream":
+            self._stream_bus(_SELECT_BUS)
             return
         if path.startswith("/api/game/rounds/"):
             remainder = path[len("/api/game/rounds/"):]

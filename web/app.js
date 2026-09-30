@@ -98,8 +98,7 @@ function setPhase(phase, meta) {
 const IDLE_ENTER_SECONDS = 120; // /api/games 不可用或未配置时的兜底
 let idleTimer = null;
 let standbySettings = { enabled: true, idle_seconds: IDLE_ENTER_SECONDS, boot_standby: false, wake_phrases: [] };
-let standbyEventCursor = 0;
-let standbyPollTimer = null;
+let standbySource = null;
 
 function applyStandbySettings(settings) {
   if (!settings || typeof settings !== 'object') return;
@@ -186,40 +185,36 @@ function startStandbyListening() {
     method: 'POST',
     body: JSON.stringify({ listen: true }),
   }).then((payload) => {
-    // 事件纪元从本次监听开始：cursor 之前的历史事件（上一段待机期间环境
-    // 人声/幻觉产生的旧唤醒）绝不重放——刷新页面瞬间被"旧唤醒"唤醒过的 bug。
-    standbyEventCursor = Number(payload?.cursor || 0);
+    // 事件纪元从本次监听开始：POST listen 清掉总线里的历史事件（上一段
+    // 待机期间环境人声/幻觉产生的旧唤醒）绝不重放——刷新页面瞬间被"旧
+    // 唤醒"唤醒过的 bug。
     renderStandbyVoiceHint(payload?.wake_phrases, payload?.games);
   }).catch(() => { /* 后端不可用不阻塞待机画面 */ });
-  standbyPollTimer = setInterval(async () => {
-    try {
-      const payload = await requestJson('/api/asr/standby/events');
-      for (const event of (payload.events || [])) {
-        if (event.sequence > standbyEventCursor) {
-          standbyEventCursor = event.sequence;
-          // 保鲜窗：超过 10 秒的事件视为过期（防御旧事件重放）。
-          const fresh = Date.now() - Number(event.timestamp_ms || 0) <= 10000;
-          if (event.status === 'wake') {
-            if (fresh) {
-              showAsrFeedback({ status: 'submitted', text: event.text });
-              wakeFromStandby();
-              return;
-            }
-          } else if (event.status === 'selected' && event.game_id) {
-            // 待机页直接点名游戏：跳过列表直达对局。
-            if (fresh) {
-              showAsrFeedback({ status: 'submitted', text: event.text });
-              wakeFromStandby();
-              enterGameById(event.game_id);
-              return;
-            }
-          } else {
-            showAsrFeedback({ status: 'unmatched', text: event.text });
-          }
-        }
+  // SSE 推送（EventSource 不吃后台标签页定时器节流——轮询版被 Chromium
+  // 钳到 1s/1min，是"板端按键好一会才反应"的根因）；断线由 EventSource
+  // 自动重连，id 序号续传不重放旧事件。
+  standbySource = new EventSource('/api/asr/standby/stream');
+  standbySource.addEventListener('bus', (message) => {
+    let event = null;
+    try { event = JSON.parse(message.data); } catch (_) { return; }
+    // 保鲜窗：超过 10 秒的事件视为过期（防御旧事件重放）。
+    const fresh = Date.now() - Number(event.timestamp_ms || 0) <= 10000;
+    if (event.status === 'wake') {
+      if (fresh) {
+        showAsrFeedback({ status: 'submitted', text: event.text });
+        wakeFromStandby();
       }
-    } catch (_) { /* 轮询失败下次再试 */ }
-  }, 300); // 300ms：板端键盘/语音事件也走这条总线（原 1.2s 按下到反应太慢）
+    } else if (event.status === 'selected' && event.game_id) {
+      // 待机页直接点名游戏：跳过列表直达对局（板端键盘单次按压同款）。
+      if (fresh) {
+        showAsrFeedback({ status: 'submitted', text: event.text });
+        wakeFromStandby();
+        enterGameById(event.game_id);
+      }
+    } else if (event.status !== 'board_navigate') {
+      showAsrFeedback({ status: 'unmatched', text: event.text });
+    }
+  });
 }
 
 function renderStandbyVoiceHint(wakePhrases, selectGames) {
@@ -244,9 +239,9 @@ function renderStandbyVoiceHint(wakePhrases, selectGames) {
 }
 
 function stopStandbyListening() {
-  if (standbyPollTimer) {
-    clearInterval(standbyPollTimer);
-    standbyPollTimer = null;
+  if (standbySource) {
+    standbySource.close();
+    standbySource = null;
   }
   requestJson('/api/asr/standby', {
     method: 'POST',
@@ -260,8 +255,7 @@ function stopStandbyListening() {
 // + 全局配置里的确认词），命中推 selected/confirm 事件；前端走与绿色
 // 按钮同一条 enterSelectedGame 路径进对局。进对局/进待机时轮询停止
 // （服务端路由由回合/待机会话自动顶掉）。
-let selectEventCursor = 0;
-let selectPollTimer = null;
+let selectSource = null;
 
 function startSelectListening() {
   stopSelectListening();
@@ -269,48 +263,41 @@ function startSelectListening() {
     method: 'POST',
     body: JSON.stringify({ listen: true }),
   }).then((payload) => {
-    selectEventCursor = Number(payload?.cursor || 0);
     renderSelectVoiceHint(payload?.games, payload?.confirm_phrases);
   }).catch(() => { /* 后端不可用不阻塞列表页 */ });
-  selectPollTimer = setInterval(async () => {
-    try {
-      const payload = await requestJson('/api/asr/select/events');
-      for (const event of (payload.events || [])) {
-        if (event.sequence > selectEventCursor) {
-          selectEventCursor = event.sequence;
-          // 保鲜窗：超过 10 秒的选择事件视为过期（防御旧事件重放）。
-          const fresh = Date.now() - Number(event.timestamp_ms || 0) <= 10000;
-          if (event.status === 'selected' && event.game_id) {
-            if (fresh) {
-              showAsrFeedback({ status: 'submitted', text: event.text });
-              enterGameById(event.game_id);
-              return;
-            }
-          } else if (event.status === 'confirm') {
-            // 语音确认：进入当前高亮的游戏（上下键/点选已改写选中态）。
-            if (fresh) {
-              showAsrFeedback({ status: 'submitted', text: event.text });
-              enterSelectedGame();
-              return;
-            }
-          } else if (event.status === 'board_navigate' && event.game_id) {
-            // 板端键盘光标同步（input_board_enable）：只挪高亮、不进局——
-            // 进局走 selected 事件或本地 Enter，enterSelectedGame 的相位
-            // 守卫保证同一记按键不会建两个回合。
-            if (fresh) selectGame(event.game_id);
-          } else {
-            showAsrFeedback({ status: 'unmatched', text: event.text });
-          }
-        }
+  // SSE 推送（同待机层：EventSource 不吃后台标签页定时器节流）。
+  selectSource = new EventSource('/api/asr/select/stream');
+  selectSource.addEventListener('bus', (message) => {
+    let event = null;
+    try { event = JSON.parse(message.data); } catch (_) { return; }
+    // 保鲜窗：超过 10 秒的选择事件视为过期（防御旧事件重放）。
+    const fresh = Date.now() - Number(event.timestamp_ms || 0) <= 10000;
+    if (event.status === 'selected' && event.game_id) {
+      if (fresh) {
+        showAsrFeedback({ status: 'submitted', text: event.text });
+        enterGameById(event.game_id);
       }
-    } catch (_) { /* 轮询失败下次再试 */ }
-  }, 300); // 300ms：板端键盘/语音事件也走这条总线（原 1.2s 按下到反应太慢）
+    } else if (event.status === 'confirm') {
+      // 语音确认：进入当前高亮的游戏（上下键/点选已改写选中态）。
+      if (fresh) {
+        showAsrFeedback({ status: 'submitted', text: event.text });
+        enterSelectedGame();
+      }
+    } else if (event.status === 'board_navigate' && event.game_id) {
+      // 板端键盘光标同步（input_board_enable）：只挪高亮、不进局——
+      // 进局走 selected 事件或本地 Enter，enterSelectedGame 的相位
+      // 守卫保证同一记按键不会建两个回合。
+      if (fresh) selectGame(event.game_id);
+    } else if (event.status !== 'wake') {
+      showAsrFeedback({ status: 'unmatched', text: event.text });
+    }
+  });
 }
 
 function stopSelectListening() {
-  if (selectPollTimer) {
-    clearInterval(selectPollTimer);
-    selectPollTimer = null;
+  if (selectSource) {
+    selectSource.close();
+    selectSource = null;
   }
   requestJson('/api/asr/select', {
     method: 'POST',

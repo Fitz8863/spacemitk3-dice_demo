@@ -721,11 +721,14 @@ def test_frontend_standby_screen_engine_level():
     assert "state.phase !== 'select'" in app
     # boot_standby=true: the page loads straight into standby.
     assert "if (standbySettings.boot_standby) enterStandby();" in app
-    # Wake words: the standby screen asks the server to listen, polls the
-    # wake events, and stops listening on wake / round start / teardown.
+    # Wake words: the standby screen asks the server to listen, streams the
+    # wake events over SSE, and stops listening on wake / round start / teardown.
     assert "startStandbyListening()" in app
     assert "'/api/asr/standby'" in app
-    assert "'/api/asr/standby/events'" in app
+    # SSE 推送（2026-09-30）：轮询版被后台标签页定时器节流钳到 1s/1min，
+    # 板端按键"好一会才反应"的根因；EventSource 不受节流。
+    assert "new EventSource('/api/asr/standby/stream')" in app
+    assert "new EventSource('/api/asr/select/stream')" in app
     assert "stopStandbyListening()" in app
     assert "standbyWakeWords" in html
     # Wake-up swallows the first input at capture time: it must never reach
