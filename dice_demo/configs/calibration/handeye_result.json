@@ -1,0 +1,342 @@
+{
+  "schema": 1,
+  "mode": "eye_to_hand",
+  "quality_passed": false,
+  "direction": "T_base_camera maps camera optical coordinates into arm base",
+  "T_base_camera": [
+    [
+      0.05529828203389326,
+      -0.9965222591589273,
+      0.062333674726330945,
+      -0.06407379412221875
+    ],
+    [
+      -0.9969923375910302,
+      -0.05171370943596228,
+      0.05772322791689694,
+      0.35052144379991584
+    ],
+    [
+      -0.054298975946818595,
+      -0.06533819141329898,
+      -0.9963847359097621,
+      0.6826936525981168
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "T_tcp_board": [
+    [
+      -0.9971955876553742,
+      -0.05247867893307642,
+      -0.05335680104815042,
+      0.18704991421156716
+    ],
+    [
+      -0.05064997635295043,
+      0.998100634400371,
+      -0.03506712855399782,
+      -0.04876480966527451
+    ],
+    [
+      0.05509573355622355,
+      -0.03226626515443215,
+      -0.9979595925070741,
+      -0.006530891866017638
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "T_flange_tcp": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "pose_base_camera_m_rad": [
+    -0.06407379412221875,
+    0.35052144379991584,
+    0.6826936525981168,
+    -3.076111142241839,
+    0.054325693735215834,
+    -1.5153879969014463
+  ],
+  "rotation_diversity_singular_values": [
+    2.5518346501478515,
+    0.859154123890298,
+    0.8080866175187004
+  ],
+  "holdout_indices": [
+    3,
+    7,
+    11,
+    15,
+    19
+  ],
+  "holdout_errors_m_deg": [
+    [
+      0.003945163453875696,
+      1.434769177895964
+    ],
+    [
+      0.002144330314754591,
+      1.0785739427811791
+    ],
+    [
+      0.011553914051656235,
+      1.3300681993795487
+    ],
+    [
+      0.0037908896120127916,
+      0.7575388352958621
+    ],
+    [
+      0.01257252648303981,
+      2.8428163627294
+    ]
+  ],
+  "all_sample_errors_m_deg": [
+    [
+      0.003960246497840284,
+      2.4466259633900314
+    ],
+    [
+      0.0035396125640474512,
+      1.3797717962790692
+    ],
+    [
+      0.0011963693592140035,
+      1.6673263255945885
+    ],
+    [
+      0.0021564503834182215,
+      1.1435402321072874
+    ],
+    [
+      0.0029886620738960546,
+      0.9235843378016481
+    ],
+    [
+      0.0040680950973331995,
+      1.4150219005650175
+    ],
+    [
+      0.004328957427881297,
+      0.9704184817344752
+    ],
+    [
+      0.0017610802786609107,
+      0.8759197249566789
+    ],
+    [
+      0.003071198057596819,
+      0.9873026843638425
+    ],
+    [
+      0.004255467532005472,
+      2.1058492173979517
+    ],
+    [
+      0.003436072871521226,
+      1.6743987768038806
+    ],
+    [
+      0.0063620066426831445,
+      0.7493385550004119
+    ],
+    [
+      0.005222046612055302,
+      2.2304970309237993
+    ],
+    [
+      0.0021446187970034203,
+      0.8366992865181465
+    ],
+    [
+      0.004893500171517932,
+      0.844623662274268
+    ],
+    [
+      0.002151844227697012,
+      0.810894841817458
+    ],
+    [
+      0.0007033968247223804,
+      0.5980666035420995
+    ],
+    [
+      0.005487531355007898,
+      1.2527290931809694
+    ],
+    [
+      0.004208199112932587,
+      1.928597550513521
+    ],
+    [
+      0.008033100411467656,
+      2.53202025926497
+    ]
+  ],
+  "thresholds": {
+    "position_m": 0.005,
+    "angle_deg": 2.0
+  },
+  "sample_count": 20,
+  "camera": {
+    "backend": "realsense",
+    "serial": "346222071954",
+    "frame": "color_optical",
+    "width": 960,
+    "height": 720,
+    "camera_matrix": [
+      [
+        912.6941528320312,
+        0.0,
+        429.69549560546875
+      ],
+      [
+        0.0,
+        912.8109741210938,
+        378.5689697265625
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "dist_coeffs": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "distortion_model": "distortion.inverse_brown_conrady",
+    "source_resolution": [
+      1280,
+      720
+    ],
+    "crop_xywh": [
+      220,
+      0,
+      960,
+      720
+    ],
+    "fps": 6
+  },
+  "tcp": "flange",
+  "board_measurement": {
+    "grid_width_mm": 86.5,
+    "grid_height_mm": 108.0,
+    "spacing_x_mm": 21.625,
+    "spacing_y_mm": 21.6,
+    "source_dataset": "/home/test2/dice_demo_hwj/calibration/datasets/handeye_auto_20260923_184613",
+    "opencv_version": "4.13.0",
+    "recorded_board_config": {
+      "type": "charuco",
+      "dictionary": "4x4_50",
+      "squares_x": 4,
+      "squares_y": 5,
+      "square_length_m": 0.0215,
+      "marker_length_m": 0.015,
+      "legacy_pattern": false,
+      "min_corners": 6,
+      "max_reprojection_px": 1.0,
+      "image_roi_xyxy": [
+        0,
+        0,
+        960,
+        720
+      ],
+      "note": "Cover the fixed table board during hand-eye collection. The full cropped RGB image is available to the hand board.",
+      "image_profile": {
+        "color_resolution": [
+          1280,
+          720
+        ],
+        "fps": 6,
+        "crop_xywh": [
+          220,
+          0,
+          960,
+          720
+        ]
+      },
+      "image_exclude_rois_xyxy": []
+    },
+    "source_sha256": {
+      "sample_0000.png": "99f120c0df4f0ae92eaafdf92337a5ed9840a3f085bfe3b1aeae7dfbb832dc47",
+      "sample_0000.json": "2e809b4f1ab5cb9ddc39bf507e88bc78cf80c9097b28221641f258f0830719ae",
+      "sample_0001.png": "62cfae4ea3eba8f779accd9b722265cd2b6d7e34591bebfabb7812b9f13241ae",
+      "sample_0001.json": "6ce1a10450ca7b721c6c39566ee93a136788147de36126b247d2aa64ef826001",
+      "sample_0002.png": "9a969fff2df58aa045ae21469435752478e014edd35f8fc406eefd622e48f90c",
+      "sample_0002.json": "5692d37c324aa4b320f1ac52f1981c415d81dd48d80b3e7ede8c1bcb81a06827",
+      "sample_0003.png": "a4d693421c418e2efe713fcf2c2c04bff5a68f9cae9d3de7bc63e9752ba23378",
+      "sample_0003.json": "ce17f216ca81bac52d4d472db9fda6d9b9a112d9194f225bdc1454c8a87f029f",
+      "sample_0004.png": "150606980813c4d5f2bf625c6340321836b5c4f3791c8ee9a90438ec2f06d417",
+      "sample_0004.json": "9758bcad36abeb6efcd5754d5b69647128bc156e12dfad96892d7d5295f07321",
+      "sample_0005.png": "cc3c8dd98e76d51f97821108c72850490a578a6ac53c6ff088c0ceb0e04997b4",
+      "sample_0005.json": "349bcd2eef013669fe79f4cb9af8f6c491936d6074b6d6b981b16f9bf7b363d4",
+      "sample_0006.png": "450d8efc81d7419d305a8dd7f6fc4976076c21cb50445f892cca60edc719269c",
+      "sample_0006.json": "dd84f97a84e2e1183b2e127b858eaeb88c05eb278910fa72d7eae8b1098d0776",
+      "sample_0007.png": "0bf3fe6a097dd93e2f47b0b751bded16aa6c7dfbfe3c4a48c31327c73e285fd0",
+      "sample_0007.json": "80430c1ca20aecec59bc0497134916e537e5815320705a2b8fda24dd9fe51a96",
+      "sample_0008.png": "d7726e33d597dcb07e3a586e67f657e9f03f42930fa6407e3acfcd5f9ae6a115",
+      "sample_0008.json": "4553b068acc772fe3e3e20ccafd98d3661a043917b4a0aa75446302d9c1dae23",
+      "sample_0009.png": "6d5ea25cfed1a1d04764e6d99f2d7a7981f5bb519ea19b1102037715ae06eb13",
+      "sample_0009.json": "b95157cdac5ac61edb25f2e2dac2b5a4e5a1206795072a087944f3b8583c7e32",
+      "sample_0010.png": "309b2ef40615551c9630257605874dc42664dbe3c87b449163329e102e4b0825",
+      "sample_0010.json": "2c82a1dfb16525870e320ab68ec20126ef4ac642a2ea5e4878ab95e674d20f2f",
+      "sample_0011.png": "c042dc5b781c1ad6e79de212447538a3961494d13ec7f5e39a948b5b0d93a0b4",
+      "sample_0011.json": "1a369f8e37b72ff5c7259d50dcb092770946911b3c9afa67bcab98269d5a93a1",
+      "sample_0012.png": "b8e4940b74d5f791842ccbdd82ebba209622dc1ec5686ad138dbbd8fe9d3ee13",
+      "sample_0012.json": "a075fe9a225e2e2633c75e9c2ab466dc5f19f60378b0248facdf7a1bcaa3c7bc",
+      "sample_0013.png": "a236dbc5166a5d2cdac2ccaabcc3925809f8b136d9f1bcc564d2d746f3682b0f",
+      "sample_0013.json": "8e836474ec711bf4acfb18778f0cfbbe80f2bc875bf25480946f202e5ed022f6",
+      "sample_0014.png": "717c4972c59aefb1d18b99b2e1eb55475dd2e68411ab05abef232704eef5a331",
+      "sample_0014.json": "18a76ea7d5fc6cff500b4347fe20f2d0ac3f7b6d9a0c85ae25a270e413b4ec7c",
+      "sample_0015.png": "20794302ceecff19b79d2df935551508100a88d1a6c0ddf93020fbecb363ebb8",
+      "sample_0015.json": "9c4e05526c096629d2cc5e53843d093dd2fbe0d7799a6a6ea86184251c25c67e",
+      "sample_0016.png": "10623b7c0f2591e231c3c8147b7f731f35ae0b6ff488435d52a0cffbfc1aed90",
+      "sample_0016.json": "ca2161067450e45ac6e3e571448d05a792dcccb064c839621805a28414659b70",
+      "sample_0017.png": "9b4cb8b3a63652b1d69348ef55b091a08dd37be0824640111660730a916eb3f5",
+      "sample_0017.json": "1ec4349ff16cb2b11103292c52f0195e35786ee1d03b7a37a0584b62b01627c6",
+      "sample_0018.png": "4703fb44221b5c884465525470fc05e6a84d392b7c36e8a9f0a187267953cf93",
+      "sample_0018.json": "1488ee870b81f5c59236435ecdabb6168d5868e2cb439842392a1d325e77d8ef",
+      "sample_0019.png": "a1f182406ff51ec447f81940d7134a5638d4f91fcb7a63094332a2bf89057bc3",
+      "sample_0019.json": "cb3a5530c1d276acd3634ca335429e5cbfa5b70c896136c10e9a9421a508a2af",
+      "manifest.json": "5724829a852aa10b764296d76a250bb4a2349e878a22af30b5b53b2551381943"
+    },
+    "method": "Original marker detection and corner interpolation; measured X/Y grid points for PnP. Original flange poses, sample order, holdouts and gates retained.",
+    "scope": "Offline derived observations; not a resumable capture session or a live board config."
+  }
+}
