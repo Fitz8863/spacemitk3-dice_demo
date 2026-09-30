@@ -239,10 +239,9 @@ export function register(engine) {
     }
     $('resultEmoji').textContent = tie ? '🤝' : playerWins ? '🏆' : '✨';
     $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : 'Agent 获胜';
-    const stubNote = result.source === 'stub' ? '（演示判定，视觉模型尚未接入）' : '';
     $('resultSubtitle').textContent = tie
-      ? `双方都出了${result.player_choice}${stubNote}，再来一局？`
-      : `${result.player_choice} 对 ${result.agent_choice}${stubNote}`;
+      ? `双方都出了${result.player_choice}，再来一局？`
+      : `${result.player_choice} 对 ${result.agent_choice}`;
     banner.classList.toggle('loss', !playerWins && !tie);
   }
 

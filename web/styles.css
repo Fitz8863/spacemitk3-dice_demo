@@ -105,8 +105,9 @@ body[data-phase="analysis"] .analysis-status { margin-bottom: 0; }
 .controller-key-blue { background: #2563eb; }
 .controller-key-yellow { background: #eab308; }
 
-.stage-body { width: 100%; max-width: 920px; display: flex; flex: 1; align-items: center; justify-content: center; padding: 8px 0 30px; }
-.view { width: 100%; animation: fadeIn .35s ease both; }
+.stage-body { width: 100%; max-width: 920px; display: grid; flex: 1; place-items: center; padding: 8px 0 30px; }
+.view { width: 100%; grid-area: 1 / 1; animation: fadeIn .3s ease both; }
+.view-leave { animation: fadeOut .13s ease both; pointer-events: none; }
 .hidden { display: none !important; }
 
 .view-title { margin: 0 0 28px; font-size: 44px; line-height: 1.15; letter-spacing: -.02em; }
@@ -285,6 +286,7 @@ body[data-phase="standby"] .stage-head { display: none; }
 @keyframes standbyHint { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
 
 @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
 @keyframes countPop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 @keyframes shake { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-14px) scale(1.015); } }
 /* 一圈转满 720°/360°，首尾都是整数圈所以循环无缝；X、Y 轴转速不同，
@@ -298,6 +300,7 @@ body[data-phase="standby"] .stage-head { display: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .01ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: .01ms !important;
   }
@@ -861,3 +864,17 @@ body:has(.dice-video)[data-phase="analysis"] .vision-pip {
     font-size: 24px;
   }
 }
+
+/* 结果揭晓动效（dice 骰子与 rps 拳形共用同一容器）：横幅弹出、逐颗骰子错峰
+   落位、大分数压秤落定。视图 display:none→显示会重播 CSS 动画，showResult
+   每局重建 innerHTML，天然逐局重播；prefers-reduced-motion 由全局降级块接管。 */
+.result-banner { animation: revealPop .32s cubic-bezier(.2, 1.2, .4, 1) both; }
+.score-dice > * { animation: diePop .3s cubic-bezier(.2, 1.2, .4, 1) both; }
+.score-dice > *:nth-child(2) { animation-delay: .06s; }
+.score-dice > *:nth-child(3) { animation-delay: .12s; }
+.score-dice > *:nth-child(4) { animation-delay: .18s; }
+.score-dice > *:nth-child(5) { animation-delay: .24s; }
+.score-side > strong { animation: scorePop .34s cubic-bezier(.2, 1.1, .4, 1) .18s both; }
+@keyframes revealPop { from { opacity: 0; transform: scale(.88); } to { opacity: 1; transform: scale(1); } }
+@keyframes diePop { from { opacity: 0; transform: scale(.4) rotate(-14deg); } to { opacity: 1; transform: none; } }
+@keyframes scorePop { from { opacity: 0; transform: scale(1.4); } to { opacity: 1; transform: scale(1); } }

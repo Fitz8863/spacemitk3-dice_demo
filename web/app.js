@@ -74,12 +74,31 @@ function renderPhaseCopy(phase, fallback) {
 }
 
 // ---- 视图切换 ----
+// 视图在 .stage-body 的 grid 叠层（所有 .view 同一格）上交叉淡化：旧视图加
+// .view-leave 淡出 130ms 后再隐藏，新视图照常 fadeIn——消除「旧视图一帧
+// 消失、新视图从零亮起」的闪断。计时器只在引擎层；同相位重入与快速连切
+// （如 shaking→stop_call 同视图）都先清挂起计时器并回收 leave 类。
+let phaseLeaveTimer = null;
 function setPhase(phase, meta) {
   state.phase = phase;
   // Phases style themselves via body[data-phase] (e.g. the open phase lowers
   // the stage header into mid-screen).
   document.body.dataset.phase = phase;
-  views.forEach((view) => view.classList.toggle('hidden', view.dataset.view !== phase));
+  clearTimeout(phaseLeaveTimer);
+  const incoming = views.find((view) => view.dataset.view === phase) || null;
+  const outgoing = views.find((view) => !view.classList.contains('hidden')) || null;
+  if (outgoing && outgoing !== incoming) {
+    outgoing.classList.add('view-leave');
+    const leaving = outgoing;
+    phaseLeaveTimer = setTimeout(() => {
+      leaving.classList.remove('view-leave');
+      leaving.classList.add('hidden');
+    }, 130);
+  }
+  if (incoming) {
+    incoming.classList.remove('view-leave');
+    incoming.classList.remove('hidden');
+  }
   const resolved = meta || (activeGame && activeGame.phaseMeta && activeGame.phaseMeta[phase]) || SELECT_META;
   $('phaseTitle').textContent = resolved[0];
   renderPhaseCopy(phase, resolved[1]);
