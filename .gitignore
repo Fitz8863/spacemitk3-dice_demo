@@ -37,6 +37,11 @@ web/dice-arena-web.log
 .dice-arena.env.bak
 backend/__pycache__/
 
+# dice_demo/ 内部忽略规则由快照自带的 dice_demo/.gitignore 负责（随 subtree pull 自动演进），主仓不重复维护
+
+# Local spec/ticket scratch (not published)
+.scratch/
+
 # Migrated Qwen3-TTS runtime state and board-local model payloads
 tts/qwen3-tts/llama-server.log
 tts/qwen3-tts/llama-server.pid
