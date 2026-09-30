@@ -686,7 +686,8 @@ def _board_active_round() -> GameRound | None:
 
 
 def _board_enabled_games() -> list[str]:
-    return [m["id"] for m in get_games() if m.get("enabled")]
+    # get_games() 是 GameRegistry 对象（.all() 取全量），不是可迭代列表。
+    return [m["id"] for m in get_games().all() if m.get("enabled")]
 
 
 def _board_cursor_game(games: list[str]) -> str:

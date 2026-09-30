@@ -153,6 +153,16 @@ class _FakeRound:
         return {"id": self.id}
 
 
+class _FakeRegistry:
+    """get_games() 返回 GameRegistry；测试桩提供同款 .all() 接口。"""
+
+    def __init__(self, games):
+        self._games = games
+
+    def all(self):
+        return self._games
+
+
 class DispatchTests(unittest.TestCase):
     """server._board_dispatch 的分相位派发与去重（fake 依赖，不起真引擎）。"""
 
@@ -162,9 +172,9 @@ class DispatchTests(unittest.TestCase):
         self._patches = [
             mock.patch.object(server, "rounds", {"r-test": self.round_}),
             mock.patch.object(server, "rounds_lock", __import__("threading").Lock()),
-            mock.patch.object(server, "get_games", lambda: [
+            mock.patch.object(server, "get_games", lambda: _FakeRegistry([
                 {"id": "dice", "enabled": True}, {"id": "rps", "enabled": True},
-            ]),
+            ])),
             mock.patch.object(server, "get_arena_config",
                               lambda: {"input_board_enable": True}),
             mock.patch.object(server, "_board_cursor", {"game_id": None}),
