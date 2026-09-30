@@ -219,7 +219,7 @@ function startStandbyListening() {
         }
       }
     } catch (_) { /* 轮询失败下次再试 */ }
-  }, 1200);
+  }, 300); // 300ms：板端键盘/语音事件也走这条总线（原 1.2s 按下到反应太慢）
 }
 
 function renderStandbyVoiceHint(wakePhrases, selectGames) {
@@ -304,7 +304,7 @@ function startSelectListening() {
         }
       }
     } catch (_) { /* 轮询失败下次再试 */ }
-  }, 1200);
+  }, 300); // 300ms：板端键盘/语音事件也走这条总线（原 1.2s 按下到反应太慢）
 }
 
 function stopSelectListening() {

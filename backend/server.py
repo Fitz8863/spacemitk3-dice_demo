@@ -724,14 +724,19 @@ def _board_dispatch(action: str) -> None:
                 "event": "asr", "status": "board_navigate",
                 "game_id": _board_cursor["game_id"], "text": "board",
             })
+            # 方向键也唤醒待机页（本地键盘的"任意键唤醒"同款语义）。
+            _STANDBY_BUS.push({"event": "asr", "status": "wake", "text": "board"})
             return
         if action == "confirm":
             game_id = _board_cursor_game(games)
             if _board_recent(f"select:{game_id}"):
                 return
-            # 待机页：唤醒回列表；列表页：直达对局（复用语音选游戏的事件形状，
-            # 页面各自按所处相位消费，stale 事件由 listen 清总线+10s 保鲜窗兜底）。
-            _STANDBY_BUS.push({"event": "asr", "status": "wake", "text": "board"})
+            # selected 进两条总线：待机页一批消费"唤醒+直达对局"（单次按压，
+            # 不用先唤醒再按一次）；列表页直接进入。进局相位守卫防双建局。
+            _STANDBY_BUS.push({
+                "event": "asr", "status": "selected", "game_id": game_id,
+                "text": "board",
+            })
             _SELECT_BUS.push({
                 "event": "asr", "status": "selected", "game_id": game_id,
                 "text": "board",

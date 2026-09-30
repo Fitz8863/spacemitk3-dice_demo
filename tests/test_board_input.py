@@ -215,17 +215,18 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual([p["game_id"] for p in pushes], ["rps", "dice"])
         self.assertTrue(all(p["status"] == "board_navigate" for p in pushes))
 
-    def test_no_round_confirm_wakes_and_selects(self):
+    def test_no_round_confirm_selects_on_both_buses(self):
+        """待机页单次按压直达对局：selected 进两条总线（待机页一批消费
+        唤醒+进局，列表页直接进入）。"""
         with mock.patch.object(server, "rounds", {}), \
                 mock.patch.object(server, "_STANDBY_BUS") as standby_bus, \
                 mock.patch.object(server, "_SELECT_BUS") as select_bus:
             server._board_dispatch("down")   # 光标 -> rps
             server._board_dispatch("confirm")
-        standby_bus.push.assert_called_once_with(
-            {"event": "asr", "status": "wake", "text": "board"})
-        selected = select_bus.push.call_args_list[-1].args[0]
+        selected = standby_bus.push.call_args_list[-1].args[0]
         self.assertEqual(selected["status"], "selected")
         self.assertEqual(selected["game_id"], "rps")
+        self.assertEqual(select_bus.push.call_args_list[-1].args[0]["game_id"], "rps")
 
 
 if __name__ == "__main__":
