@@ -658,14 +658,16 @@ body:has(.dice-video) #readyButtonHint { margin: 8px auto 16px; }
 .topbar { min-height: 78px; }
 .experience-shell {
   display: block;
-  min-height: calc(100dvh - 112px);
+  /* 112px 只覆盖顶栏(78)+外距(4)，footer（约 33px）+ 壳内边距会被推出视口
+     （940x1000 实测溢出 26px、页面出滚动条）。140px 留足底部空间。 */
+  min-height: calc(100dvh - 140px);
   margin-top: 4px;
 }
 .experience-shell::after { left: calc(50% - 27px); }
 .stage {
   z-index: 1;
   width: 100%;
-  min-height: calc(100dvh - 112px);
+  min-height: calc(100dvh - 140px);
   padding: 20px clamp(24px, 3vw, 58px) 24px;
 }
 .stage-body { max-width: min(86vw, 1680px); }

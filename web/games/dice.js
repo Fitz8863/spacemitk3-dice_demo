@@ -571,8 +571,10 @@ export function register(engine) {
         // 视图名不同的（shake_countdown → countdown、stop_call → shaking、
         // analysis_failed → analysis）需要显式映射，否则会隐藏全部视图。
         const viewOverrides = {
+          shake_countdown: { view: 'countdown' },
           stop_call: { view: 'shaking' },
           arm_failed: { view: 'arm_failed' },
+          analysis_failed: { view: 'analysis' },
         };
         if (snapshot.state && snapshot.state !== lastRenderedState) {
           renderState(snapshot.state, viewOverrides[snapshot.state] || {});

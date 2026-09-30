@@ -360,11 +360,14 @@ function enterGameById(gameId) {
 window.addEventListener('pointerdown', () => armIdleReturn(), { capture: true });
 
 // ---- 提示 ----
+let toastTimer = null;
 function toast(message) {
   const node = $('toast');
   node.textContent = message;
   node.classList.add('show');
-  setTimeout(() => node.classList.remove('show'), 2800);
+  // 连续 toast 时先清旧计时器，否则上一条的隐藏定时器会把新 toast 提前掐掉。
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => node.classList.remove('show'), 2800);
 }
 
 // ---- ASR 语音反馈 ----
