@@ -1,6 +1,6 @@
 {
-  "_note": "dice_demo 常驻接入配置。demo_root 相对主仓库根解析（默认指向兄弟仓库 dice_demo）；修改本文件需重启后端。真机超时以实测为准：常驻热机下识别+抓取约 2-3s，摇+放+归位约 13-20s；超时预算含进程死亡后的自动重启预热（约 6-10s）。",
-  "demo_root": "../dice_demo",
+  "_note": "dice_demo 常驻接入配置。demo_root 相对主仓库根解析（现指向仓内快照子目录 dice_demo/，上游 wangannyi/dice_demo 经 subtree pull 同步，子目录内文件不可本地修改）；修改本文件需重启后端。真机超时以实测为准：常驻热机下识别+抓取约 2-3s，摇+放+归位约 13-20s；超时预算含进程死亡后的自动重启预热（约 6-10s）。",
+  "demo_root": "dice_demo",
   "python_bin": "/usr/bin/python3",
   "ready_timeout_seconds": 60,
   "grasp_timeout_seconds": 45,
