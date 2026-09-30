@@ -130,7 +130,8 @@ class BoardKeyReader:
 
     def status(self) -> dict:
         return {
-            "running": self._thread is not None,
+            # is_alive 而非"曾经 start 过"：线程死了监督者才能发现并重建。
+            "running": self._thread is not None and self._thread.is_alive(),
             "devices": [path for _, path in self._devices.values()],
             "permission_denied": self._permission_denied,
             "last_action": self.last_action,

@@ -14,6 +14,7 @@ import faulthandler
 import json
 import mimetypes
 import os
+import queue
 import signal
 import sys
 import threading
@@ -662,6 +663,22 @@ _board_reader: BoardKeyReader | None = None
 _board_reader_lock = threading.Lock()
 _board_cursor: dict[str, str | None] = {"game_id": None}  # 板端导航光标
 _board_dedup: dict[str, float] = {}
+# 读键与派发解耦：读键线程只往队列丢动作（永不阻塞，否则像 rounds_lock
+# 这样的长持锁会把它卡死——卡住期间按键堆在内核缓冲里，松锁后井喷或丢弃，
+# 现场表现为"按了没反应/慢半拍"）。派发线程慢慢拿锁。
+_board_actions: "queue.Queue[str]" = queue.Queue()
+
+
+def _board_enqueue(action: str) -> None:
+    _board_actions.put_nowait(action)
+
+
+def _board_dispatch_loop() -> None:
+    while True:
+        try:
+            _board_dispatch(_board_actions.get())
+        except Exception as exc:
+            print(f"[board-input] dispatch loop error: {exc}", flush=True)
 
 
 def _board_recent(key: str) -> bool:
@@ -766,7 +783,7 @@ def _supervise_board_input() -> None:
                     # 停过的 reader 对象还在（stop 不置 None），只要没在跑
                     # 就重建——supervisor 单线程，无并发竞争。
                     if _board_reader is None or not _board_reader.status()["running"]:
-                        _board_reader = BoardKeyReader(_board_dispatch)
+                        _board_reader = BoardKeyReader(_board_enqueue)
                         _board_reader.start()
                         print("[board-input] reader started (input_board_enable=true)", flush=True)
             elif not enabled and reader is not None and running:
@@ -778,6 +795,10 @@ def _supervise_board_input() -> None:
 
 
 def _start_board_input_supervisor() -> None:
+    # 派发线程常驻（派发内部自己检查开关），监督线程负责读取器生死。
+    threading.Thread(
+        target=_board_dispatch_loop, name="board-input-dispatch", daemon=True
+    ).start()
     threading.Thread(
         target=_supervise_board_input, name="board-input-supervisor", daemon=True
     ).start()
