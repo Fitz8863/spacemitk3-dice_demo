@@ -49,5 +49,5 @@
     "player_side": "LEFT",
     "video_rotation_deg": {"dice": 0, "rps": 0}
   },
-  "input_board_enable": false
+  "input_board_enable": true
 }
