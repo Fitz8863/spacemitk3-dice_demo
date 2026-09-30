@@ -141,11 +141,12 @@ class ReaderDispatchTests(unittest.TestCase):
 
 
 class _FakeRound:
-    def __init__(self, game_id: str, state: str, round_id: str = "r-test"):
+    def __init__(self, game_id: str, state: str, round_id: str = "r-test", age_ms: float = 10_000.0):
         self.game_id = game_id
         self.state = state
         self.id = round_id
         self.status = "running"
+        self.created_at = __import__("time").time() * 1000 - age_ms
         self.submitted: list[tuple[str, dict]] = []
 
     def submit_intent(self, name: str, payload: dict | None = None):
@@ -187,6 +188,17 @@ class DispatchTests(unittest.TestCase):
     def test_in_round_intent_uses_the_table(self):
         server._board_dispatch("confirm")
         self.assertEqual(self.round_.submitted, [("confirm", {"source": "board"})])
+
+    def test_confirm_echo_of_just_created_round_is_skipped(self):
+        """同一记板端 Enter 的回声：本地 keydown 建局后几十毫秒，派发看到
+        新生回合不要立刻替用户确认规则（规则页被一闪跳过）。"""
+        fresh = _FakeRound("dice", "rules", round_id="r-fresh", age_ms=50.0)
+        with mock.patch.object(server, "rounds", {"r-fresh": fresh}):
+            server._board_dispatch("confirm")   # 回声：跳过
+            self.assertEqual(fresh.submitted, [])
+            fresh.created_at = __import__("time").time() * 1000 - 5_000
+            server._board_dispatch("confirm")   # 真正的第二次按键：照常投递
+            self.assertEqual(fresh.submitted, [("confirm", {"source": "board"})])
 
     def test_shaking_has_no_keys(self):
         self.round_.state = "shaking"

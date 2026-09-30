@@ -732,6 +732,16 @@ def _board_dispatch(action: str) -> None:
             intent = resolve_intent(round_.game_id, round_.state, action)
             if intent is None:
                 return
+            # 同一记板端 Enter 会先经板子 Chromium 本地 keydown 建局（web
+            # 路径），几十毫秒后本派发才看到"已有活跃回合"——若照常映射就
+            # 会把 rules 的 confirm 也投出去，规则页被一闪跳过。判定标准：
+            # 回合刚建不满 250ms 且动作是 confirm = 同一记按键的回声，跳过。
+            if (
+                intent == "confirm"
+                and round_.state == "rules"
+                and time.time() * 1000 - round_.created_at < 250
+            ):
+                return
             if _board_recent(f"intent:{round_.id}:{intent}"):
                 return
             try:
