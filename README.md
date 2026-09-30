@@ -8,12 +8,20 @@
 - `tts/qwen3-tts/`：迁移的 Qwen3-TTS 0.6B + SpaceMIT `llama-server` 服务；网页通过后端代理获取 24 kHz 单声道 WAV。
 - `tts/moss-tts-nano/`：迁移的 MOSS-TTS-Nano SpaceMIT EP runtime 源码与板端交付目录，布局与 `tts/qwen3-tts/` 一致；模型、riscv64 Python 包和 native 库按该目录 `.gitignore` 保留为板端运行时文件。
 - `backend/components/tts_moss_nano/`：MOSS-TTS-Nano 组件适配器；调用仓库内 runtime，按文本 chunk 流式返回 WAV。
+- `dice_demo/`：NERO 机械臂抓放/摇骰子系统的**上游快照子目录**（外部协作仓经 `git subtree --squash` 合入；子目录内文件不可在本仓直接修改，改动走上游仓再同步，见下文「机械臂与 dice_demo 子目录」）。含常驻 JSONL 控制协议、绿杯视觉模型、手眼标定与 hand_geometry URDF；由 `backend/components/robot_arm_nero/` 组件消费。
 
 文档索引见 [`docs/README.md`](docs/README.md)。想了解端到端请求如何调度，请阅读
 [`FRAMEWORK_DISPATCH.md`](FRAMEWORK_DISPATCH.md)；想接手或修改代码，请先阅读
 [`AI_PROJECT_CONTEXT.md`](AI_PROJECT_CONTEXT.md) 和 [`CLAUDE.md`](CLAUDE.md)。
 
-当前阶段**不接机械臂**，用人手和网页按钮代替机械臂的摇骰、停骰、开盖指令。胜负由 K3 板端摄像头上的 YOLOv8 检测产生，不由网页随机生成。浏览器摄像头只用于页面预览；实际识别直接读取 K3 摄像头设备。
+机械臂已接入（2026-09-23 起）：NERO 机械臂经 `backend/components/robot_arm_nero/` 组件驱动仓内 `dice_demo/` 快照，完成抓杯、摇骰、放杯、归位整链（2026-09-24 起人工摇骰模式已移除）；实体按键与网页按钮保留为人工兜底。胜负由 K3 板端摄像头上的 YOLOv8 检测产生，不由网页随机生成。浏览器摄像头只用于页面预览；实际识别直接读取 K3 摄像头设备。
+
+### 机械臂与 dice_demo 子目录（开发位 / 运行位）
+
+`dice_demo/` 是外部协作仓（上游开发主仓）的快照，经 `git subtree --squash` 合入。两条铁律：
+
+- **子目录内部不可在本仓修改**（上游领地）：机械臂侧代码/文档的改动一律在上游仓提交，之后在 main 执行 `git subtree pull --prefix=dice_demo <上游路径> hwj_dev --squash` 同步，重启板端服务生效。
+- **板上双位分工**：上游仓检出 = 开发位（改码、pytest、标定）；main 检出内的 `dice_demo/` = 运行位（`robot_arm_nero` 的 `demo_root` 指向它，datasets 运行数据也写在这里）。运行与发布因此永远同源。
 
 > 大模型复核是**可配置**的一环，由游戏 manifest 的 `vision_profile.llm.enabled` 控制；**dice 当前为 `false`（纯 YOLO 判胜）**，复核代码与旋钮保留但休眠。详见下文「大模型的 endpoint…」一段。
 
@@ -72,7 +80,7 @@ python3 backend/tts_debug.py <provider_id>
 
 `web/` 前端和 `backend/server.py` 都只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。网页请求 `/api/adjudicate` 后，bridge 会通过 `vision_yolov8_objdetect` 启动或复用 `vision/yolov8_objdetect/build/yolov8_camera`；YOLO runtime 只输出稳定检测证据，LLM 请求由 Python provider 发起。浏览器在板端通过 `127.0.0.1` 访问时，可以正常申请摄像头权限；如果从其他设备通过 HTTP IP 访问，浏览器可能因非安全上下文限制摄像头权限，但实际识别仍使用 K3 板端摄像头。
 
-大模型的 endpoint、model 和 API key 统一配置在 `backend/components/llm_openai_compat/config.json`（2026-09-04 大模型模块化后从视觉组件迁出；视觉组件 config 现在只剩 `runtime`/`events`）。该文件被 Git 跟踪，**仓库必须保持私有**；不要把 key 写进网页或日志。修改后重启 `scripts/start_web.sh` 生效。如果没有配置 key，`/api/health` 会显示 `llm_configured:false`，进入开盖后的视觉裁决阶段会明确提示未配置，而不是使用随机骰子或直接判定胜负。
+大模型的 endpoint、model 和 API key 统一配置在 `backend/components/llm_openai_compat/config.json`（2026-09-04 大模型模块化后从视觉组件迁出；视觉组件 config 现在只剩 `runtime`/`events`）。该文件被 Git 跟踪；**本仓库当前是公开仓库**（历史中曾包含真实 key，维护者知情并拍板维持现状——不要再往仓库新增任何真实密钥）；不要把 key 写进网页或日志。修改后重启 `scripts/start_web.sh` 生效。如果没有配置 key，`/api/health` 会显示 `llm_configured:false`，进入开盖后的视觉裁决阶段会明确提示未配置，而不是使用随机骰子或直接判定胜负。
 
 > **当前 dice 是纯 YOLO 判胜**：`backend/games/dice/manifest.json` 的 `vision_profile.llm.enabled` 自 2026-09-07 起为 `false`，复核代码与全部旋钮都保留但休眠。`/api/health` 的 `llm_configured:true` 只表示**槽位与组件配置就绪**，不代表这一局会调用大模型。要恢复复核就把该开关改成 `true`（热加载，下一局生效）。
 
@@ -139,7 +147,7 @@ python3 backend/tts_debug.py <provider_id>
 - 触发器三类：`on_intent`（前端按键意图）、`duration` + `on_expire`（计时器，`tick_seconds` 可配，倒计时默认 0.9 秒还原舞台节奏）、`on_event`（后端内部事件，如 `adjudication.result`/`adjudication.diagnosis`）。
 - `speech` 动作 `mode` 只有 `tts_local`/`tts_remote`/`audio` 三种；`await: true` 表示后端等待前端播放完成回执（`speech_done`）后才继续推进。**注意 `await` 会把本状态的 `duration` 计时器整体后推**（引擎先跑完 `on_enter` 再起计时），所以 `duration` 是"这句播完后再等多久"，不是"本状态持续多久"——骰子现状（2026-09-24）：`stop_call` 的 `停.wav` 故意不 await，喊停的瞬间就交棒进裁决；`select_by: winner_role` 按裁决结果选台词，`{player_score}`/`{agent_score}` 占位符由引擎渲染。
 - `audio` 模式从该游戏目录读取 WAV（如 `audio/停.wav`），拒绝绝对路径和 `..` 越界。游戏级 `voice`/`speed` 是 TTS 默认参数，单条动作可覆盖。
-- 未来接机械臂时，在对应状态加一条新动作类型（如 `{"action": "robot", "command": "shake_dice"}`）并注册对应执行器与 `command` 类型功能包即可，无需改引擎和前端。
+- 机械臂动作即走此机制：在状态里声明 `{"action": "robot", "command": "shake_dice"}` 一类动作，由对应执行器功能包消费（`robot_arm_nero` 已实现 grasp/shake/settle/feedback/throw_gesture/reset_home）；扩展新指令只需注册新的 `command` 类型功能包，无需改引擎和前端。
 - manifest 支持热加载（mtime 检测，保存后下一局生效；坏配置保留最后可用版本）。正在跑的一局使用创建时的状态机快照。修改 manifest 结构后无需重启后端。
 
 ## 语音输入（ASR 语音确认）
@@ -316,7 +324,7 @@ file /tmp/dice-tts.wav
 
 当前模型配置以板端实际 `tts/qwen3-tts/qwen3-tts-0.6b/config.json` 为准；已迁移配置为 24 kHz、`frontend_threads=2`、`codec_threads=4`、`talker_threads=4`。TTS preferred cores 默认 `8,9,10,11,12,13`，YOLO EP affinity 仍为 `14;15`，两者不要混用。CPU/环境变量配置本身不等于 AI Core 利用率证明，验证时还要检查实际进程映射和运行日志。
 
-## 与后续 ROS2 / Agent / 机械臂的接口边界
+## 与后续 ROS2 / Agent 的接口边界（机械臂已接入）
 
 前端已经按状态机拆分为以下可替换阶段：
 
@@ -325,14 +333,14 @@ SELECT -> RULES -> READY -> COUNTDOWN -> SHAKING -> OPEN
        -> ANALYSIS -> RESULT -> READY / SELECT
 ```
 
-后续接入时，可以把前端的两个“人手按钮”替换成 ROS2 / Agent 事件：
+机械臂已按此模型接入：人手按钮与机械臂 Action 走同一意图通道（`startShake` / `stopShake` / `revealDice` 的语义见 `AI_PROJECT_CONTEXT.md` 第 4.3 节映射）。若再接 ROS2 / Agent 事件，可替换的仍是同一组语义指令：
 
 - `startShake`：下发摇骰语义指令；
 - `stopShake`：下发停骰语义指令；
 - 摇骰收尾：机械臂放下杯子归位完即播「停！」（stop_call 0.5s），随即进入视觉识别；
 - `ANALYSIS`：接收 K3 YOLOv8 输出的 10 颗骰子、置信度、两侧总和和判定结果。
 
-当前 HTTP bridge 已通过 SSE 推送分析进度和结果。下一阶段接入机械臂时，应继续让后端作为权威状态源；只有需要双向机器人事件或高频画面时，再增加 WebSocket/视频通道，不让 ROS2、视觉和网页 UI 互相耦合。
+当前 HTTP bridge 已通过 SSE 推送分析进度和结果。后端始终是权威状态源；只有需要双向机器人事件或高频画面时，再增加 WebSocket/视频通道，不让 ROS2、视觉和网页 UI 互相耦合。
 
 ## 可插拔组件与模型切换
 

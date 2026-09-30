@@ -7,7 +7,6 @@
 | 文档 | 用途 |
 | --- | --- |
 | [`../README.md`](../README.md) | 使用者和部署者入口：启动、配置、API 和常用验证命令。 |
-| [`../TTS配置与切换指南.md`](../TTS配置与切换指南.md) | TTS provider 切换步骤与三层参数（游戏/组件/请求）详解。 |
 | [`../AI_PROJECT_CONTEXT.md`](../AI_PROJECT_CONTEXT.md) | AI 或新开发者接手时的上下文、目录职责、安全约束和当前状态。 |
 | [`../CLAUDE.md`](../CLAUDE.md) | 编程代理修改本仓库时必须遵守的工程约束。 |
 | [`../FRAMEWORK_DISPATCH.md`](../FRAMEWORK_DISPATCH.md) | 从浏览器请求到视觉/TTS provider 的端到端调度说明。 |
@@ -22,12 +21,17 @@
 | [`../backend/components/tts_moss_nano/参数说明.md`](../backend/components/tts_moss_nano/参数说明.md) | 本地 MOSS 组件配置（音色克隆/生成参数/EP 绑核）全字段参考，补充其 README 未覆盖的段落。 |
 | [`../backend/components/tts_qwen3/参数说明.md`](../backend/components/tts_qwen3/参数说明.md) | 本地 Qwen3-TTS 组件配置全字段参考。 |
 | [`../backend/components/vision_yolov8_objdetect/参数说明.md`](../backend/components/vision_yolov8_objdetect/参数说明.md) | 视觉裁决组件配置 + runtime 硬件配置双文件参考，含游戏 profile 覆盖优先级。 |
+| [`../机械臂调度优化清单.md`](../机械臂调度优化清单.md) | 机械臂调度优化的议题清单与讨论记录（main 仓部分；demo 侧条目见 `dice_demo/` 内文档）。 |
+| [`../dice_demo/README.md`](../dice_demo/README.md) | 机械臂子系统（NERO 抓放/摇骰）上游快照的运行说明。 |
+| [`../dice_demo/STRUCTURE.md`](../dice_demo/STRUCTURE.md) | 机械臂子系统目录结构与清理边界（上游快照，随 subtree 同步）。 |
+| [`../dice_demo/docs/INTEGRATION.md`](../dice_demo/docs/INTEGRATION.md) | 机械臂常驻控制器与本仓 `robot_arm_nero` 组件的 JSONL 接入契约。 |
 
 ## 配置入口
 
 - 游戏配置：`backend/games/<game_id>/manifest.json`。其中的 `providers` 选择语义职责，`vision_profile` 描述该游戏的模型、类别、规则、LLM prompt、视频 path、超时和结果保持时间。
 - 视觉 runtime 配置：各游戏 `backend/games/<game_id>/adjudicator_config.json`（manifest 的 `vision_profile.runtime_config` 必填指向）。这里保存该游戏的摄像头、推理、RTSP 和 MediaMTX WebRTC 基础地址。
-- provider 配置：`backend/components/<provider_id>/config.json`。这里保存适配器的运行时路径、端口、endpoint 和生命周期设置；LLM 密钥也直接保存在该文件的 `llm` 段（仓库须保持私有）。
+- provider 配置：`backend/components/<provider_id>/config.json`。这里保存适配器的运行时路径、端口、endpoint 和生命周期设置。LLM 密钥在 `backend/components/llm_openai_compat/config.json` 的**顶层扁平键**（`endpoint`/`model`/`api_key`/`reasoning_effort`，没有 `llm` 子段）；仓库当前为公开仓库，不要再新增真实密钥。
+- 机械臂子系统：`dice_demo/` 是上游快照子目录（`git subtree` 合入，内部文件不可在本仓直接修改）；`backend/components/robot_arm_nero/config.json` 的 `demo_root` 指向它，改动需重启生效。
 
 新增游戏通常只需要添加一个游戏目录和 manifest；新增 TTS 或视觉能力只需要添加对应 provider 功能包并在游戏 manifest 中选择。空间定位类视觉必须使用独立的 `role=localizer` 插槽，不能接入 `vision_adjudicator`。
 
