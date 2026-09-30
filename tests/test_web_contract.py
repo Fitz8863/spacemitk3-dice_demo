@@ -79,11 +79,13 @@ def test_frontend_schedules_streamed_tts_frames_back_to_back():
 
 
 def test_frontend_result_copy_is_detector_only():
-    """The result subtitle states pure-visual adjudication and never names the LLM."""
+    """The result subtitle states only the verdict — no source annotations."""
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
 
-    assert "纯视觉判定" in js
-    assert "大模型" not in js.split("resultSubtitle", 1)[1][:400]
+    assert "resultSubtitle').textContent = `玩家 ${player} : Agent ${agent}`" in js
+    # 宣判结果不带来源说明（维护者 2026-09-30 拍板：不要说明性文字）。
+    for annotation in ("纯视觉判定", "大模型", "YOLOv8：", "当前未启用"):
+        assert annotation not in js
 
 
 def test_frontend_buttons_match_controller_key_colors():

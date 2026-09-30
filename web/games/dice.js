@@ -403,7 +403,7 @@ export function register(engine) {
     }
     $('resultEmoji').textContent = tie ? '🤝' : playerWins ? '🏆' : '✨';
     $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : 'Agent 获胜';
-    $('resultSubtitle').textContent = `YOLOv8：玩家 ${player} : Agent ${agent}（纯视觉判定）`;
+    $('resultSubtitle').textContent = `玩家 ${player} : Agent ${agent}`;
     banner.classList.toggle('loss', !playerWins && !tie);
   }
 
