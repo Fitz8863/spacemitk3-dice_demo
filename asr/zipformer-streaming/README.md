@@ -62,7 +62,7 @@ RTF < 1 即快于实时：1 秒音频的推理耗时不到 0.35 秒，麦克风�
 
 ## 环境要求
 
-- SpacemiT K3 板，Bianbu 系统（ssh `spacemit@spacemit-k3`）
+- SpacemiT K3 板，Bianbu 系统
 - `spacemit-onnxruntime 2.0.6`（含 SpaceMIT EP，库在 `/usr/local/lib`）
 - `libsndfile`、`arecord`（Bianbu 自带）
 - 其余第三方依赖（kaldi-native-fbank、kissfft）源码已随仓库分发于
@@ -71,7 +71,7 @@ RTF < 1 即快于实时：1 秒音频的推理耗时不到 0.35 秒，麦克风�
 ## 快速开始
 
 ```bash
-cd ~/projects/asr/zipformer-streaming
+cd <repo-root>/asr/zipformer-streaming
 
 # 1. 编译（约 1 分钟）
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

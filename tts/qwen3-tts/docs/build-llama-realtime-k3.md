@@ -27,14 +27,12 @@ SpaceMIT preferred AI core 通过 `SPACEMIT_PERFER_CORE_ID` 固定为 `8,9,10,11
 
 ## 在 K3 板端构建
 
-先准备与当前 runtime 对应的 SpaceMIT fork，并确认源码处于基础 commit：
+先准备与当前 runtime 对应的 SpaceMIT fork，并确认源码处于基础 commit（以下假设源码放在 `~/qwen3-tts`，位置自定）：
 
 ```bash
-cd /home/spacemit/projects/qwen3-tts
-# 示例：源码目录由部署者自行准备
-cd /home/spacemit/projects/qwen3-tts/llama.cpp-realtime
+cd ~/qwen3-tts/llama.cpp-realtime
 git checkout 787e5fc
-patch -p1 < /home/spacemit/projects/qwen3-tts/patches/llama.cpp-realtime.patch
+patch -p1 < ~/qwen3-tts/patches/llama.cpp-realtime.patch
 ```
 
 使用 K3 构建参数：
@@ -46,7 +44,7 @@ cmake -S . -B build-k3 \
   -DGGML_CPU_RISCV64_SPACEMIT=ON \
   -DGGML_RV_ZBA=ON \
   -DLLAMA_SERVER_SMT_MTMD=ON \
-  -DSPACEMIT_ORT_DIR=/home/spacemit/projects/qwen3-tts/spacemit-ort-build \
+  -DSPACEMIT_ORT_DIR=~/qwen3-tts/spacemit-ort-build \
   -DCMAKE_INSTALL_RPATH='$ORIGIN'
 cmake --build build-k3 --target llama-server -j4
 file build-k3/bin/llama-server
@@ -60,7 +58,7 @@ file build-k3/bin/llama-server
 不要一开始覆盖正式 runtime。先复制到独立目录：
 
 ```bash
-cd /home/spacemit/projects/qwen3-tts
+cd ~/qwen3-tts
 rm -rf runtime-realtime-test
 mkdir -p runtime-realtime-test/bin
 cp /path/to/build-k3/bin/llama-server runtime-realtime-test/bin/
@@ -90,7 +88,7 @@ preferred core ids: 8,9,10,11
 通过 Dice Arena 功能包进行 3 次相同文本测速，避免旧交互式播放器影响 RTF：
 
 ```bash
-cd /home/spacemit/projects/dice-game/main
+cd <repo-root>   # Dice Arena 仓库根
 QWEN3_TTS_RUNTIME="$PWD/tts/qwen3-tts/runtime-realtime-test" \
 python3 backend/componentctl.py start tts_qwen3
 for _ in 1 2 3; do
