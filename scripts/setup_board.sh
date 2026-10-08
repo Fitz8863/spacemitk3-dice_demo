@@ -255,13 +255,17 @@ step_models() {
 # ---------------------------------------------------------------------------
 # mediamtx: 实时画面推流服务（网页小窗）
 # ---------------------------------------------------------------------------
+mediamtx_probe() {  # 本地服务探活：绕过代理环境变量，curl 失败再以 ss 兜底
+    curl --noproxy '*' -fsS --max-time 2 "http://127.0.0.1:8889" >/dev/null 2>&1 \
+        || ss -ltn "sport = :8889" 2>/dev/null | grep -q LISTEN
+}
+
 step_mediamtx() {
     if [[ $NO_MEDIAMTX == 1 ]]; then
         say "按 --no-mediamtx 跳过（识别与裁决不受影响，仅网页无实时画面小窗）"
         return 0
     fi
-    if curl -fsS --max-time 2 "http://127.0.0.1:8889" >/dev/null 2>&1 \
-        || ss -ltn "sport = :8889" 2>/dev/null | grep -q LISTEN; then
+    if mediamtx_probe; then
         say "mediamtx 已在运行（127.0.0.1:8889），跳过"
         return 0
     fi
@@ -364,7 +368,7 @@ step_check() {
     done
     ls "$ROOT_DIR"/tts/moss-tts-nano/models/*/ >/dev/null 2>&1 || die "MOSS 模型缺失（重跑 models 步骤）"
 
-    if curl -fsS --max-time 2 "http://127.0.0.1:8889" >/dev/null 2>&1; then
+    if mediamtx_probe; then
         say "mediamtx 在线"
     else
         warn "mediamtx 未运行 —— 网页将没有实时画面（识别不受影响）"
