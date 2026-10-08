@@ -22,7 +22,7 @@ DOWNLOAD_DIR="${DICE_DOWNLOAD_DIR:-$ROOT_DIR/.runtime/downloads}"
 ASSETS_BASE_URL="${DICE_ASSETS_BASE_URL:-"https://github.com/Fitz8863/spacemitk3-dice_demo/releases/download/board-assets-v1"}"
 MOSS_ASSET="moss-tts-nano-board-assets.tar.gz"
 MATCHA_ASSET="matcha-tts-board-assets.tar.gz"
-MEDIAMTX_URL="${DICE_MEDIAMTX_URL:-"https://github.com/Fitz8863/spacemit-mediamtx/releases/download/v1.20.1/mediamtx_v1.20.1_linux_riscv64.tar.gz"}"
+MEDIAMTX_URL="${DICE_MEDIAMTX_URL:-"https://github.com/Fitz8863/spacemit-mediamtx/releases/download/v1.20.1-riscv64/mediamtx_v1.20.1_linux_riscv64.tar.gz"}"
 SENSEVOICE_URL="https://archive.spacemit.com/spacemit-ai/model_zoo/asr/sensevoice.tar.gz"
 MEDIAMTX_DIR="${MEDIAMTX_DIR:-$HOME/projects/mediamtx}"
 
@@ -179,12 +179,20 @@ fetch_verified() {  # fetch_verified <文件名> <URL>
             || die "下载失败: $url（可稍后重跑本脚本续传；或用 DICE_ASSETS_BASE_URL 覆盖地址）"
     fi
     # .sha256 同源发布，随下随验；校验失败删掉重下，避免半截文件续传掩盖损坏。
+    # 侧车里记录的可能是原始文件名（如 mediamtx 官方包名）而非本地保存名，
+    # 所以只取哈希值自拼校验行，不直接 `sha256sum -c` 整个侧车。
     if [[ ! -f "$DOWNLOAD_DIR/$name.sha256" ]]; then
         curl -fL --retry 3 -o "$DOWNLOAD_DIR/$name.sha256" "$url.sha256" || true
     fi
     if [[ -f "$DOWNLOAD_DIR/$name.sha256" ]]; then
-        ( cd "$DOWNLOAD_DIR" && sha256sum -c "$name.sha256" ) \
-            || { rm -f "$DOWNLOAD_DIR/$name"; die "$name 校验失败，已删除请重跑（断点续传损坏或发布物更新）"; }
+        local expected
+        expected="$(awk '{print $1}' "$DOWNLOAD_DIR/$name.sha256")"
+        if [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            ( cd "$DOWNLOAD_DIR" && echo "$expected  $name" | sha256sum -c - ) \
+                || { rm -f "$DOWNLOAD_DIR/$name"; die "$name 校验失败，已删除请重跑（断点续传损坏或发布物更新）"; }
+        else
+            warn "$name.sha256 内容不是 64 位哈希，跳过校验"
+        fi
     else
         warn "未找到 $name 的 .sha256，跳过校验"
     fi
@@ -259,12 +267,16 @@ step_mediamtx() {
     local tmp="$DOWNLOAD_DIR/mediamtx-extract"
     rm -rf "$tmp" && mkdir -p "$tmp"
     tar -xzf "$DOWNLOAD_DIR/mediamtx_riscv64.tar.gz" -C "$tmp"
-    [[ -f "$tmp/mediamtx" ]] || die "mediamtx 包内未找到 mediamtx 可执行文件"
-    cp -a "$tmp/mediamtx" "$MEDIAMTX_DIR/bin/mediamtx"
+    # 官方包带一层版本目录（mediamtx_v1.20.1_linux_riscv64/），按名字定位不猜路径
+    local mtx_bin mtx_yml
+    mtx_bin="$(find "$tmp" -type f -name mediamtx -print -quit)"
+    mtx_yml="$(find "$tmp" -type f -name mediamtx.yml -print -quit)"
+    [[ -n "$mtx_bin" ]] || die "mediamtx 包内未找到 mediamtx 可执行文件"
+    cp -a "$mtx_bin" "$MEDIAMTX_DIR/bin/mediamtx"
     chmod +x "$MEDIAMTX_DIR/bin/mediamtx"
     # 已有配置不覆盖（现场可能改过端口/路径）
     if [[ ! -f "$MEDIAMTX_DIR/config/mediamtx.yml" ]]; then
-        cp -a "$tmp/mediamtx.yml" "$MEDIAMTX_DIR/config/mediamtx.yml" 2>/dev/null || true
+        [[ -n "$mtx_yml" ]] && cp -a "$mtx_yml" "$MEDIAMTX_DIR/config/mediamtx.yml"
     fi
     rm -rf "$tmp"
 
