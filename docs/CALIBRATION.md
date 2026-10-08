@@ -103,6 +103,10 @@ bash calibrate.sh apply
 
 窗口在采样停稳时更新，平滑运动时不处理 X11 事件。Ctrl+C 中断后保留数据和不完整标记，不继续求解、应用。
 
+自动采样数据的 `manifest.json` 中，`opencv_version` 记录本次实际检测角点的 OpenCV 版本，`source_opencv_version` 保留示教数据记录的版本。离线尺寸修正必须使用本次采样的版本；示教数据的版本不应覆盖新采样的版本。
+
+如果自动采样完成、后续求解失败，完整数据路径仍会写入工作流状态。解决求解错误后，执行 `bash calibrate.sh solve` 可从最近数据继续，无需再次驱动机械臂采样。历史数据若报 OpenCV 版本不一致，应先核对实际采样环境和角点约定，不要直接删除版本检查或任意改写版本号。
+
 ## 相机移动后的自动校准
 
 必须已运行 register；基座、桌面固定板不能移动，reference_id 和板尺寸必须保持一致。露出固定板；相机视角改变后检查固定板 ROI。
@@ -119,6 +123,8 @@ bash calibrate.sh apply
 apply 先保存 pipeline_config.json、handeye_result.json 和 home_table_scene.json 到新的 backup 目录，status 显示其路径。然后调用原有应用工具，将抓取流程设为“等待桌面登记”；只有桌面采集与绑定成功才解除该状态。
 
 如果桌面采集失败，解决相机占用或桌面遮挡后执行 `bash calibrate.sh table`。不要只改哈希或手动清除等待标记。
+
+桌面采集和绑定入口位于 `calibration/tools/table_capture.py`、`calibration/tools/register_home_table.py`。`apply` 在修改标定前确认这两个工具存在；旧版若在标定安装后因缺少工具停止，更新仓库后运行 `bash calibrate.sh table` 补完桌面登记，无需重新采样或再次应用标定。
 
 回滚时先停止抓取进程，将同一次备份的三个文件分别恢复到 pipeline_config 指定的配置文件、原 calibration 文件和原 home_table_scene 文件。三者必须一起恢复，再重启会话。
 

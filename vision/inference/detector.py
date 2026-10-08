@@ -13,18 +13,22 @@ from cup_grasp_demo.flow.cup_perception import decode
 from vision.inference.yolo_seg import preprocess
 
 
+class YOLOOutputError(ValueError):
+    """The runtime returned an invalid segmentation tensor, not a missing object."""
+
+
 def cap_outputs(outputs):
     if (
         len(outputs) != 2
         or outputs[0].shape != (1, 38, 8400)
         or outputs[1].shape != (1, 32, 160, 160)
     ):
-        raise ValueError("Green model requires [1,38,8400] and [1,32,160,160]")
+        raise YOLOOutputError("Green model requires [1,38,8400] and [1,32,160,160]")
     if not all(np.isfinite(x).all() for x in outputs):
-        raise ValueError("Nonfinite YOLO outputs")
+        raise YOLOOutputError("Nonfinite YOLO outputs")
     scores = outputs[0][:, 4:6, :]
     if scores.min() < -1e-6 or scores.max() > 1 + 1e-6:
-        raise ValueError("Invalid class scores")
+        raise YOLOOutputError("Invalid class scores")
     detection = np.concatenate([outputs[0][:, :5, :], outputs[0][:, 6:, :]], axis=1)
     detection[:, 4, :] = np.where(
         scores[:, 0, :] >= scores[:, 1, :], scores[:, 0, :], 0
@@ -55,7 +59,7 @@ def configured_session(opts):
     if not path.is_relative_to(ROOT):
         raise ValueError("Model must be inside dice_demo")
     sha = hashlib.sha256(path.read_bytes()).hexdigest()
-    return session(str(path), sha, opts["ort_package_dir"], *runtime_settings(opts))
+    return session(str(path), sha, opts.get("ort_package_dir"), *runtime_settings(opts))
 
 
 @lru_cache(maxsize=2)
@@ -65,7 +69,7 @@ def session(path, sha, package, threads=1, provider="cpu", cpu_ids=()):
     try:
         ort = importlib.import_module("onnxruntime")
     except ModuleNotFoundError:
-        if package not in sys.path:
+        if package and package not in sys.path:
             sys.path.append(package)
         ort = importlib.import_module("onnxruntime")
     runtime_settings(dict(inference_threads=threads, inference_provider=provider, inference_cpu_ids=cpu_ids))
