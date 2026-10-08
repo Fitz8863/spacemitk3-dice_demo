@@ -45,6 +45,9 @@ def test_setup_installs_build_toolchain_and_dev_headers():
         "libgstreamer1.0-dev", "libgstreamer-plugins-base1.0-dev",
     ):
         assert pkg in script, f"source build needs {pkg}"
+    # pkg-config 是 Debian 过渡包名（二进制实际由 pkgconf 提供），必须按命令兜底，
+    # 否则环境齐全的板会被误报缺包而拒绝继续（板上实测踩过）。
+    assert "command -v pkg-config" in script
 
 
 def test_setup_keeps_the_gstreamer_element_gate():

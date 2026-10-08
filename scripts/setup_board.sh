@@ -82,7 +82,15 @@ step_deps() {
 
     local missing=()
     for pkg in "${pkgs[@]}"; do
-        dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+        if dpkg -s "$pkg" >/dev/null 2>&1; then
+            continue
+        fi
+        # 命令型工具按二进制兜底：Debian 系 pkg-config 是过渡包名，
+        # 实际二进制由 pkgconf 提供（板上真实踩过：dpkg 查无此包但命令在）。
+        case "$pkg" in
+            pkg-config) command -v pkg-config >/dev/null 2>&1 || missing+=("$pkg") ;;
+            *) missing+=("$pkg") ;;
+        esac
     done
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo "setup: 缺少系统包: ${missing[*]}"
