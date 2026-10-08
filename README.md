@@ -120,6 +120,6 @@ GET  /api/adjudicate/<job_id>/stream  裁决进度与结果（SSE）
 ## 文档索引
 
 - [`docs/README.md`](docs/README.md) —— 全部文档索引（含各组件 `参数说明.md` 清单）
-- [`AI_PROJECT_CONTEXT.md`](AI_PROJECT_CONTEXT.md) —— 目录职责与架构上下文，接手开发前先读
 - [`FRAMEWORK_DISPATCH.md`](FRAMEWORK_DISPATCH.md) —— 端到端请求调度
-- 想新增一个视觉游戏：新增 `backend/games/<id>/` 目录（manifest + 运行配置 + `pipeline.py` 薄壳 + 结果投影）和 `web/games/<id>.js` 即可，`backend/core/` 不需要改，详见 `AI_PROJECT_CONTEXT.md`。
+- [`GLOSSARY.md`](GLOSSARY.md) —— 项目术语表
+- 想新增一个视觉游戏：新增 `backend/games/<id>/` 目录（manifest + 运行配置 + `pipeline.py` 薄壳 + 结果投影）和 `web/games/<id>.js` 即可，`backend/core/` 不需要改。

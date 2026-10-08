@@ -146,6 +146,7 @@ arecord -D default -f S16_LE -r 16000 -c 1 -t raw \
 --wav FILE         识别 wav 文件（边识别边显示单行字幕，结束出完整结果）
 --realtime         wav 按实时节奏喂入，模拟边说边出字
 --pcm              从 stdin 读 s16le/16k/mono 裸流（麦克风管道）
+--jsonl            机器可读输出：stdout 每行一个 JSON 事件（契约见下节）
 --cpu              不用 SpaceMIT EP，encoder 纯 CPU（配合 int8.onnx）
 --encoder FILE     指定 encoder onnx（默认 q.onnx；CPU 模式建议 int8.onnx）
 --ep-disable-conv  SpaceMIT EP 禁用 Conv 算子（遇到 Conv 报错时加）
@@ -176,6 +177,19 @@ ffmpeg -loglevel error -i 任意音频.mp3 -f s16le -ar 16000 -ac 1 - \
 # 环境嘈杂、总是误出字 → 调高静音门限
 ./run_mic.sh -- --vad-rms 800
 ```
+
+## JSONL 事件契约（`--jsonl`）
+
+`--jsonl` 模式下 stdout 每行输出一个 JSON 对象，模型日志走 stderr；本仓 `backend/components/asr_zipformer` 功能包按此契约消费。stdout **只允许** JSON 行，新增任何输出必须走 stderr：
+
+```
+{"type":"partial","text":...}    增量识别文本（每 320ms，空文本不发）
+{"type":"sentence","text":...}   VAD 停顿断句的整句（意图匹配用这个）
+{"type":"final","text":...}      stdin EOF 后的尾部整句
+{"type":"stats","audio_seconds":..,"infer_seconds":..,"rtf":..,"chunks":..,"tokens":..}
+```
+
+音频输入格式：stdin s16le / 16kHz / mono 裸流（`arecord -D default -f S16_LE -r 16000 -c 1 -t raw` 直连，设备跟随系统设置）。改动本契约需同步 `backend/components/asr_zipformer/provider.py` 与其测试。
 
 ## 延迟构成
 
