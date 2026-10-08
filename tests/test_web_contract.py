@@ -286,7 +286,9 @@ def test_robot_shake_is_event_driven_with_stop_call():
     machine = dice_manifest()["state_machine"]
 
     intro = machine["states"]["game_start"]
-    assert intro["duration"] == 2.0
+    # duration 是现场调参旋钮（5.0→2.0→3.0 一路在调），守卫只钉语义：
+    # 过场必须存在且为合理正数，不钉具体数值。
+    assert isinstance(intro["duration"], (int, float)) and 1.0 <= intro["duration"] <= 10.0
     assert intro["on_enter"] == [
         {"action": "robot", "command": "grasp_cup", "timeout_seconds": 30}
     ]
@@ -763,12 +765,14 @@ def test_manifest_state_machine_declares_the_full_graph():
     assert result_entry["select_by"] == "winner_role"
     assert set(result_entry["cases"]) == {"PLAYER", "AGENT", "TIE"}
     # 离开结果页必须先归位（用户 2026-09-23 晚拍板）：再来一局经 rehome
-    # 过场（reset_home 事件驱动，完成/失败/6s 兜底三路都回 ready）；返回
-    # 列表走服务端终态归位 watcher。ready 保持无 robot 动作（e66d773 的
-    # 锁排队教训——归位不该挂在所有进 ready 的路径上）。
+    # 过场（reset_home 事件驱动，完成/失败两路回 ready——2026-10-08 起去掉
+    # 6s on_expire 兜底：归位慢于 6s 时计时器先放行进 ready，紧接的绿键
+    # grasp_cup 在串行锁上排队，用户看到"下一状态慢一拍"；纯事件驱动后
+    # 等待显式留在本过场页）；返回列表走服务端终态归位 watcher。ready 保持
+    # 无 robot 动作（e66d773 的锁排队教训——归位不该挂在所有进 ready 的路径上）。
     rehome = machine["states"]["rehome"]
     assert rehome["on_enter"] == [{"action": "robot", "command": "reset_home"}]
-    assert rehome["on_expire"]["to"] == "ready"
+    assert "duration" not in rehome and "on_expire" not in rehome
     assert rehome["on_event"] == {
         "robot.reset_home.completed": {"to": "ready"},
         "robot.reset_home.failed": {"to": "ready"},

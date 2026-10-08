@@ -144,16 +144,12 @@
 					"title": "机械臂回起点啦",
 					"copy": "稍等一下，小搭子正在摆好姿势，下一局马上就绪。"
 				},
-				"duration": 6,
 				"on_enter": [
 					{
 						"action": "robot",
 						"command": "reset_home"
 					}
 				],
-				"on_expire": {
-					"to": "ready"
-				},
 				"on_event": {
 					"robot.reset_home.completed": {
 						"to": "ready"
