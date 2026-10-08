@@ -286,7 +286,7 @@ def test_robot_shake_is_event_driven_with_stop_call():
     machine = dice_manifest()["state_machine"]
 
     intro = machine["states"]["game_start"]
-    assert intro["duration"] == 5.0
+    assert intro["duration"] == 2.0
     assert intro["on_enter"] == [
         {"action": "robot", "command": "grasp_cup", "timeout_seconds": 30}
     ]
