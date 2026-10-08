@@ -55,6 +55,14 @@ tts/qwen3-tts/AGENTS.md
 vision/yolov10_objdetect/AGENTS.md
 vision/yolov8_objdetect/AGENTS.md
 
+# 打包机器与分发说明（维护者本地出包用；make_bundle 从工作区复制入包，不依赖 git 跟踪）
+scripts/make_bundle.sh
+scripts/bundle_install_dice.sh
+scripts/bundle_install_mediamtx.sh
+scripts/安装说明-dice.md
+scripts/安装说明-mediamtx.md
+tests/test_bundle_install_contract.py
+
 # Migrated Qwen3-TTS runtime state and board-local model payloads
 tts/qwen3-tts/llama-server.log
 tts/qwen3-tts/llama-server.pid

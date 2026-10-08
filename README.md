@@ -27,10 +27,10 @@ backend/server.py（K3 板端轻量 HTTP 服务）
 
 | 项 | 说明 |
 | --- | --- |
-| 硬件 | SpacemiT K3 板（riscv64，内存 ≥ 8G，建议 16G）；USB 摄像头（俯拍台面）；NERO 机械臂（两个游戏的动作执行方）；麦克风 / 扬声器（语音功能用，可选） |
+| 硬件 | SpacemiT K3 板（riscv64，内存 ≥ 8G，建议 16G）；USB 摄像头（俯拍台面，接了多台时可用 `scripts/detect.sh` 确认各自的采集节点）；NERO 机械臂（两个游戏的动作执行方）；麦克风 / 扬声器（语音功能用，可选） |
 | 系统 | Bianbu（自带 python3、SpaceMIT onnxruntime、OpenCL） |
-| 系统包 | OpenCV、GStreamer 插件等 apt 包，完整清单见 [`scripts/安装说明-dice.md`](scripts/安装说明-dice.md)；其中 GStreamer 一组是**硬依赖**，缺了视觉链路起不来 |
-| mediamtx | 网页里实时查看识别画面需要，安装见 [`scripts/安装说明-mediamtx.md`](scripts/安装说明-mediamtx.md) |
+| 系统包 | `libopencv-*-410` 四件、GStreamer 插件组（`gstreamer1.0-tools`、`-plugins-base/good/bad/ugly`、`gstreamer1.0-rtsp`，**硬依赖**——视觉链路缺了起不来）、`libsndfile1`、`alsa-utils`、`curl`、`v4l-utils` |
+| mediamtx | 网页里实时查看识别画面需要（WebRTC :8889 / RTSP :8554）；为外部组件，需自行部署 |
 
 前端与后端只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。
 
@@ -62,7 +62,7 @@ scripts/stop_web.sh
 
 两点说明：
 
-- **语音模型资产不入 git**（体积达数 GB，按 `.gitignore` 管理）；YOLO 模型在仓内。需要完整语音时按各 TTS / ASR 组件 README 放置资产，或直接使用下文的分发包。单独调试 TTS 可用 `python3 backend/tts_debug.py <provider_id>`。
+- **语音模型资产不入 git**（体积达数 GB，按 `.gitignore` 管理）；YOLO 模型在仓内。需要完整语音时按各 TTS / ASR 组件 README 放置资产。单独调试 TTS 可用 `python3 backend/tts_debug.py <provider_id>`。
 - 从局域网其他设备经 HTTP 访问时，浏览器可能因非安全上下文限制「页面预览摄像头」权限——实际识别用的始终是 K3 板端摄像头，不受影响。
 
 ## 玩法与按键
@@ -112,10 +112,6 @@ GET  /api/adjudicate/<job_id>/stream  裁决进度与结果（SSE）
 `dice_demo/` 是上游协作仓的快照子目录（`git subtree --squash` 合入），**内部文件不可在本仓直接修改**，改动一律在上游仓提交后再同步。手眼标定数据绑定具体物理机器，更换机械臂或相机安装后需重新标定。
 
 接入契约见 [`dice_demo/docs/INTEGRATION.md`](dice_demo/docs/INTEGRATION.md)；本仓侧组件说明见 [`backend/components/robot_arm_nero/参数说明.md`](backend/components/robot_arm_nero/参数说明.md)。
-
-## 离线部署（分发包）
-
-`scripts/make_bundle.sh` 可打出主包与 mediamtx 小包两份 tar，解压后运行包内 `install.sh` 即可，**不需要 git、不需要联网**，适合给演示现场的新板装机（分发包不含机械臂子系统，走其自身发布流程）。说明见 [`scripts/安装说明-dice.md`](scripts/安装说明-dice.md)。
 
 ## 文档索引
 
