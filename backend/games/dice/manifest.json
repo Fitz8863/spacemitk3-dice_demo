@@ -191,7 +191,7 @@
 					"title": "抓稳骰盅，挑战开始！",
 					"copy": "机械臂准备中，请握好骰盅。"
 				},
-				"duration": 5.0,
+				"duration": 2.0,
 				"on_enter": [
 					{
 						"action": "robot",
