@@ -5,7 +5,8 @@
     "working_dir": "vision/yolov8_objdetect",
     "mode": "resident",
     "prewarm_camera": true,
-    "terminate_grace_seconds": 5
+    "terminate_grace_seconds": 5,
+    "use_robot_runtime_lock": true
   },
   "events": {
     "protocol": "jsonl-events-v2"

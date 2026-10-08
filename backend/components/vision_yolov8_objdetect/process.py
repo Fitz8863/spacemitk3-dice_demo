@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any, Mapping, Iterator
 import json
 import os
+import platform
 import subprocess
+import sys
 import threading
 
 from components.vision_yolov8_objdetect.profile import (
@@ -21,6 +23,24 @@ from components.vision_yolov8_objdetect.profile import (
 
 class SnapshotError(ValueError):
     """Raised when a runtime snapshot reference is invalid or unsafe."""
+
+
+def locked_recognition_environment(component_config: Mapping[str, Any]) -> dict[str, str] | None:
+    """Apply the robot's tested native dependency lock only to vision children."""
+    runtime = component_config.get("runtime", {})
+    if not isinstance(runtime, Mapping) or not runtime.get("use_robot_runtime_lock", False):
+        return None
+    if platform.machine() != "riscv64":
+        return None
+    root = Path(__file__).resolve().parents[3]
+    robot_config = json.loads((root / "backend/components/robot_arm_nero/config.json").read_text())
+    demo_root = (root / robot_config["demo_root"]).resolve()
+    command = [sys.executable, str(demo_root / "scripts/k3_runtime.py"), "environment", "--native"]
+    result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=15)
+    overrides = json.loads(result.stdout)
+    if set(overrides) != {"LD_LIBRARY_PATH", "LD_PRELOAD"} or not all(isinstance(v, str) for v in overrides.values()):
+        raise ValueError("Invalid locked recognition runtime environment")
+    return {**os.environ, **overrides}
 
 
 def build_rtsp_args(config: Mapping[str, Any], selected_video: Mapping[str, Any] | None) -> list[str]:
@@ -217,6 +237,7 @@ class YoloRuntimeProcess:
             self._process = subprocess.Popen(
                 cmd,
                 cwd=self.working_dir,
+                env=None if injected_binary or binary else locked_recognition_environment(component_config),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
