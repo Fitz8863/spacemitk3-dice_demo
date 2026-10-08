@@ -19,10 +19,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DOWNLOAD_DIR="${DICE_DOWNLOAD_DIR:-$ROOT_DIR/.runtime/downloads}"
 
-ASSETS_BASE_URL="${DICE_ASSETS_BASE_URL:-https://github.com/Fitz8863/spacemitk3-dice_demo/releases/download/board-assets-v1}"
+ASSETS_BASE_URL="${DICE_ASSETS_BASE_URL:-"https://github.com/Fitz8863/spacemitk3-dice_demo/releases/download/board-assets-v1"}"
 MOSS_ASSET="moss-tts-nano-board-assets.tar.gz"
 MATCHA_ASSET="matcha-tts-board-assets.tar.gz"
-MEDIAMTX_URL="${DICE_MEDIAMTX_URL:-https://github.com/Fitz8863/spacemit-mediamtx/releases/download/v1.20.1/mediamtx_v1.20.1_linux_riscv64.tar.gz}"
+MEDIAMTX_URL="${DICE_MEDIAMTX_URL:-"https://github.com/Fitz8863/spacemit-mediamtx/releases/download/v1.20.1/mediamtx_v1.20.1_linux_riscv64.tar.gz"}"
 SENSEVOICE_URL="https://archive.spacemit.com/spacemit-ai/model_zoo/asr/sensevoice.tar.gz"
 MEDIAMTX_DIR="${MEDIAMTX_DIR:-$HOME/projects/mediamtx}"
 
