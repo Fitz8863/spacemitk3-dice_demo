@@ -61,6 +61,7 @@ scripts/bundle_install_dice.sh
 scripts/bundle_install_mediamtx.sh
 scripts/安装说明-dice.md
 scripts/安装说明-mediamtx.md
+scripts/pack_model_assets.sh
 tests/test_bundle_install_contract.py
 
 # Migrated Qwen3-TTS runtime state and board-local model payloads
