@@ -14,6 +14,7 @@ artifacts in that directory, matching the existing ``tts/qwen3-tts`` layout.
 from __future__ import annotations
 
 import gc
+import glob
 import io
 import json
 import os
@@ -60,6 +61,65 @@ def _prepend_library_path(path: Path) -> None:
     os.environ["LD_LIBRARY_PATH"] = ":".join(entries)
 
 
+def _rebind_ep_threads(spec: str) -> None:
+    """Move EP-pinned worker threads into the configured core set.
+
+    SpaceMIT EP 2.0.6 spawns its thread pool at provider import with one
+    thread per A100 core (8-15), regardless of any affinity option — the
+    intra-thread affinity knobs only label the intra pool's four threads,
+    and neither process-level sched_setaffinity (the constraint is the
+    cgroup, not the inherited mask) nor a systemd AllowedCPUs scope stops
+    it (verified on board, 2026-10-08).  The only lever that works is to
+    re-bind the already-created threads after the EP loads — and the EP
+    respects that: threads stay put across real synthesis runs.
+
+    Cores 12-15 must stay free for other EP workloads (the green-cup YOLO
+    of the robot arm demo pins 12;13; a MOSS synthesis overlapping its
+    capture step stretches that inference from ~0.05s to ~0.6s plus a
+    failed-detection CPU recheck — the "next state feels one beat slow"
+    symptom).  Threads already inside the target set (the four intra
+    workers on 8-11) are left alone; the general-purpose 0-7 threads
+    (HTTP server, allocator) are never touched.
+    """
+    cores = _parse_core_set(spec)
+    if not cores:
+        return
+    moved: list[int] = []
+    for tid_dir in glob.glob("/proc/self/task/*"):
+        try:
+            tid = int(tid_dir.rsplit("/", 1)[1])
+            current = os.sched_getaffinity(tid)
+        except (OSError, ValueError):
+            continue
+        if current & cores:
+            continue  # already inside the target set
+        try:
+            os.sched_setaffinity(tid, cores)
+            moved.append(tid)
+        except OSError:
+            continue
+    if moved:
+        print(
+            f"[tts_moss_nano] rebind {len(moved)} EP thread(s) -> {sorted(cores)}",
+            flush=True,
+        )
+
+
+def _parse_core_set(spec: str) -> set[int]:
+    """Parse "8;9;10;11" / "8-11" / "8,9" into a core set; empty on no parse."""
+    cores: set[int] = set()
+    for part in spec.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, _, hi = part.partition("-")
+            cores.update(range(int(lo), int(hi) + 1))
+        else:
+            cores.add(int(part))
+    return cores
+
+
 def _wave_bytes(waveform: np.ndarray, sample_rate: int) -> bytes:
     """Encode one float32 interleaved waveform chunk as a self-contained WAV."""
     audio = np.asarray(waveform, dtype=np.float32)
@@ -100,6 +160,7 @@ class MossRuntime:
         ep_inter_thread_num: int = 1,
         ep_intra_thread_affinity: str = "8;9;10;11",
         ep_disable_op_type_filter: str = "",
+        process_affinity: str = "8;9;10;11",
     ) -> None:
         self.root = root.resolve()
         self.model_dir = model_dir.resolve()
@@ -114,6 +175,7 @@ class MossRuntime:
         self.ep_inter_thread_num = int(ep_inter_thread_num)
         self.ep_intra_thread_affinity = str(ep_intra_thread_affinity)
         self.ep_disable_op_type_filter = str(ep_disable_op_type_filter)
+        self.process_affinity = str(process_affinity)
 
         self._runtime: Any | None = None
         self._prompt_audio_codes: list[list[int]] | None = None
@@ -217,6 +279,11 @@ class MossRuntime:
             self._validate_result(warmup_result)
             if self._stop_event.is_set():
                 return
+
+            # EP 线程池在 import 时已铺满整个 A100 簇（8-15），warmup 也压过了；
+            # 在宣布 ready 之前把越界线程扳回目标核，之后 EP 不会再改回去
+            # （板端实测：合成压力下线程稳定，见 _rebind_ep_threads 注释）。
+            _rebind_ep_threads(self.process_affinity)
 
             codec_config = runtime.codec_meta["codec_config"]
             with self._state_lock:
@@ -483,6 +550,7 @@ def main() -> None:
         ep_inter_thread_num=settings.ep_inter_thread_num,
         ep_intra_thread_affinity=settings.ep_intra_thread_affinity,
         ep_disable_op_type_filter=settings.ep_disable_op_type_filter,
+        process_affinity=settings.process_affinity,
     )
     runtime.start()
     server = MossHttpServer((settings.host, settings.port), runtime)

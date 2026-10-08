@@ -32,6 +32,7 @@ class MossSettings:
     ep_inter_thread_num: int
     ep_intra_thread_affinity: str
     ep_disable_op_type_filter: str
+    process_affinity: str
 
 
 def resolve_model_dir(root: Path, configured: str | Path | None = None) -> Path:
@@ -90,6 +91,10 @@ def load_settings(config: dict[str, Any] | None = None) -> MossSettings:
     ep_inter = int(config_value(config, "execution_provider", "inter_thread_num", default=1))
     ep_affinity = str(config_value(config, "execution_provider", "intra_thread_affinity", default="8;9;10;11"))
     ep_filter = str(config_value(config, "execution_provider", "disable_op_type_filter", default=""))
+    # EP 线程池在 import 时铺满全部 A100 核，一切配置都拦不住；daemon 在
+    # ready 前把越界线程扳回此核集。默认 8-11：把 12-15 让给其他 EP 负载
+    # （绿杯 YOLO 用 12;13）。空串 = 不扳。
+    process_affinity = str(config_value(config, "execution_provider", "process_affinity", default="8;9;10;11"))
     if voice_mode not in {"builtin", "clone"}:
         raise ValueError("MOSS voice.mode must be builtin or clone")
     if voice_mode == "clone" and reference_audio is None:
@@ -118,4 +123,5 @@ def load_settings(config: dict[str, Any] | None = None) -> MossSettings:
         ep_inter_thread_num=ep_inter,
         ep_intra_thread_affinity=ep_affinity,
         ep_disable_op_type_filter=ep_filter,
+        process_affinity=process_affinity,
     )

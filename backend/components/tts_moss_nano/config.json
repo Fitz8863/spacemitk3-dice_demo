@@ -30,6 +30,7 @@
     "intra_thread_num": 4,
     "inter_thread_num": 1,
     "intra_thread_affinity": "8;9;10;11",
-    "disable_op_type_filter": ""
+    "disable_op_type_filter": "",
+    "process_affinity": "8;9;10;11"
   }
 }
