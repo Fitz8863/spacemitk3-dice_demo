@@ -1,0 +1,299 @@
+/* The legacy theme is unchanged; every arena rule is scoped to its theme. */
+.arena-only { display: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.theme-control select { font: inherit; font-size: 13px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; cursor: pointer; }
+
+:root[data-theme="dark-arena"] {
+  color-scheme: dark;
+  --bg: #2a3b34; --text: #f7faf5; --muted: #d2ded4; --muted-2: #d2ded4;
+  --line: #6b8272; --accent: #b0e237; --accent-soft: #405635;
+  --accent-contrast: #2a3b34; --brand-blue: #f7faf5;
+  --surface: #354a40; --surface-muted: #40594b;
+  --win: #b0e237; --loss: #e76b6b; --tie: #dfa820;
+  --shadow: none; --shadow-hover: none;
+  --arena-title: clamp(44px, 2.92vw, 56px);
+  --arena-heading: clamp(30px, 2.1vw, 40px);
+  --arena-body: clamp(18px, 1.05vw, 20px);
+  --arena-button: clamp(20px, 1.25vw, 24px);
+  --arena-label: clamp(16px, .94vw, 18px);
+  --arena-meta: clamp(13px, .73vw, 14px);
+}
+:root[data-theme="dark-arena"], :root[data-theme="dark-arena"] body { background: var(--bg); color: var(--text); }
+:root[data-theme="dark-arena"] body,
+:root[data-theme="dark-arena"] button,
+:root[data-theme="dark-arena"] .stage-title,
+:root[data-theme="dark-arena"] .view-title,
+:root[data-theme="dark-arena"] .game-copy,
+:root[data-theme="dark-arena"] .game-copy strong,
+:root[data-theme="dark-arena"] .rules-item,
+:root[data-theme="dark-arena"] .rules-item strong,
+:root[data-theme="dark-arena"] .rules-item > span,
+:root[data-theme="dark-arena"] .brand-name,
+:root[data-theme="dark-arena"] .companion-status,
+:root[data-theme="dark-arena"] .countdown-number,
+:root[data-theme="dark-arena"] .score-label,
+:root[data-theme="dark-arena"] .versus,
+:root[data-theme="dark-arena"] .game-start-text,
+:root[data-theme="dark-arena"] .toast,
+:root[data-theme="dark-arena"] .asr-feedback {
+  font-family: "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+:root[data-theme="dark-arena"] .app-shell { max-width: 1920px; padding: 0 clamp(20px, 4vw, 76px) 20px; }
+:root[data-theme="dark-arena"] .topbar { min-height: 80px; border-color: var(--line); }
+:root[data-theme="dark-arena"] .brand { gap: 20px; }
+:root[data-theme="dark-arena"] .brand-logo { display: none; }
+:root[data-theme="dark-arena"] .arena-wordmark { display: inline-flex; align-items: center; gap: 12px; font-size: 20px; letter-spacing: .06em; font-weight: 600; }
+:root[data-theme="dark-arena"] .arena-wordmark i { width: 10px; height: 10px; transform: rotate(45deg); background: var(--brand-green); }
+:root[data-theme="dark-arena"] .arena-wordmark small { font-size: var(--arena-meta); font-weight: 400; color: var(--muted); letter-spacing: .04em; }
+:root[data-theme="dark-arena"] .brand-divider { background: var(--line); height: 22px; }
+:root[data-theme="dark-arena"] .brand-name { font-weight: 400; font-size: var(--arena-meta); letter-spacing: .05em; }
+:root[data-theme="dark-arena"] .topbar-right { gap: 16px; }
+:root[data-theme="dark-arena"] .companion-status { padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: var(--arena-meta); font-weight: 400; box-shadow: none; transform: none; }
+:root[data-theme="dark-arena"] .companion-status > span { width: 6px; height: 6px; box-shadow: none; }
+:root[data-theme="dark-arena"] .icon-button { width: 48px; height: 48px; border: 1px solid var(--line); border-radius: 6px; background: transparent; font-size: 22px; box-shadow: none; transform: none; }
+:root[data-theme="dark-arena"] .theme-control select { background: transparent; color: var(--text); font-size: var(--arena-meta); }
+:root[data-theme="dark-arena"] :is(button, select):focus-visible { outline: 2px solid var(--brand-green); outline-offset: 4px; }
+
+/* The footer already explains these keys; keep the rules and action buttons. */
+:root[data-theme="dark-arena"] body:is([data-phase="select"], [data-phase="rules"]) .stage-copy { display: none; }
+
+/* A single, open canvas replaces the illustrated frame and corner stickers. */
+:root[data-theme="dark-arena"] .experience-shell { display: flex; margin: 0; min-height: 0; flex: 1; overflow: visible; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+:root[data-theme="dark-arena"] .experience-shell::before,
+:root[data-theme="dark-arena"] .experience-shell::after,
+:root[data-theme="dark-arena"] .stage-title::after,
+:root[data-theme="dark-arena"] .buddy-panel,
+:root[data-theme="dark-arena"] .vision-pip > .buddy-art { display: none; }
+:root[data-theme="dark-arena"] .stage { display: flex; flex-direction: column; justify-content: center; min-height: 0; padding: 0 0 36px; position: relative; background: transparent; }
+:root[data-theme="dark-arena"] .stage::before,
+:root[data-theme="dark-arena"] .stage::after { display: none; }
+:root[data-theme="dark-arena"] .arena-topline { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; margin: 20px 0 28px; color: var(--muted); font-size: var(--arena-meta); text-align: left; }
+:root[data-theme="dark-arena"] .arena-steps { display: flex; gap: 20px; }
+:root[data-theme="dark-arena"] .arena-steps .active { color: var(--brand-green); }
+:root[data-theme="dark-arena"] .stage-head { display: block; margin: auto 0 30px; padding: 0; }
+:root[data-theme="dark-arena"] .stage-kicker { display: block; padding: 0; border: 0; border-radius: 0; transform: none; background: transparent; color: var(--brand-green); font-size: var(--arena-meta); letter-spacing: .14em; font-weight: 400; box-shadow: none; }
+:root[data-theme="dark-arena"] .stage-title { font-size: var(--arena-title); text-wrap: balance; line-height: 1.3; font-weight: 500; letter-spacing: -.035em; margin: 15px 0; }
+:root[data-theme="dark-arena"] .stage-copy { text-wrap: pretty; max-width: 1160px; color: var(--muted); font-size: var(--arena-label); line-height: 1.65; font-weight: 400; }
+:root[data-theme="dark-arena"] .stage-body { max-width: 1100px; flex: 0 0 auto; padding: 0; margin: 0 auto auto; }
+:root[data-theme="dark-arena"] .view { max-width: none; }
+:root[data-theme="dark-arena"] .view-title { font-size: var(--arena-heading); font-weight: 500; line-height: 1.4; letter-spacing: -.025em; }
+:root[data-theme="dark-arena"] :is([data-view="game_start"], [data-view="rehome"], [data-view="shaking"], [data-view="arm_failed"], [data-view="play"]) > :is(.view-title, .game-start-text) { display: none; }
+
+/* Game choices are balanced, quiet cards, with line icons and a selection dot. */
+:root[data-theme="dark-arena"] [data-view="select"] { max-width: 1160px; margin: auto; }
+:root[data-theme="dark-arena"] .game-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 0 0 24px; }
+:root[data-theme="dark-arena"] .game-option { min-height: 138px; padding: 24px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); gap: 18px; transform: none; box-shadow: none; }
+:root[data-theme="dark-arena"] .game-option.selected { background: var(--accent-soft); border-color: var(--brand-green); transform: none; box-shadow: none; }
+:root[data-theme="dark-arena"] .game-option:hover { background: var(--surface-muted); transform: none; box-shadow: none; }
+:root[data-theme="dark-arena"] .game-option::before { display: none; }
+:root[data-theme="dark-arena"] .game-icon { width: 48px; height: 48px; flex: 0 0 48px; border: 0; border-radius: 0; transform: none; box-shadow: none; background: transparent; font-size: 30px; }
+:root[data-theme="dark-arena"] [data-game="dice"] .game-icon { font-size: 0; background: url('./assets/dice-outline.svg') center / 44px no-repeat; }
+:root[data-theme="dark-arena"] [data-game="rps"] .game-icon { font-size: 0; background: url('./assets/rps-outline.svg') center / 44px no-repeat; }
+:root[data-theme="dark-arena"] .game-copy { gap: 10px; min-width: 0; }
+:root[data-theme="dark-arena"] .game-copy strong { font-size: clamp(28px, 1.67vw, 32px); font-weight: 500; }
+:root[data-theme="dark-arena"] .game-copy small { font-size: 16px; line-height: 1.6; color: var(--muted); font-weight: 400; }
+:root[data-theme="dark-arena"] .game-arrow { font-size: 0; width: 14px; height: 14px; flex: 0 0 14px; border: 1px solid var(--line); background: transparent; border-radius: 50%; }
+:root[data-theme="dark-arena"] .selected .game-arrow { background: var(--brand-green); border-color: var(--brand-green); box-shadow: inset 0 0 0 4px var(--accent-soft); }
+:root[data-theme="dark-arena"] .hall-action { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+:root[data-theme="dark-arena"] .selected-caption { display: inline; font-size: 16px; color: var(--muted); text-align: left; }
+:root[data-theme="dark-arena"] .arena-companion { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 28px; color: var(--muted); font-size: 16px; }
+:root[data-theme="dark-arena"] .arena-companion svg { color: var(--brand-green); width: 40px; height: 40px; background: var(--accent-soft); border-radius: 6px; padding: 6px; }
+
+/* Physical key colors and IDs remain the game control contract. */
+:root[data-theme="dark-arena"] .btn-circle,
+:root[data-theme="dark-arena"] .btn-pill { width: auto; height: auto; min-height: 56px; padding: 12px 24px; border: 0; border-radius: 6px; font-size: var(--arena-button); font-weight: 500; line-height: 1.5; box-shadow: none; transform: none; color: #fff; }
+:root[data-theme="dark-arena"] .btn-circle::before,
+:root[data-theme="dark-arena"] .btn-pill::before { display: none; }
+:root[data-theme="dark-arena"] .btn-green { background: #15803d; }
+:root[data-theme="dark-arena"] .btn-red { background: #c53d3d; }
+:root[data-theme="dark-arena"] .btn-blue { background: #2866d4; }
+:root[data-theme="dark-arena"] .btn-yellow { background: #dfa820; color: #141d1c; }
+:root[data-theme="dark-arena"] .view-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 30px; }
+:root[data-theme="dark-arena"] .controller-key { width: 8px; height: 8px; border: 0; box-shadow: none; }
+:root[data-theme="dark-arena"] .controller-hint { gap: 6px; margin-inline: 3px; }
+:root[data-theme="dark-arena"] .controller-hint > span:last-child { font-weight: 400; }
+
+:root[data-theme="dark-arena"] .rules-list { gap: 30px; margin: 5px 0 40px; }
+:root[data-theme="dark-arena"] .rules-item { min-height: 0; padding: 22px 0 0; border: 0; border-top: 1px solid var(--line); background: transparent; border-radius: 0; transform: none; box-shadow: none; }
+:root[data-theme="dark-arena"] .rules-item > span { display: inline; padding: 0; width: auto; height: auto; border: 0; color: var(--muted); background: transparent; border-radius: 0; font-size: var(--arena-meta); font-weight: 400; box-shadow: none; transform: none; }
+:root[data-theme="dark-arena"] .rules-item strong { font-size: clamp(22px, 1.35vw, 26px); font-weight: 500; margin: 16px 0 10px; }
+:root[data-theme="dark-arena"] .rules-item p { font-size: var(--arena-body); line-height: 1.8; color: var(--muted); }
+:root[data-theme="dark-arena"] .arm-progress { font-size: var(--arena-body); margin: 18px auto 0; padding: 12px 20px; border-radius: 6px; border-color: var(--line); background: var(--surface); box-shadow: none; max-width: 700px; flex-wrap: wrap; }
+:root[data-theme="dark-arena"] .arm-phase-step { color: var(--brand-green); font-weight: 400; }
+:root[data-theme="dark-arena"] .countdown-number { font-size: clamp(90px, 9vw, 152px); line-height: 1.1; font-weight: 400; color: var(--brand-green); text-shadow: none; font-variant-numeric: tabular-nums; }
+:root[data-theme="dark-arena"] .rps-throw { font-size: clamp(48px, 6vw, 80px); margin: 26px 0; }
+
+/* Keep one live iframe in normal flow; no reconnects on theme/phase changes. */
+:root[data-theme="dark-arena"] .vision-pip { position: static; width: min(100%, 720px); transform: none; padding: 0; margin: 0 auto 24px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: none; overflow: hidden; transition: none; }
+:root[data-theme="dark-arena"] body .vision-pip .analysis-stream-head { display: flex; margin: 0; padding: 12px 16px; font-size: var(--arena-meta); color: var(--muted); }
+:root[data-theme="dark-arena"] .analysis-stream-label { font-weight: 400; }
+:root[data-theme="dark-arena"] .vision-pip iframe { display: block; border: 0; width: 100%; border-radius: 0; }
+:root[data-theme="dark-arena"] body[data-phase="analysis"] .vision-pip { width: min(100%, 980px); }
+:root[data-theme="dark-arena"] body[data-phase="analysis"] .stage-head { display: none; }
+:root[data-theme="dark-arena"] body[data-phase="ready"] .stage-head { display: none; }
+:root[data-theme="dark-arena"] body[data-phase="result"] .stage-head { display: none; }
+:root[data-theme="dark-arena"] body:has(.dice-video) .stage-head { margin: auto 0 22px; }
+:root[data-theme="dark-arena"] body:has(.dice-video) .stage-kicker { display: none; }
+:root[data-theme="dark-arena"] body:has(.dice-video) .stage-body { max-width: 1100px; padding: 0; }
+:root[data-theme="dark-arena"] body:has(.dice-video) .stage-title { font-size: var(--arena-title); }
+:root[data-theme="dark-arena"] body:has(.dice-video) .stage-copy { font-size: var(--arena-label); line-height: 1.65; }
+:root[data-theme="dark-arena"] body:has(.dice-video) .view-title { font-size: var(--arena-heading); }
+:root[data-theme="dark-arena"] .analysis-spinner { width: 32px; height: 32px; border-width: 2px; border-color: var(--line); border-top-color: var(--brand-green); box-shadow: none; margin: 0 auto 20px; }
+:root[data-theme="dark-arena"] .analysis-steps { gap: 16px; margin: 22px 0; }
+:root[data-theme="dark-arena"] .analysis-step { padding: 14px 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); transform: none; box-shadow: none; opacity: 1; color: var(--muted); }
+:root[data-theme="dark-arena"] .analysis-step.active { border-color: var(--brand-green); background: var(--accent-soft); box-shadow: none; color: var(--text); }
+:root[data-theme="dark-arena"] .analysis-step.failed { border-color: var(--loss); background: #58433c; }
+:root[data-theme="dark-arena"] .analysis-step span { width: 32px; height: 32px; border-width: 1px; border-color: var(--line); font-size: var(--arena-meta); font-weight: 400; }
+:root[data-theme="dark-arena"] .analysis-step.active span { color: var(--bg); }
+:root[data-theme="dark-arena"] .analysis-step.failed span { color: #fff; }
+:root[data-theme="dark-arena"] .analysis-step strong { font-weight: 400; font-size: var(--arena-body); }
+:root[data-theme="dark-arena"] .analysis-status { font-size: var(--arena-body); line-height: 1.8; margin: 0 auto 20px; max-width: 980px; overflow-wrap: anywhere; }
+
+:root[data-theme="dark-arena"] .result-banner { border: 0; padding: 0; background: transparent; border-radius: 0; transform: none; box-shadow: none; animation: none; }
+:root[data-theme="dark-arena"] .result-banner.loss { background: transparent; border: 0; }
+:root[data-theme="dark-arena"] .result-banner .view-title { margin: 0; }
+:root[data-theme="dark-arena"] .result-emoji { display: none; }
+:root[data-theme="dark-arena"] .result-subtitle { color: var(--muted); font-size: var(--arena-label); }
+:root[data-theme="dark-arena"] .scoreboard { padding: 20px 0; width: min(100%, 780px); margin: 16px auto; background: transparent; border: 0; border-radius: 0; gap: 24px; box-shadow: none; }
+:root[data-theme="dark-arena"] .score-side { min-width: 0; padding: 16px; background: transparent; border-radius: 0; transform: none; border-top: 1px solid var(--line); }
+:root[data-theme="dark-arena"] .score-label { font-size: var(--arena-label); color: var(--muted); font-weight: 400; }
+:root[data-theme="dark-arena"] .score-side > strong { font-size: clamp(48px, 5vw, 80px); font-weight: 400; line-height: 1.3; font-variant-numeric: tabular-nums; letter-spacing: -.04em; }
+:root[data-theme="dark-arena"] .score-side > strong,
+:root[data-theme="dark-arena"] .score-dice > * { animation: none; }
+:root[data-theme="dark-arena"] .player-side > strong { color: var(--text); }
+:root[data-theme="dark-arena"] .agent-side > strong { color: var(--text); }
+:root[data-theme="dark-arena"] [data-view="result"]:has([data-winner="PLAYER"]) .player-side > strong,
+:root[data-theme="dark-arena"] [data-view="result"]:has([data-winner="AGENT"]) .agent-side > strong { color: var(--brand-green); }
+:root[data-theme="dark-arena"] .versus { color: var(--muted); font-size: var(--arena-meta); font-weight: 400; transform: none; }
+:root[data-theme="dark-arena"] .score-dice { gap: 8px; margin: 15px 0; }
+:root[data-theme="dark-arena"] .score-dice .die { --die-size: clamp(24px, 2.6vw, 42px); border: 0; border-radius: 5px; box-shadow: none; background: #dce6dc; }
+:root[data-theme="dark-arena"] .die span.on { background: #24382b; }
+:root[data-theme="dark-arena"] .rps-gesture { color: var(--text); background: var(--surface-muted); border: 1px solid var(--line); }
+:root[data-theme="dark-arena"] body:has(.rps-gesture) .score-side > strong { font-size: clamp(24px, 2.2vw, 36px); }
+
+/* On the board display, camera and game state share one readable row. */
+@media (min-width: 1000px) {
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .stage {
+    display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+    grid-template-rows: auto auto; align-content: center; align-items: center;
+    column-gap: 36px; padding: 90px 0 36px;
+  }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .arena-topline { position: absolute; top: 0; margin: 20px 0; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .vision-pip { grid-column: 1; grid-row: 1 / span 2; width: 100%; margin: 0; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden))[data-phase="analysis"] .vision-pip { width: 100%; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .stage-head { grid-column: 2; grid-row: 1; margin: 0 0 24px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .stage-title { font-size: var(--arena-heading); margin-top: 0; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .stage-copy { font-size: var(--arena-label); }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .stage-body { grid-column: 2; grid-row: 2; margin: 0; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .rules-list { grid-template-columns: 1fr; gap: 18px; margin: 0; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .rules-item { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 14px; padding-top: 12px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .rules-item strong { font-size: clamp(22px, 1.35vw, 26px); margin: 0 0 6px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .rules-item p { font-size: var(--arena-body); }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .analysis-steps { grid-template-columns: 1fr; gap: 12px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .analysis-step { justify-content: flex-start; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .score-side { padding-inline: 8px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .score-dice { gap: 5px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .score-dice .die { --die-size: clamp(20px, 1.65vw, 36px); }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .view-actions .btn-circle,
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .view-actions .btn-pill { padding: 12px 24px; font-size: var(--arena-button); }
+}
+
+:root[data-theme="dark-arena"] .standby-scene { min-height: 440px; gap: 30px; }
+:root[data-theme="dark-arena"] .standby-ring { border-width: 1px; border-color: #b0e23733; }
+:root[data-theme="dark-arena"] .standby-core { width: 38px; height: 38px; border-radius: 8px; background: var(--brand-green); box-shadow: none; }
+:root[data-theme="dark-arena"] .standby-zzz { display: none; }
+:root[data-theme="dark-arena"] .standby-hint { font-size: clamp(28px, 1.9vw, 36px); color: var(--text); }
+:root[data-theme="dark-arena"] .standby-wake-words { font-size: var(--arena-body); color: var(--muted); line-height: 1.8; }
+:root[data-theme="dark-arena"] body[data-phase="standby"] .stage-head { display: none; }
+:root[data-theme="dark-arena"] body[data-phase="standby"] .stage-body { margin-block: auto; }
+:root[data-theme="dark-arena"] .brand-footer { display: none; }
+:root[data-theme="dark-arena"] .arena-footer { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding-top: 18px; border-top: 1px solid var(--line); font-size: var(--arena-meta); color: var(--muted); }
+:root[data-theme="dark-arena"] .arena-keys { display: flex; flex-wrap: wrap; gap: 18px; }
+:root[data-theme="dark-arena"] .arena-keys > span { display: inline-flex; align-items: center; gap: 6px; }
+:root[data-theme="dark-arena"] .arena-keys i { width: 6px; height: 6px; border-radius: 50%; }
+:root[data-theme="dark-arena"] .arena-keys .green { background: #16a34a; }
+:root[data-theme="dark-arena"] .arena-keys .blue { background: #6e98f0; }
+:root[data-theme="dark-arena"] .arena-keys .yellow { background: #dfa820; }
+:root[data-theme="dark-arena"] .arena-keys .red { background: #e76b6b; }
+:root[data-theme="dark-arena"] .toast,
+:root[data-theme="dark-arena"] .asr-feedback { background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 12px 32px #0005; font-size: var(--arena-label); }
+:root[data-theme="dark-arena"] .asr-feedback.level-ok { border-left: 3px solid var(--brand-green); }
+:root[data-theme="dark-arena"] .asr-feedback.level-wait { border-left: 3px solid var(--tie); }
+:root[data-theme="dark-arena"] .asr-feedback.level-info { border-left: 3px solid var(--muted); }
+
+/* Override the live-video layout's high-specificity legacy control sizes. */
+:root[data-theme="dark-arena"] body:has(.dice-video) :is(.analysis-status, .arm-progress, .analysis-step strong) { font-size: var(--arena-body); }
+:root[data-theme="dark-arena"] body:has(.dice-video) :is(.result-subtitle, .score-label) { font-size: var(--arena-label); }
+:root[data-theme="dark-arena"] body:has(.dice-video) .countdown-number { font-size: clamp(90px, 9vw, 152px); }
+:root[data-theme="dark-arena"] body:has(.dice-video) .view-actions .btn-circle,
+:root[data-theme="dark-arena"] body:has(.dice-video) .view-actions .btn-pill { width: auto; height: auto; min-height: 56px; padding: 12px 24px; border-radius: 6px; font-size: var(--arena-button); }
+:root[data-theme="dark-arena"] body:has(.dice-video) .vision-pip { width: min(100%, 720px); padding: 0; margin: 0 auto 24px; border-radius: 6px; }
+:root[data-theme="dark-arena"] body:has(.dice-video)[data-phase="analysis"] .vision-pip { width: min(100%, 980px); }
+:root[data-theme="dark-arena"] body:has(.dice-video) .stage { padding: 0 0 36px; }
+:root[data-theme="dark-arena"] body:has(.dice-video) .scoreboard { margin: 16px auto; padding: 20px 0; }
+:root[data-theme="dark-arena"] body:has(.dice-video) .score-side > strong { font-size: clamp(48px, 5vw, 80px); }
+:root[data-theme="dark-arena"] body:has(.rps-gesture) .score-side > strong { font-size: clamp(24px, 2.2vw, 36px); }
+
+/* Keep the same readable type in shorter desktop windows by tightening spacing. */
+@media (min-width: 1000px) and (max-height: 850px) {
+  :root[data-theme="dark-arena"] .app-shell { padding-inline: 32px; padding-bottom: 12px; }
+  :root[data-theme="dark-arena"] .topbar { min-height: 76px; }
+  :root[data-theme="dark-arena"] .stage-head { margin-bottom: 20px; }
+  :root[data-theme="dark-arena"] .game-option { min-height: 140px; padding: 20px; }
+  :root[data-theme="dark-arena"] .arena-companion { margin-top: 20px; }
+  :root[data-theme="dark-arena"] .standby-scene { min-height: 320px; }
+  :root[data-theme="dark-arena"] .arena-footer { padding-top: 10px; }
+  :root[data-theme="dark-arena"] .btn-circle,
+  :root[data-theme="dark-arena"] .btn-pill { min-height: 56px; padding-block: 10px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .stage { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); column-gap: 24px; padding: 60px 0 16px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .stage-head { margin-bottom: 12px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .stage-copy { line-height: 1.5; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .rules-list { gap: 10px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .rules-item { padding-top: 8px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .rules-item strong { margin-bottom: 4px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .rules-item p { line-height: 1.5; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .analysis-steps { gap: 8px; margin-block: 16px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .analysis-status { line-height: 1.5; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .view-actions { margin-top: 16px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .view-actions .btn-circle,
+  :root[data-theme="dark-arena"] body:has(.dice-video:not(.hidden)) .view-actions .btn-pill { min-height: 56px; padding-block: 10px; }
+}
+
+/* Active play and detection give the live feed more space. Result/locked/error
+   states use the normal split layout. The same iframe stays in place. */
+:root[data-theme="dark-arena"] body.arena-video-focus:has(.dice-video) .vision-pip { width: 100%; }
+@media (min-width: 1000px) {
+  :root[data-theme="dark-arena"] body.arena-video-focus:has(.dice-video:not(.hidden)) .stage { grid-template-columns: minmax(0, 2.4fr) minmax(320px, 1fr); }
+}
+
+@media (max-width: 760px) {
+  :root[data-theme="dark-arena"] .app-shell { padding-inline: 20px; }
+  :root[data-theme="dark-arena"] .topbar { min-height: 72px; gap: 12px; }
+  :root[data-theme="dark-arena"] .arena-wordmark { font-size: 16px; gap: 8px; }
+  :root[data-theme="dark-arena"] .arena-wordmark small,
+  :root[data-theme="dark-arena"] .brand-divider,
+  :root[data-theme="dark-arena"] .brand-name,
+  :root[data-theme="dark-arena"] .companion-status { display: none; }
+  :root[data-theme="dark-arena"] .topbar-right { gap: 8px; }
+  :root[data-theme="dark-arena"] .theme-control select { max-width: 124px; font-size: 14px; }
+  :root[data-theme="dark-arena"] .arena-topline { flex-wrap: wrap; margin-block: 16px 30px; }
+  :root[data-theme="dark-arena"] .arena-steps { gap: 12px; font-size: 13px; }
+  :root[data-theme="dark-arena"] .stage { min-height: 0; padding-bottom: 36px; }
+  :root[data-theme="dark-arena"] .stage-title { font-size: 36px; }
+  :root[data-theme="dark-arena"] body:has(.dice-video) .stage-title { font-size: 36px; }
+  :root[data-theme="dark-arena"] .game-list { grid-template-columns: 1fr; gap: 12px; }
+  :root[data-theme="dark-arena"] .game-option { min-height: 104px; padding: 20px; }
+  :root[data-theme="dark-arena"] .rules-list { grid-template-columns: 1fr; gap: 22px; }
+  :root[data-theme="dark-arena"] .rules-item { padding-top: 16px; }
+  :root[data-theme="dark-arena"] .analysis-steps { grid-template-columns: 1fr; gap: 8px; }
+  :root[data-theme="dark-arena"] .analysis-step { justify-content: flex-start; }
+  :root[data-theme="dark-arena"] .scoreboard { gap: 8px; }
+  :root[data-theme="dark-arena"] .score-side { padding: 12px 4px; }
+  :root[data-theme="dark-arena"] .score-dice { gap: 4px; }
+  :root[data-theme="dark-arena"] .score-dice .die { --die-size: clamp(18px, 4vw, 30px); }
+  :root[data-theme="dark-arena"] .arena-footer { align-items: flex-start; flex-direction: column; gap: 16px; padding-bottom: 8px; }
+  :root[data-theme="dark-arena"] .arena-keys { gap: 10px 14px; font-size: 13px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="dark-arena"] *, :root[data-theme="dark-arena"] *::before, :root[data-theme="dark-arena"] *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

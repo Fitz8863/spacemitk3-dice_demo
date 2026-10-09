@@ -48,6 +48,16 @@ function bindBuddyToLiveVideo() {
 
 const SELECT_META = ['挑个游戏，开玩吧！', '选好游戏，再按下绿色按钮，小搭子陪你一起出发。'];
 
+let currentPhaseMeta = SELECT_META;
+function renderThemeHeading() {
+  const phase = state.phase;
+  const resolved = window.ArenaTheme.resolveMeta(phase, currentPhaseMeta, activeGame?.id);
+  $('phaseTitle').textContent = resolved[0];
+  renderPhaseCopy(phase, resolved[1]);
+  window.ArenaTheme.renderPhase(state.phase, activeGame?.id, state.selectedGame);
+}
+window.addEventListener('arena-theme-change', renderThemeHeading);
+
 const gameModules = {};
 let activeGame = null; // 当前挂载的游戏模块（有 enter/teardown/onKey）
 let games = []; // GET /api/games 返回的列表
@@ -116,8 +126,8 @@ function setPhase(phase, meta) {
     }, PHASE_LEAVE_MS));
   }
   const resolved = meta || (activeGame && activeGame.phaseMeta && activeGame.phaseMeta[phase]) || SELECT_META;
-  $('phaseTitle').textContent = resolved[0];
-  renderPhaseCopy(phase, resolved[1]);
+  currentPhaseMeta = resolved;
+  renderThemeHeading();
   resetIdleTimer();
 }
 
@@ -1047,6 +1057,7 @@ function selectGame(id) {
     item.classList.toggle('selected', selected);
     item.setAttribute('aria-selected', selected ? 'true' : 'false');
   });
+  window.ArenaTheme.renderPhase(state.phase, activeGame?.id, id);
 }
 
 function enterSelectedGame() {

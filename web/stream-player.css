@@ -27,3 +27,14 @@ video { position: absolute; left: 50%; top: 50%; display: block; width: 100%; he
   .jumper { animation: none; transform: translate(83%, 0); will-change: auto; }
 }
 body.offscreen .jumper { animation-play-state: paused; }
+
+/* The loading scene follows the parent theme; the live video is untouched. */
+:root[data-theme="dark-arena"] body { background: #354a40; color: #d2ded4; }
+:root[data-theme="dark-arena"] #loading { background: #354a40; }
+:root[data-theme="dark-arena"] #loading p { font: 400 clamp(16px, 1.8vw, 20px)/1.6 "Noto Sans CJK SC", system-ui, sans-serif; }
+:root[data-theme="dark-arena"] .loading-scene { width: 32px; height: 32px; border: 2px solid #6b8272; border-top-color: #b0e237; border-radius: 50%; animation: arena-loading 1.2s linear infinite; }
+:root[data-theme="dark-arena"] .loading-scene > * { display: none; }
+@keyframes arena-loading { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="dark-arena"] .loading-scene { animation: none; }
+}

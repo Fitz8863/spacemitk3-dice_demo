@@ -389,7 +389,7 @@ def test_frontend_uses_user_gesture_audio_for_countdown_cues():
     assert "if (!state.sound" in js
 
 
-def test_frontend_uses_light_theme_and_high_contrast_urgent_styles():
+def test_frontend_preserves_legacy_palette_and_defaults_to_dark_arena():
     css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
 
@@ -397,7 +397,9 @@ def test_frontend_uses_light_theme_and_high_contrast_urgent_styles():
     assert "--surface: #ffffff" in css
     assert "color: var(--loss)" in css
     assert "@keyframes urgentPulse" in css
-    assert 'content="#f7f9fc"' in html
+    assert 'data-theme="dark-arena"' in html
+    assert 'content="#2a3b34"' in html
+    assert 'href="./dark-arena.css"' in html
 
 
 def test_frontend_uses_louder_tense_warning_tone_for_urgent_countdown():

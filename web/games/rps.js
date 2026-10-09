@@ -237,6 +237,7 @@ export function register(engine) {
     if (!tie && !playerWins && winnerRole !== 'AGENT') {
       throw new Error('裁决结果缺少有效 winner_role');
     }
+    banner.dataset.winner = winnerRole;
     $('resultEmoji').textContent = tie ? '🤝' : playerWins ? '🏆' : '✨';
     $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : 'Agent 获胜';
     $('resultSubtitle').textContent = tie
