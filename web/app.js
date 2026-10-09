@@ -78,26 +78,42 @@ function renderPhaseCopy(phase, fallback) {
 // .view-leave 淡出 130ms 后再隐藏，新视图照常 fadeIn——消除「旧视图一帧
 // 消失、新视图从零亮起」的闪断。计时器只在引擎层；同相位重入与快速连切
 // （如 shaking→stop_call 同视图）都先清挂起计时器并回收 leave 类。
-let phaseLeaveTimer = null;
+// 收敛必须全量：130ms 动画窗内可能叠着不止一个旧视图（快速连切/回跳），
+// 后台标签页还会节流计时器——只按 DOM 顺序收回第一个可见视图会让中间
+// 切过的视图永久叠在屏上（2026-10-09 实测 rules 三卡片与 ready 标题叠显）。
+// 因此每个离场视图独立计时收敛，进入新视图时把其余视图全部送入离场。
+let phaseLeaveTimers = new Map();
+const PHASE_LEAVE_MS = 130;
 function setPhase(phase, meta) {
   state.phase = phase;
   // Phases style themselves via body[data-phase] (e.g. the open phase lowers
   // the stage header into mid-screen).
   document.body.dataset.phase = phase;
-  clearTimeout(phaseLeaveTimer);
   const incoming = views.find((view) => view.dataset.view === phase) || null;
-  const outgoing = views.find((view) => !view.classList.contains('hidden')) || null;
-  if (outgoing && outgoing !== incoming) {
-    outgoing.classList.add('view-leave');
-    const leaving = outgoing;
-    phaseLeaveTimer = setTimeout(() => {
-      leaving.classList.remove('view-leave');
-      leaving.classList.add('hidden');
-    }, 130);
-  }
-  if (incoming) {
-    incoming.classList.remove('view-leave');
-    incoming.classList.remove('hidden');
+  for (const view of views) {
+    const pending = phaseLeaveTimers.get(view);
+    if (view === incoming) {
+      // 回跳进一个尚在离场动画的视图：立即恢复显示并撤销其隐藏计时。
+      if (pending) {
+        clearTimeout(pending);
+        phaseLeaveTimers.delete(view);
+      }
+      view.classList.remove('view-leave');
+      view.classList.remove('hidden');
+      continue;
+    }
+    if (view.classList.contains('hidden') && !pending) {
+      continue; // 本就不可见，也无待收敛动画
+    }
+    if (pending) {
+      continue; // 已在离场动画中，计时器到期会隐藏，无需重复
+    }
+    view.classList.add('view-leave');
+    phaseLeaveTimers.set(view, setTimeout(() => {
+      phaseLeaveTimers.delete(view);
+      view.classList.remove('view-leave');
+      view.classList.add('hidden');
+    }, PHASE_LEAVE_MS));
   }
   const resolved = meta || (activeGame && activeGame.phaseMeta && activeGame.phaseMeta[phase]) || SELECT_META;
   $('phaseTitle').textContent = resolved[0];
@@ -1127,3 +1143,7 @@ loadGames().then(() => {
   if (standbySettings.boot_standby) enterStandby();
   else startSelectListening();
 });
+
+// 测试钩子：视图切换的自动化验证入口（CDP/无头浏览器直调）。
+// 仅用于真实页面环境里驱动 setPhase 做叠层回归测试，业务逻辑勿绕过它。
+window.__setPhase = setPhase;
