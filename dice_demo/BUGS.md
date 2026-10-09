@@ -223,8 +223,9 @@ main 侧另有失败页归位/开机归位兜底（dice_game 49103f5/564ce81/d3b
 
 ### 配置卫生
 
-- [ ] **P3-4** `configs/green_cup.json:88-98`：`shake_study` 零引用死键（真源是
-  `shake.joint_motion_cost`）。
+- [x] **P3-4** `configs/green_cup.json:88-98`：`shake_study` 零引用死键（真源是
+  `shake.joint_motion_cost`）。✅ 已修（2026-10-08，连同 green_open_cup 两份副本
+  同段删除；大夹具内嵌副本已随 SLIM L3 夹具删除先行消解）
 - [ ] **P3-5** 出厂绝对路径残留 3 处：`green_open_cup/home_table_scene.json:23` 的
   `source: /home/test2/...`、`configs/calibration/handeye_result.json:262` 与
   `configs/installation/camera.json:262` 的 `source_dataset: /home/test2/...`。
@@ -234,8 +235,10 @@ main 侧另有失败页归位/开机归位兜底（dice_game 49103f5/564ce81/d3b
 - [ ] **P3-6** `configs/green_cup.json:131` 与 `cup_perception.py:24` 双处硬编码
   `/usr/lib/python3.14/dist-packages`（板上 3.12/3.14 混跑）；`detector.py:65-70`
   的 ORT 兜底还缺 `exc.name` 判断、把版本相关路径 append 进 sys.path。
-- [ ] **P3-7** `configs/installation/camera.json` 是过期副本（sha256 与活动标定不一致），
-  仅打包时被覆盖——建议改为打包时直接复制活动标定。
+- [x] **P3-7** `configs/installation/camera.json` 是过期副本（sha256 与活动标定不一致），
+  仅打包时被覆盖——建议改为打包时直接复制活动标定。✅ 已随目录删除消解
+  （2026-10-08；唯一读写方 package_release.py 已先于本条删除于 3031f5d，
+  复核零引用后整目录移除，git 历史可找回）。
 
 ### 打包与交付
 
@@ -258,15 +261,23 @@ main 侧另有失败页归位/开机归位兜底（dice_game 49103f5/564ce81/d3b
   （偶发 1s 停帧）；SIGKILL 可能残留 gst-launch 子进程。
 - [ ] **P3-14** `realsense_session.py:161-193`：在途请求保护可被绕过（读线程开始服务
   即清 `_request`，第二次并发调用会通过检查）——当前 Workflow 单线程，潜伏。
-- [ ] **P3-15** `vision/inference/yolo_seg.py`：三个解码器 + `YoloSegmentor` 死代码，
+- [x] **P3-15** `vision/inference/yolo_seg.py`：三个解码器 + `YoloSegmentor` 死代码，
   测试只覆盖死路径（产线走 `cup_perception.decode`）；`decode_standard2` 掩码用
-  `logits>0` 与产线 `sigmoid>threshold` 不等价。
-- [ ] **P3-16** `vision/capture/config.py:38-44`：`calibration_file`/`calibration_digest()`
+  `logits>0` 与产线 `sigmoid>threshold` 不等价。✅ 已修（2026-10-08，死符号连同
+  死路径测试删除，`preprocess` 保留并新增 letterbox 契约测试；死码间的掩码语义
+  差异随之消解）
+- [x] **P3-16** `vision/capture/config.py:38-44`：`calibration_file`/`calibration_digest()`
   无人调用，README:52 却宣称它做一致性校验——真正生效的是
   `configs/green_cup.json:7` 的 `calibration` 键。二选一：接线或删字段改 README。
-- [ ] **P3-17** `cup_grasp_demo/flow/planar_scene.py` 成为零引用死代码
-  （table_capture/register_home_table 已随脚本瘦身删除；将来找回登记工具时
-  连同修复路径基准问题：会话路径以调用者 cwd 为基准、采集子进程以 ROOT 为基准）。
+  ✅ 已修（2026-10-09，删字段路线：calibration_digest 函数、camera.json
+  calibration_file 键、REQUIRED 集合同步；测试把该键转为未知键负例）
+- [x] **P3-17** `cup_grasp_demo/flow/planar_scene.py` 成为零引用死代码
+  （table_capture/register_home_table 已随脚本瘦身删除…）✅ 记录已修正
+  （2026-10-08）：**该前提过期，planar_scene.py 是活代码，勿删**——
+  `calibration/tools/register_home_table.py:13`、`calibration/tools/table_capture.py:11`
+  均在导入并调用，`tests/calibration/test_table_registration.py:73` 有覆盖。
+  原条目所述"路径基准问题"（会话路径以调用者 cwd 为基准、采集子进程以
+  ROOT 为基准）仍待将来做桌面登记工具时核实。
 
 ### 时钟/字段一致性
 
