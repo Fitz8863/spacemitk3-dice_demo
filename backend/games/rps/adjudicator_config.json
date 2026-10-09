@@ -95,9 +95,6 @@
   "focus": -1,
   "zoom": 100,
   "yolov10_enabled": true,
-  "video": {
-    "webrtc_base_url": "http://127.0.0.1:8889"
-  },
   "rtsp": {
     "enabled": true,
     "host": "127.0.0.1",

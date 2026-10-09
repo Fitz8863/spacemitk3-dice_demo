@@ -67,7 +67,7 @@
 
 | 键 | 当前值 | 说明 |
 |---|---|---|
-| `video.webrtc_base_url` | `http://127.0.0.1:8889` | 浏览器画面的 WebRTC 基址（mediamtx）；游戏 manifest 的 `video.enabled` 决定页面是否显示（当前 `false`：页面不显示，推流照常，ffplay 可拉流看） |
+| `video.webrtc_base_url` | **已上浮移除（2026-10-09）** | 浏览器画面的 WebRTC 基址现在住全局 `backend/config.json` 的 `video.webrtc_base_url`（改 IP 热生效、不重建 runtime）；本文件同名键仅作历史兼容回退，别再写。游戏 manifest 的 `video.enabled` 决定页面是否显示 |
 | `rtsp.enabled/host/port` | true/127.0.0.1/8554 | runtime 向 mediamtx 推 H.264（VPU 硬编，横屏 1920x1080） |
 | `rtsp.path` | **不在此声明** | 生产由 manifest 的 `vision_profile.video.path: /rps/det` 经 `--rtsp-path` 恒压；写进来是死键（ Dice 侧已清理过同款纪律）。mediamtx 的 `all_others` 规则覆盖 `/rps/det`，无需改服务配置 |
 

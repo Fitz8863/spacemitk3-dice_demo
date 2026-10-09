@@ -72,6 +72,26 @@ class ValidationTests(unittest.TestCase):
     def test_valid_config_passes(self):
         self.assertEqual(validate_arena_config(VALID_ARENA), VALID_ARENA)
 
+    def test_webrtc_base_url_validation(self):
+        # 部署级浏览器画面地址（2026-10-09 从游戏 runtime_config 上浮）。
+        good = {**VALID_ARENA, "video": {"webrtc_base_url": "http://10.0.90.160:8889"}}
+        self.assertEqual(validate_arena_config(good), good)
+        validate_arena_config({**VALID_ARENA, "video": {"webrtc_base_url": "https://board:8889/"}})
+        for bad in (
+            "http://board:8889/dice",   # 不许带路径
+            "http://board:8889/?x=1",   # 不许带 query
+            "ftp://board:8889",         # 只许 http(s)
+            "board:8889",               # 必须绝对 URL
+            "http://u:p@board:8889",    # 不许带凭据
+            123,                        # 必须字符串
+        ):
+            with self.assertRaises(ArenaConfigError):
+                validate_arena_config({**VALID_ARENA, "video": {"webrtc_base_url": bad}})
+        with self.assertRaises(ArenaConfigError):
+            validate_arena_config({**VALID_ARENA, "video": "http://board:8889"})
+        # video 段整体缺省 = 不提供全局默认（合法，游戏自己的声明继续生效）
+        validate_arena_config({**VALID_ARENA, "video": {}})
+
     def test_wrong_schema_version(self):
         with self.assertRaises(ArenaConfigError):
             validate_arena_config({**VALID_ARENA, "schema_version": 2})
@@ -173,6 +193,18 @@ class AccessorTests(unittest.TestCase):
         self.assertTrue(arena_asr_enabled(None))
         self.assertFalse(arena_asr_enabled({**VALID_ARENA, "asr_enabled": False}))
 
+    def test_webrtc_base_url_accessor(self):
+        from core.arena_config import arena_webrtc_base_url
+
+        arena = {**VALID_ARENA, "video": {"webrtc_base_url": "http://10.0.90.160:8889"}}
+        self.assertEqual(arena_webrtc_base_url(arena), "http://10.0.90.160:8889")
+        # 缺省/非字符串一律退化为空（消费方视作"无全局默认"）
+        self.assertEqual(arena_webrtc_base_url(VALID_ARENA), "")
+        self.assertEqual(arena_webrtc_base_url(None), "")
+        self.assertEqual(arena_webrtc_base_url({"video": {}}), "")
+        self.assertEqual(arena_webrtc_base_url({"video": {"webrtc_base_url": 42}}), "")
+        self.assertEqual(arena_webrtc_base_url({"video": "http://x:1"}), "")
+
 
 class MergeTests(unittest.TestCase):
     def test_game_providers_win_per_slot(self):
@@ -247,6 +279,53 @@ class MergeTests(unittest.TestCase):
         with_global_defaults(manifest, {**VALID_ARENA, "asr_enabled": False})
         self.assertEqual(manifest["providers"], {"tts_local": "tts_qwen3"})
         self.assertTrue(manifest["asr"]["enabled"])
+
+    def test_webrtc_base_url_underlays_vision_profile_video(self):
+        """全局 video.webrtc_base_url 作为部署默认注入（2026-10-09 上浮）。
+
+        游戏 runtime_config 不再携带浏览器地址；manifest 未声明时由全局
+        层填充，声明了则 manifest 赢（与 participants 同款 underlay 规则）。
+        该值不参与视觉 runtime 签名——改 IP 只影响浏览器 URL，不重建进程。
+        """
+        arena = {**VALID_ARENA, "video": {"webrtc_base_url": "http://10.0.90.160:8889"}}
+        manifest = {
+            "id": "dice",
+            "vision_profile": {
+                "game_id": "dice",
+                "video": {"enabled": True, "path": "/dice/det"},
+            },
+        }
+        merged = with_global_defaults(manifest, arena)
+        self.assertEqual(
+            merged["vision_profile"]["video"]["webrtc_base_url"],
+            "http://10.0.90.160:8889",
+        )
+        # 源 manifest 不被写入
+        self.assertNotIn("webrtc_base_url", manifest["vision_profile"]["video"])
+
+        # manifest 自己声明 → 全局不覆盖（单游戏特殊地址仍可行）
+        own = {
+            "id": "dice",
+            "vision_profile": {
+                "video": {
+                    "enabled": True,
+                    "path": "/dice/det",
+                    "webrtc_base_url": "http://special:8889",
+                }
+            },
+        }
+        self.assertEqual(
+            with_global_defaults(own, arena)["vision_profile"]["video"]["webrtc_base_url"],
+            "http://special:8889",
+        )
+
+        # 全局未配置 / vision_profile 无 video 段 → 什么都不注入
+        self.assertNotIn(
+            "webrtc_base_url",
+            with_global_defaults(manifest, VALID_ARENA)["vision_profile"]["video"],
+        )
+        bare = {"id": "x", "vision_profile": {"game_id": "x"}}
+        self.assertEqual(with_global_defaults(bare, arena)["vision_profile"], {"game_id": "x"})
 
 
 class LocalTtsPinTests(unittest.TestCase):

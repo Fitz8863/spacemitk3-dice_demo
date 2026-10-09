@@ -461,6 +461,11 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
     """Expose safe, deployment-facing vision metadata without prompts/secrets."""
     try:
         manifest = require_game(get_games(), game_id)
+        # Underlay arena defaults (providers/participants/display and the
+        # deployment-wide video.webrtc_base_url) so metadata reports the same
+        # effective values a round would run with.
+        arena = get_arena_config()
+        manifest = with_global_defaults(manifest, arena)
         profile = manifest.get("vision_profile")
         if not isinstance(profile, dict):
             return {}
@@ -482,6 +487,7 @@ def _vision_profile_metadata(game_id: str, provider_id: str) -> dict[str, Any]:
         metadata = _safe_profile_metadata(profile, base_url, runtime)
         profile_metadata = []
         for item in get_games().all():
+            item = with_global_defaults(item, arena)
             item_profile = item.get("vision_profile")
             if not isinstance(item_profile, dict):
                 continue

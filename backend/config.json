@@ -17,6 +17,9 @@
   },
   "voice": "default",
   "speed": 1.0,
+  "video": {
+    "webrtc_base_url": "http://127.0.0.1:8889"
+  },
   "asr_enabled": false,
   "vision_always_on": true,
   "robot_home_patrol": true,

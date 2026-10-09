@@ -54,9 +54,13 @@ def test_profile_loads_dice_and_composes_mediamtx_url():
     component = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_objdetect")
     _ = component  # component config holds lifecycle only; hardware is per-game
     runtime = load_runtime_config(resolve_runtime_config_path(profile))
-    assert compose_video_url(runtime["video"]["webrtc_base_url"], profile["video"]["path"]) == (
-        "http://127.0.0.1:8889/dice/det"
-    )
+    # webrtc_base_url 已上浮到全局 backend/config.json（2026-10-09）：
+    # 游戏的 runtime_config 不再携带浏览器地址，取全局默认与 video.path 拼接。
+    arena = json.loads((ROOT / "backend/config.json").read_text())
+    assert "webrtc_base_url" not in runtime.get("video", {})
+    assert compose_video_url(
+        arena["video"]["webrtc_base_url"], profile["video"]["path"]
+    ) == "http://127.0.0.1:8889/dice/det"
 
 
 def test_runtime_config_is_declared_per_game_and_loads_hardware_defaults():
@@ -75,7 +79,8 @@ def test_runtime_config_is_declared_per_game_and_loads_hardware_defaults():
         "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_9395301F-video-index0"
     )
     assert runtime["rtsp"]["port"] == 8554
-    assert runtime["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
+    # 浏览器地址已上浮全局（2026-10-09）：runtime config 只剩硬件/模型键。
+    assert "video" not in runtime
     assert "rtsp" not in component
     assert "video" not in component
 
@@ -426,9 +431,13 @@ def test_runtime_config_exposes_mediamtx_base_and_component_has_no_duplicate_vid
     manifest = json.loads((ROOT / "backend/games/dice/manifest.json").read_text())
     config = load_component_config(ROOT / "backend" / "components" / "vision_yolov8_objdetect")
     runtime = load_runtime_config(resolve_runtime_config_path(manifest["vision_profile"]))
-    assert runtime["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
+    # webrtc_base_url 已上浮到全局 backend/config.json（2026-10-09）：
+    # 游戏的 runtime_config 不再携带浏览器地址，组件配置也不许重复。
+    assert "video" not in runtime
     assert "video" not in config
     assert "rtsp" not in config
+    arena = json.loads((ROOT / "backend/config.json").read_text())
+    assert arena["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
 
 
 def test_provider_health_no_longer_reports_llm_state():

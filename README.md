@@ -52,7 +52,7 @@ scripts/start_web.sh     # 启动；无机械臂：DICE_NO_ARM=1 scripts/start_w
 
 - `setup_board.sh` 分步幂等（`deps` / `build` / `models` / `mediamtx` / `can0` / `detect` / `check`，可单跑、可失败后重跑续传），模型资产从本仓库 GitHub Release 下载（本地 TTS 约 700M）；语音识别与备用 TTS 引擎是可选项（`--with-asr` / `--with-matcha`）。
 - **免臂模式**：没有 NERO 机械臂时用 `DICE_NO_ARM=1 scripts/start_web.sh` 起服务——网页、语音播报、视觉裁决（`/api/adjudicate`）均可用；完整一局需要机械臂（摇骰 / 出拳环节由它执行），对局推进到机械臂步骤时会走失败页。
-- 从局域网其他设备经 HTTP 访问时，浏览器可能因非安全上下文限制「页面预览摄像头」权限——实际识别用的始终是 K3 板端摄像头，不受影响。
+- 从局域网其他设备经 HTTP 访问时，浏览器可能因非安全上下文限制「页面预览摄像头」权限——实际识别用的始终是 K3 板端摄像头，不受影响。要让**页面里的实时画面小窗**在该设备上可见，把全局 `backend/config.json` 的 `video.webrtc_base_url` 改成 `http://<板端IP>:8889`（热生效，无需重启）。
 - 不想用一键脚本、逐项手动部署：编译 `vision/yolov8_objdetect` 与 `vision/yolov10_objdetect`（板上手动装过 `/opt/opencv-spacemit` SDK 的需加 `-DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4`，apt 安装 `libopencv-dev` 的无需）、按各组件 README 放置 TTS/ASR 模型资产、自行部署 mediamtx，最后 `scripts/start_web.sh`。
 - 单独调试 TTS：`python3 backend/tts_debug.py <provider_id>`。
 
@@ -72,7 +72,7 @@ scripts/start_web.sh     # 启动；无机械臂：DICE_NO_ARM=1 scripts/start_w
 | 游戏 | `backend/games/<id>/manifest.json`（状态机、台词、触发词、视觉规则） | 热加载，下一局生效 | [`backend/games/dice/参数说明.md`](backend/games/dice/参数说明.md)、[`backend/games/rps/参数说明.md`](backend/games/rps/参数说明.md) |
 | 组件 | `backend/components/<id>/config.json` | 需重启后端 | 各组件目录下的 `参数说明.md` |
 
-视觉硬件参数（摄像头 / EP 绑核 / 焦距 / 推流）**每游戏一份**：manifest 的 `vision_profile.runtime_config` 指向该游戏的 `adjudicator_config.json`，且为**整份替换、不做字段级合并**——要做差异就整份复制一份再改。
+视觉硬件参数（摄像头 / EP 绑核 / 焦距 / 推流）**每游戏一份**：manifest 的 `vision_profile.runtime_config` 指向该游戏的 `adjudicator_config.json`，且为**整份替换、不做字段级合并**——要做差异就整份复制一份再改。例外：浏览器画面基址 `video.webrtc_base_url` 是部署属性（板子 IP），住全局 `backend/config.json`——改它热生效、不重建视觉 runtime。
 
 常用调整：
 

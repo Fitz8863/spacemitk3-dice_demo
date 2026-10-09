@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
+from urllib.parse import urlsplit
 
 from core.participants import normalize_participants
 
@@ -50,6 +51,24 @@ def validate_arena_config(payload: Any) -> dict[str, Any]:
             for game, angle in rotations.items()
         ):
             raise ArenaConfigError("display.video_rotation_deg must map game ids to 0/90/180/270")
+    video = payload.get("video")
+    if video is not None:
+        if not isinstance(video, dict):
+            raise ArenaConfigError("video must be an object")
+        base = video.get("webrtc_base_url")
+        if base is not None:
+            if not isinstance(base, str) or not base.strip():
+                raise ArenaConfigError("video.webrtc_base_url must be a non-empty string")
+            parsed = urlsplit(base.strip())
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.username
+                or parsed.password
+            ):
+                raise ArenaConfigError("video.webrtc_base_url must be an absolute HTTP(S) URL")
+            if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+                raise ArenaConfigError("video.webrtc_base_url must not contain a path or query")
     games_enabled = payload.get("games_enabled")
     if games_enabled is not None:
         if not isinstance(games_enabled, dict) or not all(
@@ -194,6 +213,22 @@ def arena_vision_always_on(arena: Mapping[str, Any] | None) -> bool:
     return value if isinstance(value, bool) else True
 
 
+def arena_webrtc_base_url(arena: Mapping[str, Any] | None) -> str:
+    """Deployment-wide WebRTC origin (board IP + MediaMTX port), or ``""``.
+
+    Consumers fall back to it when neither the game manifest nor the game's
+    runtime config declares ``video.webrtc_base_url``.  The value only shapes
+    browser-facing video URLs, so it is hot-reloaded and never rebuilds the
+    vision runtime.  Invalid values are rejected by ``validate_arena_config``
+    at load time; anything non-string here degrades to ``""`` (no video URL).
+    """
+    video = (arena or {}).get("video")
+    if not isinstance(video, Mapping):
+        return ""
+    value = video.get("webrtc_base_url")
+    return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
 def arena_game_select_phrases(arena: Mapping[str, Any] | None) -> dict[str, list[str]]:
     """Voice-selection trigger words per game id, from the global config.
 
@@ -289,6 +324,19 @@ def with_global_defaults(
         # source of the effective value downstream code reads.
         asr["enabled"] = arena_asr_enabled(arena)
         merged["asr"] = asr
+    # Browser-facing WebRTC origin: the board IP + MediaMTX port are
+    # deployment attributes with no per-game meaning, so the arena fills the
+    # value in when the game's vision_profile.video leaves it out (a manifest
+    # declaration still wins, per the usual underlay rule).  The injected key
+    # is deliberately outside the vision runtime signature: changing the IP
+    # rewrites browser video URLs only and never rebuilds the runtime.
+    profile = merged.get("vision_profile")
+    if isinstance(profile, dict):
+        video = profile.get("video")
+        if isinstance(video, dict) and "webrtc_base_url" not in video:
+            base = arena_webrtc_base_url(arena)
+            if base:
+                merged["vision_profile"] = {**profile, "video": {**video, "webrtc_base_url": base}}
     return merged
 
 

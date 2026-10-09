@@ -19,7 +19,7 @@ K3 摄像头
   -> GStreamer H.264/VPU 编码 -> MediaMTX RTSP 发布 -> WebRTC
 ```
 
-MediaMTX 由部署管理。runtime 配置中的 `video.webrtc_base_url` 提供部署基础地址，浏览器使用后端根据游戏 manifest 中的
+MediaMTX 由部署管理。全局配置 `backend/config.json` 的 `video.webrtc_base_url`（2026-10-09 从各游戏 runtime 配置上浮）提供部署基础地址，浏览器使用后端根据游戏 manifest 中的
 profile path 合成的
 WebRTC URL；runtime 自身产生的 RTSP/内部地址不能直接作为浏览器地址。
 
@@ -190,7 +190,7 @@ backend/games/<game_id>/manifest.json -> vision_profile
 
 新增游戏不需要修改本 runtime：新增模型文件和 manifest 中的 `vision_profile` 即可。
 profile 中的 path 只能是 URL 路径（例如 `/dice/`），不能包含主机、查询串或 `..`；
-WebRTC 基础地址通过各游戏 `runtime_config` 指向的硬件文件（如 `backend/games/dice/adjudicator_config.json`）的 `video.webrtc_base_url` 配置，游戏只配置自己的 `video.path`。LLM 的 endpoint/model/api_key 保存在全局 `providers.llm` 槽位指向的组件（当前 `backend/components/llm_openai_compat/config.json` 的 `llm` 段），**不在**视觉组件配置里（该文件被 Git 跟踪，仓库必须保持私有；环境变量覆盖层已于 2026-09-01 移除，JSON 是唯一配置来源）。组件与 runtime 配置的完整字段说明见 `backend/components/vision_yolov8_objdetect/参数说明.md`。
+WebRTC 基础地址在全局 `backend/config.json` 的 `video.webrtc_base_url`（2026-10-09 上浮，热生效、不重建 runtime；游戏 runtime_config 的同名键仅作历史兼容回退），游戏只配置自己的 `video.path`。LLM 的 endpoint/model/api_key 保存在全局 `providers.llm` 槽位指向的组件（当前 `backend/components/llm_openai_compat/config.json` 的 `llm` 段），**不在**视觉组件配置里（该文件被 Git 跟踪，仓库必须保持私有；环境变量覆盖层已于 2026-09-01 移除，JSON 是唯一配置来源）。组件与 runtime 配置的完整字段说明见 `backend/components/vision_yolov8_objdetect/参数说明.md`。
 
 ## 诊断模式
 
