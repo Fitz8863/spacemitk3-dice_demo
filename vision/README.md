@@ -5,7 +5,7 @@
 | 层 | 目录 | 内容 |
 |---|---|---|
 | 采集 | `capture/` | `camera.json`（相机唯一配置源）、`realsense_session.py`（D435i 采集+常驻读帧+推流）、`frame_io.py`（帧数据读写）、`config.py`（配置加载器+标定绑定） |
-| 推理 | `inference/` | `detector.py`（YOLO 推理+provenance）、`model_adapter.py`（模型输出自动适配）、`yolo_seg.py`（前处理+解码） |
+| 推理 | `inference/` | `detector.py`（YOLO 推理+provenance）、`model_adapter.py`（模型输出自动适配）、`yolo_seg.py`（letterbox 前处理；解码在 `cup_grasp_demo/flow/cup_perception.py` 产线路径） |
 | 几何 | `geometry/` | `circle_rim.py`（圆口立体拟合）、`cup_height.py`（深度带杯高）、`table_plane.py`（通用几何基元） |
 | 策略 | `strategy/` | `green_cup.json`（抓取参数）、`loader.py`（策略加载） |
 
@@ -47,7 +47,6 @@ cp vision/strategy/green_cup.json vision/strategy/<物体名>.json
 | `crop_xywh` | [x,y,w,h] | 彩色图裁剪窗口 |
 | `warmup_frames` | int | 常驻启动预热帧数（1~60） |
 | `fresh_discard_frames` | int | 正式采集前丢弃帧数（0~5） |
-| `calibration_file` | str | 标定结果路径（换相机配置后须重做桌面登记） |
 
 **换配置须知**：改分辨率或裁剪后必须重新标定和桌面登记（工具随标定流程提供，
 见 `docs/CALIBRATION.md`）。
