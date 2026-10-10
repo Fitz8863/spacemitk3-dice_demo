@@ -27,7 +27,7 @@
 | `model` | `models/yolov10n_gestures.q.onnx` | 34 类 HaGRID 手势模型（YOLOv10n end-to-end，`[1,300,6]` 已解码免 NMS，PPQ INT8）。**换模型必须同步换 `classes`**——词表与模型成对，错了是标签错位不是配置报错（self-test 的 class_id 范围检查是唯一防线） |
 | `classes` | 34 个类名 | **模型词表**，按模型输出 id 排序（`no_gesture` 是 id 33）。包内零内置词表，`rps_mode`/`filter_no_gesture` 开启时必填 |
 | `rps_mode` | `true` | 启用折叠；`false` 按原始 34 类上报（id-only 形态，调试用） |
-| `rps_map` | Rock←{fist,grabbing,grip}、Paper←{palm,stop,stop_inverted,four}、Scissors←{peace,peace_inverted,two_up,two_up_inverted} | **折叠表**：游戏标签 ← 源手势。多对一合法；**折叠发生在 C++ 稳定计数之前**——palm↔stop（同为布）的源类抖动不清零稳定计数。折叠后 class_id = 标签声明序（字母序：**Paper=0、Rock=1、Scissors=2**），观测事件同时带 `label` 文本（pipeline 按 label 取手势，不依赖 id） |
+| `rps_map` | Rock←{fist,grabbing,grip}、Paper←{palm,stop}、Scissors←{peace,peace_inverted,two_up,two_up_inverted} | **折叠表**：游戏标签 ← 源手势。多对一合法；**折叠发生在 C++ 稳定计数之前**——palm↔stop（同为布）的源类抖动不清零稳定计数。折叠后 class_id = 标签声明序（字母序：**Paper=0、Rock=1、Scissors=2**），观测事件同时带 `label` 文本（pipeline 按 label 取手势，不依赖 id）。**2026-10-09 用户拍板收窄**：Paper 原含 {palm,stop,stop_inverted,four}，掌背朝上的握拳常被模型误认成 stop_inverted/four → 错判"布"；收窄后这两类被丢弃（=无手势，走重试），不再产生错误判定 |
 | `filter_no_gesture` | `true` | 丢弃 HaGRID 的 `no_gesture` 兜底类（画出来全是噪声） |
 
 **改折叠表的注意**：加源手势（如把 `three` 也算剪刀）只改 `rps_map`；**换词表顺序 = 换 id 映射**，
@@ -38,7 +38,7 @@
 
 | 键 | 当前值 | 说明 |
 |---|---|---|
-| `conf` | `0.25` | 置信度阈值（模型输出已是概率域）。实测空场景 best_conf≈0.008，真人手势远高于此；**识别不出手时可降到 0.15 试**，误检变多再回调 |
+| `conf` | `0.30` | 置信度阈值（模型输出已是概率域；2026-10-09 由 0.25 上调——压掉弱误检框，与折叠表收窄同批）。实测空场景 best_conf≈0.008，真人手势远高于此；**识别不出手时可降到 0.15 试**，误检变多再回调 |
 | `stable_frames` | `10` | **折叠后**类别多重集需连续重复的帧数（≈0.4s @24fps 推理）。手势切换的过渡帧会清零计数；误判提前可升到 15–20 |
 | `yolov10_enabled` | `true` | `false` = 只推流不推理（透视对位用） |
 
