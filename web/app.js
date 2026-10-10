@@ -216,6 +216,7 @@ function enterStandby() {
 function wakeFromStandby() {
   if (state.phase !== 'standby') return false;
   setPhase('select');
+  selectDefaultGame();
   stopStandbyListening();
   startSelectListening();
   return true;
@@ -1012,6 +1013,7 @@ function returnToSelect() {
   activeGame = null;
   stopStandbyListening(); // 对局结束回列表：确保没有残留的待机监听/轮询
   setPhase('select');
+  selectDefaultGame();
   startSelectListening(); // 列表页恢复语音选游戏
 }
 
@@ -1040,6 +1042,12 @@ function renderGameList() {
     name.textContent = game.name;
     const desc = document.createElement('small');
     desc.textContent = game.description || '';
+    if (game.id === 'rps') {
+      const category = document.createElement('span');
+      category.className = 'arena-only game-category';
+      category.textContent = '加赛体验';
+      copy.append(category);
+    }
     copy.append(name, desc);
 
     button.append(icon, copy);
@@ -1053,6 +1061,14 @@ function renderGameList() {
 
     list.append(button);
   });
+}
+
+function selectDefaultGame() {
+  // The exhibition's main challenge is dice. Respect game enablement and
+  // fall back to the first available game; selecting never starts a round.
+  const preferred = games.find((game) => game.id === 'dice' && game.enabled)
+    || games.find((game) => game.enabled);
+  selectGame(preferred?.id || null);
 }
 
 function selectGame(id) {
@@ -1144,8 +1160,7 @@ async function loadGames() {
     games = Array.isArray(payload.games) ? payload.games : [];
     applyStandbySettings(payload.standby);
     renderGameList();
-    const firstEnabled = games.find((game) => game.enabled);
-    if (firstEnabled) selectGame(firstEnabled.id);
+    selectDefaultGame();
   } catch (error) {
     console.error('Failed to load game list:', error);
     toast('游戏列表加载失败，请检查后端 /api/games');

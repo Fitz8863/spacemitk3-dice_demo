@@ -21,6 +21,8 @@ function boot(saved, blocked = false) {
   }
   for (const id of ['startGame', 'confirmRules', 'repeatRules', 'startShake', 'gameStartText', 'themeSelect', 'arenaBreadcrumb', 'arenaSelected']) nodes.set(id, node('旧文案'));
   const ready = node('旧准备标题');
+  const diceDescription = node('原骰子介绍');
+  const rpsDescription = node('原猜拳介绍');
   const steps = [0, 1, 2, 3].map((i) => { const element = node(); element.dataset.step = String(i); return element; });
   const stepContainer = node(); stepContainer.querySelectorAll = () => steps;
   nodes.set('arenaSteps', stepContainer);
@@ -29,7 +31,9 @@ function boot(saved, blocked = false) {
   const document = {
     documentElement: root,
     getElementById: (id) => nodes.get(id),
-    querySelector: (selector) => selector.includes('theme-color') ? meta : selector.includes('ready') ? ready : null,
+    querySelector: (selector) => selector.includes('theme-color') ? meta
+      : selector.includes('ready') ? ready
+      : selector.includes('.game-copy small') ? (selector.includes('"dice"') ? diceDescription : rpsDescription) : null,
     addEventListener: (type, handler) => listeners.set(type, handler),
   };
   const context = {
@@ -42,7 +46,7 @@ function boot(saved, blocked = false) {
   };
   vm.runInNewContext(source, context);
   listeners.get('DOMContentLoaded')();
-  return { api: context.window.ArenaTheme, root, meta, nodes, steps, ready, values, calls, listeners };
+  return { api: context.window.ArenaTheme, root, meta, nodes, steps, ready, diceDescription, rpsDescription, values, calls, listeners };
 }
 
 for (const value of [undefined, 'invalid', 'light', '']) {
@@ -53,6 +57,9 @@ for (const value of [undefined, 'invalid', 'light', '']) {
 }
 const app = boot();
 const copy = ['后端标题', '后端动作与提示必须保留'];
+assert.equal(app.api.resolveMeta('select', copy, 'dice')[0], '骰王挑战赛');
+assert.equal(app.api.resolveMeta('select', copy, 'dice')[1], copy[1]);
+assert.equal(app.diceDescription.textContent, '与机械臂同台摇骰，让 AI 识别点数、揭晓胜负。');
 assert.equal(app.api.resolveMeta('rules', copy, 'dice')[0], '三步，开始挑战。');
 assert.equal(app.api.resolveMeta('rules', copy, 'rps')[0], '听口令，一起出拳。');
 assert.equal(app.api.resolveMeta('rules', copy, 'dice')[1], copy[1]);
@@ -61,6 +68,9 @@ app.api.renderPhase('analysis', 'dice', 'dice');
 assert.equal(app.steps[2].attributes['aria-current'], 'step');
 assert.equal(app.steps[1].attributes['aria-current'], undefined);
 app.api.set('storybook');
+assert.equal(app.api.resolveMeta('select', copy, 'dice'), copy);
+assert.equal(app.diceDescription.textContent, '原骰子介绍');
+assert.equal(app.rpsDescription.textContent, '原猜拳介绍');
 assert.equal(app.api.resolveMeta('rules', copy, 'dice'), copy);
 assert.equal(app.nodes.get('startGame').textContent, '旧文案');
 assert.equal(app.ready.textContent, '旧准备标题');

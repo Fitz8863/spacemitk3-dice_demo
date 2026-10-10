@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#2a3b34" />
-  <title>时空游乐舱 · 进迭时空</title>
+  <title>骰王挑战赛 · 进迭时空</title>
   <script src="./theme.js"></script>
   <script src="./video-focus.js" defer></script>
   <link rel="stylesheet" href="./styles.css" />
@@ -16,8 +16,6 @@
       <div class="brand">
         <img class="brand-logo" src="./assets/spacemit-logo.png" alt="SPACEMIT 进迭时空" />
         <span class="arena-wordmark arena-only"><i aria-hidden="true"></i>SPACEMIT <small>进迭时空</small></span>
-        <span class="brand-divider" aria-hidden="true"></span>
-        <span class="brand-name">时空游乐舱</span>
       </div>
       <div class="topbar-right">
         <label class="theme-control"><span class="sr-only">界面主题</span><select id="themeSelect" aria-label="界面主题"><option value="dark-arena">石墨灰绿</option><option value="storybook">萌趣游乐舱</option></select></label>
@@ -97,6 +95,12 @@
         <!-- 待机页（全体游戏之前；select 空闲超时进入，任意按键唤醒） -->
         <section class="view hidden" data-view="standby" aria-label="待机">
           <div class="standby-scene">
+            <div class="arena-only challenge-standby">
+              <p class="challenge-eyebrow">SPACEMIT · 机械臂互动挑战</p>
+              <h2>骰王挑战赛</h2>
+              <p class="challenge-intro">与机械臂同台摇骰，让 AI 揭晓胜负。</p>
+              <img src="./assets/dice-challenge.svg" width="400" height="280" alt="" />
+            </div>
             <div class="standby-orb">
               <span class="standby-ring" aria-hidden="true"></span>
               <span class="standby-ring standby-ring-2" aria-hidden="true"></span>
@@ -112,12 +116,12 @@
 
         <!-- 选择游戏 -->
         <section class="view" data-view="select">
+          <p class="arena-only challenge-intro hall-intro">与机械臂同台摇骰，让 AI 揭晓胜负。</p>
           <div class="game-list" id="gameList" role="listbox" aria-label="游戏列表"></div>
           <div class="hall-action">
             <span class="arena-only selected-caption" id="arenaSelected" aria-live="polite"></span>
             <button class="btn-circle btn-green" id="startGame" type="button">开玩！</button>
           </div>
-          <div class="arena-companion arena-only"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="4" y="6" width="16" height="14" rx="4"/><path d="M12 6V3M9 3h6M1 11h3m16 0h3M8 15h8"/><circle cx="8" cy="11" r="1"/><circle cx="16" cy="11" r="1"/></svg><span>AI 已就位，等你来挑战。</span></div>
           <p class="standby-wake-words hidden" id="selectVoiceHint"></p>
         </section>
 

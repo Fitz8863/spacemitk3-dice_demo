@@ -27,7 +27,7 @@
   });
 
   const titles = {
-    select: '你的下一场挑战。', rules: '三步，开始挑战。',
+    select: '骰王挑战赛', rules: '三步，开始挑战。',
     ready: '握好骰盅，准备开始。', rehome: '下一局，马上就绪。',
     game_start: '挑战开始。', countdown: '一起倒数，准备摇。',
     arm_failed: '机械臂动作未完成。',
@@ -37,7 +37,21 @@
     startShake: '开始摇骰', gameStartText: '挑战开始',
   };
   const originals = new Map();
+  const cardOriginals = new WeakMap();
+  function updateHallCards() {
+    const descriptions = {
+      dice: '与机械臂同台摇骰，让 AI 识别点数、揭晓胜负。',
+      rps: '石头、剪刀、布，与 AI 轻松过招。',
+    };
+    for (const [id, copy] of Object.entries(descriptions)) {
+      const node = document.querySelector(`[data-game="${id}"] .game-copy small`);
+      if (!node) continue;
+      if (!cardOriginals.has(node)) cardOriginals.set(node, node.textContent);
+      node.textContent = current === 'dark-arena' ? copy : cardOriginals.get(node);
+    }
+  }
   function updateLabels() {
+    updateHallCards();
     for (const [id, copy] of Object.entries(labels)) {
       const node = document.getElementById(id);
       if (!node) continue;
@@ -52,6 +66,7 @@
   }
 
   function renderPhase(phase, gameId, selectedId) {
+    updateHallCards();
     const gameName = (id) => document.querySelector(`[data-game="${id}"] .game-copy strong`)?.textContent || '游戏';
     const breadcrumb = document.getElementById('arenaBreadcrumb');
     if (breadcrumb) breadcrumb.textContent = ['select', 'standby'].includes(phase)
@@ -69,7 +84,7 @@
       });
     }
     const selected = document.getElementById('arenaSelected');
-    if (selected) selected.textContent = `已选择 · ${gameName(selectedId)}`;
+    if (selected) selected.textContent = selectedId ? `已选择 · ${gameName(selectedId)}` : '暂无可用游戏';
   }
 
   window.ArenaTheme = {

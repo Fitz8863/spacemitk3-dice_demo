@@ -15,3 +15,12 @@ def test_theme_defaults_and_switching():
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='Node is required')
+def test_hall_prefers_dice_without_starting_rounds_and_preserves_selection_keys():
+    result = subprocess.run(
+        ['node', str(ROOT / 'tests/js/hall_regressions.cjs'), str(ROOT / 'web/app.js')],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
