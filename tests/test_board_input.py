@@ -240,6 +240,24 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(selected["game_id"], "rps")
         self.assertEqual(select_bus.push.call_args_list[-1].args[0]["game_id"], "rps")
 
+    def test_synthetic_bus_events_carry_board_source(self):
+        """板端键盘合成事件带 source:'board'（2026-10-10）：前端据此区分
+        按键与语音——board 来源只做动作，不弹「听到…」语音浮条（修复
+        「听到「board」，已生效」误弹；text 恒为占位符 "board"）。"""
+        with mock.patch.object(server, "rounds", {}), \
+                mock.patch.object(server, "_STANDBY_BUS") as standby_bus, \
+                mock.patch.object(server, "_SELECT_BUS") as select_bus:
+            server._board_dispatch("down")   # board_navigate + standby wake
+            server._board_dispatch("confirm")  # selected × 两条总线
+        pushes = [
+            call.args[0]
+            for call in list(select_bus.push.call_args_list)
+            + list(standby_bus.push.call_args_list)
+        ]
+        self.assertEqual(len(pushes), 4)  # navigate/wake/selected/selected
+        for payload in pushes:
+            self.assertEqual(payload.get("source"), "board")
+
 
 if __name__ == "__main__":
     unittest.main()

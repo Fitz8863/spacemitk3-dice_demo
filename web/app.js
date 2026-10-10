@@ -244,19 +244,22 @@ function startStandbyListening() {
     try { event = JSON.parse(message.data); } catch (_) { return; }
     // 保鲜窗：超过 10 秒的事件视为过期（防御旧事件重放）。
     const fresh = Date.now() - Number(event.timestamp_ms || 0) <= 10000;
+    // 板端键盘的合成事件带 source:'board'：动作照做（唤醒/进局/高亮），
+    // 但不弹「听到…」语音浮条——按键不是语音，弹了就是误导（2026-10-10）。
+    const heard = event.source !== 'board';
     if (event.status === 'wake') {
       if (fresh) {
-        showAsrFeedback({ status: 'submitted', text: event.text });
+        if (heard) showAsrFeedback({ status: 'submitted', text: event.text });
         wakeFromStandby();
       }
     } else if (event.status === 'selected' && event.game_id) {
       // 待机页直接点名游戏：跳过列表直达对局（板端键盘单次按压同款）。
       if (fresh) {
-        showAsrFeedback({ status: 'submitted', text: event.text });
+        if (heard) showAsrFeedback({ status: 'submitted', text: event.text });
         wakeFromStandby();
         enterGameById(event.game_id);
       }
-    } else if (event.status !== 'board_navigate') {
+    } else if (event.status !== 'board_navigate' && heard) {
       showAsrFeedback({ status: 'unmatched', text: event.text });
     }
   });
@@ -317,15 +320,17 @@ function startSelectListening() {
     try { event = JSON.parse(message.data); } catch (_) { return; }
     // 保鲜窗：超过 10 秒的选择事件视为过期（防御旧事件重放）。
     const fresh = Date.now() - Number(event.timestamp_ms || 0) <= 10000;
+    // 板端键盘合成事件（source:'board'）只做动作，不弹语音浮条（2026-10-10）。
+    const heard = event.source !== 'board';
     if (event.status === 'selected' && event.game_id) {
       if (fresh) {
-        showAsrFeedback({ status: 'submitted', text: event.text });
+        if (heard) showAsrFeedback({ status: 'submitted', text: event.text });
         enterGameById(event.game_id);
       }
     } else if (event.status === 'confirm') {
       // 语音确认：进入当前高亮的游戏（上下键/点选已改写选中态）。
       if (fresh) {
-        showAsrFeedback({ status: 'submitted', text: event.text });
+        if (heard) showAsrFeedback({ status: 'submitted', text: event.text });
         enterSelectedGame();
       }
     } else if (event.status === 'board_navigate' && event.game_id) {
@@ -333,7 +338,7 @@ function startSelectListening() {
       // 进局走 selected 事件或本地 Enter，enterSelectedGame 的相位
       // 守卫保证同一记按键不会建两个回合。
       if (fresh) selectGame(event.game_id);
-    } else if (event.status !== 'wake') {
+    } else if (event.status !== 'wake' && heard) {
       showAsrFeedback({ status: 'unmatched', text: event.text });
     }
   });

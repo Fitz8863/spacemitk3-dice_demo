@@ -765,9 +765,12 @@ def _board_dispatch(action: str) -> None:
             _SELECT_BUS.push({
                 "event": "asr", "status": "board_navigate",
                 "game_id": _board_cursor["game_id"], "text": "board",
+                "source": "board",
             })
             # 方向键也唤醒待机页（本地键盘的"任意键唤醒"同款语义）。
-            _STANDBY_BUS.push({"event": "asr", "status": "wake", "text": "board"})
+            # 合成事件带 source:'board'——前端对按键来源只做动作、
+            # 不弹「听到…」语音浮条（按键不是语音）。
+            _STANDBY_BUS.push({"event": "asr", "status": "wake", "text": "board", "source": "board"})
             return
         if action == "confirm":
             game_id = _board_cursor_game(games)
@@ -775,13 +778,14 @@ def _board_dispatch(action: str) -> None:
                 return
             # selected 进两条总线：待机页一批消费"唤醒+直达对局"（单次按压，
             # 不用先唤醒再按一次）；列表页直接进入。进局相位守卫防双建局。
+            # source:'board' 让前端免弹语音浮条（同上）。
             _STANDBY_BUS.push({
                 "event": "asr", "status": "selected", "game_id": game_id,
-                "text": "board",
+                "text": "board", "source": "board",
             })
             _SELECT_BUS.push({
                 "event": "asr", "status": "selected", "game_id": game_id,
-                "text": "board",
+                "text": "board", "source": "board",
             })
     except Exception as exc:  # 派发绝不能带死读取线程
         print(f"[board-input] dispatch failed: {exc}", flush=True)
