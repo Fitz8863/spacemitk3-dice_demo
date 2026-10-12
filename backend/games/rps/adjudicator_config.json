@@ -45,8 +45,7 @@
       "grip"
     ],
     "Paper": [
-      "palm",
-      "stop"
+      "palm"
     ],
     "Scissors": [
       "peace",
@@ -56,7 +55,7 @@
     ]
   },
   "filter_no_gesture": true,
-  "conf": 0.30,
+  "conf": 0.35,
   "stable_frames": 10,
   "rotate": {
     "enabled": false,
