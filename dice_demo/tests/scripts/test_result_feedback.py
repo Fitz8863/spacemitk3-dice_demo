@@ -46,6 +46,19 @@ class FeedbackTests(unittest.TestCase):
         paper = registry.recipe('paper')
         scissors = registry.recipe('scissors')
         self.assertEqual(registry.recipe("rps-ready")["arm_delivery"], "smooth_profile")
+        # 抬臂同时握拳，四指基本闭合后拇指才收拢（interval 须覆盖手指行程：
+        # 定时闭合全程 0.5s（板上已验证），0.4s 时四指已入末段、间隙足够拇指
+        # 通过；rock 的 0.1s 只在四指已预先闭合的衔接场景安全，从张开的手
+        # 起步时拇指 0.1s 出发会与半路的食指相撞——2026-10-10 现场两轮实测）。
+        ready = registry.recipe("rps-ready")
+        self.assertEqual(ready["hand_0_100"], [0, 0, 100, 100, 100, 100])
+        # 拇指收拢但留松量（85）：预备态长时间压死（100）会让 home 开手时
+        # 食指中指挣脱预紧而弹跳；rock 出拳时才全闭压紧（[100]*6 不变）。
+        self.assertEqual(ready["hand_sequence"]["poses"],
+                         [[0, 0, 100, 100, 100, 100], [85, 85, 100, 100, 100, 100]])
+        self.assertEqual(ready["hand_sequence"]["interval_s"], .4)
+        self.assertFalse(ready["hand_sequence"]["return_to_initial"])
+        self.assertEqual(ready["hand_sequence"]["cycles"], 1)
         for recipe in (rock, paper, scissors):
             self.assertEqual(recipe['joints_deg'], joints)
             self.assertEqual(recipe['speed_percent'], 100)
