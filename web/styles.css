@@ -220,7 +220,11 @@ body[data-phase="standby"] .vision-pip { display: none; }
 /* 骰子点阵：全站唯一的骰子画法，比分板与摇骰页共用同一套点数布局。
    40px（比分板）是"数据字形"，扁平即可；摇骰页那颗 120px 的另有实物画法
    （见下面的 .die-face）——放大后的图标必须换画法，直接缩放会像贴纸。 */
-.die { --die-size: 40px; --die-pip: 7px; --die-pad: 7px; width: var(--die-size); height: var(--die-size); border-radius: var(--die-radius, calc(var(--die-size) * .2)); background: #d9e2ec; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); padding: var(--die-pad); gap: 2px; }
+/* 点阵/内边距/点间隙随 --die-size 等比缩放（基准 40px 时逐像素还原旧的
+   7px/7px/2px）：主题层把 --die-size 缩到 24px 上下（clamp）时，固定像素
+   的内部度量装不下 3×3 点阵（需 39px）会溢出裁切——小屏"骰子不完整"
+   的根因（2026-10-12）。摇骰页 .die-face 固定 120px 且自带原值，不受影响。 */
+.die { --die-size: 40px; --die-pip: calc(var(--die-size) * .175); --die-pad: calc(var(--die-size) * .175); width: var(--die-size); height: var(--die-size); border-radius: var(--die-radius, calc(var(--die-size) * .2)); background: #d9e2ec; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); padding: var(--die-pad); gap: calc(var(--die-size) * .05); }
 .die span { width: var(--die-pip); height: var(--die-pip); border-radius: 50%; align-self: center; justify-self: center; background: #17293b; opacity: 0; }
 .die span.on { opacity: 1; }
 
@@ -232,7 +236,7 @@ body[data-phase="standby"] .vision-pip { display: none; }
    共用棱上叠成双线，圆角会在角上留缺口，两个都会让立方体散成几片卡片。
    所以圆角收到 2px（够软又不露缺口），并且不给 border。 */
 .die-cube { position: relative; width: 120px; height: 120px; transform-style: preserve-3d; animation: tumble 1.8s linear infinite; will-change: transform; }
-.die-face { --die-size: 120px; --die-pip: 19px; --die-pad: 20px; --die-radius: 2px; position: absolute; top: 0; left: 0; }
+.die-face { --die-size: 120px; --die-pip: 19px; --die-pad: 20px; gap: 2px; --die-radius: 2px; position: absolute; top: 0; left: 0; }
 .die-face span { background: radial-gradient(circle at 36% 30%, #3c5878 0%, #17293b 58%, #0b1725 100%); box-shadow: inset 0 2px 3px rgba(0, 0, 0, .5), 0 1px 0 rgba(255, 255, 255, .85); }
 /* 固定光源：上面最亮、下面最暗，正面比侧面亮一档。最暗的面压到 #ced9e5
    附近——这样即使某帧正对镜头，也总有侧面的色阶撑住骰子的轮廓。 */
