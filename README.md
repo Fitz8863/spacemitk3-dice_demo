@@ -10,6 +10,7 @@ HOME → CAPTURE → PLAN → APPROACH → GRIP → LIFT → SHAKE → LOWER →
 
 - [运行环境与安装](docs/ENVIRONMENT.md)
 - [首次标定、自动重采和相机移动后的恢复](docs/CALIBRATION.md)
+- [浏览器手眼标定工作台](docs/CALIBRATION_WEB.md)
 - [分阶段调试与单项测试](docs/DEBUG.md)
 - [上层应用接入接口](docs/INTEGRATION.md)
 - [参数配置参考](docs/CONFIGURATION.md)
@@ -175,14 +176,18 @@ tests/                         回归测试
 
 ## 9. 标定与外参恢复
 
-在仓库根目录执行以下命令，参数统一在 [`configs/calibration_workflow.json`](configs/calibration_workflow.json) 中配置。
+标定工具运行在 K3，电脑通过浏览器操作。按 [Web 工具说明](docs/CALIBRATION_WEB.md)完成首次配置后，在仓库根目录启动：
 
-| 场景 | 命令 |
-| --- | --- |
-| 首次标定：人工示教采样并求解 | `bash calibrate.sh first` |
-| 自动标定：沿已有示教路线采样并求解 | `bash calibrate.sh auto --execute` |
-| 相机移动后：通过已登记的固定板恢复外参 | `bash calibrate.sh restore --execute` |
+```bash
+bash scripts/calibration_web_service.sh start
+```
 
-复用内置 20 姿态轨迹时，先确认满足[标定指南](docs/CALIBRATION.md)中的安装条件，再运行 `bash calibrate.sh plan` 生成本机计划。
+访问 `http://<K3地址>:8091`，退出占用设备的程序，再按页面引导选择任务：
 
-得到标定结果后，按指南完成现场准备，再运行 `bash calibrate.sh apply`，自动备份原结果、应用新结果并登记桌面。完整流程与配置说明见[标定指南](docs/CALIBRATION.md)。
+- **首次安装**：人工示教，建立相机与机械臂的位置关系。
+- **重新标定**：沿已保存的示教路线重新采样。
+- **相机位置变了**：基座和已登记的固定板未移动时，通过固定板恢复外参。
+
+完成后检查结果，再应用标定并登记桌面。
+
+详细操作、参数和命令见 [Web 工具说明](docs/CALIBRATION_WEB.md)和[命令行标定指南](docs/CALIBRATION.md)。

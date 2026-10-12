@@ -26,6 +26,20 @@ def synthetic():
 
 
 class CalibrationTests(unittest.TestCase):
+    def test_configured_quality_gates_preserve_residuals_and_transforms(self):
+        _, _, samples = synthetic()
+        with patch('core.distance', return_value=(.0119, 2.65)):
+            original = solve(samples, np.eye(4))
+            relaxed = solve(samples, np.eye(4), .015, 5.)
+        self.assertFalse(original['quality_passed'])
+        self.assertTrue(relaxed['quality_passed'])
+        self.assertEqual(relaxed['thresholds'], {'position_m': .015, 'angle_deg': 5.})
+        for key in ('T_base_camera', 'T_tcp_board', 'holdout_errors_m_deg', 'all_sample_errors_m_deg'):
+            self.assertEqual(original[key], relaxed[key])
+        for residual in ((.01501, 1), (.001, 5.01)):
+            with patch('core.distance', return_value=residual):
+                self.assertFalse(solve(samples, np.eye(4), .015, 5.)['quality_passed'])
+
     def make_collection_session(self, path, poses=None):
         board = json.loads((ROOT/'config/board_perceptive.json').read_text())
         camera = {'backend': 'realsense', 'serial': 'test-camera', 'frame': 'color_optical',
@@ -155,6 +169,24 @@ class CalibrationTests(unittest.TestCase):
         two[:, :320] = 255
         with self.assertRaisesRegex(ValueError, 'No ChArUco markers'):
             roi.detect(two, K, np.zeros(5))
+
+    def test_reference_roi_covers_right_edge_and_rejects_clipped_board(self):
+        cfg = json.loads((ROOT/'config/board_reference_redcloth.json').read_text())
+        detector = CharucoDetector(cfg)
+        board = detector.board
+        pattern = (board.generateImage((120, 150)) if hasattr(board, 'generateImage')
+                   else board.draw((120, 150)))
+        image = np.full((720, 960, 3), 255, np.uint8)
+        image[465:615, 640:760] = cv2.cvtColor(pattern, cv2.COLOR_GRAY2BGR)
+        K = np.array([[900., 0., 480.], [0., 900., 360.], [0., 0., 1.]])
+        _, quality, _ = detector.detect(image, K, np.zeros(5))
+        self.assertEqual(quality['corners'], 12)
+        clipped = CharucoDetector({**cfg, 'image_roi_xyxy': [520, 440, 740, 700]})
+        with self.assertRaisesRegex(ValueError, r'Too few ChArUco corners:.*8/12.*520, 440, 740, 700'):
+            clipped.detect(image, K, np.zeros(5))
+        # A second copy outside the fixed-board ROI cannot contaminate registration.
+        image[100:250, 200:320] = cv2.cvtColor(pattern, cv2.COLOR_GRAY2BGR)
+        self.assertEqual(detector.detect(image, K, np.zeros(5))[1]['corners'], 12)
 
     def test_exclusion_keeps_full_frame_coordinates_and_rejects_fixed_board_alone(self):
         cfg = json.loads((ROOT/'config/board_4x5_21p5mm.json').read_text())
