@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -56,7 +57,15 @@ def test_profile_loads_dice_and_composes_mediamtx_url():
     runtime = load_runtime_config(resolve_runtime_config_path(profile))
     # webrtc_base_url 已上浮到全局 backend/config.json（2026-10-09）：
     # 游戏的 runtime_config 不再携带浏览器地址，取全局默认与 video.path 拼接。
-    arena = json.loads((ROOT / "backend/config.json").read_text())
+    # 默认值从 HEAD 提交读——工作区的 backend/config.json 带现场 IP
+    # （webrtc 上浮后的"现场值不入库"落点），不能让测试随现场值漂红。
+    arena = json.loads(
+        subprocess.run(
+            ["git", "show", "HEAD:backend/config.json"],
+            cwd=ROOT, capture_output=True, text=True, check=True,
+        ).stdout
+    )
+    assert arena["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
     assert "webrtc_base_url" not in runtime.get("video", {})
     assert compose_video_url(
         arena["video"]["webrtc_base_url"], profile["video"]["path"]
@@ -436,7 +445,13 @@ def test_runtime_config_exposes_mediamtx_base_and_component_has_no_duplicate_vid
     assert "video" not in runtime
     assert "video" not in config
     assert "rtsp" not in config
-    arena = json.loads((ROOT / "backend/config.json").read_text())
+    # 默认值从 HEAD 提交读——工作区带现场 IP（见上条测试的说明）。
+    arena = json.loads(
+        subprocess.run(
+            ["git", "show", "HEAD:backend/config.json"],
+            cwd=ROOT, capture_output=True, text=True, check=True,
+        ).stdout
+    )
     assert arena["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
 
 
