@@ -514,7 +514,7 @@ export function register(engine) {
   }
 
   // ---- 对局生命周期 ----
-  async function enter(manifest) {
+  async function enter(manifest, options = {}) {
     $('analysisStreamPanel').classList.add('dice-video');
     configureParticipants(manifest);
     stopVisionStream();
@@ -586,7 +586,8 @@ export function register(engine) {
     });
 
     try {
-      await round.start();
+      if (options.roundId) await round.attach(options.roundId);
+      else await round.start();
       setActiveRound(round); // 登记给 pagehide 保险：离开页面即取消对局
     } catch (error) {
       console.error('Failed to start round:', error);

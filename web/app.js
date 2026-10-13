@@ -3,6 +3,7 @@
 // 订阅事件流并渲染；台词以后端下发的 speech 指令播放，await 指令播完回执。
 import { register as registerDice } from './games/dice.js';
 import { register as registerRps } from './games/rps.js';
+import { createSessionClient } from './shared-session.js';
 
 const state = {
   phase: 'select',
@@ -62,6 +63,68 @@ const gameModules = {};
 let activeGame = null; // 当前挂载的游戏模块（有 enter/teardown/onKey）
 let games = []; // GET /api/games 返回的列表
 let boardInputSource = { local_client: false, enabled: false, available: false };
+let sharedSession = null;
+let sessionRender = Promise.resolve();
+let sessionApplying = false;
+let sessionRoundId = null;
+let lastSharedMode = false;
+let lastActivitySent = 0;
+
+function sessionAction(action, data = {}) {
+  return sharedSession.action(action, data).catch((error) => {
+    if (!error.silent && error.code !== 'SESSION_STALE') console.error('Shared action failed:', error);
+  });
+}
+
+function sessionActivity() {
+  if (!sharedSession?.shared || Date.now() - lastActivitySent < 1000) return;
+  lastActivitySent = Date.now();
+  sessionAction('activity');
+}
+
+function applySessionSnapshot(snapshot) {
+  boardInputSource.available = snapshot.board_input?.available === true;
+  boardInputSource.enabled = snapshot.board_input?.enabled === true;
+  sessionRender = sessionRender.catch(console.error).then(async () => {
+    if (sharedSession.snapshot !== snapshot) return; // A newer snapshot already arrived.
+    if (!snapshot.shared) {
+      if (lastSharedMode) {
+        lastSharedMode = false;
+        sessionApplying = true;
+        try { returnToSelect(); } finally { sessionApplying = false; }
+        if (snapshot.phase === 'standby') enterStandby();
+      }
+      return;
+    }
+    lastSharedMode = true;
+    clearTimeout(idleTimer);
+    clearIdleReturn();
+    if (standbySource) { standbySource.close(); standbySource = null; }
+    if (selectSource) { selectSource.close(); selectSource = null; }
+    sessionApplying = true;
+    try {
+      if (!snapshot.round_id) {
+        if (activeGame) activeGame.teardown();
+        activeGame = null;
+        sessionRoundId = null;
+        selectGame(snapshot.selected_game, true);
+        setPhase(snapshot.phase === 'standby' ? 'standby' : 'select');
+        renderStandbyVoiceHint(standbySettings.wake_phrases, []);
+        return;
+      }
+      if (sessionRoundId !== snapshot.round_id) {
+        activeGame?.teardown();
+        const manifest = games.find((game) => game.id === snapshot.game_id);
+        const module = gameModules[snapshot.game_id];
+        if (!manifest || !module) throw new Error(`Unknown shared game: ${snapshot.game_id}`);
+        activeGame = module;
+        sessionRoundId = snapshot.round_id;
+        await module.enter(manifest, { roundId: snapshot.round_id });
+      }
+    } finally { sessionApplying = false; }
+  });
+}
+
 
 const CONTROLLER_COPY = {
   select: `使用 <span class="controller-hint"><span class="controller-key controller-key-yellow" aria-label="黄色按钮"></span><span>黄色 · 向上选择</span></span> 和 <span class="controller-hint"><span class="controller-key controller-key-blue" aria-label="蓝色按钮"></span><span>蓝色 · 向下选择</span></span> 选择游戏，选中后按 <span class="controller-hint"><span class="controller-key controller-key-green" aria-label="绿色按钮"></span><span>绿色 · 确认</span></span>。`,
@@ -158,6 +221,7 @@ function applyStandbySettings(settings) {
 }
 
 function resetIdleTimer() {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return;
   clearTimeout(idleTimer);
   if (state.phase !== 'select' || !standbySettings.enabled) return;
   idleTimer = setTimeout(enterStandby, standbySettings.idle_seconds * 1000);
@@ -181,6 +245,7 @@ function clearIdleReturn() {
 }
 
 function armIdleReturn() {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return;
   clearIdleReturn();
   if (!idleReturnArmed || !standbySettings.enabled) return;
   idleReturnTimer = setTimeout(() => {
@@ -191,12 +256,14 @@ function armIdleReturn() {
 }
 
 function setIdleReturn(armed) {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return;
   idleReturnArmed = armed === true;
   if (idleReturnArmed) armIdleReturn();
   else clearIdleReturn();
 }
 
 function enterStandby() {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return;
   boardSelectionEntry = null;
   clearTimeout(idleTimer);
   idleTimer = null;
@@ -216,6 +283,11 @@ function enterStandby() {
 }
 
 function wakeFromStandby() {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) {
+    if (state.phase !== 'standby') return false;
+    sessionAction('wake');
+    return true;
+  }
   if (state.phase !== 'standby') return false;
   setPhase('select');
   selectDefaultGame();
@@ -228,6 +300,7 @@ function wakeFromStandby() {
 // 词表在服务端拼：游戏名在前、唤醒词在后（"我想玩摇骰子游戏"选游戏，
 // 即使唤醒词"游戏"也在句中）；所以这里不再前端预判唤醒词是否为空。
 function startStandbyListening() {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return;
   stopStandbyListening();
   requestJson('/api/asr/standby', {
     method: 'POST',
@@ -296,6 +369,7 @@ function renderStandbyVoiceHint(wakePhrases, selectGames) {
 }
 
 function stopStandbyListening() {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return;
   if (standbySource) {
     standbySource.close();
     standbySource = null;
@@ -315,6 +389,7 @@ function stopStandbyListening() {
 let selectSource = null;
 
 function startSelectListening() {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return;
   stopSelectListening();
   requestJson('/api/asr/select', {
     method: 'POST',
@@ -362,6 +437,7 @@ function startSelectListening() {
 }
 
 function stopSelectListening() {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return;
   if (selectSource) {
     selectSource.close();
     selectSource = null;
@@ -403,6 +479,11 @@ function enterGameById(gameId) {
 // 应唤醒待机。
 ['keydown', 'keyup'].forEach((type) => {
   window.addEventListener(type, (event) => {
+    if (sharedSession?.shared && ['Enter', 'Escape', 'ArrowDown', 'ArrowUp'].includes(event.key)
+        && boardInputSource.local_client && boardInputSource.available && sharedSession.ready) {
+      event.stopPropagation(); event.preventDefault(); return;
+    }
+    if (sharedSession?.shared && type === 'keydown') sessionActivity();
     if (state.phase === 'standby' && type !== 'click') {
       // 待机页可见诊断：确认设备按键是否到达页面（按键后屏幕左上角闪现）。
       const probe = $('standbyProbe');
@@ -424,7 +505,7 @@ function enterGameById(gameId) {
 
 // 对局空闲返回把"人在场"的证据放宽到指针输入：与待机唤醒不同（那里刻意排除
 // click 防误唤醒），按钮点击本身就是要重置空闲计时的信号。
-window.addEventListener('pointerdown', () => armIdleReturn(), { capture: true });
+window.addEventListener('pointerdown', () => { armIdleReturn(); sessionActivity(); }, { capture: true });
 
 // ---- 提示 ----
 let toastTimer = null;
@@ -843,6 +924,7 @@ async function playDirective(round, directive, options = {}) {
 // 宽限期后自动取消回合、释放麦克风。
 let activeRound = null;
 window.addEventListener('pagehide', () => {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return;
   const roundId = activeRound?.roundId;
   if (!roundId) return;
   try {
@@ -857,6 +939,8 @@ function createRoundClient(gameId, handlers) {
   let roundId = null;
   let source = null;
   let lastSequence = 0;
+  let currentSnapshot = null;
+  let firstSharedSnapshot = true;
   // Set once the round reaches a terminal snapshot or the client cancels:
   // afterwards every event is stale game state and must not reach the UI,
   // otherwise a finished view resurrects itself after returnToSelect().
@@ -880,6 +964,21 @@ function createRoundClient(gameId, handlers) {
 
   function ingest(snapshot) {
     if (closed) return;
+    currentSnapshot = snapshot;
+    if (typeof sharedSession !== 'undefined' && sharedSession?.shared) {
+      if (firstSharedSnapshot) {
+        firstSharedSnapshot = false;
+        lastSequence = Number(snapshot.event_sequence || 0);
+        handlers.onSyncState?.(snapshot);
+        for (const item of (snapshot.observations || [])) {
+          if (item.event === 'tick') handlers.onTick?.(item);
+          else handlers.onEvent?.(item, snapshot);
+        }
+        // Finished error rounds keep their failure view; do not replay old speech.
+        if (snapshot.status === 'error') handlers.onComplete?.({ status: 'error' }, snapshot);
+        return;
+      }
+    }
     for (const item of (snapshot.events || [])) {
       const sequence = Number(item.sequence || 0);
       if (sequence > lastSequence) {
@@ -924,6 +1023,7 @@ function createRoundClient(gameId, handlers) {
   }
 
   async function start() {
+    if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return attach(sharedSession.snapshot.round_id);
     const payload = await requestJson('/api/game/rounds', {
       method: 'POST',
       body: JSON.stringify({ game: gameId }),
@@ -936,7 +1036,28 @@ function createRoundClient(gameId, handlers) {
     return payload;
   }
 
+  async function attach(id) {
+    teardownStream();
+    roundId = id;
+    closed = false;
+    lastSequence = 0;
+    firstSharedSnapshot = true;
+    currentSnapshot = await requestJson(`/api/game/rounds/${id}`);
+    ingest(currentSnapshot);
+    if (closed) return currentSnapshot;
+    subscribe();
+    return currentSnapshot;
+  }
+
   async function submitIntent(intent, payload = {}) {
+    if (typeof sharedSession !== 'undefined' && sharedSession?.shared) {
+      if (intent === 'speech_started' || intent === 'speech_done') return currentSnapshot;
+      const result = await sharedSession.action('intent', { round_id: roundId,
+        state: currentSnapshot?.state, state_version: currentSnapshot?.state_version,
+        intent, payload });
+      if (result.round && result.round_id === roundId) ingest(result.round);
+      return result.round;
+    }
     if (!roundId) throw new Error('对局尚未创建');
     const targetRoundId = roundId;
     const snapshot = await requestJson(`/api/game/rounds/${targetRoundId}/intents`, {
@@ -953,6 +1074,7 @@ function createRoundClient(gameId, handlers) {
   }
 
   async function cancel() {
+    if (typeof sharedSession !== 'undefined' && sharedSession?.shared) { roundId = null; closed = true; teardownStream(); return; }
     if (!roundId) return;
     const target = roundId;
     roundId = null;
@@ -974,6 +1096,7 @@ function createRoundClient(gameId, handlers) {
 
   return {
     start,
+    attach,
     submitIntent,
     cancel,
     teardownStream,
@@ -993,7 +1116,7 @@ async function requestJson(url, options = {}) {
     const errorMessage = payload.error || `HTTP ${response.status}`;
 
     // An intent pressed at the wrong moment is normal gameplay, not an error.
-    if (errorCode === 'ROUND_INTENT_REJECTED' || errorCode === 'ROUND_CLOSED') {
+    if (errorCode === 'ROUND_INTENT_REJECTED' || errorCode === 'ROUND_CLOSED' || errorCode === 'SESSION_STALE') {
       const error = new Error(errorMessage);
       error.code = errorCode;
       error.silent = true;
@@ -1024,6 +1147,10 @@ function registerGame(module) {
 }
 
 function returnToSelect() {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) {
+    if (!sessionApplying && sharedSession.snapshot?.round_id) sessionAction('exit');
+    return;
+  }
   boardSelectionEntry = null; // A pending confirmation must not revive a departed screen.
   setIdleReturn(false); // 离开对局即解除空闲退出（回列表后由待机计时接管）
   if (activeGame && activeGame.teardown) activeGame.teardown();
@@ -1088,6 +1215,7 @@ let boardSelectionPending = false;
 let boardSelectionEntry = null;
 
 function syncBoardSelection(id) {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return Promise.resolve(true);
   if (!boardInputSource.local_client || !games.some((game) => game.id === id && game.enabled)) {
     return Promise.resolve(true);
   }
@@ -1116,6 +1244,7 @@ function syncBoardSelection(id) {
 }
 
 function selectDefaultGame() {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return;
   // The exhibition's main challenge is dice. Respect game enablement and
   // fall back to the first available game; selecting never starts a round.
   const preferred = games.find((game) => game.id === 'dice' && game.enabled)
@@ -1123,7 +1252,8 @@ function selectDefaultGame() {
   selectGame(preferred?.id || null);
 }
 
-function selectGame(id) {
+function selectGame(id, fromSession = false) {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared && !fromSession) return sessionAction('select', { game: id });
   state.selectedGame = id;
   document.querySelectorAll('.game-option').forEach((item) => {
     const selected = item.dataset.game === id;
@@ -1135,6 +1265,7 @@ function selectGame(id) {
 }
 
 function enterSelectedGame() {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return sessionAction('enter');
   // Reserve the entry before waiting: DOM Enter and the board SSE callback may
   // arrive together while selection synchronization is still in flight.
   if (state.phase !== 'select') return;
@@ -1216,6 +1347,10 @@ document.addEventListener('keydown', (event) => {
   const controllerKey = ['Enter', 'Escape', 'ArrowDown', 'ArrowUp'].includes(event.key);
   if (controllerKey) event.preventDefault();
   if (event.repeat) return;
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared && state.phase === 'select' && ['ArrowUp', 'ArrowDown'].includes(event.key)) {
+    sessionAction('navigate', { direction: event.key === 'ArrowDown' ? 'down' : 'up' });
+    return;
+  }
 
   if (state.phase === 'select') {
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
@@ -1249,7 +1384,9 @@ async function loadGames() {
     };
     applyStandbySettings(payload.standby);
     renderGameList();
-    selectDefaultGame();
+    sharedSession = createSessionClient({ requestJson, onSnapshot: applySessionSnapshot });
+    await sharedSession.connect();
+    if (!sharedSession.shared) selectDefaultGame();
   } catch (error) {
     console.error('Failed to load game list:', error);
     toast('游戏列表加载失败，请检查后端 /api/games');
@@ -1258,6 +1395,7 @@ async function loadGames() {
 
 setPhase('select');
 loadGames().then(() => {
+  if (sharedSession?.shared) return;
   // boot_standby=true：页面加载即待机（设备就绪的舞台状态）；false 停在列表
   // 并直接开语音选游戏监听。
   if (standbySettings.boot_standby) enterStandby();
