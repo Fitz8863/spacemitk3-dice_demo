@@ -186,6 +186,18 @@ def test_board_input_relay_contract():
     assert "if (state.phase !== 'select') return;" in js
 
 
+def test_local_hall_selection_sync_preserves_existing_input_channels():
+    js = (ROOT / "web/app.js").read_text(encoding="utf-8")
+    assert "'/api/input/board/selection'" in js
+    assert "local_client: payload.board_input?.local_client === true" in js
+    assert "const ok = await boardSelectionSync;" in js
+    assert "if (boardSelectionEntry !== null) return;" in js
+    assert "new EventSource('/api/asr/select/stream')" in js
+    assert "new EventSource('/api/asr/standby/stream')" in js
+    assert "if (!heard && boardInputSource.local_client) enterSelectedGame();" in js
+    assert "boardInputSource.available && selectSource?.readyState === 1" in js
+
+
 def test_frontend_blue_button_retries_adjudication_after_diagnosis():
     html = (ROOT / "web/index.html").read_text(encoding="utf-8")
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")

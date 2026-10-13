@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -16,6 +17,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from core.vision import VisionAdjudicationRequest  # noqa: E402
+from core.arena_config import arena_webrtc_base_url, validate_arena_config  # noqa: E402
 from components.vision_yolov8_objdetect.profile import (  # noqa: E402
     ProfileError,
     compose_video_url,
@@ -57,19 +59,22 @@ def test_profile_loads_dice_and_composes_mediamtx_url():
     runtime = load_runtime_config(resolve_runtime_config_path(profile))
     # webrtc_base_url 已上浮到全局 backend/config.json（2026-10-09）：
     # 游戏的 runtime_config 不再携带浏览器地址，取全局默认与 video.path 拼接。
-    # 默认值从 HEAD 提交读——工作区的 backend/config.json 带现场 IP
-    # （webrtc 上浮后的"现场值不入库"落点），不能让测试随现场值漂红。
+    # 从 HEAD 读取已提交配置，现场快照也可能合法地带有部署 IP。
     arena = json.loads(
         subprocess.run(
             ["git", "show", "HEAD:backend/config.json"],
             cwd=ROOT, capture_output=True, text=True, check=True,
         ).stdout
     )
-    assert arena["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
+    validate_arena_config(arena)
     assert "webrtc_base_url" not in runtime.get("video", {})
-    assert compose_video_url(
+    base = urlsplit(arena["video"]["webrtc_base_url"])
+    composed = urlsplit(compose_video_url(
         arena["video"]["webrtc_base_url"], profile["video"]["path"]
-    ) == "http://127.0.0.1:8889/dice/det"
+    ))
+    assert (composed.scheme, composed.netloc) == (base.scheme, base.netloc)
+    assert composed.path == "/dice/det"
+    assert not composed.query and not composed.fragment
 
 
 def test_runtime_config_is_declared_per_game_and_loads_hardware_defaults():
@@ -445,14 +450,15 @@ def test_runtime_config_exposes_mediamtx_base_and_component_has_no_duplicate_vid
     assert "video" not in runtime
     assert "video" not in config
     assert "rtsp" not in config
-    # 默认值从 HEAD 提交读——工作区带现场 IP（见上条测试的说明）。
+    # 已提交配置可以合法地保存现场地址。
     arena = json.loads(
         subprocess.run(
             ["git", "show", "HEAD:backend/config.json"],
             cwd=ROOT, capture_output=True, text=True, check=True,
         ).stdout
     )
-    assert arena["video"]["webrtc_base_url"] == "http://127.0.0.1:8889"
+    validate_arena_config(arena)
+    assert arena_webrtc_base_url(arena) == arena["video"]["webrtc_base_url"]
 
 
 def test_provider_health_no_longer_reports_llm_state():
