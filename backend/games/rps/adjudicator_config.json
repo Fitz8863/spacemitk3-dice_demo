@@ -55,7 +55,7 @@
     ]
   },
   "filter_no_gesture": true,
-  "conf": 0.35,
+  "conf": 0.30,
   "stable_frames": 10,
   "rotate": {
     "enabled": false,

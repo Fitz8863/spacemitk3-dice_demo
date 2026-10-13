@@ -374,15 +374,15 @@
 						"cases": {
 							"PLAYER": {
 								"mode": "tts_local",
-								"text": "当前玩家点数是{player_score}，Agent点数是{agent_score}。恭喜你，你赢了，你真的太棒了，快去找工作人员领取奖励吧。"
+								"text": "当前玩家点数是{player_score}，机械臂点数是{agent_score}。恭喜你，你赢了，你真的太棒了，快去找工作人员领取奖励吧。"
 							},
 							"AGENT": {
 								"mode": "tts_local",
-								"text": "当前玩家点数是{player_score}，Agent点数是{agent_score}。很遗憾，你输了哦，要不再来一局？"
+								"text": "当前玩家点数是{player_score}，机械臂点数是{agent_score}。很遗憾，你输了哦，要不再来一局？"
 							},
 							"TIE": {
 								"mode": "tts_local",
-								"text": "当前玩家点数{player_score}。Agent点数{agent_score}。本局平局，要不再来一局？"
+								"text": "当前玩家点数{player_score}。机械臂点数{agent_score}。本局平局，要不再来一局？"
 							}
 						}
 					},
