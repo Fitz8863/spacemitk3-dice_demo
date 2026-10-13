@@ -85,3 +85,13 @@ def test_session_stream_first_frame_is_current_snapshot(http_session):
     data=json.loads(r.fp.readline().removeprefix(b'data: '))
     assert data['selected_game']=='rps'
     c.close()
+
+
+def test_legacy_pagehide_cancel_only_detaches_shared_display(http_session):
+    port,_,made=http_session
+    _,snap=request(port,'POST','/api/session/actions',{'action':'enter'})
+    rid=snap['round_id']
+    assert request(port,'POST',f'/api/game/rounds/{rid}/cancel')[0]==200
+    assert made[0].status=='running'
+    assert request(port,'POST','/api/session/actions',{'action':'exit','round_id':rid})[0]==200
+    assert made[0].status=='cancelled'

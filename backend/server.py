@@ -49,6 +49,7 @@ from core.asr_bridge import AsrIntentBridge
 from core.vision_stream import VisionStreamManager
 from core.board_input import BoardKeyReader, resolve_intent
 from core.shared_session import SharedSession
+from core.shared_audio import SharedAudio
 from core.arena_config import (
     ARENA_CONFIG_PATH,
     ArenaConfigError,
@@ -1404,6 +1405,8 @@ def create_round(game_id: str, *, shared: bool = False, event_sink=None) -> Game
     # input never gates round creation: a broken ASR provider only means this
     # round runs on buttons alone.
     try:
+        if shared:
+            ASR_BRIDGE.stop()
         ASR_BRIDGE.start_for_round(round_)
     except Exception as exc:
         print(f"[asr] failed to start for round {round_.id[:8]}: {exc!r}", flush=True)
@@ -1423,6 +1426,45 @@ def create_round(game_id: str, *, shared: bool = False, event_sink=None) -> Game
 # Shared session is initialized by main or the explicit session API, never by import.
 _SESSION: SharedSession | None = None
 _SESSION_LOCK = threading.Lock()
+_SHARED_AUDIO: SharedAudio | None = None
+_AUDIO_LOCK = threading.Lock()
+
+
+def _produce_shared_audio(round_, directive, emit):
+    if directive.get("mode") == "audio":
+        path = resolve_game_audio_path(round_.game_id, str(directive.get("audio") or ""), root=_GAMES_ROOT)
+        emit(path.read_bytes())
+        return
+    dispatcher = _tts_dispatcher()
+    entry = {"mode": str(directive.get("mode") or "tts_local")}
+    if directive.get("provider"):
+        entry["provider"] = directive["provider"]
+    provider_id = dispatcher.provider_id_for_speech_entry(entry, round_.game_id)
+    payload = {"game": round_.game_id, "text": directive.get("text", ""),
+               "voice": directive.get("voice", "default"), "speed": directive.get("speed", 1.0)}
+    provider = dispatcher.provider(payload, game_id=round_.game_id, provider_id=provider_id)
+    if callable(getattr(provider, "stream", None)):
+        dispatcher.stream(payload, emit, game_id=round_.game_id, provider_id=provider_id)
+    else:
+        audio, _ = dispatcher.synthesize(payload, game_id=round_.game_id, provider_id=provider_id)
+        emit(audio)
+
+
+def _get_shared_audio():
+    global _SHARED_AUDIO
+    with _AUDIO_LOCK:
+        if _SHARED_AUDIO is None:
+            _SHARED_AUDIO = SharedAudio(produce=_produce_shared_audio)
+        return _SHARED_AUDIO
+
+
+def _create_shared_round(game, sink):
+    audio = _get_shared_audio()
+    def notify(round_, event):
+        sink(round_, event)
+        audio.enqueue(round_, event)
+    return create_round(game, shared=True, event_sink=notify)
+
 
 
 def _shared_round_intent(round_, intent, payload):
@@ -1434,6 +1476,7 @@ def _shared_round_intent(round_, intent, payload):
 
 def _shared_hall_asr(phase):
     if phase not in {"select", "standby"}:
+        ASR_BRIDGE.stop()
         return
     phrases = _game_select_phrases()
     if phase == "standby":
@@ -1461,7 +1504,7 @@ def _get_session():
     with _SESSION_LOCK:
         if _SESSION is None:
             _SESSION = SharedSession(config=get_arena_config, games=_board_enabled_games,
-                create_round=lambda game, sink: create_round(game, shared=True, event_sink=sink),
+                create_round=_create_shared_round,
                 on_hall=_shared_hall_asr, board_source=_board_input_source,
                 legacy_running=lambda: any(r.status == "running" and not getattr(r, "shared", False) for r in rounds.values()))
         return _SESSION
@@ -1479,6 +1522,8 @@ def _shutdown_runtime_components() -> None:
     """Stop provider-owned resident workers before the backend exits."""
     if _SESSION is not None:
         _SESSION.close()
+    if _SHARED_AUDIO is not None:
+        _SHARED_AUDIO.close()
     try:
         ASR_BRIDGE.stop()
     except Exception as exc:
@@ -1595,7 +1640,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             snapshot = session.snapshot()
             self.send_sse_snapshot(snapshot, "snapshot")
-            while True:
+            while not session.closed:
                 previous = snapshot["revision"]
                 snapshot = session.wait_for_update(previous)
                 self.send_sse_snapshot(snapshot, "update" if snapshot["revision"] != previous else "heartbeat")
@@ -1707,6 +1752,7 @@ class Handler(BaseHTTPRequestHandler):
             "status": snapshot["status"],
             "state": snapshot["state"],
             "state_version": snapshot.get("state_version"),
+            "speech_active": snapshot.get("speech_active", False),
             "ui": snapshot.get("ui", {}),
             "observations": snapshot.get("observations", []),
             "error": snapshot["error"],
@@ -1765,8 +1811,42 @@ class Handler(BaseHTTPRequestHandler):
                 session.disconnected()
             self.close_connection = True
 
+    def send_shared_speech_frames(self, round_, directive_id):
+        directive = round_.find_directive(directive_id)
+        if directive is None:
+            self.send_error_json(InvalidRequestError("speech directive not found"))
+            return
+        audio = _get_shared_audio()
+        clip = audio.ensure(round_, directive)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-dice-arena-wav-stream")
+        self.send_header("X-Dice-Speech-Directive", directive_id)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            for wav in audio.frames(clip, live=True):
+                self.wfile.write(encode_audio_frame(wav))
+                self.wfile.flush()
+            self.wfile.write(encode_end_frame())
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:
+            try:
+                self.wfile.write(encode_error_frame(str(exc)))
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        finally:
+            self.close_connection = True
+
     def send_round_speech_frames(self, round_: GameRound, directive_id: str) -> None:
         """Stream one directive's audio: manifest WAV or provider TTS frames."""
+        if getattr(round_, "shared", False):
+            self.send_shared_speech_frames(round_, directive_id)
+            return
         directive = round_.find_directive(directive_id)
         if directive is None:
             self.send_error_json(DiceArenaError(
@@ -1908,6 +1988,7 @@ class Handler(BaseHTTPRequestHandler):
                 "tts_remote_provider": remote_id,
                 "tts_remote": {**remote_health, "configured": bool(remote_id)},
                 "board_input": _board_input_status(),
+                "shared_audio": _SHARED_AUDIO.health() if _SHARED_AUDIO else {"worker_running": False},
                 "camera": "config.json",
             })
             return
@@ -1954,7 +2035,17 @@ class Handler(BaseHTTPRequestHandler):
             except JobNotFoundError as exc:
                 self.send_error_json(exc)
                 return
-            if suffix == "stream":
+            if suffix == "speech/current" and getattr(round_, "shared", False):
+                audio = _get_shared_audio()
+                snap = round_.snapshot()
+                current = audio.current(round_)
+                if current is None and snap["speech_active"]:
+                    latest = next((e for e in reversed(snap["events"]) if e.get("event") == "speech" and e.get("state_version") == snap.get("state_version")), None)
+                    if latest:
+                        audio.ensure(round_, latest)
+                        current = audio.current(round_)
+                self.send_json({"directive": current})
+            elif suffix == "stream":
                 self.stream_round_events(round_)
             else:
                 self.send_json(round_.snapshot())
@@ -2000,7 +2091,10 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/api/session/actions":
             try:
-                self.send_json(_get_session().submit(self.read_json()))
+                command = self.read_json()
+                if command.get("action") == "intent" and (not isinstance(command.get("state"), str) or not isinstance(command.get("state_version"), int)):
+                    raise InvalidRequestError("state and state_version are required for a session intent")
+                self.send_json(_get_session().submit(command))
             except DiceArenaError as exc:
                 self.send_error_json(exc)
             return
@@ -2217,7 +2311,7 @@ class Handler(BaseHTTPRequestHandler):
                 if suffix == "cancel":
                     self.drain_body()
                     if getattr(round_, "shared", False):
-                        _get_session().submit({"action": "exit", "round_id": round_.id})
+                        _get_session().submit({"action": "detach", "round_id": round_.id})
                     else:
                         round_.cancel()
                     self.send_json(round_.snapshot())

@@ -815,6 +815,7 @@ function waitSeconds(seconds) {
 // 一起后移——游戏节奏与「语音↔屏幕倒计时」的相对对齐都不变。用于需要停顿的
 // 转场（骰子：停！之后静 2 秒再念开盖词）。
 async function playDirective(round, directive, options = {}) {
+  if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return playSharedDirective(round, directive);
   const ackHoldSeconds = Math.max(0, Number(options.ackHoldSeconds) || 0);
   const targetRoundId = round?.roundId;
   let startNotified = false;
@@ -917,6 +918,79 @@ async function playDirective(round, directive, options = {}) {
   }
 }
 
+// All remote displays consume the same cached audio. Only the backend player
+// acknowledges it; muting or an autoplay block cannot advance the round.
+let audioUnlockNeeded = false;
+function showAudioUnlock() {
+  audioUnlockNeeded = true;
+  $('audioUnlock')?.classList.remove('hidden');
+}
+
+async function playSharedDirective(round, directive) {
+  if (boardInputSource.local_client || !state.sound || !round?.roundId) return;
+  stopSpeech();
+  const context = getSpeechAudioContext();
+  if (context && context.state !== 'running') {
+    showAudioUnlock();
+    return;
+  }
+  const requestId = state.ttsRequestId;
+  const controller = new AbortController();
+  state.ttsAbortController = controller;
+  const queue = createTtsFrameQueue();
+  let reader;
+  const producer = (async () => {
+    try {
+      const response = await fetch(`/api/game/rounds/${round.roundId}/speech`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ directive_id: directive.directive_id, live: true }), signal: controller.signal,
+      });
+      if (!response.ok || !response.body) throw new Error(`Audio HTTP ${response.status}`);
+      reader = response.body.getReader();
+      for await (const blob of readTtsFrames(reader)) queue.push(blob);
+      queue.finish();
+    } catch (error) { queue.finish(error); }
+    finally { try { await reader?.cancel(); } catch (_) {} reader?.releaseLock(); }
+  })();
+  const scheduler = createSpeechScheduler(requestId);
+  if (scheduler) state.ttsPlaybackCancel = scheduler.cancel;
+  try {
+    while (true) {
+      const blob = await queue.next();
+      if (blob === null || requestId !== state.ttsRequestId) break;
+      if (scheduler) await scheduler.schedule(blob);
+      else await playSpeechBlob(blob, requestId);
+    }
+    if (scheduler) await scheduler.waitDrained();
+    await producer;
+  } catch (error) {
+    controller.abort();
+    if (error.name === 'NotAllowedError') showAudioUnlock();
+    else if (error.name !== 'AbortError') console.error('Shared speech failed:', error);
+  } finally {
+    await producer.catch(() => {});
+    if (state.ttsPlaybackCancel === scheduler?.cancel) state.ttsPlaybackCancel = null;
+    if (state.ttsAbortController === controller) state.ttsAbortController = null;
+  }
+}
+
+async function resumeSharedAudio() {
+  const roundId = activeRound?.roundId;
+  if (!sharedSession?.shared || !roundId || boardInputSource.local_client || !state.sound) return;
+  const audio = await requestJson(`/api/game/rounds/${roundId}/speech/current`);
+  if (audio.directive && activeRound?.roundId === roundId) playSharedDirective(activeRound, audio.directive);
+}
+
+$('audioUnlock')?.addEventListener('click', async () => {
+  const context = getSpeechAudioContext();
+  try {
+    await context?.resume();
+    audioUnlockNeeded = false;
+    $('audioUnlock')?.classList.add('hidden');
+    await resumeSharedAudio();
+  } catch (_) { showAudioUnlock(); }
+});
+
 // ---- 页面离开保险 ----
 // 关标签/刷新/跳转时尽力取消当前对局（sendBeacon 在页面卸载后仍会送达，
 // /cancel 无请求体，不会毒化 keep-alive 连接）。断网/休眠等 sendBeacon
@@ -941,6 +1015,7 @@ function createRoundClient(gameId, handlers) {
   let lastSequence = 0;
   let currentSnapshot = null;
   let firstSharedSnapshot = true;
+  let lastAudioDirective = null;
   // Set once the round reaches a terminal snapshot or the client cancels:
   // afterwards every event is stale game state and must not reach the UI,
   // otherwise a finished view resurrects itself after returnToSelect().
@@ -950,7 +1025,10 @@ function createRoundClient(gameId, handlers) {
     if (event.event === 'state_changed') {
       handlers.onStateChange?.(event.state, event.ui || {}, snapshot || null);
     } else if (event.event === 'speech') {
+      lastAudioDirective = event.directive_id;
       handlers.onSpeech?.(event);
+    } else if (event.event === 'audio_error') {
+      toast(event.kind === 'board_playback' ? '板端扬声器播放失败，游戏继续' : '语音生成失败，游戏继续');
     } else if (event.event === 'tick') {
       handlers.onTick?.(event);
     } else if (event.event === 'asr') {
@@ -983,6 +1061,8 @@ function createRoundClient(gameId, handlers) {
       const sequence = Number(item.sequence || 0);
       if (sequence > lastSequence) {
         lastSequence = sequence;
+        if (typeof sharedSession !== 'undefined' && sharedSession?.shared && item.event === 'speech'
+            && (item.state_version !== snapshot.state_version || snapshot.speech_active === false)) continue;
         dispatch(item, snapshot);
       }
     }
@@ -1013,7 +1093,19 @@ function createRoundClient(gameId, handlers) {
         ingest(JSON.parse(event.data));
       } catch (_) { /* malformed frame: the next snapshot re-aligns state */ }
     };
-    source.addEventListener('snapshot', handle);
+    source.addEventListener('snapshot', (event) => {
+      if (typeof sharedSession !== 'undefined' && sharedSession?.shared) firstSharedSnapshot = true;
+      handle(event);
+      if (typeof sharedSession !== 'undefined' && sharedSession?.shared) {
+        const id = roundId;
+        requestJson(`/api/game/rounds/${id}/speech/current`).then((audio) => {
+          if (roundId === id && !closed && audio.directive) {
+            lastAudioDirective = audio.directive.directive_id;
+            handlers.onSpeech?.(audio.directive);
+          }
+        }).catch(console.error);
+      }
+    });
     source.addEventListener('update', handle);
     source.addEventListener('complete', (event) => {
       handle(event);
@@ -1116,7 +1208,7 @@ async function requestJson(url, options = {}) {
     const errorMessage = payload.error || `HTTP ${response.status}`;
 
     // An intent pressed at the wrong moment is normal gameplay, not an error.
-    if (errorCode === 'ROUND_INTENT_REJECTED' || errorCode === 'ROUND_CLOSED' || errorCode === 'SESSION_STALE') {
+    if (errorCode === 'ROUND_INTENT_REJECTED' || errorCode === 'ROUND_CLOSED' || errorCode === 'SESSION_STALE' || (url === '/api/session' && response.status === 404)) {
       const error = new Error(errorMessage);
       error.code = errorCode;
       error.silent = true;
@@ -1337,10 +1429,12 @@ bindBuddyToLiveVideo();
 $('startGame').addEventListener('click', enterSelectedGame);
 $('gameList').addEventListener('dblclick', enterSelectedGame);
 $('soundToggle').addEventListener('click', () => {
+  if (sharedSession?.shared && boardInputSource.local_client) { toast('板端语音由默认扬声器播放'); return; }
   state.sound = !state.sound;
   if (!state.sound) stopSpeech();
   $('soundToggle').textContent = state.sound ? '🔊' : '🔇';
   toast(state.sound ? 'TTS 播报已开启' : '语音播报已关闭');
+  if (state.sound && sharedSession?.shared) { getSpeechAudioContext(); resumeSharedAudio().catch(console.error); }
 });
 
 document.addEventListener('keydown', (event) => {
@@ -1385,8 +1479,15 @@ async function loadGames() {
     applyStandbySettings(payload.standby);
     renderGameList();
     sharedSession = createSessionClient({ requestJson, onSnapshot: applySessionSnapshot });
-    await sharedSession.connect();
-    if (!sharedSession.shared) selectDefaultGame();
+    try {
+      await sharedSession.connect();
+    } catch (error) {
+      // An older running backend can serve these static files during rollout.
+      // Keep its established controls until the service is deliberately switched.
+      if (error.code !== 'UNKNOWN_ERROR') throw error;
+      sharedSession = null;
+    }
+    if (!sharedSession?.shared) selectDefaultGame();
   } catch (error) {
     console.error('Failed to load game list:', error);
     toast('游戏列表加载失败，请检查后端 /api/games');

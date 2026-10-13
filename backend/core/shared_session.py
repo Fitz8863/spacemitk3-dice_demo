@@ -58,6 +58,10 @@ class SharedSession:
         return 'dice' if 'dice' in games else next(iter(games), None)
 
     @property
+    def closed(self):
+        return self._stop.is_set()
+
+    @property
     def enabled(self):
         with self._condition:
             return self._shared
@@ -144,7 +148,7 @@ class SharedSession:
         if action == '_event':
             if self._round is cmd['round']:
                 event = cmd['event']
-                if event.get('event') == 'state_changed':
+                if event.get('event') in {'state_changed', 'audio_finished'}:
                     self._last_activity = self._clock()
                 if event.get('event') == 'round_complete' and self._round.status != 'error':
                     self._return_hall()
@@ -155,6 +159,8 @@ class SharedSession:
             raise DiceArenaError('shared session is disabled', 'SESSION_DISABLED', 409)
         if cmd.get('session_id') not in (None, self._id):
             raise DiceArenaError('stale session', 'SESSION_STALE', 409)
+        if action == 'detach':
+            return self._snapshot_locked()
         self._last_activity = self._clock()
         if action == 'activity':
             return self._snapshot_locked()
@@ -207,6 +213,8 @@ class SharedSession:
                 if not isinstance(intent, str) or not intent:
                     raise InvalidRequestError('intent is required')
                 # Only the backend audio worker is allowed to release speech gates.
+                if round_.status == 'error' and intent == 'new_round':
+                    return self._execute({'action': 'enter'})
                 if intent not in {'speech_started', 'speech_done'}:
                     round_.submit_intent(intent, cmd.get('payload') or {})
                     if round_.status in {'exited', 'cancelled'}:
@@ -253,6 +261,8 @@ class SharedSession:
             requested = bool(self._config().get('input_board_enable', False))
             if self._round is None and requested != self._shared and not self._legacy_running():
                 self._shared = requested
+                if not requested:
+                    self._on_hall('disabled')
                 self._hall_key = None
                 self._changed()
             if not self._shared:

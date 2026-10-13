@@ -556,7 +556,7 @@ def test_frontend_acks_awaited_directives_and_mutes_cleanly():
     app = (ROOT / "web/app.js").read_text(encoding="utf-8")
 
     play = app.split("async function playDirective", 1)[1].split(
-        "// ---- 权威对局客户端", 1
+        "// All remote displays consume", 1
     )[0]
     # Acknowledgement is unconditional: every directive (awaited or not)
     # releases the engine's speech-gate registration when playback ends.
