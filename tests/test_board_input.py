@@ -276,6 +276,26 @@ class DispatchTests(unittest.TestCase):
                 server._sync_board_selection("rps")
         self.assertEqual(server._board_cursor["game_id"], "dice")
 
+    def test_reader_status_changes_notify_existing_hall_buses(self):
+        with mock.patch.object(server, "_board_input_status", return_value={
+                "enabled": True, "running": True, "devices": ["/dev/input/event0"]}), \
+                mock.patch.object(server, "_SELECT_BUS") as select_bus, \
+                mock.patch.object(server, "_STANDBY_BUS") as standby_bus:
+            current = server._publish_board_input_source(None)
+            server._publish_board_input_source(current)
+            self.assertEqual(select_bus.push.call_count, 1)
+            self.assertEqual(standby_bus.push.call_count, 1)
+            event = select_bus.push.call_args.args[0]
+            self.assertEqual(event["status"], "board_input")
+            self.assertTrue(event["enabled"])
+            self.assertTrue(event["available"])
+        with mock.patch.object(server, "_board_input_status", return_value={
+                "enabled": False, "running": False, "devices": []}), \
+                mock.patch.object(server, "_SELECT_BUS") as select_bus, \
+                mock.patch.object(server, "_STANDBY_BUS"):
+            server._publish_board_input_source(current)
+            self.assertFalse(select_bus.push.call_args.args[0]["available"])
+
     def test_synthetic_bus_events_carry_board_source(self):
         """板端键盘合成事件带 source:'board'（2026-10-10）：前端据此区分
         按键与语音——board 来源只做动作，不弹「听到…」语音浮条（修复

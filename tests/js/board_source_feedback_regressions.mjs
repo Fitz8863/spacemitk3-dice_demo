@@ -24,6 +24,7 @@ const feedback = [];
 const actions = { wake: 0, enterGame: [], enterSelected: 0, selectGame: [] };
 const context = vm.createContext({
   EventSource,
+  boardInputSource: { local_client: false, enabled: true },
   requestJson: async () => ({}),
   $: () => null,
   showAsrFeedback: (event) => feedback.push(event),
@@ -102,5 +103,13 @@ assert.equal(actions.enterSelected, 1);
 assert.equal(feedback.length, 3);
 assert.equal(feedback[2].status, 'submitted');
 assert.equal(feedback[2].text, '进入游戏');
+
+context.boardInputSource.local_client = true;
+selectBus()(bus({ status: 'selected', game_id: 'rps', text: 'board', source: 'board' }));
+assert.equal(actions.enterSelected, 2, 'local board confirmation must use the current page highlight');
+assert.deepEqual(actions.enterGame, ['dice', 'dice'], 'stale board target must not override local selection');
+standbyBus()(bus({ status: 'selected', game_id: 'rps', text: 'board', source: 'board' }));
+assert.equal(actions.enterSelected, 3);
+assert.equal(feedback.length, 3);
 
 console.log('PASS: board-sourced bus events act without voice toasts; voice events still toast');

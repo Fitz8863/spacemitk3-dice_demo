@@ -829,9 +829,29 @@ def _board_input_status() -> dict:
     return {"enabled": arena_input_board_enabled(get_arena_config()), **status}
 
 
+def _board_input_source() -> dict[str, bool]:
+    status = _board_input_status()
+    return {
+        "enabled": status["enabled"],
+        "available": bool(status["enabled"] and status["running"] and status["devices"]),
+    }
+
+
+def _publish_board_input_source(previous: tuple[bool, bool] | None) -> tuple[bool, bool]:
+    """Keep existing hall/standby streams informed when the optional reader changes."""
+    source = _board_input_source()
+    current = (source["enabled"], source["available"])
+    if current != previous:
+        event = {"event": "asr", "status": "board_input", "source": "board", **source}
+        _SELECT_BUS.push(event)
+        _STANDBY_BUS.push(event)
+    return current
+
+
 def _supervise_board_input() -> None:
     """按配置热启停读取线程：true 起线程、false 停并释放设备句柄。"""
     global _board_reader
+    previous_source = None
     while True:
         try:
             enabled = arena_input_board_enabled(get_arena_config())
@@ -849,6 +869,7 @@ def _supervise_board_input() -> None:
             elif not enabled and reader is not None and running:
                 reader.stop()
                 print("[board-input] reader stopped (input_board_enable=false)", flush=True)
+            previous_source = _publish_board_input_source(previous_source)
         except Exception as exc:
             print(f"[board-input] supervisor error: {exc}", flush=True)
         time.sleep(2.0)
@@ -1794,7 +1815,7 @@ class Handler(BaseHTTPRequestHandler):
                 "standby": arena_standby(arena),
                 "board_input": {
                     "local_client": self._is_board_local_client(),
-                    "enabled": arena_input_board_enabled(arena),
+                    **_board_input_source(),
                 },
             })
             return

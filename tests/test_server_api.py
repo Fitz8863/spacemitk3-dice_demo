@@ -1652,6 +1652,7 @@ def board_selection_http(monkeypatch):
     monkeypatch.setattr(server, "get_games", lambda: registry)
     monkeypatch.setattr(server, "get_arena_config", lambda: {"input_board_enable": True})
     monkeypatch.setattr(server, "_board_cursor", {"game_id": "dice"})
+    monkeypatch.setattr(server, "_board_reader", None)
     monkeypatch.setattr(server, "rounds", {})
     monkeypatch.setattr(server, "_board_dedup", {})
     monkeypatch.setattr(server, "_SELECT_BUS", server._AsrEventBus())
@@ -1743,7 +1744,7 @@ def test_games_exposes_board_input_source(board_selection_http, monkeypatch, loc
         response = connection.getresponse()
         assert response.status == 200
         payload = json.loads(response.read())
-        assert payload["board_input"] == {"local_client": local_client, "enabled": True}
+        assert payload["board_input"] == {"local_client": local_client, "enabled": True, "available": False}
         assert {game["id"] for game in payload["games"]} == {"dice", "rps", "disabled"}
     finally:
         connection.close()

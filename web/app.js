@@ -61,6 +61,7 @@ window.addEventListener('arena-theme-change', renderThemeHeading);
 const gameModules = {};
 let activeGame = null; // 当前挂载的游戏模块（有 enter/teardown/onKey）
 let games = []; // GET /api/games 返回的列表
+let boardInputSource = { local_client: false, enabled: false, available: false };
 
 const CONTROLLER_COPY = {
   select: `使用 <span class="controller-hint"><span class="controller-key controller-key-yellow" aria-label="黄色按钮"></span><span>黄色 · 向上选择</span></span> 和 <span class="controller-hint"><span class="controller-key controller-key-blue" aria-label="蓝色按钮"></span><span>蓝色 · 向下选择</span></span> 选择游戏，选中后按 <span class="controller-hint"><span class="controller-key controller-key-green" aria-label="绿色按钮"></span><span>绿色 · 确认</span></span>。`,
@@ -196,6 +197,7 @@ function setIdleReturn(armed) {
 }
 
 function enterStandby() {
+  boardSelectionEntry = null;
   clearTimeout(idleTimer);
   idleTimer = null;
   if (state.phase !== 'select' || !standbySettings.enabled) return;
@@ -248,6 +250,11 @@ function startStandbyListening() {
     // 板端键盘的合成事件带 source:'board'：动作照做（唤醒/进局/高亮），
     // 但不弹「听到…」语音浮条——按键不是语音，弹了就是误导（2026-10-10）。
     const heard = event.source !== 'board';
+    if (event.status === 'board_input' && event.source === 'board') {
+      boardInputSource.enabled = event.enabled === true;
+      boardInputSource.available = event.available === true;
+      return;
+    }
     if (event.status === 'wake') {
       if (fresh) {
         if (heard) showAsrFeedback({ status: 'submitted', text: event.text });
@@ -258,7 +265,8 @@ function startStandbyListening() {
       if (fresh) {
         if (heard) showAsrFeedback({ status: 'submitted', text: event.text });
         wakeFromStandby();
-        enterGameById(event.game_id);
+        if (!heard && boardInputSource.local_client) enterSelectedGame();
+        else enterGameById(event.game_id);
       }
     } else if (event.status !== 'board_navigate' && heard) {
       showAsrFeedback({ status: 'unmatched', text: event.text });
@@ -323,10 +331,18 @@ function startSelectListening() {
     const fresh = Date.now() - Number(event.timestamp_ms || 0) <= 10000;
     // 板端键盘合成事件（source:'board'）只做动作，不弹语音浮条（2026-10-10）。
     const heard = event.source !== 'board';
+    if (event.status === 'board_input' && event.source === 'board') {
+      boardInputSource.enabled = event.enabled === true;
+      boardInputSource.available = event.available === true;
+      return;
+    }
     if (event.status === 'selected' && event.game_id) {
       if (fresh) {
         if (heard) showAsrFeedback({ status: 'submitted', text: event.text });
-        enterGameById(event.game_id);
+        // A physical Enter may have raced the page's pending default/mouse sync.
+        // The local page owns its highlight; remote pages keep the existing relay.
+        if (!heard && boardInputSource.local_client) enterSelectedGame();
+        else enterGameById(event.game_id);
       }
     } else if (event.status === 'confirm') {
       // 语音确认：进入当前高亮的游戏（上下键/点选已改写选中态）。
@@ -1008,6 +1024,7 @@ function registerGame(module) {
 }
 
 function returnToSelect() {
+  boardSelectionEntry = null; // A pending confirmation must not revive a departed screen.
   setIdleReturn(false); // 离开对局即解除空闲退出（回列表后由待机计时接管）
   if (activeGame && activeGame.teardown) activeGame.teardown();
   activeGame = null;
@@ -1063,6 +1080,41 @@ function renderGameList() {
   });
 }
 
+// ---- 板端大厅选中项同步 ----
+let boardSelectionSync = Promise.resolve(true);
+let boardSelectionVersion = 0;
+let boardSelectionGame = null;
+let boardSelectionPending = false;
+let boardSelectionEntry = null;
+
+function syncBoardSelection(id) {
+  if (!boardInputSource.local_client || !games.some((game) => game.id === id && game.enabled)) {
+    return Promise.resolve(true);
+  }
+  if (boardSelectionGame === id && boardSelectionPending) return boardSelectionSync;
+  boardSelectionGame = id;
+  boardSelectionPending = true;
+  const version = ++boardSelectionVersion;
+  // One in-flight request prevents an older reply from overwriting a newer choice.
+  // Keep failures in-band so a subsequent selection/confirmation can retry.
+  boardSelectionSync = boardSelectionSync.then(async () => {
+    try {
+      const result = await requestJson('/api/input/board/selection', {
+        method: 'POST', body: JSON.stringify({ game: id }),
+      });
+      if (result.game !== id) throw new Error('board selection was not acknowledged');
+      return true;
+    } catch (error) {
+      console.warn('Board selection sync failed:', error);
+      return false;
+    }
+  }).then((ok) => {
+    if (version === boardSelectionVersion) boardSelectionPending = false;
+    return ok;
+  });
+  return boardSelectionSync;
+}
+
 function selectDefaultGame() {
   // The exhibition's main challenge is dice. Respect game enablement and
   // fall back to the first available game; selecting never starts a round.
@@ -1079,26 +1131,55 @@ function selectGame(id) {
     item.setAttribute('aria-selected', selected ? 'true' : 'false');
   });
   window.ArenaTheme.renderPhase(state.phase, activeGame?.id, id);
+  syncBoardSelection(id);
 }
 
 function enterSelectedGame() {
-  // 相位守卫：只有列表页能发起进局。同一记板端 Enter 会同时走本地
-  // keydown 与服务端 selected 事件两条路（input_board_enable 附加输入源），
-  // 已在对局/已进入时静默忽略，防止连建两个回合；语音直达与陈旧事件同享此保护。
+  // Reserve the entry before waiting: DOM Enter and the board SSE callback may
+  // arrive together while selection synchronization is still in flight.
   if (state.phase !== 'select') return;
-  const module = gameModules[state.selectedGame];
-  if (!module) {
-    toast(`未注册游戏：${state.selectedGame}`);
+  if (boardSelectionEntry !== null) return;
+  if (!games.some((game) => game.id === state.selectedGame && game.enabled)) return;
+
+  function enter() {
+    const manifest = games.find((game) => game.id === state.selectedGame && game.enabled);
+    if (!manifest) return;
+    const module = gameModules[manifest.id];
+    if (!module) {
+      toast(`未注册游戏：${manifest.id}`);
+      return;
+    }
+    stopSelectListening();
+    activeGame = module;
+    module.enter(manifest);
+  }
+
+  // Remote pages never write the board cursor or wait for its synchronization.
+  if (!boardInputSource.local_client) {
+    enter();
     return;
   }
-  const manifest = games.find((game) => game.id === state.selectedGame);
-  if (!manifest) {
-    toast(`缺少游戏配置：${state.selectedGame}`);
-    return;
-  }
-  stopSelectListening(); // 进对局：列表选路轮询停止（服务端路由由回合顶掉）
-  activeGame = module;
-  module.enter(manifest);
+  const attempt = {};
+  boardSelectionEntry = attempt;
+  syncBoardSelection(state.selectedGame); // Retries a previously failed sync.
+  return (async () => {
+    try {
+      while (boardSelectionEntry === attempt && state.phase === 'select') {
+        const version = boardSelectionVersion;
+        const ok = await boardSelectionSync;
+        if (boardSelectionEntry !== attempt || state.phase !== 'select') return;
+        if (version !== boardSelectionVersion) continue; // User changed the highlight.
+        if (!ok) {
+          toast('选中游戏同步失败，请再次确认');
+          return;
+        }
+        enter();
+        return;
+      }
+    } finally {
+      if (boardSelectionEntry === attempt) boardSelectionEntry = null;
+    }
+  })();
 }
 
 // ---- 启动 ----
@@ -1138,6 +1219,9 @@ document.addEventListener('keydown', (event) => {
 
   if (state.phase === 'select') {
     if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      // The same physical arrow also arrives through board_navigate. Let that
+      // existing channel handle local navigation once; retain web-key fallback.
+      if (boardInputSource.local_client && boardInputSource.available && selectSource?.readyState === 1) return;
       const enabled = games.filter((game) => game.enabled);
       if (!enabled.length) return;
       const ids = enabled.map((game) => game.id);
@@ -1158,6 +1242,11 @@ async function loadGames() {
   try {
     const payload = await requestJson('/api/games');
     games = Array.isArray(payload.games) ? payload.games : [];
+    boardInputSource = {
+      local_client: payload.board_input?.local_client === true,
+      enabled: payload.board_input?.enabled === true,
+      available: payload.board_input?.available === true,
+    };
     applyStandbySettings(payload.standby);
     renderGameList();
     selectDefaultGame();
