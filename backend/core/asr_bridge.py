@@ -149,7 +149,8 @@ class AsrIntentBridge:
         rejected: list[str] = []
         for intent in candidates:
             try:
-                round_.submit_intent(intent, {"source": "asr", "text": text})
+                submit = getattr(round_, "input_dispatch", round_.submit_intent)
+                submit(intent, {"source": "asr", "text": text})
             except DiceArenaError as exc:
                 # Spoken words that the current state does not accept, or a
                 # round that just ended, are normal conversation.

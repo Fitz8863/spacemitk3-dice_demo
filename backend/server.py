@@ -48,6 +48,7 @@ from core.jobs import ComponentJob
 from core.asr_bridge import AsrIntentBridge
 from core.vision_stream import VisionStreamManager
 from core.board_input import BoardKeyReader, resolve_intent
+from core.shared_session import SharedSession
 from core.arena_config import (
     ARENA_CONFIG_PATH,
     ArenaConfigError,
@@ -566,6 +567,8 @@ def _sse_cancel_stale_rounds() -> None:
             with _sse_presence_lock:
                 _sse_presence.pop(round_id, None)
             continue
+        if getattr(round_, "shared", False):
+            continue  # Shared-session presence includes hall and round subscribers.
         if round_.status == "running":
             print(f"[round:{round_id[:8]}] SSE 消费者离开超过 {SSE_GRACE_SECONDS:g}s，自动取消回合", flush=True)
             round_.cancel()  # terminal → asr bridge watcher stops the mic
@@ -602,6 +605,14 @@ def _sse_stream_opened(round_id: str) -> None:
 
 def _sse_stream_closed(round_id: str) -> None:
     """One SSE consumer left: start the grace clock only when it was the last."""
+    if getattr(rounds.get(round_id), "shared", False):
+        with _sse_presence_lock:
+            remaining = _sse_connections.get(round_id, 0) - 1
+            if remaining > 0:
+                _sse_connections[round_id] = remaining
+            else:
+                _sse_connections.pop(round_id, None)
+        return
     with _sse_presence_lock:
         remaining = _sse_connections.get(round_id, 0) - 1
         if remaining > 0:
@@ -745,6 +756,8 @@ def _sync_board_selection(game_id: str) -> str:
     manifest = with_global_defaults(get_games().get(game_id), get_arena_config())
     if not manifest.get("enabled", False):
         raise GameDisabledError(game_id)
+    if _SESSION is not None and _SESSION.enabled:
+        _SESSION.submit({"action": "select", "game": game_id})
     with _board_cursor_lock:
         _board_cursor["game_id"] = game_id
     return game_id
@@ -760,6 +773,15 @@ def _board_cursor_game(games: list[str]) -> str:
 def _board_dispatch(action: str) -> None:
     """把一个板端按键动作派发到当前相位（局内意图 / 选关 / 待机唤醒）。"""
     try:
+        if _SESSION is not None and _SESSION.enabled:
+            snapshot = _SESSION.snapshot()
+            current = snapshot.get("round") or {}
+            if _board_recent(f"shared:{snapshot.get('round_id')}:{current.get('state_version')}:{action}"):
+                return
+            _SESSION.submit({"action": "board", "key": action,
+                             "round_id": snapshot.get("round_id"),
+                             "state": current.get("state"), "state_version": current.get("state_version")}, wait=False)
+            return
         if not arena_input_board_enabled(get_arena_config()):
             return  # 每键现读：热加载，false 期间按键静默丢弃
         round_ = _board_active_round()
@@ -1319,7 +1341,7 @@ def _run_home_patrol() -> None:
     _home_patrol_thread.start()
 
 
-def create_round(game_id: str) -> GameRound:
+def create_round(game_id: str, *, shared: bool = False, event_sink=None) -> GameRound:
     manifest = require_game(get_games(), game_id)
     if not isinstance(manifest.get("state_machine"), dict):
         raise InvalidRequestError(f"game {game_id} declares no state_machine")
@@ -1354,7 +1376,11 @@ def create_round(game_id: str) -> GameRound:
             adjudicate_fn=_round_adjudicate_fn(game_id, arm_throw),
             robot_fn=_round_robot_fn(game_id, arm_throw),
             log=lambda line: print(f"[round:{round_.id[:8]}] {line}", flush=True),
+            event_sink=(lambda event: event_sink(round_, event)) if event_sink else None,
         )
+        round_.shared = shared
+        if shared:
+            round_.input_dispatch = lambda intent, payload: _shared_round_intent(round_, intent, payload)
         rounds[round_.id] = round_
     round_.start()
     if uses_robot:
@@ -1394,6 +1420,53 @@ def create_round(game_id: str) -> GameRound:
     return round_
 
 
+# Shared session is initialized by main or the explicit session API, never by import.
+_SESSION: SharedSession | None = None
+_SESSION_LOCK = threading.Lock()
+
+
+def _shared_round_intent(round_, intent, payload):
+    snap = round_.snapshot()
+    return _get_session().submit({"action": "intent", "round_id": round_.id,
+        "state": snap["state"], "state_version": snap.get("state_version"),
+        "intent": intent, "payload": payload})
+
+
+def _shared_hall_asr(phase):
+    if phase not in {"select", "standby"}:
+        return
+    phrases = _game_select_phrases()
+    if phase == "standby":
+        phrases["wake"] = arena_standby(get_arena_config())["wake_phrases"]
+    else:
+        phrases[_SELECT_CONFIRM_KEY] = arena_game_select_confirm_phrases(get_arena_config())
+    def on_select(key, text):
+        if _SESSION is None or not _SESSION.enabled:
+            return
+        if key == "wake":
+            cmd = {"action": "wake"}
+        elif key == _SELECT_CONFIRM_KEY:
+            cmd = {"action": "enter"}
+        else:
+            cmd = {"action": "enter", "game": key}
+        _SESSION.submit(cmd, wait=False)
+    ASR_BRIDGE.start_select_session(phrases=phrases,
+        asr_enabled=arena_asr_enabled(get_arena_config()),
+        provider_id=arena_slot_value(get_arena_config(), "asr"),
+        on_select=on_select, on_heard=lambda text: None)
+
+
+def _get_session():
+    global _SESSION
+    with _SESSION_LOCK:
+        if _SESSION is None:
+            _SESSION = SharedSession(config=get_arena_config, games=_board_enabled_games,
+                create_round=lambda game, sink: create_round(game, shared=True, event_sink=sink),
+                on_hall=_shared_hall_asr, board_source=_board_input_source,
+                legacy_running=lambda: any(r.status == "running" and not getattr(r, "shared", False) for r in rounds.values()))
+        return _SESSION
+
+
 def _lookup_round(round_id: str) -> GameRound:
     with rounds_lock:
         round_ = rounds.get(round_id)
@@ -1404,6 +1477,8 @@ def _lookup_round(round_id: str) -> GameRound:
 
 def _shutdown_runtime_components() -> None:
     """Stop provider-owned resident workers before the backend exits."""
+    if _SESSION is not None:
+        _SESSION.close()
     try:
         ASR_BRIDGE.stop()
     except Exception as exc:
@@ -1509,6 +1584,27 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(f"event: {event}\ndata: {payload}\n\n".encode("utf-8"))
         self.wfile.flush()
 
+    def stream_session(self, session):
+        session.connected()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        try:
+            snapshot = session.snapshot()
+            self.send_sse_snapshot(snapshot, "snapshot")
+            while True:
+                previous = snapshot["revision"]
+                snapshot = session.wait_for_update(previous)
+                self.send_sse_snapshot(snapshot, "update" if snapshot["revision"] != previous else "heartbeat")
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            session.disconnected()
+            self.close_connection = True
+
     def _stream_bus(self, bus: _AsrEventBus) -> None:
         """SSE 推送一条选关/待机总线（板端键盘与语音事件的消费通道）。
 
@@ -1610,6 +1706,9 @@ class Handler(BaseHTTPRequestHandler):
             "game_id": snapshot["game_id"],
             "status": snapshot["status"],
             "state": snapshot["state"],
+            "state_version": snapshot.get("state_version"),
+            "ui": snapshot.get("ui", {}),
+            "observations": snapshot.get("observations", []),
             "error": snapshot["error"],
             "result": snapshot["result"],
             "events": [
@@ -1622,6 +1721,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def stream_round_events(self, round_: GameRound) -> None:
         _sse_stream_opened(round_.id)
+        session = _get_session() if getattr(round_, "shared", False) else None
+        if session is not None:
+            session.connected()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache, no-store")
@@ -1659,6 +1761,8 @@ class Handler(BaseHTTPRequestHandler):
             # tolerated) after which the watchdog cancels it — releasing the
             # ASR microphone with it.  Terminal rounds just drop the entry.
             _sse_stream_closed(round_.id)
+            if session is not None:
+                session.disconnected()
             self.close_connection = True
 
     def send_round_speech_frames(self, round_: GameRound, directive_id: str) -> None:
@@ -1751,6 +1855,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed_url = urlsplit(self.path)
         path = parsed_url.path
+        if path == "/api/session":
+            payload = _get_session().snapshot()
+            payload["local_client"] = self._is_board_local_client()
+            self.send_json(payload)
+            return
+        if path == "/api/session/stream":
+            self.stream_session(_get_session())
+            return
         if path == "/api/health":
             component_items = COMPONENTS.all(include_health=True)
             tts_id = _selected_tts_id()
@@ -1886,6 +1998,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
+        if path == "/api/session/actions":
+            try:
+                self.send_json(_get_session().submit(self.read_json()))
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
+            return
         if path == "/api/tts/stream":
             try:
                 payload = self.read_json()
@@ -1990,6 +2108,9 @@ class Handler(BaseHTTPRequestHandler):
             except DiceArenaError as exc:
                 self.send_error_json(exc)
                 return
+            if _SESSION is not None and _SESSION.enabled:
+                self.send_json({"listening": arena_asr_enabled(get_arena_config()), "shared": True})
+                return
             if payload.get("listen") is not True:
                 ASR_BRIDGE.stop()
                 self.send_json({"listening": False})
@@ -2030,6 +2151,9 @@ class Handler(BaseHTTPRequestHandler):
             except DiceArenaError as exc:
                 self.send_error_json(exc)
                 return
+            if _SESSION is not None and _SESSION.enabled:
+                self.send_json({"listening": arena_asr_enabled(get_arena_config()), "shared": True})
+                return
             if payload.get("listen") is not True:
                 ASR_BRIDGE.stop()
                 self.send_json({"listening": False})
@@ -2061,8 +2185,12 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 payload = self.read_json()
                 game_id = str(payload.get("game") or "dice")
-                round_ = create_round(game_id)
-                self.send_json(round_.snapshot(), HTTPStatus.CREATED)
+                if _SESSION is not None and _SESSION.enabled:
+                    result = _SESSION.submit({"action": "enter", "game": game_id})
+                    self.send_json(result["round"], HTTPStatus.CREATED)
+                else:
+                    round_ = create_round(game_id)
+                    self.send_json(round_.snapshot(), HTTPStatus.CREATED)
             except DiceArenaError as exc:
                 self.send_error_json(exc)
             return
@@ -2088,7 +2216,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if suffix == "cancel":
                     self.drain_body()
-                    round_.cancel()
+                    if getattr(round_, "shared", False):
+                        _get_session().submit({"action": "exit", "round_id": round_.id})
+                    else:
+                        round_.cancel()
                     self.send_json(round_.snapshot())
                     return
                 # intents
@@ -2097,7 +2228,14 @@ class Handler(BaseHTTPRequestHandler):
                     intent = str(payload.get("intent") or "").strip()
                     if not intent:
                         raise InvalidRequestError("intent is required")
-                    self.send_json(round_.submit_intent(intent, payload))
+                    if getattr(round_, "shared", False):
+                        _get_session().submit({"action": "intent", "round_id": round_.id,
+                            "intent": intent, "payload": payload,
+                            "state": payload.get("state"), "state_version": payload.get("state_version"),
+                            "request_id": payload.get("request_id")})
+                        self.send_json(round_.snapshot())
+                    else:
+                        self.send_json(round_.submit_intent(intent, payload))
                 except DiceArenaError as exc:
                     self.send_error_json(exc)
                 except Exception as exc:
@@ -2196,6 +2334,7 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Dice Arena K3 backend listening on http://{args.host}:{args.port}", flush=True)
     print(f"Local TTS provider: {_LOCAL_TTS_PIN or 'none'}", flush=True)
+    _get_session()
     _start_board_input_supervisor()
     adjudicator = next((item for item in COMPONENTS.all(include_health=True)
                         if item["type"] == "vision" and item["role"] == "adjudicator"), None)

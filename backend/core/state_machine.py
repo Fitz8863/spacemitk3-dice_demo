@@ -113,6 +113,7 @@ class GameRound:
         speech_ack_fallback_seconds: float = SPEECH_ACK_FALLBACK_SECONDS,
         round_id: str | None = None,
         log: Callable[[str], None] | None = None,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.id = round_id or uuid.uuid4().hex
         self.game_id = game_id
@@ -127,6 +128,8 @@ class GameRound:
         self._await_fallback_seconds = await_fallback_seconds
         self._speech_ack_fallback_seconds = speech_ack_fallback_seconds
         self._log = log or (lambda line: print(f"[round:{self.id[:8]}] {line}", flush=True))
+        self._event_sink = event_sink
+        self._observations: dict[str, dict] = {}
 
         self.status = "running"
         self.state = ""
@@ -272,6 +275,9 @@ class GameRound:
             "game_id": self.game_id,
             "status": self.status,
             "state": self.state,
+            "state_version": self._generation,
+            "ui": dict(self._state_config_locked().get("ui") or {}) if self.state else {},
+            "observations": list(self._observations.values()),
             "error": self.error,
             "result": self.result,
             "speech_active": bool(self._active_speech),
@@ -290,12 +296,19 @@ class GameRound:
     def _emit_locked(self, event: dict[str, Any]) -> None:
         event = dict(event)
         event.setdefault("timestamp_ms", now_ms())
+        event.setdefault("state_version", self._generation)
+        if event.get("event") in {"video", "robot", "robot_result", "phase", "progress", "diagnosis", "tick"}:
+            key = str(event["event"]) + ":" + str(event.get("command") or "")
+            self._observations[key] = event
         self.event_sequence += 1
         event.setdefault("sequence", self.event_sequence)
         self.events.append(event)
         self.events = self.events[-60:]
         self.revision += 1
         self.condition.notify_all()
+        if self._event_sink is not None:
+            # The sink only enqueues; provider/playback work never runs under this lock.
+            self._event_sink(dict(event))
 
     def _emit(self, event: dict[str, Any]) -> None:
         with self.condition:
@@ -546,6 +559,7 @@ class GameRound:
             "mode": entry.get("mode", "tts_local"),
             "text": text,
             "await": bool(action.get("await")),
+            "state": self.state,
         }
         if entry.get("mode", "tts_local") == "audio":
             directive["audio"] = entry.get("audio", "")
