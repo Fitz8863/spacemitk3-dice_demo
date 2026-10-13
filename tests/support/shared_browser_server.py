@@ -87,6 +87,15 @@ class Handler(server.Handler):
             return
         return super().do_GET()
     def do_POST(self):
+        if self.path=='/test/audio-error':
+            command=self.read_json()
+            snap=session.snapshot()
+            round_=server.rounds.get(snap['round_id'])
+            if round_ is None:
+                self.send_json({'error':'test requires a running round'},400);return
+            round_.emit_observation({'event':'audio_error','kind':command['kind'],
+                                    'directive_id':'fault-injection','message':'simulated audio failure'})
+            self.send_json({'injected':True});return
         if self.path=='/test/reset':
             self.read_json()
             if session.snapshot()['round_id']:

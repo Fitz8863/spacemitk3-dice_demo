@@ -905,7 +905,6 @@ async function playDirective(round, directive, options = {}) {
     await producer.catch(() => {});
     if (error.name === 'AbortError' || requestId !== state.ttsRequestId || !state.sound) return;
     console.error(`Speech directive ${directive.directive_id} failed after ${playedFrames} frame(s):`, error);
-    toast('语音播放失败，请检查语音组件');
   } finally {
     if (scheduler && state.ttsPlaybackCancel === scheduler.cancel) {
       state.ttsPlaybackCancel = null;
@@ -1029,7 +1028,8 @@ function createRoundClient(gameId, handlers) {
       lastAudioDirective = event.directive_id;
       handlers.onSpeech?.(event);
     } else if (event.event === 'audio_error') {
-      toast(event.kind === 'board_playback' ? '板端扬声器播放失败，游戏继续' : '语音生成失败，游戏继续');
+      // Audio is best effort in shared mode. The backend clock and board
+      // player keep the round moving; do not disturb the display with a toast.
     } else if (event.event === 'tick') {
       handlers.onTick?.(event);
     } else if (event.event === 'asr') {

@@ -10,6 +10,19 @@ let browser;
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   async function page() {
     const p = await context.newPage();
+    await p.addInitScript(() => {
+      const Source = window.EventSource;
+      window.EventSource = class extends Source {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener('update', (event) => {
+            const snapshot = JSON.parse(event.data);
+            window.observedAudioErrors = (snapshot.round?.events || [])
+              .filter((item) => item.event === 'audio_error').map((item) => item.kind);
+          });
+        }
+      };
+    });
     p.on('pageerror', (error) => errors.push(error.message));
     p.on('request', (req) => {
       if (req.url().endsWith('/api/game/rounds') && req.method() === 'POST') actions.push(req.url());
@@ -40,6 +53,19 @@ let browser;
   assert.equal(first.game_id, 'rps');
   assert.equal(streams.length, 0, 'one session SSE carries round updates for every display');
   assert.equal(actions.length, 0, 'shared displays must not create private rounds');
+  // Exercise the real round-event path. Audio errors must leave both displays
+  // unchanged and silent while later shared controls still advance the game.
+  for (const kind of ['board_playback', 'synthesis']) {
+    const response = await context.request.post(`${base}/test/audio-error`, { data: { kind } });
+    assert.equal(response.status(), 200);
+    for (const p of [a, b]) {
+      await p.waitForFunction((kind) => window.observedAudioErrors?.includes(kind), kind);
+      assert.equal(await p.locator('#toast').evaluate((node) => node.classList.contains('show')), false,
+        `${kind} must not show a toast on any display`);
+      assert.equal(await p.evaluate(() => document.body.dataset.phase), 'rules');
+    }
+    assert.equal((await session()).round_id, first.round_id);
+  }
   // A fresh display has no user activation; it must offer an unlock control.
   const c = await page();
   await phase(c, 'rules');
@@ -78,7 +104,7 @@ let browser;
   await a.screenshot({ path: '/tmp/k3-shared-session-browser.png', fullPage: true });
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ verdict: 'PASS', clients: 4, private_round_requests: actions.length,
-    checks: ['board navigation', 'parallel Enter', 'same round stream', 'autoplay unlock', 'reload', 'close one display',
+    checks: ['board navigation', 'parallel Enter', 'same round stream', 'silent audio failures', 'autoplay policy', 'reload', 'close one display',
       'RPS simulated throw once', 'late result join', 'shared exit', 'default dice', 'dice result'], page_errors: errors }));
   await browser.close();
 })().catch(async (error) => { console.error(error); await browser?.close(); process.exitCode = 1; });

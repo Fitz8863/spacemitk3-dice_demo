@@ -1319,6 +1319,28 @@ def _patrol_rounds(monkeypatch, running=None):
     monkeypatch.setattr(server, "active_job_id", None)
 
 
+@pytest.fixture
+def patrol_lifecycle(monkeypatch):
+    """Join the test's patrol before monkeypatch restores its global config.
+
+    Otherwise an old worker can wake in the next test and observe the next
+    fake provider between its config patches and _run_home_patrol().
+    """
+    server._home_patrol_stop.set()
+    previous = server._home_patrol_thread
+    if previous is not None:
+        previous.join(timeout=6)
+        assert not previous.is_alive(), "previous patrol did not stop"
+    monkeypatch.setattr(server, "_home_patrol_thread", None)
+    monkeypatch.setattr(server, "_home_patrol_stop", threading.Event())
+    yield
+    server._home_patrol_stop.set()
+    worker = server._home_patrol_thread
+    if worker is not None:
+        worker.join(timeout=6)
+        assert not worker.is_alive(), "test patrol did not stop"
+
+
 def _one_patrol_cycle(monkeypatch, script, *, arena=None, running=None, expect_probe=True):
     """Drive exactly one patrol iteration with a fast period, return the fake."""
     provider = _PatrolRobot(script)
@@ -1347,7 +1369,7 @@ def _one_patrol_cycle(monkeypatch, script, *, arena=None, running=None, expect_p
     return provider
 
 
-def test_patrol_homes_an_off_home_arm(monkeypatch):
+def test_patrol_homes_an_off_home_arm(monkeypatch, patrol_lifecycle):
     """离家 → 探针报告 at_home=False → 巡检触发归位。"""
     provider = _one_patrol_cycle(
         monkeypatch, [{"status": "completed", "at_home": False}]
@@ -1355,7 +1377,7 @@ def test_patrol_homes_an_off_home_arm(monkeypatch):
     assert provider.reset_calls == 1
 
 
-def test_patrol_leaves_an_at_home_arm_alone(monkeypatch):
+def test_patrol_leaves_an_at_home_arm_alone(monkeypatch, patrol_lifecycle):
     provider = _one_patrol_cycle(
         monkeypatch, [{"status": "completed", "at_home": True}]
     )
@@ -1363,7 +1385,7 @@ def test_patrol_leaves_an_at_home_arm_alone(monkeypatch):
     assert provider.reset_calls == 0
 
 
-def test_patrol_skips_probe_failures_and_dead_residents(monkeypatch):
+def test_patrol_skips_probe_failures_and_dead_residents(monkeypatch, patrol_lifecycle):
     """探针失败/skipped（死常驻）→ 不归位、不崩——巡检不是第二个复活源。"""
     provider = _one_patrol_cycle(
         monkeypatch, [{"status": "failed", "reason": "pose_unavailable"},
@@ -1373,7 +1395,7 @@ def test_patrol_skips_probe_failures_and_dead_residents(monkeypatch):
     assert provider.reset_calls == 0
 
 
-def test_patrol_does_not_touch_the_arm_during_a_round(monkeypatch):
+def test_patrol_does_not_touch_the_arm_during_a_round(monkeypatch, patrol_lifecycle):
     provider = _one_patrol_cycle(
         monkeypatch, [{"status": "completed", "at_home": False}],
         running="running", expect_probe=False,
@@ -1384,7 +1406,7 @@ def test_patrol_does_not_touch_the_arm_during_a_round(monkeypatch):
     assert provider.reset_calls == 0
 
 
-def test_patrol_off_switch_disables_probing(monkeypatch):
+def test_patrol_off_switch_disables_probing(monkeypatch, patrol_lifecycle):
     provider = _PatrolRobot([{"status": "completed", "at_home": False}])
     monkeypatch.setattr(server, "COMPONENTS", _BootHomeRegistry(provider))
     monkeypatch.setattr(

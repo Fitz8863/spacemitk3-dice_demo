@@ -26,3 +26,28 @@ await ctx.playSharedDirective(round, { directive_id: 'x' });
 assert.equal(shown, true, 'autoplay-blocked remote gets a sound unlock action');
 assert.equal(acks, 0, 'web playback and mute must not acknowledge shared speech');
 console.log('PASS: local echo suppression, remote mute, autoplay unlock and no shared web speech acknowledgements');
+
+// Playback/speaker failures are deliberately silent in the UI. The backend
+// continues the shared round and keeps the diagnostic in its own event/log.
+const clientSource = app.slice(app.indexOf('function createRoundClient('), app.indexOf('// ---- 网络 ----'));
+let toastCount = 0;
+let stream;
+const clientContext = vm.createContext({
+  sharedSession: undefined,
+  requestJson: async () => ({ round_id: 'round-2' }),
+  showAsrFeedback() {},
+  toast() { toastCount += 1; },
+  EventSource: class {
+    constructor() { stream = this; this.handlers = {}; }
+    addEventListener(name, fn) { this.handlers[name] = fn; }
+    close() {}
+    emit(name, data) { this.handlers[name]?.({ data: JSON.stringify(data) }); }
+  },
+});
+vm.runInContext(clientSource, clientContext);
+const client = clientContext.createRoundClient('dice', {});
+await client.start();
+stream.emit('update', { status: 'running', state: 'rules', event_sequence: 1, revision: 1,
+  events: [{ event: 'audio_error', kind: 'board_playback', sequence: 1 }] });
+assert.equal(toastCount, 0, 'audio failures must not show a frontend toast');
+console.log('PASS: audio errors stay silent in the frontend');
