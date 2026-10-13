@@ -111,8 +111,8 @@
             "action": "speech",
             "select_by": "winner_role",
             "cases": {
-              "PLAYER": {"mode": "tts_local", "text": "你出了{player_choice}，Agent出了{agent_choice}，恭喜你赢了，你真的太强了。"},
-              "AGENT": {"mode": "tts_local", "text": "你出了{player_choice}，Agent出了{agent_choice}，很遗憾你输了哦，回家再练练吧。"},
+              "PLAYER": {"mode": "tts_local", "text": "你出了{player_choice}，机械臂出了{agent_choice}，恭喜你赢了，你真的太强了。"},
+              "AGENT": {"mode": "tts_local", "text": "你出了{player_choice}，机械臂出了{agent_choice}，很遗憾你输了哦，回家再练练吧。"},
               "TIE": {"mode": "tts_local", "text": "双方都出了{player_choice}，本局平局，要不再来一局？"}
             }
           },
