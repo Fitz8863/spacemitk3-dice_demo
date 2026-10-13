@@ -4,6 +4,7 @@ export function createSessionClient({ requestJson, onSnapshot, onConnection = ()
   let source = null;
   let pending = Promise.resolve();
   let localClient = false;
+  const roundSubscribers = new Set();
   let nonce = 0;
   const clientId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 
@@ -13,6 +14,7 @@ export function createSessionClient({ requestJson, onSnapshot, onConnection = ()
     if ('local_client' in value) localClient = value.local_client === true;
     snapshot = value;
     onSnapshot(value);
+    for (const listener of roundSubscribers) listener(value);
   }
 
   async function refresh() {
@@ -59,7 +61,13 @@ export function createSessionClient({ requestJson, onSnapshot, onConnection = ()
     return result;
   }
 
-  return { connect, action, refresh, close() { source?.close(); },
+  return { connect, action, refresh,
+    subscribeRound(roundId, receive) {
+      const listener = (value) => { if (value.round_id === roundId && value.round) receive(value.round); };
+      roundSubscribers.add(listener);
+      return () => roundSubscribers.delete(listener);
+    },
+    close() { source?.close(); roundSubscribers.clear(); },
     get snapshot() { return snapshot; }, get shared() { return snapshot?.shared === true; },
     get localClient() { return localClient; }, get ready() { return source?.readyState === 1; } };
 }

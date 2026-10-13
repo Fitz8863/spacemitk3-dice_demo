@@ -59,7 +59,7 @@ const snap = { round_id: 'round-1', game_id: 'rps', state: 'result', state_versi
   observations: [{ event: 'video', url: 'http://video' }, { event: 'robot', phase: 'completed' }],
   events: [{ event: 'speech', sequence: 2, text: 'old rules' }, { event: 'state_changed', sequence: 31, state: 'result' }] };
 const ctx = vm.createContext({
-  sharedSession: { shared: true, action: async (...args) => { log.push(['action', ...args]); return { round_id: 'round-1', round: snap }; } },
+  sharedSession: { shared: true, subscribeRound() { return () => {}; }, action: async (...args) => { log.push(['action', ...args]); return { round_id: 'round-1', round: snap }; } },
   EventSource: Source, showAsrFeedback() {},
   requestJson: async (url, options) => { log.push(['request', url, options]); return snap; },
 });

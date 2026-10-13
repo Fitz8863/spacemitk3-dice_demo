@@ -152,7 +152,7 @@ class SharedSession:
                     self._last_activity = self._clock()
                 if event.get('event') == 'round_complete' and self._round.status != 'error':
                     self._return_hall()
-                elif event.get('event') not in {'tick', 'progress'}:
+                else:
                     self._changed()
             return None
         if not self._shared:

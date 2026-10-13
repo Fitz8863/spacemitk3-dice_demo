@@ -1016,6 +1016,7 @@ function createRoundClient(gameId, handlers) {
   let currentSnapshot = null;
   let firstSharedSnapshot = true;
   let lastAudioDirective = null;
+  let detachSessionRound = null;
   // Set once the round reaches a terminal snapshot or the client cancels:
   // afterwards every event is stale game state and must not reach the UI,
   // otherwise a finished view resurrects itself after returnToSelect().
@@ -1083,6 +1084,11 @@ function createRoundClient(gameId, handlers) {
   }
 
   function subscribe() {
+    if (typeof sharedSession !== 'undefined' && sharedSession?.shared) {
+      detachSessionRound?.();
+      detachSessionRound = sharedSession.subscribeRound(roundId, ingest);
+      return;
+    }
     if (source) source.close();
     source = new EventSource(`/api/game/rounds/${roundId}/stream`);
     const subscribedRoundId = roundId;
@@ -1138,6 +1144,14 @@ function createRoundClient(gameId, handlers) {
     ingest(currentSnapshot);
     if (closed) return currentSnapshot;
     subscribe();
+    if (typeof sharedSession !== 'undefined' && sharedSession?.shared) {
+      requestJson(`/api/game/rounds/${id}/speech/current`).then((audio) => {
+        if (roundId === id && !closed && audio.directive && audio.directive.directive_id !== lastAudioDirective) {
+          lastAudioDirective = audio.directive.directive_id;
+          handlers.onSpeech?.(audio.directive);
+        }
+      }).catch(console.error);
+    }
     return currentSnapshot;
   }
 
@@ -1180,6 +1194,8 @@ function createRoundClient(gameId, handlers) {
   }
 
   function teardownStream() {
+    detachSessionRound?.();
+    detachSessionRound = null;
     if (source) {
       source.close();
       source = null;
