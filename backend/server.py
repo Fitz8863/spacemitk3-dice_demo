@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 from http import HTTPStatus
+from ipaddress import ip_address
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,6 +29,7 @@ from typing import Any
 from core.components import build_registry
 from core.errors import (
     DiceArenaError,
+    GameDisabledError,
     InvalidRequestError,
     JobAlreadyExistsError,
     JobNotFoundError,
@@ -677,6 +679,7 @@ _BOARD_DEDUP_SECONDS = 0.25
 _board_reader: BoardKeyReader | None = None
 _board_reader_lock = threading.Lock()
 _board_cursor: dict[str, str | None] = {"game_id": None}  # 板端导航光标
+_board_cursor_lock = threading.RLock()
 _board_dedup: dict[str, float] = {}
 # 读键与派发解耦：读键线程只往队列丢动作（永不阻塞，否则像 rounds_lock
 # 这样的长持锁会把它卡死——卡住期间按键堆在内核缓冲里，松锁后井喷或丢弃，
@@ -717,15 +720,41 @@ def _board_active_round() -> GameRound | None:
     return None
 
 
+def _board_local_client(peer: str, local: str) -> bool:
+    """Identify a board-local browser from socket addresses, never HTTP headers."""
+    try:
+        peer_ip = ip_address(peer)
+        local_ip = ip_address(local)
+    except ValueError:
+        return False
+    peer_ip = getattr(peer_ip, "ipv4_mapped", None) or peer_ip
+    local_ip = getattr(local_ip, "ipv4_mapped", None) or local_ip
+    return peer_ip.is_loopback or peer_ip == local_ip
+
+
 def _board_enabled_games() -> list[str]:
-    # get_games() 是 GameRegistry 对象（.all() 取全量），不是可迭代列表。
-    return [m["id"] for m in get_games().all() if m.get("enabled")]
+    arena = get_arena_config()
+    return [
+        m["id"] for m in get_games().all()
+        if with_global_defaults(m, arena).get("enabled")
+    ]
+
+
+def _sync_board_selection(game_id: str) -> str:
+    """Accept the local page's highlight without starting a round or touching devices."""
+    manifest = with_global_defaults(get_games().get(game_id), get_arena_config())
+    if not manifest.get("enabled", False):
+        raise GameDisabledError(game_id)
+    with _board_cursor_lock:
+        _board_cursor["game_id"] = game_id
+    return game_id
 
 
 def _board_cursor_game(games: list[str]) -> str:
-    if _board_cursor["game_id"] not in games:
-        _board_cursor["game_id"] = games[0]
-    return _board_cursor["game_id"]
+    with _board_cursor_lock:
+        if _board_cursor["game_id"] not in games:
+            _board_cursor["game_id"] = games[0]
+        return _board_cursor["game_id"]
 
 
 def _board_dispatch(action: str) -> None:
@@ -759,12 +788,14 @@ def _board_dispatch(action: str) -> None:
         if not games:
             return
         if action in ("up", "down"):
-            idx = games.index(_board_cursor_game(games))
-            step = 1 if action == "down" else -1
-            _board_cursor["game_id"] = games[(idx + step) % len(games)]
+            with _board_cursor_lock:
+                idx = games.index(_board_cursor_game(games))
+                step = 1 if action == "down" else -1
+                game_id = games[(idx + step) % len(games)]
+                _board_cursor["game_id"] = game_id
             _SELECT_BUS.push({
                 "event": "asr", "status": "board_navigate",
-                "game_id": _board_cursor["game_id"], "text": "board",
+                "game_id": game_id, "text": "board",
                 "source": "board",
             })
             # 方向键也唤醒待机页（本地键盘的"任意键唤醒"同款语义）。
@@ -1417,6 +1448,9 @@ class Handler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
 
+    def _is_board_local_client(self) -> bool:
+        return _board_local_client(self.client_address[0], self.connection.getsockname()[0])
+
     def log_message(self, fmt: str, *args: Any) -> None:
         # Keep the board console readable; analysis logs are exposed per job.
         print(f"[web] {self.address_string()} {fmt % args}", flush=True)
@@ -1754,9 +1788,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"components": COMPONENTS.all(include_health=True)})
             return
         if path == "/api/games":
+            arena = get_arena_config()
             self.send_json({
-                "games": get_games().public_all(get_arena_config()),
-                "standby": arena_standby(get_arena_config()),
+                "games": get_games().public_all(arena),
+                "standby": arena_standby(arena),
+                "board_input": {
+                    "local_client": self._is_board_local_client(),
+                    "enabled": arena_input_board_enabled(arena),
+                },
             })
             return
         if path == "/api/asr/standby/events":
@@ -1900,6 +1939,21 @@ class Handler(BaseHTTPRequestHandler):
                 game_id = str(payload.get("game") or "dice")
                 job = create_adjudication_job(game_id)
                 self.send_json(job.snapshot(), HTTPStatus.ACCEPTED)
+            except DiceArenaError as exc:
+                self.send_error_json(exc)
+            return
+        if path == "/api/input/board/selection":
+            try:
+                payload = self.read_json()  # Drain even a rejected request on keep-alive.
+                if not self._is_board_local_client():
+                    raise DiceArenaError(
+                        "board selection may only be synced from the board itself",
+                        code="BOARD_SELECTION_LOCAL_ONLY", status=HTTPStatus.FORBIDDEN,
+                    )
+                game_id = payload.get("game")
+                if not isinstance(game_id, str) or not game_id.strip():
+                    raise InvalidRequestError("game must be a non-empty string")
+                self.send_json({"game": _sync_board_selection(game_id)})
             except DiceArenaError as exc:
                 self.send_error_json(exc)
             return

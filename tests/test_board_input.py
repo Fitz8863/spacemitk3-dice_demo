@@ -163,6 +163,13 @@ class _FakeRegistry:
     def all(self):
         return self._games
 
+    def get(self, game_id):
+        for game in self._games:
+            if game['id'] == game_id:
+                return game
+        from core.errors import GameNotFoundError
+        raise GameNotFoundError(game_id)
+
 
 class DispatchTests(unittest.TestCase):
     """server._board_dispatch 的分相位派发与去重（fake 依赖，不起真引擎）。"""
@@ -239,6 +246,35 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(selected["status"], "selected")
         self.assertEqual(selected["game_id"], "rps")
         self.assertEqual(select_bus.push.call_args_list[-1].args[0]["game_id"], "rps")
+
+    def test_returned_page_selection_overrides_old_board_cursor(self):
+        with mock.patch.object(server, "rounds", {}), \
+                mock.patch.object(server, "_SELECT_BUS") as select_bus, \
+                mock.patch.object(server, "_STANDBY_BUS"):
+            server._board_dispatch("down")  # Prior visit selected RPS.
+            server._sync_board_selection("dice")  # Page returns to the hall.
+            server._board_dispatch("confirm")
+        self.assertEqual(select_bus.push.call_args_list[-1].args[0]["game_id"], "dice")
+
+    def test_mouse_selection_changes_the_physical_confirm_target(self):
+        with mock.patch.object(server, "rounds", {}), \
+                mock.patch.object(server, "_SELECT_BUS") as select_bus, \
+                mock.patch.object(server, "_STANDBY_BUS"):
+            server._sync_board_selection("rps")
+            server._board_dispatch("confirm")
+        self.assertEqual(select_bus.push.call_args_list[-1].args[0]["game_id"], "rps")
+
+    def test_invalid_selection_keeps_the_previous_board_cursor(self):
+        from core.errors import GameDisabledError, GameNotFoundError
+        server._board_cursor["game_id"] = "dice"
+        with self.assertRaises(GameNotFoundError):
+            server._sync_board_selection("missing")
+        with mock.patch.object(server, "get_arena_config", lambda: {
+            "input_board_enable": True, "games_enabled": {"rps": False},
+        }):
+            with self.assertRaises(GameDisabledError):
+                server._sync_board_selection("rps")
+        self.assertEqual(server._board_cursor["game_id"], "dice")
 
     def test_synthetic_bus_events_carry_board_source(self):
         """板端键盘合成事件带 source:'board'（2026-10-10）：前端据此区分

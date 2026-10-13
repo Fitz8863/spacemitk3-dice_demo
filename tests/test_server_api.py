@@ -1640,3 +1640,110 @@ def test_throw_gesture_delay_waits_then_calls_and_slot_is_pending_during_delay(m
     assert outcome2["status"] == "failed"
     assert "interrupted" in outcome2["reason"]
     assert arm_throw2["status"] == "failed" and arm_throw2["gesture"] is None
+
+
+@pytest.fixture
+def board_selection_http(monkeypatch):
+    """Serve only fake game metadata; never start a board reader or providers."""
+    registry = GameRegistry()
+    for game_id in ("dice", "rps"):
+        registry.register({"id": game_id, "name": game_id, "enabled": True})
+    registry.register({"id": "disabled", "name": "disabled", "enabled": False})
+    monkeypatch.setattr(server, "get_games", lambda: registry)
+    monkeypatch.setattr(server, "get_arena_config", lambda: {"input_board_enable": True})
+    monkeypatch.setattr(server, "_board_cursor", {"game_id": "dice"})
+    monkeypatch.setattr(server, "rounds", {})
+    monkeypatch.setattr(server, "_board_dedup", {})
+    monkeypatch.setattr(server, "_SELECT_BUS", server._AsrEventBus())
+    monkeypatch.setattr(server, "_STANDBY_BUS", server._AsrEventBus())
+    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield httpd.server_address[1]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.mark.parametrize("peer,local,expected", [
+    ("127.0.0.1", "127.0.0.1", True),
+    ("::1", "::1", True),
+    ("::ffff:127.0.0.1", "127.0.0.1", True),
+    ("10.0.90.160", "10.0.90.160", True),
+    ("100.118.229.28", "100.118.229.28", True),
+    ("10.0.90.45", "10.0.90.160", False),
+    ("100.100.100.10", "100.118.229.28", False),
+    ("invalid", "127.0.0.1", False),
+])
+def test_board_local_client_uses_socket_addresses(peer, local, expected):
+    assert server._board_local_client(peer, local) is expected
+
+
+def test_board_selection_endpoint_updates_physical_confirm_target(board_selection_http):
+    status, _, body = _round_post(board_selection_http, "/api/input/board/selection", {"game": "rps"})
+    assert status == 200
+    assert json.loads(body) == {"game": "rps"}
+    server._board_dispatch("confirm")
+    assert server._SELECT_BUS.poll()[-1]["game_id"] == "rps"
+    status, _, body = _round_post(board_selection_http, "/api/input/board/selection", {"game": "dice"})
+    assert status == 200
+    server._board_dedup.clear()
+    server._board_dispatch("confirm")
+    assert server._SELECT_BUS.poll()[-1]["game_id"] == "dice"
+
+
+@pytest.mark.parametrize("payload,status,code", [
+    ({}, 400, "INVALID_REQUEST"),
+    ({"game": 1}, 400, "INVALID_REQUEST"),
+    ({"game": ""}, 400, "INVALID_REQUEST"),
+    ({"game": "missing"}, 404, "GAME_NOT_FOUND"),
+    ({"game": "disabled"}, 403, "GAME_DISABLED"),
+])
+def test_board_selection_endpoint_rejects_invalid_games(board_selection_http, payload, status, code):
+    actual, _, body = _round_post(board_selection_http, "/api/input/board/selection", payload)
+    assert actual == status
+    assert json.loads(body)["code"] == code
+    assert server._board_cursor["game_id"] == "dice"
+
+
+def test_board_selection_endpoint_obeys_global_game_switch(board_selection_http, monkeypatch):
+    monkeypatch.setattr(server, "get_arena_config", lambda: {"games_enabled": {"rps": False}})
+    status, _, body = _round_post(board_selection_http, "/api/input/board/selection", {"game": "rps"})
+    assert status == 403
+    assert json.loads(body)["code"] == "GAME_DISABLED"
+    assert server._board_cursor["game_id"] == "dice"
+
+
+def test_board_selection_endpoint_rejects_remote_client_and_drains_body(board_selection_http, monkeypatch):
+    monkeypatch.setattr(server.Handler, "_is_board_local_client", lambda self: False)
+    connection = HTTPConnection("127.0.0.1", board_selection_http, timeout=3)
+    try:
+        connection.request("POST", "/api/input/board/selection", body=json.dumps({"game": "rps"}),
+                           headers={"Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1"})
+        response = connection.getresponse()
+        assert response.status == 403
+        assert json.loads(response.read())["code"] == "BOARD_SELECTION_LOCAL_ONLY"
+        assert server._board_cursor["game_id"] == "dice"
+        connection.request("GET", "/api/games")
+        response = connection.getresponse()
+        assert response.status == 200
+        assert json.loads(response.read())["board_input"]["local_client"] is False
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("local_client", [True, False])
+def test_games_exposes_board_input_source(board_selection_http, monkeypatch, local_client):
+    monkeypatch.setattr(server.Handler, "_is_board_local_client", lambda self: local_client)
+    connection = HTTPConnection("127.0.0.1", board_selection_http, timeout=3)
+    try:
+        connection.request("GET", "/api/games")
+        response = connection.getresponse()
+        assert response.status == 200
+        payload = json.loads(response.read())
+        assert payload["board_input"] == {"local_client": local_client, "enabled": True}
+        assert {game["id"] for game in payload["games"]} == {"dice", "rps", "disabled"}
+    finally:
+        connection.close()
