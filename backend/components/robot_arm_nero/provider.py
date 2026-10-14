@@ -479,7 +479,7 @@ class RobotArmNeroProvider(RobotProvider):
         config = json.loads(
             (Path(__file__).parent / "config.json").read_text(encoding="utf-8")
         )
-        self._demo_root = (REPO_ROOT / str(config.get("demo_root", "../dice_demo"))).resolve()
+        self._demo_root = (REPO_ROOT / str(config.get("demo_root", "dice_demo"))).resolve()
         self._python_bin = str(config.get("python_bin", "/usr/bin/python3"))
         self._ready_timeout = float(config.get("ready_timeout_seconds", 60))
         self._timeouts = {
@@ -521,22 +521,56 @@ class RobotArmNeroProvider(RobotProvider):
             "configs/green_cup.json": self._demo_root / "configs" / "green_cup.json",
             "configs/actions/gestures": self._demo_root / "configs" / "actions" / "gestures",
             "configs/actions/home.json": self._demo_root / "configs" / "actions" / "home.json",
-            "vendor-site/pyAgxArm": self._demo_root / "vendor-site" / "pyAgxArm",
-            "vendor-site/pyrealsense2": self._demo_root / "vendor-site" / "pyrealsense2",
+            "third_party/pyAgxArm/pyAgxArm/__init__.py": (
+                self._demo_root / "third_party" / "pyAgxArm" / "pyAgxArm" / "__init__.py"
+            ),
         }
         missing = [name for name, path in checks.items() if not path.exists()]
         if missing:
             payload["ok"] = False
             payload["ready"] = False
             payload["error"] = f"demo deployment incomplete under {self._demo_root}: missing {missing}"
+        else:
+            try:
+                dependencies = self._python_dependencies()
+                payload["python_dependencies"] = dependencies
+                missing_python = [name for name, origin in dependencies.items() if not origin]
+                if missing_python:
+                    raise RuntimeError(f"missing Python dependencies: {missing_python}")
+            except (OSError, subprocess.TimeoutExpired, ValueError, RuntimeError) as exc:
+                payload["ok"] = False
+                payload["ready"] = False
+                payload["error"] = f"robot Python dependencies unavailable: {exc}"
         # CAN 三关探测：/api/health 立刻可见，不用等对局里超时才发现。
         can = _can0_status()
         payload["can0"] = can
         if can["status"] != "ok":
             payload["ok"] = False
             payload["ready"] = False
-            payload["error"] = can["fix"]
+            payload["error"] = "; ".join(filter(None, (payload.get("error"), can["fix"])))
         return payload
+
+    def _python_dependencies(self) -> dict[str, str | None]:
+        """Discover SDK/RealSense in the selected interpreter without loading native code."""
+        result = subprocess.run(
+            [self._python_bin, "-B", "-c", """
+import json
+import sys
+from importlib.machinery import PathFinder
+origins = {}
+for name in ('pyAgxArm', 'pyrealsense2'):
+    spec = PathFinder.find_spec(name, sys.path)
+    origins[name] = spec.origin if spec else None
+print(json.dumps(origins))
+"""],
+            cwd=str(self._demo_root), env=self._build_env(),
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                f"{self._python_bin}: {result.stderr.strip()[:500] or f'exit {result.returncode}'}"
+            )
+        return json.loads(result.stdout)
 
     def ensure_started(self) -> None:
         """Spawn the resident early so the rules speech covers its warmup.
@@ -1007,13 +1041,17 @@ class RobotArmNeroProvider(RobotProvider):
     def _build_env(self) -> dict[str, str]:
         env = dict(os.environ)
         env["DICE_CONFIG"] = str(self._demo_root / "configs" / "green_cup.json")
+        env["DICE_PYTHON"] = self._python_bin
         env["DICE_VISION_PYTHON"] = self._python_bin
         env["DICE_SDK_PYTHON"] = self._python_bin
-        env["NERO_SDK_DIR"] = str(self._demo_root / "vendor-site" / "pyAgxArm")
-        pythonpath = [
-            str(self._demo_root / "vendor-site"),
-            str(self._demo_root / "vendor-site-deps"),
-        ]
-        existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = ":".join([*pythonpath, existing]) if existing else ":".join(pythonpath)
+        sdk_root = self._demo_root / "third_party" / "pyAgxArm"
+        env["NERO_SDK_DIR"] = str(sdk_root)
+        env["PYTHONNOUSERSITE"] = "1"
+        pythonpath = [str(self._demo_root), str(sdk_root)]
+        extra_packages = self._demo_root / "third_party" / "python"
+        if extra_packages.is_dir():
+            pythonpath.append(str(extra_packages))
+        # The selected demo takes precedence over an inherited development SDK.
+        pythonpath.extend(entry for entry in env.get("PYTHONPATH", "").split(":") if entry)
+        env["PYTHONPATH"] = ":".join(dict.fromkeys(pythonpath))
         return env

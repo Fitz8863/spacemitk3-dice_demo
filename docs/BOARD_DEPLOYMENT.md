@@ -54,6 +54,8 @@ scripts/setup_board.sh check --with-asr --with-matcha
 
 `check` 导入 Python/SDK/RealSense、核验模型和动态库，并用合成 NV12 图像执行一次 OpenCL/YOLO 推理；不打开摄像头、麦克风或 CAN，不发送机械臂动作，不合成/播放语音。机械臂原有完整检查仍可用 `bash dice_demo/scripts/check_environment.sh` 执行；仅核对依赖使用 `bash scripts/robot_dependencies.sh check`，不读取客户标定。部署脚本由主项目维护，不改写 `dice_demo/` 上游快照。
 
+默认机械臂运行目录为仓内 `dice_demo/`，与安装脚本一致，无需额外克隆兄弟目录。接入层使用随仓库的 `third_party/pyAgxArm` SDK，并在配置的 Python 中查找已安装的 RealSense；旧 `vendor-site/` 不再是启动或健康检查前提。显式设置外部 `demo_root` 时，该目录的依赖须另行准备。
+
 ## 4. 安装失败后继续
 
 | 提示 | 处理 |

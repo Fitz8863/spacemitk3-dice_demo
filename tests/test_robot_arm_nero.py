@@ -10,7 +10,9 @@ restart-and-recover paths the provider must handle.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -217,8 +219,12 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
             "{}", encoding="utf-8"
         )
         (root / "configs" / "actions" / "home.json").write_text("{}", encoding="utf-8")
-        (root / "vendor-site" / "pyAgxArm").mkdir(parents=True)
-        (root / "vendor-site" / "pyrealsense2").mkdir(parents=True)
+        sdk = root / "third_party" / "pyAgxArm" / "pyAgxArm"
+        sdk.mkdir(parents=True)
+        (sdk / "__init__.py").write_text('LAYOUT = "bundled"\n', encoding="utf-8")
+        realsense = root / "third_party" / "python" / "pyrealsense2"
+        realsense.mkdir(parents=True)
+        (realsense / "__init__.py").write_text("", encoding="utf-8")
         (root / "cup_grasp_demo" / "datasets").mkdir(parents=True)
         (root / "fake_resident.py").write_text(FAKE_RESIDENT_SOURCE, encoding="utf-8")
         (root / "run.sh").write_text(
@@ -238,6 +244,7 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         # Point at the fixture and keep every timeout short but generous for
         # slow CI machines; scenarios override per test where needed.
         self.provider._demo_root = root
+        self.provider._python_bin = sys.executable
         self.provider._ready_timeout = 15.0
         self.provider._sigint_grace = 5.0
         self.provider._timeouts = {key: 20.0 for key in self.provider._timeouts}
@@ -286,6 +293,104 @@ class RobotArmNeroProtocolTests(unittest.TestCase):
         health = self.provider.health()
         self.assertFalse(health["ok"])
         self.assertIn("gestures", str(health.get("error")))
+
+    def _install_modern_dependencies(self):
+        """A fresh deployment has a bundled SDK and installed RealSense, no vendor-site."""
+        shutil.rmtree(self.demo_root / "vendor-site", ignore_errors=True)
+        sdk = self.demo_root / "third_party" / "pyAgxArm" / "pyAgxArm"
+        sdk.mkdir(parents=True, exist_ok=True)
+        (sdk / "__init__.py").write_text('LAYOUT = "bundled"\n', encoding="utf-8")
+        realsense = self.demo_root / "third_party" / "python" / "pyrealsense2"
+        realsense.mkdir(parents=True, exist_ok=True)
+        (realsense / "__init__.py").write_text("", encoding="utf-8")
+        self.provider._python_bin = sys.executable
+        return sdk, realsense
+
+    def test_health_accepts_clean_deployment_without_vendor_site(self):
+        sdk, realsense = self._install_modern_dependencies()
+        health = self.provider.health()
+        self.assertTrue(health["ready"], health)
+        self.assertEqual(health["python_dependencies"]["pyAgxArm"], str(sdk / "__init__.py"))
+        self.assertEqual(health["python_dependencies"]["pyrealsense2"], str(realsense / "__init__.py"))
+        self.assertIsNone(self.provider._resident)
+
+    def test_health_discovers_dependencies_without_importing_them(self):
+        sdk, realsense = self._install_modern_dependencies()
+        for package in (sdk, realsense):
+            (package / "__init__.py").write_text(
+                'raise RuntimeError("health must not import native or device packages")\n',
+                encoding="utf-8",
+            )
+        health = self.provider.health()
+        self.assertTrue(health["ready"], health)
+        self.assertIsNone(self.provider._resident)
+
+    def test_health_flags_missing_bundled_sdk(self):
+        sdk, _ = self._install_modern_dependencies()
+        (sdk / "__init__.py").unlink()
+        health = self.provider.health()
+        self.assertFalse(health["ready"])
+        self.assertIn("third_party/pyAgxArm", health["error"])
+
+    def test_health_flags_missing_realsense_without_opening_devices(self):
+        _, realsense = self._install_modern_dependencies()
+        shutil.rmtree(realsense)
+        interpreter = self.demo_root / "python-without-site"
+        interpreter.write_text(
+            f'#!/usr/bin/env bash\nexec "{sys.executable}" -S "$@"\n', encoding="utf-8",
+        )
+        interpreter.chmod(0o755)
+        self.provider._python_bin = str(interpreter)
+        health = self.provider.health()
+        self.assertFalse(health["ready"])
+        self.assertIn("pyrealsense2", health["error"])
+        self.assertIsNone(self.provider._resident)
+
+    def test_health_reports_unavailable_selected_interpreter(self):
+        self._install_modern_dependencies()
+        self.provider._python_bin = str(self.demo_root / "missing-python")
+        health = self.provider.health()
+        self.assertFalse(health["ready"])
+        self.assertIn("missing-python", health["error"])
+
+    def test_clean_launch_imports_sdk_without_inherited_pythonpath(self):
+        sdk, _ = self._install_modern_dependencies()
+        with mock.patch.dict(os.environ, {"PATH": os.environ.get("PATH", "")}, clear=True):
+            env = self.provider._build_env()
+        self.assertEqual(env["NERO_SDK_DIR"], str(sdk.parent))
+        self.assertEqual(env["DICE_PYTHON"], sys.executable)
+        result = subprocess.run(
+            [self.provider._python_bin, "-B", "-c", "import pyAgxArm; print(pyAgxArm.LAYOUT)"],
+            env=env, capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "bundled")
+
+    def test_clean_launch_prefers_selected_demo_over_inherited_sdk(self):
+        sdk, _ = self._install_modern_dependencies()
+        stale = self.demo_root / "stale" / "pyAgxArm"
+        stale.mkdir(parents=True)
+        (stale / "__init__.py").write_text('LAYOUT = "stale"\n', encoding="utf-8")
+        with mock.patch.dict(os.environ, {"PYTHONPATH": str(stale.parent),
+                                         "NERO_SDK_DIR": str(stale.parent),
+                                         "DICE_PYTHON": "/missing/old-python"}):
+            env = self.provider._build_env()
+        self.assertEqual(env["NERO_SDK_DIR"], str(sdk.parent))
+        self.assertEqual(env["DICE_PYTHON"], sys.executable)
+        result = subprocess.run(
+            [self.provider._python_bin, "-B", "-c", "import pyAgxArm; print(pyAgxArm.LAYOUT)"],
+            env=env, capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "bundled")
+
+    def test_default_demo_root_matches_installer_snapshot(self):
+        config = json.loads((BACKEND / "components" / "robot_arm_nero" / "config.json").read_text())
+        self.assertEqual(config["demo_root"], "dice_demo")
+        self.assertEqual(RobotArmNeroProvider()._demo_root, ROOT / "dice_demo")
+        config.pop("demo_root")
+        with mock.patch.object(nero_module.json, "loads", return_value=config):
+            self.assertEqual(RobotArmNeroProvider()._demo_root, ROOT / "dice_demo")
 
     # ---- CAN 接口探测（2026-09-29）------------------------------------
 
