@@ -5,8 +5,7 @@ take a bare K3 board to a running system.  These tests pin the parts whose
 silent regression would only surface on a fresh board, far away from help:
 
 - the apt package list (a missing build dep fails at cmake; a missing runtime
-  dep fails at start; the old bundle installer notably omitted python3-numpy,
-  the backend's only third-party import);
+  dep fails at start; both Python ORT and PipeWire belong in deployment);
 - the GStreamer element gate (engine exits when the RTSP pipeline cannot be
   built, so a missing element kills adjudication, not just the preview);
 - the asset download sources (default URLs must stay reachable-in-principle:
@@ -30,9 +29,10 @@ def _script():
 def test_setup_installs_every_runtime_package():
     script = _script()
     for pkg in (
-        "spacemit-onnxruntime", "libsndfile1", "alsa-utils", "curl",
+        "spacemit-onnxruntime", "python3-spacemit-ort", "spacemit-tcm",
+        "libsndfile1", "alsa-utils", "pipewire-bin", "pipewire", "wireplumber", "curl",
         "v4l-utils",
-        "python3-numpy",  # backend/components/tts_moss_nano/daemon.py 唯一第三方 import
+        "python3-numpy", "iproute2",
     ):
         assert pkg in script, f"setup must install {pkg}"
 
