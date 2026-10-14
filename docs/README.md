@@ -7,6 +7,7 @@
 | 文档 | 用途 |
 | --- | --- |
 | [`../README.md`](../README.md) | 使用者和部署者入口：启动、配置、API 和常用验证命令。 |
+| [`BOARD_DEPLOYMENT.md`](BOARD_DEPLOYMENT.md) | 客户新 K3 的一键依赖安装、无硬件验收和失败后续装步骤。 |
 | [`../FRAMEWORK_DISPATCH.md`](../FRAMEWORK_DISPATCH.md) | 从浏览器请求到视觉/TTS provider 的端到端调度说明。 |
 | [`../backend/components/README.md`](../backend/components/README.md) | 可插拔 provider 功能包的目录、manifest 和接口约定。 |
 | [`../vision/yolov8_objdetect/README.md`](../vision/yolov8_objdetect/README.md) | YOLOv8 K3 runtime、控制协议、快照和 MediaMTX 播放边界。 |

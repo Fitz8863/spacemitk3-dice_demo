@@ -28,8 +28,8 @@ backend/server.py（K3 板端轻量 HTTP 服务）
 | 项 | 说明 |
 | --- | --- |
 | 硬件 | SpacemiT K3 板（riscv64，内存 ≥ 8G，建议 16G）；USB 摄像头（俯拍台面，接了多台时可用 `scripts/detect.sh` 确认各自的采集节点）；NERO 机械臂（完整对局的动作执行方，**没有也能起服务玩视觉裁决**，见下文免臂模式）；麦克风 / 扬声器（语音功能用，可选） |
-| 系统 | Bianbu（自带 python3、SpaceMIT onnxruntime、OpenCL） |
-| 系统包 | 由 `scripts/setup_board.sh` 自动安装（OpenCV 运行库与开发包、GStreamer 插件组、v4l-utils、python3-numpy 等；GStreamer 是**硬依赖**——缺了视觉链路起不来） |
+| 系统 | 与开发板一致的 Bianbu 4 镜像（当前验证 4.0.6，riscv64 / 系统 Python 3.14）；随仓库 RealSense 与 MOSS 二进制依赖要求该 Python ABI。其他 Bianbu/Python 版本需重新准备对应扩展，不能直接混用 |
+| 系统包 | 由 `scripts/setup_board.sh --yes` 按需安装：OpenCV / GStreamer / OpenCL 开发包、SpaceMIT ORT Python 与原生运行库、PipeWire、NumPy，以及机械臂的 SciPy / python-can / RealSense 等依赖。识别使用仓内锁定库，保留系统共享库 |
 | mediamtx | 网页实时画面需要（WebRTC :8889 / RTSP :8554），`setup_board.sh` 默认自动安装并注册开机自启，`--no-mediamtx` 可跳过 |
 
 前端与后端只使用 K3 系统自带的 `python3`，不需要 Node.js 或 npm。
@@ -39,22 +39,35 @@ backend/server.py（K3 板端轻量 HTTP 服务）
 在 K3 板端执行（下文 `<repo-root>` 指仓库根目录）：
 
 ```bash
-git clone <本仓库地址>   # 克隆到板端任意目录
-cd <repo-root>
+git clone https://github.com/Fitz8863/spacemitk3-dice_demo.git
+cd spacemitk3-dice_demo
 
-scripts/setup_board.sh   # 一键：装依赖 → 编译视觉 runtime → 下载模型资产 → 装 mediamtx → 自检
-scripts/start_web.sh     # 启动；无机械臂：DICE_NO_ARM=1 scripts/start_web.sh
+# 普通登录用户运行；只有安装系统包/设备组时会调用 sudo，可能要求密码。
+scripts/setup_board.sh --yes
+# 如果脚本新增了 input/video 组：先新开 SSH 或注销桌面重登，再启动。
+scripts/start_web.sh     # 无机械臂：DICE_NO_ARM=1 scripts/start_web.sh
 ```
 
 浏览器打开 `http://<板端IP>:8080`（板端本机即 `http://127.0.0.1:8080`），可用 `curl http://127.0.0.1:8080/api/health` 验证服务状态；停止用 `scripts/stop_web.sh`。
 
 说明：
 
-- `setup_board.sh` 分步幂等（`deps` / `build` / `models` / `mediamtx` / `can0` / `detect` / `check`，可单跑、可失败后重跑续传），模型资产从本仓库 GitHub Release 下载（本地 TTS 约 700M）；语音识别与备用 TTS 引擎是可选项（`--with-asr` / `--with-matcha`）。
+- `setup_board.sh` 顺序执行 `deps` / `robot` / `permissions` / `build` / `models` / `mediamtx` / `can0` / `detect` / `check`。已完整安装的依赖和资产会复用；模型从 GitHub Release 下载（MOSS 压缩包约 452 MB），支持断点续传和 SHA256 校验。可按步骤重跑，如 `scripts/setup_board.sh robot models --yes`。
 - **免臂模式**：没有 NERO 机械臂时用 `DICE_NO_ARM=1 scripts/start_web.sh` 起服务——网页、语音播报、视觉裁决（`/api/adjudicate`）均可用；完整一局需要机械臂（摇骰 / 出拳环节由它执行），对局推进到机械臂步骤时会走失败页。
 - 从局域网其他设备经 HTTP 访问时，浏览器可能因非安全上下文限制「页面预览摄像头」权限——实际识别用的始终是 K3 板端摄像头，不受影响。要让**页面里的实时画面小窗**在该设备上可见，把全局 `backend/config.json` 的 `video.webrtc_base_url` 改成 `http://<板端IP>:8889`（热生效，无需重启）。
 - 不想用一键脚本、逐项手动部署：编译 `vision/yolov8_objdetect` 与 `vision/yolov10_objdetect`（板上手动装过 `/opt/opencv-spacemit` SDK 的需加 `-DOpenCV_DIR=/opt/opencv-spacemit/lib/cmake/opencv4`，apt 安装 `libopencv-dev` 的无需）、按各组件 README 放置 TTS/ASR 模型资产、自行部署 mediamtx，最后 `scripts/start_web.sh`。
 - 单独调试 TTS：`python3 backend/tts_debug.py <provider_id>`。
+
+客户首次部署与故障修复见 [部署说明](docs/BOARD_DEPLOYMENT.md)。`check` 只验证程序依赖、动态库和使用合成图像的 YOLO 推理，不连接摄像头/CAN，不播放音频，不检查现场标定。可单独运行：
+
+```bash
+scripts/setup_board.sh check
+# 需要可选语音识别或备用 Matcha 时：安装与验收都使用相同选项。
+scripts/setup_board.sh --yes --with-asr --with-matcha
+scripts/setup_board.sh check --with-asr --with-matcha
+```
+
+安装可选组件不会修改 `asr_enabled`、TTS 选择、IP 或标定配置；客户按现场需求配置后启动。
 
 ## 玩法与按键
 
