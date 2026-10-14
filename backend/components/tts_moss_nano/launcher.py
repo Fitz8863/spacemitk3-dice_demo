@@ -145,6 +145,21 @@ def start() -> int:
         if health and bool(health.get("ready")):
             print(f"MOSS-TTS bridge started: pid={process.pid} {settings.base_url}")
             return 0
+        if health and health.get("error") and not health.get("starting", False):
+            # The daemon serves /health even after model initialization fails.
+            # Stop waiting for the full startup timeout and remove the failed
+            # child so optional TTS cannot block the web application boot.
+            try:
+                process.terminate()
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3)
+            finally:
+                pid_file.unlink(missing_ok=True)
+            raise SystemExit(
+                f"MOSS-TTS initialization failed: {health['error']}; see {log_file}"
+            )
         time.sleep(1)
     raise SystemExit(f"MOSS-TTS bridge did not become ready within {settings.start_timeout_seconds}s; see {log_file}")
 
