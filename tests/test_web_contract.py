@@ -327,19 +327,21 @@ def test_robot_shake_is_event_driven_with_stop_call():
         "robot.shake_dice.failed": {"to": "arm_failed"},
     }
 
-    # stop_call：SHAKE 完成的瞬间喊停；放杯、松手、归位与停.wav 并行。
+    # stop_call：SHAKE 完成的瞬间喊停；停.wav await——播完才发 settle_dice，
+    # 否则热机短行程的 settle 极快完成会切走 state_version，把 0.82s 的
+    # "停！"从扬声器中途杀掉（2026-10-14 拍板：方法 A）。
     stop_call = machine["states"]["stop_call"]
     assert stop_call["ui"]["view"] == "shaking"  # 复用摇骰视图，文案静默切换
     assert stop_call["on_enter"] == [
         {
             "action": "speech", "mode": "audio",
-            "audio": "audio/停.wav", "text": "停！",
+            "audio": "audio/停.wav", "text": "停！", "await": True,
         },
         {
             "action": "robot", "command": "settle_dice", "timeout_seconds": 90,
         },
     ]
-    assert "await" not in stop_call["on_enter"][0]
+    assert stop_call["on_enter"][0]["await"] is True
     assert "duration" not in stop_call
     assert "on_expire" not in stop_call
     assert stop_call["on_event"] == {

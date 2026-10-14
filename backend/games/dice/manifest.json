@@ -262,7 +262,8 @@
 						"action": "speech",
 						"mode": "audio",
 						"audio": "audio/停.wav",
-						"text": "停！"
+						"text": "停！",
+						"await": true
 					},
 					{
 						"action": "robot",
@@ -313,11 +314,6 @@
 					"copy": "请让骰子保持不动，数完点数马上揭晓胜负。"
 				},
 				"on_enter": [
-					{
-						"action": "speech",
-						"mode": "tts_local",
-						"text": "正在调用视觉判断结果"
-					},
 					{
 						"action": "adjudicate"
 					}
