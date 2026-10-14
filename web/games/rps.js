@@ -38,6 +38,7 @@ export function register(engine) {
   let displayLayout = null;
   let savedRulesMarkup = '';
   let savedDetectLabel = '';
+  let savedCaptureHidden = false;
   let restarting = false;
 
   function submitIntent(intent, payload = {}) {
@@ -188,9 +189,9 @@ export function register(engine) {
     $('stepCapture').classList.remove('failed');
     $('stepCapture').querySelector('span').textContent = '✓';
     $('stepDetect').classList.remove('active', 'failed');
-    $('stepDetect').querySelector('span').textContent = '2';
+    $('stepDetect').querySelector('span').textContent = '1';
     $('stepJudge').classList.remove('active', 'failed');
-    $('stepJudge').querySelector('span').textContent = '3';
+    $('stepJudge').querySelector('span').textContent = '2';
     $('analysisTitle').textContent = '正在识别手势';
     $('analysisFailureActions').classList.add('hidden');
     document.querySelector('.analysis-spinner')?.classList.remove('hidden');
@@ -254,8 +255,9 @@ export function register(engine) {
     $('stepJudge').classList.remove('active');
     document.querySelector('.analysis-spinner')?.classList.add('hidden');
     $('analysisTitle').textContent = '本次裁决未完成';
-    $('analysisStatus').textContent = diagnosis.message
-      || '当前画面无法形成稳定识别结果，请重新开始。';
+    $('analysisStatus').textContent = diagnosis.reason_code === 'NO_OBJECTS_DETECTED'
+      ? '识别手势失败，请您正向出您的手势'
+      : diagnosis.message || '当前画面无法形成稳定识别结果，请重新开始。';
     $('analysisFailureActions').classList.remove('hidden');
     $('analysisRetry').classList.add('hidden');
   }
@@ -275,6 +277,10 @@ export function register(engine) {
     $('analysisStreamPanel').classList.add('dice-video');
     configureParticipants(manifest);
     // 共享视图换上猜拳措辞（HTML 默认是 dice 的），teardown 还原。
+    savedCaptureHidden = $('stepCapture').classList.contains('hidden');
+    $('stepCapture').classList.add('hidden');
+    $('stepDetect').querySelector('span').textContent = '1';
+    $('stepJudge').querySelector('span').textContent = '2';
     const rulesList = document.querySelector('.rules-list');
     savedRulesMarkup = rulesList.innerHTML;
     rulesList.innerHTML = RULES_MARKUP;
@@ -342,6 +348,9 @@ export function register(engine) {
   function teardown() {
     $('analysisStreamPanel').classList.remove('dice-video');
     // 还原共享视图的 dice 默认文案（guards 覆盖 enter 中途失败的情况）。
+    $('stepCapture').classList.toggle('hidden', savedCaptureHidden);
+    $('stepDetect').querySelector('span').textContent = '2';
+    $('stepJudge').querySelector('span').textContent = '3';
     if (savedRulesMarkup) {
       document.querySelector('.rules-list').innerHTML = savedRulesMarkup;
       savedRulesMarkup = '';
