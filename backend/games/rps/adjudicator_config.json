@@ -45,7 +45,9 @@
       "grip"
     ],
     "Paper": [
-      "palm"
+      "palm",
+      "stop",
+      "stop_inverted"
     ],
     "Scissors": [
       "peace",
