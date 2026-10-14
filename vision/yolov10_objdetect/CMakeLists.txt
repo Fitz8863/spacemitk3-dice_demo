@@ -69,8 +69,17 @@ target_link_libraries(yolov10_camera PRIVATE
     PkgConfig::GSTREAMER
     dl)
 
+# The board's SpaceMIT OpenCV SDK is outside the system linker paths.
+# Keep its library directory on the build-tree executable so checks and
+# service launches can resolve the same OpenCV version used at link time.
+set(OPENCV_BUILD_RPATH "")
+if(OpenCV_DIR MATCHES "/opt/opencv-spacemit/lib/cmake/opencv4/?$")
+    get_filename_component(OPENCV_BUILD_RPATH "${OpenCV_DIR}/../.." REALPATH)
+endif()
+
 set_target_properties(yolov10_camera PROPERTIES
-    SKIP_BUILD_RPATH TRUE
+    SKIP_BUILD_RPATH FALSE
+    BUILD_RPATH "${OPENCV_BUILD_RPATH}"
     BUILD_WITH_INSTALL_RPATH FALSE
     INSTALL_RPATH "")
 
