@@ -52,6 +52,9 @@ while IFS= read -r header; do
     # 分组头形如 "C270 HD WEBCAM (usb-xhci-hcd.15.auto-1.4):"
     # 只关心 USB 相机, 跳过平台设备 (如 VPU 的 mvx)。
     [[ "$header" == *"("*usb-*"):"* ]] || continue
+    # RealSense 由 librealsense 按序列号打开；它的深度/红外 V4L2 节点
+    # 不是游戏裁决器使用的 USB 彩色视频摄像头，避免误导 camera 配置。
+    [[ "$header" == *"Intel(R) RealSense"* ]] && continue
     found=$((found + 1))
     full="${header%:}"
     model="$(printf '%s' "$full" | sed 's/ *(.*//')"
@@ -77,13 +80,16 @@ while IFS= read -r header; do
     echo "[$found] $model  (USB: $usb)"
     if [[ -n "$capture" ]]; then
         formats="$(v4l2-ctl -d "$capture" --list-formats-ext 2>/dev/null \
-            | grep -oE "'[A-Z0-9]+'" | tr -d "'" | sort -u | tr '\n' ' ')"
+            | sed -nE "s/^[[:space:]]*\[[0-9]+\]:[[:space:]]*'([^']+)'.*/\1/p" \
+            | sed 's/[[:space:]]*$//' | sort -u | tr '\n' ' ')"
         echo "    采集节点 : $capture   ← 视觉程序使用这个节点"
         echo "    支持格式 : ${formats:-未知}"
     else
         echo "    [警告] 未找到采集节点 (设备被占用或驱动异常)"
     fi
-    [[ -n "$others" ]] && echo "    其他节点 : $others (metadata, 不可用于采集)"
+    if [[ -n "$others" ]]; then
+        echo "    其他节点 : $others (metadata, 不可用于采集)"
+    fi
     echo
 done < <(grep ':$' "$tmp")
 
