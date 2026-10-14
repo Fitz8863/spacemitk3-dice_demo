@@ -403,25 +403,25 @@ class _AsrEngine:
             capture_rc = self._returncode(capture)
             asr_rc = self._returncode(asr)
             if stopped:
-                return
-            if not supervision or not has_routing:
+                pass
+            elif not supervision or not has_routing:
                 self._log(f"ASR engine ended (asr rc={asr_rc}, capture rc={capture_rc})")
-                return
-            lifetime = time.monotonic() - self._spawned_at
-            if lifetime < self._resurrect_min_lifetime:
-                self._log(
-                    f"ASR engine died after only {lifetime:.1f}s "
-                    f"(asr rc={asr_rc}); no auto-respawn — recovering at the "
-                    "next attach"
-                )
-                return
-            self._log(
-                f"ASR engine died unexpectedly (asr rc={asr_rc}); "
-                "respawning in the background"
-            )
-            threading.Thread(
-                target=self._spawn_if_dead, name="asr-engine-respawn", daemon=True
-            ).start()
+            else:
+                lifetime = time.monotonic() - self._spawned_at
+                if lifetime < self._resurrect_min_lifetime:
+                    self._log(
+                        f"ASR engine died after only {lifetime:.1f}s "
+                        f"(asr rc={asr_rc}); no auto-respawn - recovering at the "
+                        "next attach"
+                    )
+                else:
+                    self._log(
+                        f"ASR engine died unexpectedly (asr rc={asr_rc}); "
+                        "respawning in the background"
+                    )
+                    threading.Thread(
+                        target=self._spawn_if_dead, name="asr-engine-respawn", daemon=True
+                    ).start()
 
     def _read_stderr(self, asr: subprocess.Popen) -> None:
         # Diagnostics only — deliberately NOT marking the engine ready: the
