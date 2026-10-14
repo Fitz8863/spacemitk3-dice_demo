@@ -1244,8 +1244,11 @@ int main(int argc, char** argv) {
             }
             rps_mapper.fold(ds);
             std::cout << "Self-test passed: OpenCL preprocess " << prep_result.ms
-                      << " ms, " << ds.size() << " detections.\n";
-            return 0;
+                      << " ms, " << ds.size() << " detections.\n" << std::flush;
+            // Vendor OpenCL/ORT runtimes may leave worker threads blocked at
+            // process teardown after inference. This one-shot, hardware-free
+            // smoke test has completed; let the OS reclaim its process resources.
+            std::_Exit(EXIT_SUCCESS);
         } catch (const std::exception& e) {
             std::cerr << "Self-test failed: " << e.what() << "\n";
             return 6;
