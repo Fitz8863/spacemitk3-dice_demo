@@ -82,7 +82,8 @@ def test_frontend_result_copy_is_detector_only():
     """The result subtitle states only the verdict — no source annotations."""
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
 
-    assert "resultSubtitle').textContent = `玩家 ${player} : 机械臂 ${agent}`" in js
+    assert "resultSubtitle').textContent = '';" in js
+    assert "resultSubtitle').classList.add('hidden');" in js
     # 宣判结果不带来源说明（维护者 2026-09-30 拍板：不要说明性文字）。
     for annotation in ("纯视觉判定", "大模型", "YOLOv8：", "当前未启用"):
         assert annotation not in js
@@ -136,6 +137,25 @@ def test_frontend_renders_structured_diagnosis_and_retry_prompt():
     assert "本次裁决未完成" in js
     assert "diagnosis.message" in js
     assert "analysisFailureActions" in js
+
+
+def test_dice_result_omits_duplicate_score_and_keeps_rps_subtitle():
+    """Dice already shows both big scores; its small duplicate summary is hidden.
+
+    RPS keeps the actual gesture comparison (rock/scissors/...), and switching
+    from dice back to a shared result view must restore the subtitle node.
+    """
+    dice = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
+    rps = (ROOT / "web/games/rps.js").read_text(encoding="utf-8")
+    assert "$('resultSubtitle').textContent = '';" in dice
+    assert "$('resultSubtitle').classList.add('hidden');" in dice
+    assert "$('resultSubtitle').classList.remove('hidden');" in dice
+    assert "$('resultSubtitle').classList.remove('hidden');" in rps
+    assert "result.agent_choice" in rps
+    css = (ROOT / "web/styles.css").read_text(encoding="utf-8")
+    dark = (ROOT / "web/dark-arena.css").read_text(encoding="utf-8")
+    assert "body:has(.dice-video) .result-banner .view-title" in css
+    assert "body:has(.dice-video) .result-banner .view-title" in dark
 
 
 def test_frontend_uses_one_centered_stage_and_expands_live_video():

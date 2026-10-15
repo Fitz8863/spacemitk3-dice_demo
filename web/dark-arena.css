@@ -152,6 +152,7 @@
 :root[data-theme="dark-arena"] .result-banner { border: 0; padding: 0; background: transparent; border-radius: 0; transform: none; box-shadow: none; animation: none; }
 :root[data-theme="dark-arena"] .result-banner.loss { background: transparent; border: 0; }
 :root[data-theme="dark-arena"] .result-banner .view-title { margin: 0; }
+:root[data-theme="dark-arena"] body:has(.dice-video) .result-banner .view-title { font-size: clamp(52px, 4vw, 72px); }
 :root[data-theme="dark-arena"] .result-emoji { display: none; }
 :root[data-theme="dark-arena"] .result-subtitle { color: var(--muted); font-size: var(--arena-label); }
 :root[data-theme="dark-arena"] .scoreboard { padding: 20px 0; width: min(100%, 780px); margin: 16px auto; background: transparent; border: 0; border-radius: 0; gap: 24px; box-shadow: none; }

@@ -241,6 +241,7 @@ export function register(engine) {
     banner.dataset.winner = winnerRole;
     $('resultEmoji').textContent = tie ? '🤝' : playerWins ? '🏆' : '✨';
     $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : '机械臂获胜';
+    $('resultSubtitle').classList.remove('hidden');
     $('resultSubtitle').textContent = tie
       ? `双方都出了${result.player_choice}，再来一局？`
       : `${result.player_choice} 对 ${result.agent_choice}`;
@@ -347,6 +348,7 @@ export function register(engine) {
 
   function teardown() {
     $('analysisStreamPanel').classList.remove('dice-video');
+    $('resultSubtitle').classList.remove('hidden');
     // 还原共享视图的 dice 默认文案（guards 覆盖 enter 中途失败的情况）。
     $('stepCapture').classList.toggle('hidden', savedCaptureHidden);
     $('stepDetect').querySelector('span').textContent = '2';

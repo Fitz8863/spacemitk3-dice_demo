@@ -404,7 +404,8 @@ export function register(engine) {
     banner.dataset.winner = winnerRole;
     $('resultEmoji').textContent = tie ? '🤝' : playerWins ? '🏆' : '✨';
     $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : '机械臂获胜';
-    $('resultSubtitle').textContent = `玩家 ${player} : 机械臂 ${agent}`;
+    $('resultSubtitle').textContent = '';
+    $('resultSubtitle').classList.add('hidden');
     banner.classList.toggle('loss', !playerWins && !tie);
   }
 
@@ -523,6 +524,7 @@ export function register(engine) {
     $('shakeCup').innerHTML = `<div class="shake-bounce">${diceCubeMarkup()}</div>`;
     playerDice = [];
     agentDice = [];
+    $('resultSubtitle').classList.remove('hidden');
     lastRobotFailureReason = '';
     resetArmProgressRows();
     $('analysisFailureActions').classList.add('hidden');

@@ -632,6 +632,7 @@ body:has(.dice-video) .game-start-text { font-size: clamp(30px, 4vw, 48px); }
 body:has(.dice-video) .arm-progress { margin: 12px auto 0; padding: 10px 16px; }
 body:has(.dice-video) .shake-cup { display: none; }
 body:has(.dice-video) .view-title { font-size: clamp(24px, 2.5vw, 32px); margin: 8px 0; }
+body:has(.dice-video) .result-banner .view-title { font-size: clamp(36px, 3vw, 52px); }
 body:has(.dice-video) .result-banner { padding: 10px 20px; gap: 12px; }
 body:has(.dice-video) .result-emoji { font-size: 32px; }
 body:has(.dice-video) .result-subtitle { font-size: 15px; }
