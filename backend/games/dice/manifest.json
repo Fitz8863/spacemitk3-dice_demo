@@ -262,8 +262,7 @@
 						"action": "speech",
 						"mode": "audio",
 						"audio": "audio/停.wav",
-						"text": "停！",
-						"await": true
+						"text": "停！"
 					},
 					{
 						"action": "robot",
