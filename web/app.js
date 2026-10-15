@@ -109,7 +109,6 @@ function applySessionSnapshot(snapshot) {
         sessionRoundId = null;
         selectGame(snapshot.selected_game, true);
         setPhase(snapshot.phase === 'standby' ? 'standby' : 'select');
-        renderStandbyVoiceHint(standbySettings.wake_phrases, []);
         return;
       }
       if (sessionRoundId !== snapshot.round_id) {
@@ -270,15 +269,6 @@ function enterStandby() {
   if (state.phase !== 'select' || !standbySettings.enabled) return;
   stopSelectListening(); // 列表语音选游戏让位给待机唤醒/点名
   setPhase('standby');
-  const wakeNode = $('standbyWakeWords');
-  if (wakeNode) {
-    if (standbySettings.wake_phrases.length) {
-      wakeNode.textContent = `或对我说：${standbySettings.wake_phrases.join(' / ')}`;
-      wakeNode.classList.remove('hidden');
-    } else {
-      wakeNode.classList.add('hidden');
-    }
-  }
   startStandbyListening();
 }
 
@@ -305,11 +295,10 @@ function startStandbyListening() {
   requestJson('/api/asr/standby', {
     method: 'POST',
     body: JSON.stringify({ listen: true }),
-  }).then((payload) => {
+  }).then(() => {
     // 事件纪元从本次监听开始：POST listen 清掉总线里的历史事件（上一段
     // 待机期间环境人声/幻觉产生的旧唤醒）绝不重放——刷新页面瞬间被"旧
     // 唤醒"唤醒过的 bug。
-    renderStandbyVoiceHint(payload?.wake_phrases, payload?.games);
   }).catch(() => { /* 后端不可用不阻塞待机画面 */ });
   // SSE 推送（EventSource 不吃后台标签页定时器节流——轮询版被 Chromium
   // 钳到 1s/1min，是"板端按键好一会才反应"的根因）；断线由 EventSource
@@ -347,27 +336,6 @@ function startStandbyListening() {
   });
 }
 
-function renderStandbyVoiceHint(wakePhrases, selectGames) {
-  const wakeNode = $('standbyWakeWords');
-  if (!wakeNode) return;
-  const parts = [];
-  if (Array.isArray(wakePhrases) && wakePhrases.length) {
-    parts.push(`对我说：${wakePhrases.join(' / ')}`);
-  }
-  const gameWords = (selectGames || [])
-    .map((game) => (game.phrases || [])[0])
-    .filter(Boolean);
-  if (gameWords.length) {
-    parts.push(`或直接说：${gameWords.join(' / ')}`);
-  }
-  if (parts.length) {
-    wakeNode.textContent = parts.join('，');
-    wakeNode.classList.remove('hidden');
-  } else {
-    wakeNode.classList.add('hidden');
-  }
-}
-
 function stopStandbyListening() {
   if (typeof sharedSession !== 'undefined' && sharedSession?.shared) return;
   if (standbySource) {
@@ -394,8 +362,6 @@ function startSelectListening() {
   requestJson('/api/asr/select', {
     method: 'POST',
     body: JSON.stringify({ listen: true }),
-  }).then((payload) => {
-    renderSelectVoiceHint(payload?.games, payload?.confirm_phrases);
   }).catch(() => { /* 后端不可用不阻塞列表页 */ });
   // SSE 推送（同待机层：EventSource 不吃后台标签页定时器节流）。
   selectSource = new EventSource('/api/asr/select/stream');
@@ -446,24 +412,6 @@ function stopSelectListening() {
     method: 'POST',
     body: JSON.stringify({ listen: false }),
   }).catch(() => { /* already stopped */ });
-}
-
-function renderSelectVoiceHint(selectGames, confirmPhrases) {
-  const node = $('selectVoiceHint');
-  if (!node) return;
-  const words = (selectGames || [])
-    .map((game) => (game.phrases || [])[0])
-    .filter(Boolean);
-  const confirm = (confirmPhrases || [])[0];
-  const parts = [];
-  if (words.length) parts.push(words.join(' / '));
-  if (confirm) parts.push(`「${confirm}」确认进入`);
-  if (parts.length) {
-    node.textContent = `或对我说：${parts.join('，或')}`;
-    node.classList.remove('hidden');
-  } else {
-    node.classList.add('hidden');
-  }
 }
 
 function enterGameById(gameId) {

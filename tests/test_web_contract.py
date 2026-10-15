@@ -743,7 +743,9 @@ def test_frontend_standby_screen_engine_level():
     assert "new EventSource('/api/asr/standby/stream')" in app
     assert "new EventSource('/api/asr/select/stream')" in app
     assert "stopStandbyListening()" in app
-    assert "standbyWakeWords" in html
+    # ASR 语音提示节点已删（2026-10-15 用户拍板：部署不开 asr，提示词误导观众）。
+    # 监听机制本身保留（按键/板键仍需 standby 层），只是不再渲染唤醒词文案。
+    assert "standbyWakeWords" not in html and "selectVoiceHint" not in html
     # Wake-up swallows the first input at capture time: it must never reach
     # the game list (no accidental game start while "asleep").  Channels are
     # voice (server-side wake words) + physical keys only — deliberately NO
