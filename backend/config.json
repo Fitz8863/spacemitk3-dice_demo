@@ -18,7 +18,7 @@
   "voice": "default",
   "speed": 1.0,
   "video": {
-    "webrtc_base_url": "http://127.0.0.1:8889"
+    "webrtc_base_url": "http://100.118.229.28:8889"
   },
   "asr_enabled": false,
   "vision_always_on": false,
