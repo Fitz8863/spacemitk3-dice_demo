@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import pytest
 from pathlib import Path
 
@@ -290,3 +291,154 @@ def test_fast_cross_game_switch_stops_the_previous_providers_stream(always_on):
         assert v8.stop_calls == 1
     else:
         assert _wait_for(lambda: v8.stop_calls == 1)
+
+
+class _ExclusiveCameraProvider(_Provider):
+    """Hold one simulated camera until an explicitly released stop completes."""
+
+    def __init__(self, provider_id, camera):
+        super().__init__()
+        self.id = provider_id
+        self.camera = camera
+        self.start_attempted = threading.Event()
+        self.stop_entered = threading.Event()
+        self.allow_stop = threading.Event()
+        self.open = False
+
+    def start_streaming(self, profile, *, on_log=None, on_event=None):
+        self.start_attempted.set()
+        if self.camera["owner"] not in (None, self):
+            raise RuntimeError("old provider still owns the camera")
+        self.camera["owner"] = self
+        self.open = True
+        return super().start_streaming(profile, on_log=on_log)
+
+    def stop_streaming(self):
+        self.stop_calls += 1
+        self.stop_entered.set()
+        if not self.allow_stop.wait(5):
+            raise RuntimeError("test did not release provider shutdown")
+        if self.camera["owner"] is self:
+            self.camera["owner"] = None
+        self.open = False
+
+
+@pytest.mark.parametrize("same_provider", [True, False], ids=["same-game", "cross-game"])
+@pytest.mark.parametrize("release_path", ["watcher", "stop"])
+@pytest.mark.parametrize("next_always_on", [False, True], ids=["round-lifetime", "persistent"])
+def test_new_entry_waits_for_in_progress_camera_release(
+    monkeypatch, same_provider, release_path, next_always_on,
+):
+    """A release already in flight must finish before a new owner may start."""
+    monkeypatch.setattr("core.vision_stream._WATCHER_POLL_SECONDS", 0.01)
+    camera = {"owner": None}
+    old_provider = _ExclusiveCameraProvider("vision_old", camera)
+    new_provider = old_provider if same_provider else _ExclusiveCameraProvider("vision_new", camera)
+    if new_provider is not old_provider:
+        new_provider.allow_stop.set()
+    registry = _Registry({old_provider.id: old_provider, new_provider.id: new_provider})
+    manager = VisionStreamManager(components=registry)
+    old_round = _StatusRound("old", _manifest(_profile(), slot=old_provider.id))
+    new_round = _StatusRound("new", _manifest(_profile(), slot=new_provider.id))
+    entry_requested = threading.Event()
+    entry_done = threading.Event()
+    results = []
+    errors = []
+    stop_thread = None
+    start_thread = None
+
+    def enter():
+        entry_requested.set()
+        try:
+            results.append(manager.start_for_round(new_round, arena={"vision_always_on": next_always_on}))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            entry_done.set()
+
+    try:
+        assert manager.start_for_round(old_round, arena={"vision_always_on": release_path != "watcher"})
+        new_provider.start_attempted.clear()
+        if release_path == "watcher":
+            old_round.status = "exited"
+        else:
+            stop_thread = threading.Thread(target=manager.stop, daemon=True)
+            stop_thread.start()
+        assert old_provider.stop_entered.wait(2), "old camera release never started"
+        start_thread = threading.Thread(target=enter, daemon=True)
+        start_thread.start()
+        assert entry_requested.wait(1)
+        # In the regression the owner has been cleared, but its actual camera
+        # stop has not finished: reuse is killed later or cross-game open fails.
+        assert not new_provider.start_attempted.wait(0.1), "new camera started during old release"
+        old_provider.allow_stop.set()
+        assert entry_done.wait(2), "game entry deadlocked with the release watcher"
+        assert not errors
+        assert results == [True]
+        assert new_provider.open and camera["owner"] is new_provider
+        assert old_provider.stop_calls == 1
+    finally:
+        old_provider.allow_stop.set()
+        new_provider.allow_stop.set()
+        if start_thread is not None:
+            start_thread.join(timeout=2)
+        if stop_thread is not None:
+            stop_thread.join(timeout=2)
+        new_round.status = "exited"
+        manager.stop()
+
+
+def test_concurrent_game_entries_serialize_camera_start_and_ownership():
+    """Two starts cannot race before either one has published its owner."""
+    camera = {"owner": None}
+    first = _ExclusiveCameraProvider("vision_first", camera)
+    second = _ExclusiveCameraProvider("vision_second", camera)
+    first.allow_stop.set()
+    second.allow_stop.set()
+    start_entered = threading.Event()
+    allow_start = threading.Event()
+    second_requested = threading.Event()
+    original_start = first.start_streaming
+    results = {}
+    errors = []
+
+    def paused_start(*args, **kwargs):
+        start_entered.set()
+        if not allow_start.wait(5):
+            raise RuntimeError("test did not release camera startup")
+        return original_start(*args, **kwargs)
+
+    first.start_streaming = paused_start
+    manager = VisionStreamManager(components=_Registry({first.id: first, second.id: second}))
+
+    def enter(name, provider):
+        if name == "second":
+            second_requested.set()
+        try:
+            round_ = _StatusRound(name, _manifest(_profile(), slot=provider.id))
+            results[name] = manager.start_for_round(round_, arena={"vision_always_on": True})
+        except BaseException as exc:
+            errors.append(exc)
+
+    one = threading.Thread(target=enter, args=("first", first), daemon=True)
+    two = threading.Thread(target=enter, args=("second", second), daemon=True)
+    try:
+        one.start()
+        assert start_entered.wait(2)
+        two.start()
+        assert second_requested.wait(1)
+        assert not second.start_attempted.wait(0.1), "second start bypassed in-progress camera startup"
+        allow_start.set()
+        one.join(timeout=2)
+        two.join(timeout=2)
+        assert not one.is_alive() and not two.is_alive()
+        assert not errors
+        assert results == {"first": True, "second": True}
+        assert first.stop_calls == 1
+        assert not first.open and second.open and camera["owner"] is second
+    finally:
+        allow_start.set()
+        one.join(timeout=2)
+        if two.ident is not None:
+            two.join(timeout=2)
+        manager.stop()
