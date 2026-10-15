@@ -42,9 +42,17 @@ let browser;
   await context.request.post(`${base}/test/reset`, { data: {} });
   const a = await page(), b = await page();
   await phase(a, 'standby'); await phase(b, 'standby');
-  // A board direction wakes both pages and navigates both to RPS.
-  await context.request.post(`${base}/test/board`, { data: { key: 'down' } });
+  // The first green board press only wakes both pages; it must not create
+  // a round or skip the game list. Navigation starts with the next press.
+  const beforeWake = await (await context.request.get(`${base}/test/metrics`)).json();
+  await context.request.post(`${base}/test/board`, { data: { key: 'confirm' } });
   await phase(a, 'select'); await phase(b, 'select');
+  await selected(a, 'dice'); await selected(b, 'dice');
+  assert.equal((await session()).round_id, null);
+  const afterWake = await (await context.request.get(`${base}/test/metrics`)).json();
+  assert.deepEqual(afterWake.round_ids, beforeWake.round_ids, 'standby key must not create a round');
+  assert.deepEqual(afterWake.robot_calls, beforeWake.robot_calls, 'standby key must not trigger robot preparation');
+  await context.request.post(`${base}/test/board`, { data: { key: 'down' } });
   await selected(a, 'rps'); await selected(b, 'rps');
   await Promise.all([a.keyboard.press('Enter'), b.keyboard.press('Enter')]);
   await phase(a, 'rules'); await phase(b, 'rules');
@@ -104,7 +112,7 @@ let browser;
   await a.screenshot({ path: '/tmp/k3-shared-session-browser.png', fullPage: true });
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ verdict: 'PASS', clients: 4, private_round_requests: actions.length,
-    checks: ['board navigation', 'parallel Enter', 'same round stream', 'silent audio failures', 'autoplay policy', 'reload', 'close one display',
+    checks: ['standby green wakes without creating a round', 'board navigation', 'parallel Enter', 'same round stream', 'silent audio failures', 'autoplay policy', 'reload', 'close one display',
       'RPS simulated throw once', 'late result join', 'shared exit', 'default dice', 'dice result'], page_errors: errors }));
   await browser.close();
 })().catch(async (error) => { console.error(error); await browser?.close(); process.exitCode = 1; });

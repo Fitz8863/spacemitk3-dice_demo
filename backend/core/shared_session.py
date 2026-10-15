@@ -231,6 +231,10 @@ class SharedSession:
         if cmd.get('round_id') != current:
             return self._snapshot_locked()
         key = cmd.get('key')
+        # Consume the standby key before applying hall controls: the first
+        # physical press wakes the game list, without selecting or entering.
+        if self._round is None and self._phase == 'standby':
+            return self._execute({'action': 'wake'})
         if self._round:
             from core.board_input import resolve_intent
             if self._round.status == 'error':
@@ -244,8 +248,6 @@ class SharedSession:
             return self._execute({'action': 'navigate', 'direction': key})
         elif key == 'confirm':
             return self._execute({'action': 'enter'})
-        elif self._phase == 'standby':
-            return self._execute({'action': 'wake'})
         return self._snapshot_locked()
 
     def _return_hall(self):

@@ -82,6 +82,34 @@ def test_standby_confirm_respects_shared_cursor_and_exit_resets_once(session):
     assert s.snapshot()['selected_game'] == 'dice'
 
 
+@pytest.mark.parametrize('key', ['confirm', 'back', 'up', 'down'])
+@pytest.mark.parametrize('selected_game', ['dice', 'rps'])
+def test_first_board_key_only_wakes_standby_without_entering_or_navigating(session, key, selected_game):
+    s, _, made, now = session
+    if selected_game != 'dice':
+        act(s, 'select', game=selected_game)
+        now[0] = 121
+        s.tick()
+    assert s.snapshot()['phase'] == 'standby'
+    snap = act(s, 'board', key=key, round_id=None, state=None, state_version=None)
+    assert snap['phase'] == 'select'
+    assert snap['selected_game'] == selected_game
+    assert snap['round_id'] is None
+    assert made == []
+
+
+def test_second_board_confirm_enters_the_selected_game_after_standby_wake(session):
+    s, _, made, _ = session
+    first = act(s, 'board', key='confirm', round_id=None, state=None, state_version=None)
+    assert first['phase'] == 'select' and first['round_id'] is None
+    act(s, 'board', key='down', round_id=None, state=None, state_version=None)
+    assert s.snapshot()['selected_game'] == 'rps'
+    second = act(s, 'board', key='confirm', round_id=None, state=None, state_version=None)
+    assert second['game_id'] == 'rps' and second['round']['state'] == 'rules'
+    assert len(made) == 1
+    assert made[0].inputs == []
+
+
 def test_request_retry_and_late_state_cannot_advance_twice(session):
     s, _, made, _ = session
     act(s, 'enter')
