@@ -240,7 +240,7 @@ export function register(engine) {
     }
     banner.dataset.winner = winnerRole;
     $('resultEmoji').textContent = tie ? '🤝' : playerWins ? '🏆' : '✨';
-    $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : 'Agent 获胜';
+    $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : '机械臂获胜';
     $('resultSubtitle').textContent = tie
       ? `双方都出了${result.player_choice}，再来一局？`
       : `${result.player_choice} 对 ${result.agent_choice}`;

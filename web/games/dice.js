@@ -391,7 +391,7 @@ export function register(engine) {
     const player = Number(result.player_score);
     const agent = Number(result.agent_score);
     if (!Number.isFinite(player) || !Number.isFinite(agent)) {
-      throw new Error('裁决结果缺少有效的玩家或 Agent 分数');
+      throw new Error('裁决结果缺少有效的玩家或机械臂分数');
     }
     updateScores(player, agent);
     const banner = $('resultBanner');
@@ -403,8 +403,8 @@ export function register(engine) {
     }
     banner.dataset.winner = winnerRole;
     $('resultEmoji').textContent = tie ? '🤝' : playerWins ? '🏆' : '✨';
-    $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : 'Agent 获胜';
-    $('resultSubtitle').textContent = `玩家 ${player} : Agent ${agent}`;
+    $('resultTitle').textContent = tie ? '平局！' : playerWins ? '玩家获胜' : '机械臂获胜';
+    $('resultSubtitle').textContent = `玩家 ${player} : 机械臂 ${agent}`;
     banner.classList.toggle('loss', !playerWins && !tie);
   }
 

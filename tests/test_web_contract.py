@@ -82,7 +82,7 @@ def test_frontend_result_copy_is_detector_only():
     """The result subtitle states only the verdict — no source annotations."""
     js = (ROOT / "web/games/dice.js").read_text(encoding="utf-8")
 
-    assert "resultSubtitle').textContent = `玩家 ${player} : Agent ${agent}`" in js
+    assert "resultSubtitle').textContent = `玩家 ${player} : 机械臂 ${agent}`" in js
     # 宣判结果不带来源说明（维护者 2026-09-30 拍板：不要说明性文字）。
     for annotation in ("纯视觉判定", "大模型", "YOLOv8：", "当前未启用"):
         assert annotation not in js
