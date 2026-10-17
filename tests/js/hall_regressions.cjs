@@ -17,6 +17,7 @@ const context = vm.createContext({
   activeGame: null,
   selectSource: null,
   boardInputSource: { local_client: false, enabled: false },
+  refreshDisplayManifest: async (manifest) => manifest,
   requestJson(url, options) {
     requests.push({ url, payload: JSON.parse(options.body) });
     return requestHandler(url, options);
@@ -56,6 +57,7 @@ press('ArrowDown'); assert.equal(context.state.selectedGame, 'rps');
 press('ArrowUp'); assert.equal(context.state.selectedGame, 'dice');
 press('ArrowDown', true); assert.equal(context.state.selectedGame, 'dice');
 press('ArrowDown'); press('Enter');
+await new Promise(setImmediate);
 assert.equal(context.state.phase, 'rules');
 assert.deepEqual(log, ['stop-select', 'enter:rps']);
 
@@ -68,6 +70,7 @@ assert.equal(context.state.phase, 'select');
 assert.equal(context.state.selectedGame, 'dice');
 assert.deepEqual(log, ['idle:false', 'teardown', 'stop-standby', 'select', 'listen-select']);
 press('Enter');
+await new Promise(setImmediate);
 assert.equal(log.at(-1), 'enter:dice');
 
 // An idle visitor may have highlighted RPS. A fresh wake restores the main
@@ -179,7 +182,7 @@ context.state.phase = 'select';
 context.boardInputSource = { local_client: false, enabled: true };
 requests.length = 0;
 context.selectGame('dice');
-context.enterSelectedGame();
+await context.enterSelectedGame();
 assert.equal(context.state.phase, 'rules');
 assert.deepEqual(requests, []);
 

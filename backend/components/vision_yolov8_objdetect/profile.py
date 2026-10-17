@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RUNTIME_CONFIG_KNOWN_KEYS = frozenset({
     "model", "camera", "device", "width", "height", "fps", "intra_threads",
     "ep_affinity", "conf", "stable_frames", "focus", "zoom", "max_frames",
-    "dump_input", "self_test", "display_enabled", "no_display",
+    "dump_input", "self_test", "display_enabled", "no_display", "show_debug_text",
     "yolov8_enabled", "divider_detection", "queue_depth", "rtsp",
     "video", "_note",
 })

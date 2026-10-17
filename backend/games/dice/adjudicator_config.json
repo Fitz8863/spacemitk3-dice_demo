@@ -9,6 +9,7 @@
   "width": 1280,
   "height": 720,
   "fps": 24,
+  "show_debug_text": false,
   "intra_threads": 2,
   "ep_affinity": "14;15",
   "queue_depth": 2,

@@ -4,7 +4,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../web/display-layout.js'), 'utf8');
-const api = vm.runInNewContext(source.replaceAll('export function', 'function') + '\n({resolveDisplayLayout, applyScoreLayout})');
+const api = vm.runInNewContext(source.replaceAll('export function', 'function')
+  .replaceAll('export async function', 'async function')
+  + '\n({resolveDisplayLayout, refreshDisplayManifest, applyScoreLayout})',
+  { AbortSignal, console: { warn() {} } });
 for (const side of ['LEFT', 'RIGHT']) {
   test(`${side} display moves complete cards without mutating physical mapping`, () => {
     const manifest = { participants: { player: 'LEFT', agent: 'RIGHT' }, display: {
@@ -27,4 +30,37 @@ test('no display config preserves legacy physical placement', () => {
   const d = api.resolveDisplayLayout({ participants: { player: 'RIGHT', agent: 'LEFT' } });
   assert.equal(d.player_side, 'RIGHT');
   assert.equal(d.video_rotation_deg, 0);
+});
+
+for (const id of ['dice', 'rps']) {
+  test(`${id} entry fetches current display without replacing physical roles`, async () => {
+    const cached = { id, participants: { player: 'LEFT', agent: 'RIGHT' }, display: {
+      player_side: 'LEFT', agent_side: 'RIGHT', video_rotation_deg: 0,
+    }};
+    const before = JSON.stringify(cached);
+    const result = await api.refreshDisplayManifest(cached, async (url, options) => {
+      assert.equal(url, '/api/games');
+      assert.equal(options.cache, 'no-store');
+      assert.ok(options.signal instanceof AbortSignal);
+      return { games: [{ id, participants: { player: 'RIGHT', agent: 'LEFT' }, display: {
+        player_side: 'RIGHT', agent_side: 'LEFT', video_rotation_deg: 180,
+      }}] };
+    });
+    assert.equal(result.display.player_side, 'RIGHT');
+    assert.equal(result.display.video_rotation_deg, 180);
+    assert.equal(result.participants.player, 'LEFT');
+    assert.equal(JSON.stringify(cached), before);
+  });
+}
+
+test('network errors, invalid data and legacy servers preserve the existing layout', async () => {
+  const cached = { id: 'dice', participants: { player: 'LEFT', agent: 'RIGHT' } };
+  for (const fetcher of [
+    async () => { throw new Error('offline'); },
+    async () => ({}),
+    async () => ({ games: [{ id: 'dice' }] }),
+    async () => ({ games: [{ id: 'dice', display: { player_side: 'invalid' } }] }),
+  ]) {
+    assert.equal(await api.refreshDisplayManifest(cached, fetcher), cached);
+  }
 });

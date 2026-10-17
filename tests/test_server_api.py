@@ -363,6 +363,7 @@ def test_round_api_creates_and_drives_full_flow(tmp_path, monkeypatch):
         assert status == 200
         snapshot = _round_wait_until(
             port, round_id, lambda s: s["state"] == "analysis"
+            and any(e.get("mode") == "audio" for e in _round_speech_events(s))
         )
         # The awaited audio directive must block adjudication until acked.
         audio = [e for e in _round_speech_events(snapshot) if e.get("mode") == "audio"]
@@ -382,8 +383,10 @@ def test_round_api_creates_and_drives_full_flow(tmp_path, monkeypatch):
         )
         assert status == 200
 
+        # State entry is published before its asynchronous on_enter speech.
         snapshot = _round_wait_until(
             port, round_id, lambda s: s["state"] == "result"
+            and any("玩家胜" in e.get("text", "") for e in _round_speech_events(s))
         )
         assert snapshot["result"]["winner_role"] == "PLAYER"
         assert snapshot["result"]["player_score"] == 20
@@ -698,7 +701,9 @@ class ServerApiTests(unittest.TestCase):
         })
         server.GAMES = games
         try:
-            status, _, data = self.request("GET", "/api/games")
+            # Test the legacy safe projection independently of deployment config.
+            with patch.object(server, "get_arena_config", return_value={}):
+                status, _, data = self.request("GET", "/api/games")
         finally:
             server.GAMES = original_games
         payload = json.loads(data)

@@ -4,6 +4,7 @@
 import { register as registerDice } from './games/dice.js';
 import { register as registerRps } from './games/rps.js';
 import { createSessionClient } from './shared-session.js';
+import { refreshDisplayManifest } from './display-layout.js';
 
 const state = {
   phase: 'select',
@@ -112,10 +113,13 @@ function applySessionSnapshot(snapshot) {
         return;
       }
       if (sessionRoundId !== snapshot.round_id) {
-        activeGame?.teardown();
-        const manifest = games.find((game) => game.id === snapshot.game_id);
+        const cached = games.find((game) => game.id === snapshot.game_id);
         const module = gameModules[snapshot.game_id];
-        if (!manifest || !module) throw new Error(`Unknown shared game: ${snapshot.game_id}`);
+        if (!cached || !module) throw new Error(`Unknown shared game: ${snapshot.game_id}`);
+        const manifest = await refreshDisplayManifest(cached, requestJson);
+        // An exit or a newer round may arrive while the configuration is loading.
+        if (!sharedSession.shared || sharedSession.snapshot?.round_id !== snapshot.round_id) return;
+        activeGame?.teardown();
         activeGame = module;
         sessionRoundId = snapshot.round_id;
         await module.enter(manifest, { roundId: snapshot.round_id });
@@ -1327,27 +1331,31 @@ function enterSelectedGame() {
   if (state.phase !== 'select') return;
   if (boardSelectionEntry !== null) return;
   if (!games.some((game) => game.id === state.selectedGame && game.enabled)) return;
+  const attempt = {};
+  boardSelectionEntry = attempt;
 
-  function enter() {
-    const manifest = games.find((game) => game.id === state.selectedGame && game.enabled);
-    if (!manifest) return;
-    const module = gameModules[manifest.id];
+  async function enter() {
+    const cached = games.find((game) => game.id === state.selectedGame && game.enabled);
+    if (!cached) return;
+    const module = gameModules[cached.id];
     if (!module) {
-      toast(`未注册游戏：${manifest.id}`);
+      toast(`未注册游戏：${cached.id}`);
       return;
     }
+    const manifest = await refreshDisplayManifest(cached, requestJson);
+    if (boardSelectionEntry !== attempt || state.phase !== 'select'
+        || state.selectedGame !== manifest.id) return;
     stopSelectListening();
     activeGame = module;
-    module.enter(manifest);
+    await module.enter(manifest);
   }
 
   // Remote pages never write the board cursor or wait for its synchronization.
   if (!boardInputSource.local_client) {
-    enter();
-    return;
+    return enter().finally(() => {
+      if (boardSelectionEntry === attempt) boardSelectionEntry = null;
+    });
   }
-  const attempt = {};
-  boardSelectionEntry = attempt;
   syncBoardSelection(state.selectedGame); // Retries a previously failed sync.
   return (async () => {
     try {
@@ -1360,7 +1368,7 @@ function enterSelectedGame() {
           toast('选中游戏同步失败，请再次确认');
           return;
         }
-        enter();
+        await enter();
         return;
       }
     } finally {

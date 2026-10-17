@@ -274,7 +274,8 @@ def with_global_defaults(
     """Underlay arena defaults beneath one game manifest.
 
     Per field the game manifest wins; the arena fills only what it leaves
-    out.  Display is a global presentation policy shared by all games.
+    out.  Display is a global presentation policy shared by all games. Dice
+    and RPS in display mode generate their source-frame role mapping internally.
     The ASR section is another exception: it carries no switch of its own,
     so the arena breaker is written in as the effective ``enabled`` value.
     Returns a fresh dict — the source manifest and the games registry are
@@ -289,12 +290,16 @@ def with_global_defaults(
         if isinstance(game_providers, Mapping):
             providers.update(game_providers)
         merged["providers"] = providers
-    if "participants" not in merged and isinstance(arena.get("participants"), Mapping):
-        # The player/Agent physical-side mapping is a property of the table
-        # setup, not of any game; games may still override it.
-        merged["participants"] = dict(arena["participants"])
-    # Presentation is shared by both games; never overwrite detection participants.
     display = arena.get("display")
+    if isinstance(display, Mapping) and merged.get("id") in ("dice", "rps"):
+        # Both detectors use the same source coordinates: blue/player LEFT,
+        # red/robot RIGHT. Screen rotation must never swap their ownership.
+        # Keep this protocol field generated, not a second editable setting.
+        merged["participants"] = {"player": "LEFT", "agent": "RIGHT"}
+    elif "participants" not in merged and isinstance(arena.get("participants"), Mapping):
+        # Compatibility for deployments without display and other games.
+        merged["participants"] = dict(arena["participants"])
+    # Presentation is shared by both games and independent of source coordinates.
     if isinstance(display, Mapping):
         player_side = display["player_side"]
         base_rotation = display.get("video_rotation_deg", {}).get(merged.get("id"), 0)

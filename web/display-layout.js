@@ -14,6 +14,24 @@ export function resolveDisplayLayout(manifest) {
   return { ...display };
 }
 
+export async function refreshDisplayManifest(manifest, requestJson) {
+  // The game list can stay open for hours after its initial configuration load.
+  // Refresh presentation at entry, keeping the round's physical role mapping.
+  try {
+    const payload = await requestJson('/api/games', {
+      cache: 'no-store', signal: AbortSignal.timeout(2000),
+    });
+    const current = payload.games?.find(game => game.id === manifest.id);
+    if (current?.display) {
+      return { ...manifest, display: resolveDisplayLayout(current) };
+    }
+  } catch (error) {
+    // A temporary network failure must not prevent an otherwise valid entry.
+    console.warn('Display configuration refresh failed; keeping loaded layout', error);
+  }
+  return manifest;
+}
+
 export function applyScoreLayout(playerCard, agentCard, display) {
   // Explicit rows prevent CSS grid auto-placement from moving reversed cards
   // onto separate rows. Names, scores, gestures and winner roles stay intact.

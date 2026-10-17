@@ -457,7 +457,12 @@ class RoundEngineTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "shaking"))
         round_.submit_intent("stop_shake")
         self.assertTrue(wait_for(lambda: reached(round_, "analysis"), timeout=20))
-        self.assertTrue(wait_for(lambda: round_.snapshot()["state"] == "result", timeout=20))
+        # The result state is visible before its on_enter worker emits speech.
+        self.assertTrue(wait_for(
+            lambda: round_.snapshot()["state"] == "result" and any(
+                "玩家赢" in s.get("text", "") for s in self.events_of(round_, "speech")
+            ), timeout=20,
+        ))
         snapshot = round_.snapshot()
         self.assertEqual(snapshot["result"]["winner_role"], "PLAYER")
         speeches = self.events_of(round_, "speech")

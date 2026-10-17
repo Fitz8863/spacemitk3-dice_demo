@@ -619,12 +619,11 @@ def test_real_dice_manifest_and_arena_config_compose():
     merged = with_global_defaults(manifest, arena)
     for slot in ("tts_local", "tts_remote", "asr", "vision_adjudicator"):
         assert merged["providers"][slot], f"slot {slot} must resolve via the arena"
-    # The player/agent sides describe how the table is physically laid out (the
-    # arm moved to the agent side), so assert the *inheritance* rather than a
-    # specific mapping: pinning LEFT/RIGHT here would fail on every re-arrange
-    # without signalling anything about this test's actual subject.
-    assert "participants" in arena
-    assert merged["participants"] == arena["participants"]
+    # The shipped display configuration is the only orientation setting;
+    # detector ownership is generated rather than copied from editable JSON.
+    assert "participants" not in arena
+    assert "display" in arena
+    assert merged["participants"] == {"player": "LEFT", "agent": "RIGHT"}
     assert "voice" in merged
     assert "speed" in merged
     enabled = [m for m in games.all() if m.get("enabled", False)]
@@ -733,8 +732,13 @@ def test_startup_refuses_conflicting_local_tts(tmp_path, monkeypatch):
         server.main()
 
 
-def test_participants_inherit_from_arena_end_to_end(tmp_path, monkeypatch):
-    """A game manifest without participants loads and plays via the arena mapping."""
+@pytest.mark.parametrize("orientation", [
+    {"participants": {"player": "LEFT", "agent": "RIGHT"}},
+    {"display": {"player_side": "LEFT"}},
+    {"display": {"player_side": "RIGHT"}},
+])
+def test_participants_inherit_from_arena_end_to_end(tmp_path, monkeypatch, orientation):
+    """Legacy and display-only configs both expose roles and start a round."""
     games_root = tmp_path / "games"
     (games_root / "dice").mkdir(parents=True)
     (games_root / "dice" / "manifest.json").write_text(json.dumps({
@@ -745,7 +749,7 @@ def test_participants_inherit_from_arena_end_to_end(tmp_path, monkeypatch):
     arena_path.write_text(json.dumps({
         "schema_version": 1,
         "providers": {"tts_local": "tts_dummy"},
-        "participants": {"player": "LEFT", "agent": "RIGHT"},
+        **orientation,
     }), encoding="utf-8")
 
     registry = ComponentRegistry()
@@ -771,6 +775,8 @@ def test_participants_inherit_from_arena_end_to_end(tmp_path, monkeypatch):
         connection.close()
         dice = next(g for g in games if g["id"] == "dice")
         assert dice["participants"] == {"player": "LEFT", "agent": "RIGHT"}
+        if "display" in orientation:
+            assert dice["display"]["player_side"] == orientation["display"]["player_side"]
 
         # And a round on that game must start (the merged manifest carries it).
         connection = HTTPConnection("127.0.0.1", port, timeout=3)

@@ -88,6 +88,7 @@
   "width": 1920,
   "height": 1080,
   "fps": 24,
+  "show_debug_text": false,
   "intra_threads": 2,
   "ep_affinity": "14;15",
   "queue_depth": 2,

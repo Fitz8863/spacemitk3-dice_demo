@@ -188,6 +188,7 @@ struct Args {
     bool no_display = false;
     int max_frames = 0;
     bool self_test = false;
+    bool show_debug_text = true;  // Presentation only; keep legacy defaults.
     std::string dump_input;
     // Single-frame divider diagnostics: read one image, run the scene divider
     // detector, print one JSON line, exit.  No camera/OpenCL/model involved.
@@ -336,6 +337,7 @@ static bool load_config(const std::string& path, Args& a) {
         read_config_value(root, "max_frames", a.max_frames);
         read_config_value(root, "dump_input", a.dump_input);
         if (!read_config_bool(root, "self_test", a.self_test)) return false;
+        if (!read_config_bool(root, "show_debug_text", a.show_debug_text)) return false;
         bool display_enabled = !a.no_display;
         if (!read_config_bool(root, "display_enabled", display_enabled)) return false;
         // Accept the old negative spelling too, but prefer display_enabled in
@@ -1026,7 +1028,7 @@ static bool detect_scene_divider(const cv::Mat& bgr, DividerLine& divider) {
 }
 
 static void draw_scene_assist(cv::Mat& bgr, const DividerLine& divider,
-                              const std::string& status) {
+                              const std::string& status, bool show_debug_text) {
     if (divider.valid) {
         const cv::Point2f p = divider.point;
         const cv::Point2f v = divider.direction * 2000.0f;
@@ -1034,6 +1036,7 @@ static void draw_scene_assist(cv::Mat& bgr, const DividerLine& divider,
         const cv::Point p2(static_cast<int>(p.x + v.x), static_cast<int>(p.y + v.y));
         cv::line(bgr, p1, p2, cv::Scalar(0, 165, 255), 3, cv::LINE_AA);
     }
+    if (!show_debug_text) return;
     const cv::Scalar color = divider.valid ? cv::Scalar(0, 220, 0) : cv::Scalar(0, 0, 255);
     // Keep the judgment text directly on the image instead of drawing a solid
     // black panel in the top-left corner. A thin shadow preserves readability
@@ -1474,13 +1477,15 @@ int main(int argc, char** argv) {
                 }
             if (!a.no_display || rtsp_streamer.running()) {
                 draw_detections(bgr, item->detections);
-                draw_scene_assist(bgr, divider_assist, scene_status);
-                const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-                const double fps = elapsed > 0.0 ? shown / elapsed : 0.0;
-                cv::putText(bgr, "DISPLAY " + std::to_string(static_cast<int>(fps)) +
-                                      " FPS  DET " + std::to_string(item->detections.size()),
-                            {10, 96}, cv::FONT_HERSHEY_SIMPLEX, .75,
-                            {0, 255, 255}, 2, cv::LINE_AA);
+                draw_scene_assist(bgr, divider_assist, scene_status, a.show_debug_text);
+                if (a.show_debug_text) {
+                    const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
+                    const double fps = elapsed > 0.0 ? shown / elapsed : 0.0;
+                    cv::putText(bgr, "DISPLAY " + std::to_string(static_cast<int>(fps)) +
+                                          " FPS  DET " + std::to_string(item->detections.size()),
+                                {10, 96}, cv::FONT_HERSHEY_SIMPLEX, .75,
+                                {0, 255, 255}, 2, cv::LINE_AA);
+                }
                 rtsp_streamer.publish(bgr);
                 if (!a.no_display) {
                     cv::imshow("yolov8-k3", bgr);

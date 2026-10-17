@@ -193,6 +193,7 @@ struct Args {
     int inference_rotate_angle = 90;
     int max_frames = 0;
     bool self_test = false;
+    bool show_debug_text = true;  // Presentation only; keep legacy defaults.
     std::string dump_input;
     // Model vocabulary, declared by the game's runtime config (or --classes).
     // The package has no built-in class table: rps_mode and
@@ -506,6 +507,7 @@ static bool load_config(const std::string& path, Args& a) {
         read_config_value(root, "max_frames", a.max_frames);
         read_config_value(root, "dump_input", a.dump_input);
         if (!read_config_bool(root, "self_test", a.self_test)) return false;
+        if (!read_config_bool(root, "show_debug_text", a.show_debug_text)) return false;
 
         int queue_depth = static_cast<int>(a.queue_depth);
         read_config_value(root, "queue_depth", queue_depth);
@@ -1623,17 +1625,21 @@ int main(int argc, char** argv) {
                         std::max(1, static_cast<int>(a.roi_h * bgr.rows)));
                     cv::rectangle(bgr, roi_r, cv::Scalar(0, 0, 0), 7, cv::LINE_AA);
                     cv::rectangle(bgr, roi_r, cv::Scalar(80, 255, 80), 3, cv::LINE_AA);
-                    cv::putText(bgr, "ROI", cv::Point(roi_r.x + 12, roi_r.y + 34),
-                                cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(80, 255, 80),
-                                2, cv::LINE_AA);
+                    if (a.show_debug_text) {
+                        cv::putText(bgr, "ROI", cv::Point(roi_r.x + 12, roi_r.y + 34),
+                                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(80, 255, 80),
+                                    2, cv::LINE_AA);
+                    }
                 }
                 draw_detections(bgr, item->detections, rps_mapper, a.class_names);
-                const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
-                const double fps = elapsed > 0.0 ? shown / elapsed : 0.0;
-                cv::putText(bgr, "DISPLAY " + std::to_string(static_cast<int>(fps)) +
-                                      " FPS  DET " + std::to_string(item->detections.size()),
-                            {10, 28}, cv::FONT_HERSHEY_SIMPLEX, .75,
-                            {0, 255, 255}, 2, cv::LINE_AA);
+                if (a.show_debug_text) {
+                    const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
+                    const double fps = elapsed > 0.0 ? shown / elapsed : 0.0;
+                    cv::putText(bgr, "DISPLAY " + std::to_string(static_cast<int>(fps)) +
+                                          " FPS  DET " + std::to_string(item->detections.size()),
+                                {10, 28}, cv::FONT_HERSHEY_SIMPLEX, .75,
+                                {0, 255, 255}, 2, cv::LINE_AA);
+                }
                 rtsp_streamer.publish(bgr);
             }
         } else {

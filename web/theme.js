@@ -70,7 +70,7 @@
     const gameName = (id) => document.querySelector(`[data-game="${id}"] .game-copy strong`)?.textContent || '游戏';
     const breadcrumb = document.getElementById('arenaBreadcrumb');
     if (breadcrumb) breadcrumb.textContent = ['select', 'standby'].includes(phase)
-      ? '游乐舱 / 游戏大厅' : `游乐舱 / ${gameName(gameId)}`;
+      ? '游戏大厅' : `${gameName(gameId)}`;
     const step = ['rules', 'ready', 'rehome'].includes(phase) ? 0
       : phase === 'analysis' ? 2 : phase === 'result' ? 3 : 1;
     const steps = document.getElementById('arenaSteps');
