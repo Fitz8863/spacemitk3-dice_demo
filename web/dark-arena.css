@@ -1,7 +1,6 @@
-/* The legacy theme is unchanged; every arena rule is scoped to its theme. */
+/* The arena presentation overrides shared component styles. */
 .arena-only { display: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-.theme-control select { font: inherit; font-size: 13px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; cursor: pointer; }
 
 :root[data-theme="dark-arena"] {
   color-scheme: dark;

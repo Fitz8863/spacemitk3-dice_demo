@@ -46,10 +46,10 @@
 
 | 键 | 当前值 | 说明 |
 |---|---|---|
-| `rotate` | `{enabled:true, direction:cw, angle:90}` | 只控制观众看到的画面：原始横帧顺时针旋转 90°。detection 坐标会映射到这个展示坐标系，不改变模型输入方向 |
-| `inference_rotate` | `{enabled:true, direction:ccw, angle:90}` | 模型保持原先验证过的逆时针 90°方向推理，不跟随 Web 的顺时针 90°展示旋转。该方向的下半区对应原始画面左半的蓝色玩家区；模型对手掌朝向敏感，板上同一样本正常方向置信度 0.8356，倒置后 0.0000 |
-| `inference_roi` | `{x:0, y:0.5, w:1, h:0.5}` | 推理只看原检测坐标系的下半区，也就是蓝色玩家区域；机械臂手势被裁剪掉 |
-| `roi` | `{x:0, y:0, w:1, h:0.5}` | 顺时针 90° Web 展示后的上半是蓝色玩家区。runtime 把 `inference_roi` 检出的框映射到这个展示坐标系后，再做门控和绘制 |
+| `rotate` | `{enabled:false, direction:cw, angle:90}` | C++ 输出保持原始横屏，浏览器观看方向由全局 `display` 配置控制；不改变模型输入方向 |
+| `inference_rotate` | `{enabled:true, direction:ccw, angle:90}` | 模型保持原先验证过的逆时针 90°方向推理，独立于网页的显示旋转。该方向的下半区对应原始画面左半的玩家区；模型对手掌朝向敏感，板上同一样本正常方向置信度 0.8356，倒置后 0.0000 |
+| `inference_roi` | `{x:0, y:0.5, w:1, h:0.5}` | 推理只看原检测坐标系的下半区，也就是玩家区域；机械臂手势被裁剪掉 |
+| `roi` | `{x:0, y:0, w:0.5, h:1}` | 当前横屏输出的左半是玩家区。runtime 把 `inference_roi` 检出的框映射到输出坐标系后，再做门控和绘制；浏览器显示旋转不改变这一区域 |
 
 `inference_roi` 管模型看哪里，`roi` 管观众画面上的最终门控；两者不要混用。相机/桌子摆位改变时先根据推流绿框对位。
 
@@ -77,7 +77,7 @@
 |---|---|---|
 | 手势识别不出 / 误检 | `conf`（先降后调） | 下一回合 |
 | 识别太慢 / 太快出结果 | `stable_frames`（10~20 之间） | 下一回合 |
-| 手总识别不到 | 检测仍按顺时针 90°坐标看**下半区**；先确认蓝色玩家区位置，再改 `inference_roi` 或调相机 | 下一回合 |
+| 手总识别不到 | 检测按 `inference_rotate` 逆时针 90°后的坐标看**下半区**；先确认玩家区位置，再改 `inference_roi` 或调相机 | 下一回合 |
 | 加/改折叠手势 | `rps_map`（源类名必须在 `classes` 里） | 下一回合（先 self-test） |
 | 换模型 | `model` + `classes` 成对换（文件放 `models/`） | 下一回合（必须 self-test） |
 | 相机换口后打不开 | `v4l2-ctl --list-devices` 核对节点 → 改 `camera` | 下一回合 |
@@ -98,7 +98,7 @@ cd ~/projects/dice-game/main/vision/yolov10_objdetect
 # 2. 真机短跑 60 帧（占摄像头，看检测统计）
 ./build/yolov10_camera --config ../../backend/games/rps/adjudicator_config.json \
     --max-frames 60 --no-rtsp
-# 期望：GStreamer camera opened ... @24 + 横屏展示 + 蓝色玩家区的人手出现在检测里
+# 期望：GStreamer camera opened ... @24 + 横屏展示 + 玩家区的人手出现在检测里
 
 # 3. 推流目检（绿框/手部框/标签）
 ffplay -rtsp_transport tcp rtsp://<板端IP>:8554/rps/det

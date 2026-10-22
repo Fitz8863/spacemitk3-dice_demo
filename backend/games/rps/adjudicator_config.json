@@ -1,5 +1,5 @@
 {
-  "_note": "猜拳展示直接输出原始横屏：蓝色玩家左、红色 Agent 右。检测仍独立使用原来的逆时针90度及下半区ROI，只识别人手；display.player_side 可统一切换网页观看方向。",
+  "_note": "猜拳展示直接输出原始横屏：玩家左、Agent 右（原始相机坐标，与桌布颜色无关）。检测仍独立使用原来的逆时针90度及下半区ROI，只识别人手；display.player_side 可统一切换网页观看方向。",
   "model": "models/yolov10n_gestures.q.onnx",
   "classes": [
     "grabbing",
