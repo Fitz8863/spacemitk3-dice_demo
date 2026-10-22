@@ -195,6 +195,7 @@ struct Args {
     std::string image_path;
     bool yolov8_enabled = false;
     bool divider_detection_enabled = false;
+    std::string divider_colors = "red_blue";
     bool rtsp_enabled = false;
     int event_fd = -1;
     int control_fd = -1;
@@ -349,6 +350,11 @@ static bool load_config(const std::string& path, Args& a) {
         }
         if (!read_config_bool(root, "yolov8_enabled", a.yolov8_enabled)) return false;
         if (!read_config_bool(root, "divider_detection", a.divider_detection_enabled)) return false;
+        read_config_value(root, "divider_colors", a.divider_colors);
+        if (a.divider_colors != "red_blue" && a.divider_colors != "green_gray") {
+            std::cerr << "config divider_colors must be red_blue or green_gray\n";
+            return false;
+        }
 
         int queue_depth = static_cast<int>(a.queue_depth);
         read_config_value(root, "queue_depth", queue_depth);
@@ -855,7 +861,7 @@ static bool detect_black_divider(const cv::Mat& bgr, DividerLine& divider) {
 // Core detector: a warm-to-cool vertical transition in `bgr`, polarity
 // normalized inside (either mat orientation works).  Returns the refined
 // boundary as a column index in the quarter-scale image, or -1.
-static float detect_warm_cool_vertical_boundary(const cv::Mat& bgr) {
+static float detect_warm_cool_vertical_boundary(const cv::Mat& bgr, bool green_gray = false) {
     if (bgr.empty()) return -1.0f;
 
     constexpr double kDividerScale = 0.25;
@@ -872,6 +878,23 @@ static float detect_warm_cool_vertical_boundary(const cv::Mat& bgr) {
     std::vector<cv::Mat> channels;
     cv::split(small_f, channels);
     cv::Mat channel_diff = channels[2] - channels[0];   // OpenCV BGR: R - B
+    if (green_gray) {
+        // The brand green (#B0E237) and neutral gray (#666666) do not have
+        // opposite R-B signs. Classify hue/saturation before using the same
+        // robust row/column voting. Unknown pixels (hands, dice, glare) vote 0.
+        cv::Mat hsv;
+        cv::cvtColor(small, hsv, cv::COLOR_BGR2HSV);
+        for (int y = 0; y < hsv.rows; ++y) {
+            for (int x = 0; x < hsv.cols; ++x) {
+                const cv::Vec3b pixel = hsv.at<cv::Vec3b>(y, x);
+                const bool green = pixel[0] >= 25 && pixel[0] <= 55 &&
+                                   pixel[1] > 30 && pixel[2] > 40;
+                const bool gray = !green && pixel[1] <= 60 &&
+                                  pixel[2] > 35 && pixel[2] <= 190;
+                channel_diff.at<float>(y, x) = green ? 100.0f : (gray ? -100.0f : 0.0f);
+            }
+        }
+    }
 
     const int width = channel_diff.cols;
     const int height = channel_diff.rows;
@@ -973,13 +996,14 @@ static float detect_warm_cool_vertical_boundary(const cv::Mat& bgr) {
     return boundary / static_cast<float>(kDividerScale);
 }
 
-static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider) {
+static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider,
+                                    bool green_gray = false) {
     // Orientation-independent by construction: the vertical (face-off) layout
     // is tried first, then the transposed view where a horizontal red/blue
     // split becomes a vertical one.  A transposed hit maps straight back --
     // transpose coordinates swap, so column boundary there is the row
     // boundary here.
-    float boundary = detect_warm_cool_vertical_boundary(bgr);
+    float boundary = detect_warm_cool_vertical_boundary(bgr, green_gray);
     if (boundary >= 0.0f) {
         divider.valid = true;
         divider.horizontal = false;
@@ -990,7 +1014,7 @@ static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider) {
     }
     cv::Mat transposed;
     cv::transpose(bgr, transposed);
-    boundary = detect_warm_cool_vertical_boundary(transposed);
+    boundary = detect_warm_cool_vertical_boundary(transposed, green_gray);
     if (boundary < 0.0f) return false;
     divider.valid = true;
     divider.horizontal = true;
@@ -1005,9 +1029,12 @@ static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider) {
 // mat's red/blue boundary when the scene has one, otherwise a printed dark
 // line.  Callers (stable-frame gating) only care whether the scene geometry is
 // readable, not which signal proved it.
-static bool detect_scene_divider(const cv::Mat& bgr, DividerLine& divider) {
+static bool detect_scene_divider(const cv::Mat& bgr, DividerLine& divider,
+                                 const std::string& colors = "red_blue") {
     const char* source = nullptr;
-    if (detect_red_blue_divider(bgr, divider)) source = "red/blue";
+    if (detect_red_blue_divider(bgr, divider, colors == "green_gray")) {
+        source = colors == "green_gray" ? "green/gray" : "red/blue";
+    }
     else if (detect_black_divider(bgr, divider)) source = "black";
     else return false;
     // Rate-limited visibility: the divider is otherwise silent, and "line not
@@ -1100,7 +1127,7 @@ int main(int argc, char** argv) {
             return 2;
         }
         DividerLine divider;
-        const bool found = detect_scene_divider(image, divider);
+        const bool found = detect_scene_divider(image, divider, a.divider_colors);
         std::ostringstream out;
         out << "{\"image\":\"" << json_escape(a.image_path) << "\""
             << ",\"width\":" << image.cols << ",\"height\":" << image.rows
@@ -1410,7 +1437,7 @@ int main(int argc, char** argv) {
             // while idle, but must not spend CPU on scene geometry until a
             // START_ADJUDICATION command enables inference.
             if (a.divider_detection_enabled && adjudication_active.load()) {
-                divider_assist.valid = detect_scene_divider(bgr, divider_assist);
+                divider_assist.valid = detect_scene_divider(bgr, divider_assist, a.divider_colors);
             }
             std::string scene_status = !adjudication_active.load()
                 ? "Ready"

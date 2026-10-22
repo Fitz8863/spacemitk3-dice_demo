@@ -1,8 +1,8 @@
 {
   "_note": "dice 专属的视觉 runtime 配置（模型与检测参数 + 硬件）。manifest 的 vision_profile.runtime_config 指向本文件，dice 只读这一份（runtime_config 是必填项）。整份替换、不做字段级合并：这里没写的键会回落到 C++ 编译期默认值，加字段请整份补齐。model 相对路径按本文件所在目录解析——'models/best.q.onnx' 即 backend/games/dice/models/best.q.onnx。",
   "model": "models/best.q.onnx",
-  "conf": 0.30,
-  "stable_frames": 10,
+  "conf": 0.3,
+  "stable_frames": 30,
   "divider_detection": true,
   "camera": "/dev/v4l/by-id/usb-046d_HD_Pro_Webcam_C920_9395301F-video-index0",
   "device": "",
@@ -19,5 +19,6 @@
     "enabled": true,
     "host": "127.0.0.1",
     "port": 8554
-  }
+  },
+  "divider_colors": "green_gray"
 }

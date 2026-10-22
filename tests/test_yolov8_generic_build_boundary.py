@@ -57,18 +57,22 @@ def test_scene_divider_prefers_colour_split_and_falls_back_to_the_line():
     """The gate asks "is the left/right split readable", not which signal proved it."""
     source = SOURCE.read_text(encoding="utf-8")
     # The active adjudication phase resolves the divider through the dispatcher.
-    assert "divider_assist.valid = detect_scene_divider(bgr, divider_assist);" in source
+    assert "divider_assist.valid = detect_scene_divider(bgr, divider_assist, a.divider_colors);" in source
     start = source.index("static bool detect_scene_divider(")
     end = source.index("static void draw_scene_assist", start)
     dispatcher = source[start:end]
     # Colour split first, dark line only as the fallback (2026-09-21: the
     # dispatcher also tags which signal won for the rate-limited log line).
-    assert 'if (detect_red_blue_divider(bgr, divider)) source = "red/blue";' in dispatcher
+    assert 'const std::string& colors = "red_blue"' in dispatcher
+    assert 'if (detect_red_blue_divider(bgr, divider, colors == "green_gray"))' in dispatcher
+    assert 'source = colors == "green_gray" ? "green/gray" : "red/blue";' in dispatcher
     assert 'else if (detect_black_divider(bgr, divider)) source = "black";' in dispatcher
+    assert dispatcher.index('detect_red_blue_divider(') < dispatcher.index('detect_black_divider(')
     assert "else return false;" in dispatcher
     # Both signals stay available: the colour split is the glare-proof one, the
     # printed line remains for scenes without a coloured mat.
-    assert "static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider)" in source
+    assert "static bool detect_red_blue_divider(const cv::Mat& bgr, DividerLine& divider," in source
+    assert "bool green_gray = false" in source
     assert "static bool detect_black_divider(const cv::Mat& bgr, DividerLine& divider)" in source
 
 

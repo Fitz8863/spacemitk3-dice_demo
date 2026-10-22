@@ -26,7 +26,7 @@ RUNTIME_CONFIG_KNOWN_KEYS = frozenset({
     "model", "camera", "device", "width", "height", "fps", "intra_threads",
     "ep_affinity", "conf", "stable_frames", "focus", "zoom", "max_frames",
     "dump_input", "self_test", "display_enabled", "no_display", "show_debug_text",
-    "yolov8_enabled", "divider_detection", "queue_depth", "rtsp",
+    "yolov8_enabled", "divider_detection", "divider_colors", "queue_depth", "rtsp",
     "video", "_note",
 })
 
@@ -96,6 +96,8 @@ def load_runtime_config(path: Path) -> dict[str, Any]:
                 f"the C++ runtime: {', '.join(unknown)}",
                 flush=True,
             )
+    if payload.get("divider_colors", "red_blue") not in ("red_blue", "green_gray"):
+        raise ProfileError("runtime config divider_colors must be red_blue or green_gray")
     if "rtsp" in payload and not isinstance(payload["rtsp"], dict):
         raise ProfileError("runtime config rtsp must be an object")
     video = payload.get("video", {})
